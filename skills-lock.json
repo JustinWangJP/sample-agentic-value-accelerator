@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "wiki-onboarding": {
+      "source": "sickn33/antigravity-awesome-skills",
+      "sourceType": "github",
+      "skillPath": "skills/wiki-onboarding/SKILL.md",
+      "computedHash": "8d2400d5a966686aa464b25411657a36c44ced4df8fa5225e8b3aba292f7f9dd"
+    }
+  }
+}
