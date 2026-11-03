@@ -1,147 +1,77 @@
-%% AWS Agent Registry 管理ポータル MVP1。計画図であり、デプロイ済み構成ではない。
-%% 基準設計は plan/aws-agent-registry-mvp1-design-ja.md。
-%% 本図は利用者のネットワーク要件に合わせた VPC 接続版。
-%% 元の設計案に対する追加は VPC、2 Private Subnet、1 Public Subnet、NAT、IGW、DynamoDB Gateway Endpoint。
-%% CIDR は候補値。既存 VPC・接続先ネットワークとの重複を確認して確定する。
-%% 実線は要求・データの経路、破線は論理的な API 呼出し・認証・設定・監査の関連。
-%% Lambda の実行環境自体は AWS 管理側。利用者 VPC の両 Private Subnet に Hyperplane ENI で接続する。
-%% API Gateway から Lambda への起動は Lambda サービス統合。VPC Link、ALB、ENI の受信ポートを必要としない。
-%% NAT は外向き IPv4 通信専用。API の受信経路ではない。
-%% NAT は費用を抑えるため1台。AZ-A 障害時は両 AZ の外向き通信が影響を受ける。
-%% AZ-B から NAT への通信には AZ 間転送がある。可用性要件が上がれば AZ-B に Public Subnet と NAT を追加する。
-%% 外向き HTTPS は NAT 経由。DynamoDB だけは同一リージョンの Gateway Endpoint 経由。
-%% Secrets Manager の Interface Endpoint は初版では追加せず、既存 M2M secret を NAT 経由で取得する。
-%% CloudFront の S3 origin は非公開 bucket の通常 endpoint。S3 website endpoint は使用しない。
-%% Registry と API Gateway は公開 endpoint。VPC 接続は API 全体の閉域化を意味しない。
-%% Registry は既存 ARN で参照し、作成・削除しない。自動承認は無効とする。
-%% M2M JWT は Registry の発見用。管理・決裁は分離した Lambda IAM ロールと Boto3 を使う。
-%% DynamoDB は申請内容、操作者、操作履歴、冪等性、排他制御の補助。承認状態の正本は Registry。
-%% Registry の公開承認は、Agent・MCP・A2A の実行権限を付与しない。
-%% 参照資料。
-%% https://docs.aws.amazon.com/lambda/latest/dg/configuration-vpc-internet.html
-%% https://docs.aws.amazon.com/lambda/latest/dg/configuration-vpc.html
-%% https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-integrations-lambda.html
-%% https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-ddb.html
-%% https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-supported-auth-types.html
+%% AWS Agent Registry 管理ポータル MVP1 構成図（ネットワーク構成を含む）。計画図であり、デプロイ済み構成ではない。
+%% 基準: plan/aws-agent-registry-mvp1-design-ja.md、ADR-0001〜0004、GLOSSARY.md。
+%% 同じ内容の draw.io 版: agent-registry-mvp1-aws-architecture-ja.drawio
+%% ネットワーク境界（ADR-0003）
+%%   VPC・Subnet・NAT Gateway・Internet Gateway・VPC Endpoint・ALB・WAF・独自ドメインは作らない。
+%%   Lambda は VPC 非接続。AWS 管理ネットワークから TLS 443 で AWS API と IdP に接続する。
+%%   受信できる入口は CloudFront と API Gateway の標準ドメインだけ。Lambda Function URL は作らない。
+%%   閉域化・送信先の強制制限・WAF が必須になった場合は構成を見直す。
+%% 実線はリクエスト・データの経路、破線は認証・トークン・イベント・運用の関連。
 
-flowchart TB
-    USER["利用者・登録者・承認者<br/>ブラウザで React SPA を実行"]
-    IDP["既存の認証基盤<br/>Cognito または企業 IdP<br/>ユーザー SSO と M2M クライアントを分離"]
-    CONSUMER["既存の外部エージェント<br/>MCP クライアント"]
+flowchart LR
+    USER["利用者（ブラウザ・React SPA）<br/>Viewer・Publisher・Curator・Admin"]
+    CI["CI・App Factory<br/>サービス主体（専用 M2M）<br/>下書き作成・申請のみ"]
+    AGENT["外部エージェント<br/>MCP クライアント"]
+    OP["オペレーター（ローカル端末）<br/>scripts/deploy.sh を手動実行"]
+    GHA["GitHub Actions<br/>テスト・Lint・型検査・terraform validate のみ<br/>AWS 認証情報なし（ADR-0004）"]
 
     subgraph AWS["AWS アカウント"]
-        CF["Amazon CloudFront<br/>HTTPS・セキュリティヘッダー<br/>OAC で S3 origin を制限"]
+        CF["Amazon CloudFront<br/>HTTPS・CSP・OAC"]
 
-        subgraph REGION["対象リージョン・既存 Registry に合わせる"]
-            S3[("Amazon S3<br/>React SPA の静的ファイル<br/>Block Public Access 有効")]
-            API["API Gateway HTTP API<br/>公開 HTTPS endpoint・CORS 制限<br/>JWT authorizer で issuer・client・scope を検証"]
-
-            subgraph COMPUTE["AWS Lambda 管理環境・2関数を VPC 接続"]
-                MGMT["管理 Lambda・Python<br/>一覧・検索・下書き・編集・申請<br/>ユーザーのロールと所有者を検査<br/>実行ロールに決裁権限なし"]
-                CURATOR["決裁 Lambda・Python<br/>承認・却下・公開停止・廃止<br/>自己承認禁止・申請内容の hash 検査<br/>実行ロールに定義の編集権限なし"]
+        subgraph REGION["us-east-1（VPC なし・AWS マネージドの公開 HTTPS エンドポイント）"]
+            subgraph PUB["公開エンドポイント（JWT で保護）"]
+                APIGW["API Gateway HTTP API<br/>JWT authorizer（issuer・client_id・scope）<br/>CORS は SPA の origin のみ"]
+                COGNITO["Amazon Cognito（既存 User Pool）<br/>人間用 PKCE client・CI 用 M2M client（追加）<br/>発見用 M2M client（既存）"]
             end
 
-            subgraph VPC["VPC・10.40.0.0/16<br/>DNS resolution と DNS hostnames を有効化"]
-                subgraph AZA["Availability Zone A"]
-                    subgraph PUBLICA["Public Subnet A・10.40.0.0/24"]
-                        NAT["NAT Gateway 1台・Elastic IP<br/>Public Route Table<br/>0.0.0.0/0 は IGW へ"]
-                    end
-                    subgraph PRIVATEA["Private Subnet A・10.40.10.0/24"]
-                        ENIA["Lambda Hyperplane ENI A<br/>Public IP なし"]
-                        RTA["Private Route Table A<br/>0.0.0.0/0 は NAT へ<br/>DynamoDB prefix list は Endpoint へ"]
-                    end
-                end
-
-                subgraph AZB["Availability Zone B"]
-                    subgraph PRIVATEB["Private Subnet B・10.40.20.0/24"]
-                        ENIB["Lambda Hyperplane ENI B<br/>Public IP なし"]
-                        RTB["Private Route Table B<br/>0.0.0.0/0 は AZ-A の NAT へ<br/>DynamoDB prefix list は Endpoint へ"]
-                    end
-                end
-
-                SG["両関数の VPC 接続に共通の Security Group<br/>受信ルールなし・送信 TCP 443<br/>公開先は 0.0.0.0/0、DynamoDB は prefix list<br/>実行権限は各関数の IAM ロールで分離"]
-                DDBEP["DynamoDB Gateway VPC Endpoint<br/>両 Private Route Table に関連付け<br/>Endpoint policy を対象テーブルに限定"]
-                IGW["Internet Gateway<br/>VPC にアタッチ"]
-                NOTE["ネットワーク構成の前提<br/>NAT 1台のため外向き通信は AZ 冗長ではない<br/>VPC・NAT の費用は元の VPC 非接続案から増える<br/>MVP2 の実行基盤は本図の対象外"]
+            subgraph LAMBDA["AWS Lambda（VPC 非接続・Python）"]
+                MGMT["管理 Lambda<br/>発見の代理・下書き・申請・廃止依頼・通知 API<br/>状態変更の権限なし"]
+                CUR["決裁 Lambda<br/>公開承認・却下・公開停止・廃止・取り込み・回復<br/>定義の作成・更新の権限なし"]
+                EVT["イベント処理 Lambda<br/>Registry の読み取りと通知の書き込みのみ"]
             end
 
-            EGRESS["外向き HTTPS・TCP 443<br/>AWS 公開 endpoint と IdP への通信<br/>NAT からの応答だけを受信"]
-
-            subgraph REGISTRY["既存 AWS Agent Registry 1個・VPC 外のマネージドサービス"]
-                CONTROL["管理 API<br/>agent-registry-control<br/>IAM SigV4・Boto3"]
-                DISCOVERY["発見 API と Registry MCP endpoint<br/>agent-registry<br/>既存 M2M JWT・HTTP Bearer"]
-                RECORDS[("Agent・Agent Skills・MCP・A2A の定義<br/>資産定義と承認状態の正本<br/>DRAFT → PENDING_APPROVAL → APPROVED<br/>REJECTED・DEPRECATED")]
+            subgraph REG["既存 Agent Registry（ARN 参照のみ・Terraform 管理外）"]
+                CTRL["管理 API（agent-registry-control）<br/>IAM SigV4・Boto3"]
+                REC[("Registry レコード<br/>Agent・A2A・MCP サーバー・Skill<br/>定義と状態の正本（ADR-0002）<br/>自動承認は無効")]
+                DISC["発見 API・Registry MCP（agent-registry）<br/>JWT（発見用 M2M）<br/>検索・一覧は Registry 単位の認可"]
             end
 
-            DDB[("Amazon DynamoDB・補助1テーブル<br/>申請内容・操作者・操作履歴<br/>冪等性・排他制御<br/>暗号化・PITR・削除保護")]
-            SECRETS["AWS Secrets Manager<br/>既存 M2M クライアントの secret<br/>値を SPA・ログへ出さない"]
-            LOGS["Amazon CloudWatch Logs<br/>API アクセスログ・Lambda 実行ログ<br/>JWT・secret・定義全文は記録しない"]
-            TRAIL["AWS CloudTrail<br/>Registry 管理イベント<br/>既存の組織 trail を再利用"]
+            EB["EventBridge default バス<br/>ルール: aws.agent-registry のレコード状態変化"]
+
+            subgraph DATA["データ（非公開・暗号化）"]
+                DDB[("DynamoDB 補助1テーブル<br/>スナップショット・操作履歴・排他・冪等性<br/>通知（TTL 90日）・PITR・削除保護")]
+                S3SPA[("S3（SPA 静的ファイル）<br/>Block Public Access・OAC のみ許可")]
+                SEC["Secrets Manager<br/>発見用 M2M の secret（既存）"]
+            end
+
+            subgraph OPS["監査・運用"]
+                CW["CloudWatch Logs<br/>365日保存"]
+                CT["CloudTrail<br/>既存の組織 trail"]
+                IDC["IAM Identity Center<br/>RegistryPortalDeployer<br/>Registry 書き込みは Deny"]
+                TFS[("S3（Terraform state）<br/>use_lockfile")]
+            end
         end
-
     end
 
-    USER -->|"HTTPS・SPA 取得"| CF
-    CF -->|"OAC・署名付き origin 取得"| S3
-    USER <-->|"Authorization Code + PKCE<br/>ユーザー用 access token"| IDP
-    USER -->|"HTTPS・ユーザー access token"| API
-    API -.->|"JWT 検証用の公開鍵・JWKS"| IDP
-    API -->|"管理ルート・Lambda サービス統合"| MGMT
-    API -->|"決裁ルート・Lambda サービス統合"| CURATOR
-
-    MGMT -.->|"両 subnet を VPC 設定に指定"| ENIA
-    MGMT -.-> ENIB
-    CURATOR -.-> ENIA
-    CURATOR -.-> ENIB
-    SG -.-> ENIA
-    SG -.-> ENIB
-    ENIA --> RTA
-    ENIB --> RTB
-    RTA -->|"公開先への既定経路"| NAT
-    RTB -->|"AZ 間の既定経路"| NAT
-    NAT --> IGW
-    NAT -.-> NOTE
-    IGW --> EGRESS
-    RTA -->|"DynamoDB の経路"| DDBEP
-    RTB -->|"DynamoDB の経路"| DDBEP
-    DDBEP -->|"HTTPS・IAM 認可"| DDB
-
-    EGRESS --> CONTROL
-    EGRESS --> DISCOVERY
-    EGRESS --> SECRETS
-    EGRESS -->|"M2M client_credentials・token 取得"| IDP
-    MGMT -.->|"Boto3・IAM<br/>作成・更新・申請"| CONTROL
-    CURATOR -.->|"Boto3・別 IAM ロール<br/>取得・状態変更"| CONTROL
-    MGMT -.->|"HTTP Bearer・M2M JWT<br/>承認済み資産の発見"| DISCOVERY
-    MGMT -.->|"IAM で secret 取得・実通信は NAT 経由"| SECRETS
-    CONTROL -->|"資産定義と標準承認状態を管理"| RECORDS
-    DISCOVERY -->|"承認済みの版だけを参照"| RECORDS
-    CONSUMER -->|"既存 M2M JWT<br/>HTTPS・Registry MCP"| DISCOVERY
-
-    API -.->|"AWS サービスによるログ配信"| LOGS
-    MGMT -.->|"Lambda 標準ログ配信"| LOGS
-    CURATOR -.->|"Lambda 標準ログ配信"| LOGS
-    CONTROL -.->|"管理操作を記録"| TRAIL
-
-    classDef client fill:#f1f5f9,stroke:#475569,color:#0f172a
-    classDef compute fill:#fff0df,stroke:#c05600,color:#713f12
-    classDef network fill:#edf5ff,stroke:#2563eb,color:#172554
-    classDef existing fill:#edfcf3,stroke:#15803d,color:#14532d
-    classDef store fill:#f5f0ff,stroke:#7c3aed,color:#3b0764
-    classDef note fill:#fffbe6,stroke:#a16207,color:#713f12
-    class USER,CONSUMER client
-    class MGMT,CURATOR compute
-    class CF,API,ENIA,ENIB,RTA,RTB,NAT,IGW,DDBEP,SG,EGRESS network
-    class IDP,CONTROL,DISCOVERY,RECORDS,SECRETS existing
-    class S3,DDB,LOGS,TRAIL store
-    class NOTE note
-    style AWS fill:#ffffff,stroke:#64748b
-    style REGION fill:#f8fafc,stroke:#94a3b8
-    style COMPUTE fill:#fff7ed,stroke:#ea580c
-    style VPC fill:#eff6ff,stroke:#2563eb
-    style AZA fill:#ffffff,stroke:#94a3b8
-    style AZB fill:#ffffff,stroke:#94a3b8
-    style PUBLICA fill:#f0fdf4,stroke:#16a34a
-    style PRIVATEA fill:#f5f3ff,stroke:#8b5cf6
-    style PRIVATEB fill:#f5f3ff,stroke:#8b5cf6
-    style REGISTRY fill:#f0fdf4,stroke:#15803d
+    USER -->|SPA 取得| CF
+    CF -->|OAC| S3SPA
+    USER -->|API 呼び出し（アクセストークン）| APIGW
+    USER -.->|PKCE ログイン| COGNITO
+    CI -->|M2M トークン（records.write）| APIGW
+    CI -.->|client credentials| COGNITO
+    APIGW -->|Lambda 統合| MGMT
+    APIGW -->|Lambda 統合| CUR
+    MGMT -->|作成・更新・申請| CTRL
+    CUR -->|状態更新・取り込み| CTRL
+    MGMT -->|HTTP Bearer（発見用 M2M）| DISC
+    MGMT -.->|secret 取得| SEC
+    MGMT --> DDB
+    CUR --> DDB
+    EVT -->|通知の書き込み| DDB
+    CTRL --- REC
+    DISC --- REC
+    REC -.->|状態変化イベント| EB
+    EB -.->|ルールで起動| EVT
+    AGENT -->|Registry MCP（発見用 M2M JWT）| DISC
+    OP -.->|SSO 短期認証情報| IDC
+    OP -.->|state・ロック| TFS
