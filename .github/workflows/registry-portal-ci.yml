@@ -1,0 +1,76 @@
+# Registry ポータルの CI（テスト・Lint・型検査のみ）
+#
+# ADR-0004 に従い、AWS への反映は一切行わない。
+# AWS の認証情報・OIDC ロール（id-token: write）はこのワークフローに持たせない。
+name: registry-portal-ci
+
+on:
+  pull_request:
+    paths:
+      - "applications/registry_portal/**"
+      - ".github/workflows/registry-portal-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "applications/registry_portal/**"
+      - ".github/workflows/registry-portal-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: registry-portal-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend（pytest / Flake8 / Black / mypy）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: applications/registry_portal/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: applications/registry_portal/backend/requirements-dev.txt
+      - name: 依存パッケージのインストール
+        run: pip install -r requirements-dev.txt
+      - name: pytest
+        run: pytest
+      - name: Flake8
+        run: flake8 src tests
+      - name: Black
+        run: black --check src tests
+      - name: mypy
+        run: mypy
+
+  frontend:
+    name: frontend（ESLint / Vitest / typecheck / build）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: applications/registry_portal/frontend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: applications/registry_portal/frontend/package-lock.json
+      - name: 依存パッケージのインストール
+        run: npm ci
+      - name: ESLint
+        run: npm run lint
+      - name: Vitest
+        run: npm test
+      - name: typecheck
+        run: npm run typecheck
+      - name: build
+        run: npm run build

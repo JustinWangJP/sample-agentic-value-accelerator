@@ -1,0 +1,42 @@
+:root {
+  font-family: system-ui, -apple-system, 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+  color: #1f2933;
+  background: #f7f9fb;
+}
+
+body {
+  margin: 0;
+}
+
+.page {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+}
+
+dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.5rem 1.5rem;
+}
+
+dt {
+  font-weight: 600;
+}
+
+dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.error {
+  padding: 1rem;
+  border: 1px solid #d64545;
+  border-radius: 0.5rem;
+  background: #fdecec;
+}
+
+.note {
+  color: #52606d;
+  font-size: 0.875rem;
+}
