@@ -2,12 +2,12 @@
 
 [編集可能な構成図を開く](ava-aws-architecture-ja.drawio)
 
-draw.io Desktop、またはdiagrams.netの「ファイル → 開く」から読み込んでください。5ページ構成です。日本語ラベル、境界、接続線、表を個別に編集できます。外部画像や外部アイコンライブラリは使用していません。
+draw.io Desktop、またはdiagrams.netの「ファイル → 開く」から読み込んでください。5ページ構成です。日本語ラベル、境界、接続線、表を個別に編集できます。ページ01・02はdraw.io標準のAWSアイコン（`mxgraph.aws4`、AWS Architecture Icons）とAWS公式のグループ枠（AWS Cloud / Region / VPC / Availability Zone / Public・Private subnet）で描いています。外部画像は使用していません。
 
 | ページ | 内容 |
 | --- | --- |
-| 01 全体AWS構成 | UI配信、認証、管理API、データ、デプロイ、業務実行の接続 |
-| 02 VPC・Subnet・CIDR | Control Planeの2 AZ、public/private subnet、IGW、AZ別NAT、VPC Endpoint、経路 |
+| 01 全体AWS構成 | Control Plane本体（`infrastructure/main.tf`）。エッジ、VPC・2 AZ・public/private subnet・IGW・AZ別NAT・VPC Endpoint・Route Table、API、デプロイパイプライン、完了フック、展開先リソース |
+| 02 開発環境・LiteLLM | `environments/dev/main.tf`。us-east-2、/24 subnet、単一NAT、3つのALB、ECS（frontend / backend / LiteLLM）、RDS Multi-AZ、Redis Primary/Replica、spend aggregator |
 | 03 SaaS・任意Gateway | 外部IdP・他クラウド・Docker Hub、任意のLiteLLMセルフホスト構成 |
 | 04 Foundation・Langfuse | 別スタックのVPC、/24分割、単一NAT、Langfuseセルフホスト |
 | 05 CIDR・ポート・根拠 | IPv4範囲、AWS予約IPを除いた割当範囲、通信ポート、根拠ファイル |
