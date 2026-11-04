@@ -1,0 +1,77 @@
+%% AWS Agent Registry 管理ポータル MVP1 構成図（ネットワーク構成を含む）。計画図であり、デプロイ済み構成ではない。
+%% 基準: plan/aws-agent-registry-mvp1-design-ja.md、ADR-0001〜0004、GLOSSARY.md。
+%% 同じ内容の draw.io 版: agent-registry-mvp1-aws-architecture-ja.drawio
+%% ネットワーク境界（ADR-0003）
+%%   VPC・Subnet・NAT Gateway・Internet Gateway・VPC Endpoint・ALB・WAF・独自ドメインは作らない。
+%%   Lambda は VPC 非接続。AWS 管理ネットワークから TLS 443 で AWS API と IdP に接続する。
+%%   受信できる入口は CloudFront と API Gateway の標準ドメインだけ。Lambda Function URL は作らない。
+%%   閉域化・送信先の強制制限・WAF が必須になった場合は構成を見直す。
+%% 実線はリクエスト・データの経路、破線は認証・トークン・イベント・運用の関連。
+
+flowchart LR
+    USER["利用者（ブラウザ・React SPA）<br/>Viewer・Publisher・Curator・Admin"]
+    CI["CI・App Factory<br/>サービス主体（専用 M2M）<br/>下書き作成・申請のみ"]
+    AGENT["外部エージェント<br/>MCP クライアント"]
+    OP["オペレーター（ローカル端末）<br/>scripts/deploy.sh を手動実行"]
+    GHA["GitHub Actions<br/>テスト・Lint・型検査・terraform validate のみ<br/>AWS 認証情報なし（ADR-0004）"]
+
+    subgraph AWS["AWS アカウント"]
+        CF["Amazon CloudFront<br/>HTTPS・CSP・OAC"]
+
+        subgraph REGION["us-east-1（VPC なし・AWS マネージドの公開 HTTPS エンドポイント）"]
+            subgraph PUB["公開エンドポイント（JWT で保護）"]
+                APIGW["API Gateway HTTP API<br/>JWT authorizer（issuer・client_id・scope）<br/>CORS は SPA の origin のみ"]
+                COGNITO["Amazon Cognito（既存 User Pool）<br/>人間用 PKCE client・CI 用 M2M client（追加）<br/>発見用 M2M client（既存）"]
+            end
+
+            subgraph LAMBDA["AWS Lambda（VPC 非接続・Python）"]
+                MGMT["管理 Lambda<br/>発見の代理・下書き・申請・廃止依頼・通知 API<br/>状態変更の権限なし"]
+                CUR["決裁 Lambda<br/>公開承認・却下・公開停止・廃止・取り込み・回復<br/>定義の作成・更新の権限なし"]
+                EVT["イベント処理 Lambda<br/>Registry の読み取りと通知の書き込みのみ"]
+            end
+
+            subgraph REG["既存 Agent Registry（ARN 参照のみ・Terraform 管理外）"]
+                CTRL["管理 API（agent-registry-control）<br/>IAM SigV4・Boto3"]
+                REC[("Registry レコード<br/>Agent・A2A・MCP サーバー・Skill<br/>定義と状態の正本（ADR-0002）<br/>自動承認は無効")]
+                DISC["発見 API・Registry MCP（agent-registry）<br/>JWT（発見用 M2M）<br/>検索・一覧は Registry 単位の認可"]
+            end
+
+            EB["EventBridge default バス<br/>ルール: aws.agent-registry のレコード状態変化"]
+
+            subgraph DATA["データ（非公開・暗号化）"]
+                DDB[("DynamoDB 補助1テーブル<br/>スナップショット・操作履歴・排他・冪等性<br/>通知（TTL 90日）・PITR・削除保護")]
+                S3SPA[("S3（SPA 静的ファイル）<br/>Block Public Access・OAC のみ許可")]
+                SEC["Secrets Manager<br/>発見用 M2M の secret（既存）"]
+            end
+
+            subgraph OPS["監査・運用"]
+                CW["CloudWatch Logs<br/>365日保存"]
+                CT["CloudTrail<br/>既存の組織 trail"]
+                IDC["IAM Identity Center<br/>RegistryPortalDeployer<br/>Registry 書き込みは Deny"]
+                TFS[("S3（Terraform state）<br/>use_lockfile")]
+            end
+        end
+    end
+
+    USER -->|SPA 取得| CF
+    CF -->|OAC| S3SPA
+    USER -->|API 呼び出し（アクセストークン）| APIGW
+    USER -.->|PKCE ログイン| COGNITO
+    CI -->|M2M トークン（records.write）| APIGW
+    CI -.->|client credentials| COGNITO
+    APIGW -->|Lambda 統合| MGMT
+    APIGW -->|Lambda 統合| CUR
+    MGMT -->|作成・更新・申請| CTRL
+    CUR -->|状態更新・取り込み| CTRL
+    MGMT -->|HTTP Bearer（発見用 M2M）| DISC
+    MGMT -.->|secret 取得| SEC
+    MGMT --> DDB
+    CUR --> DDB
+    EVT -->|通知の書き込み| DDB
+    CTRL --- REC
+    DISC --- REC
+    REC -.->|状態変化イベント| EB
+    EB -.->|ルールで起動| EVT
+    AGENT -->|Registry MCP（発見用 M2M JWT）| DISC
+    OP -.->|SSO 短期認証情報| IDC
+    OP -.->|state・ロック| TFS

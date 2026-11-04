@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="AVAのAWS Agent Registry統合を、実装・承認処理・API・導入手順から学ぶ日本語オンボーディング資料。">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='5' fill='%23182b42'/%3E%3Cpath d='M8 23 16 8 24 23M11 18h10' fill='none' stroke='%2381bac0' stroke-width='3'/%3E%3C/svg%3E">
+  <title>AWS Agent Registry — AVA オンボーディングと実装解析</title>
+  <style>
+    :root{color-scheme:light;--navy:#182b42;--ink:#20334a;--muted:#53677c;--teal:#146a76;--teal-pale:#eaf5f5;--paper:#fff;--mist:#f3f6fa;--line:#d5e0ea;--amber:#91501f;--amber-pale:#fff5e9;--red:#9e3b3b;--red-pale:#fff0ef;--green:#276345;--radius:8px;--mono:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace}
+    *{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:30px}body{margin:0;background:var(--mist);color:var(--ink);font:15px/1.85,"Yu Gothic",YuGothic,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif}a{color:var(--teal);text-decoration-thickness:1px;text-underline-offset:3px}a:hover{text-decoration-thickness:2px}button,input,select{font:inherit}button,select,input[type=checkbox]{cursor:pointer}button{border:1px solid var(--line);border-radius:5px;background:white;color:var(--ink);padding:8px 14px;font-weight:600}button:hover{background:var(--teal-pale);border-color:var(--teal)}:focus-visible{outline:3px solid #d68b30;outline-offset:4px}h1,h2,h3,h4{line-height:1.5;font-weight:750;letter-spacing:.015em}h1{font-size:clamp(30px,3.4vw,48px);margin:12px 0 20px}h2{font-size:28px;margin:0 0 22px}h3{font-size:19px;margin:32px 0 12px}h4{font-size:16px;margin:20px 0 8px}p{margin:0 0 16px}ul,ol{padding-left:1.5em;margin:12px 0 20px}li+li{margin-top:7px}code{font-family:var(--mono);font-size:.88em;background:#eef2f7;border-radius:3px;padding:2px 5px;overflow-wrap:anywhere}pre{font:12px/1.8 var(--mono);margin:0;padding:22px;overflow:auto;tab-size:2;color:#e9f0f7;background:var(--navy);border-radius:0 0 7px 7px}pre code{font:inherit;color:inherit;background:none;padding:0;overflow-wrap:normal}small,.small{font-size:12px;color:var(--muted)}strong{font-weight:750}[hidden]{display:none!important}.skip{position:fixed;left:12px;top:-80px;z-index:100;background:white;padding:10px}.skip:focus{top:12px}
+    .rail{position:fixed;inset:0 auto 0 0;width:246px;background:var(--navy);color:#e6edf5;z-index:20;padding:28px 20px;overflow-y:auto}.brand{display:flex;align-items:center;gap:12px;margin-bottom:22px}.brand-mark{display:grid;place-items:center;border:2px solid #81bac0;border-radius:6px;width:42px;height:42px;font-size:14px;letter-spacing:-1px;color:#fff}.brand b{font-size:15px}.brand small{color:#b7c9dc;display:block;font-size:11px}.rail a{color:#d3deeb;text-decoration:none}.rail .nav-list{list-style:none;margin:20px 0;padding:0}.nav-list li{margin:2px 0}.nav-list a{display:block;padding:7px 11px;border-left:2px solid transparent;font-size:13px;line-height:1.6}.nav-list a:hover,.nav-list a[aria-current=location]{color:white;background:#25425a;border-left-color:#8acbd0}.nav-group{margin:22px 10px 5px;color:#a6c2d5;font-size:11px}.rail-foot{border-top:1px solid #40566d;padding:18px 10px 0;font-size:11px;line-height:1.8;color:#b6c7d8}.rail-foot a{display:block;margin-top:7px;color:#c1e3e5}.mobile-bar{display:none}.workspace{margin-left:246px}.topline{max-width:1180px;margin:auto;display:flex;align-items:center;justify-content:space-between;gap:14px;padding:20px 40px;color:var(--muted);font-size:12px}.topline button{font-size:12px;padding:5px 12px}.document{max-width:1180px;margin:0 auto;padding:0 40px 64px}.hero{background:var(--paper);padding:42px 42px 30px;border-top:6px solid var(--teal);border-radius:5px 5px 0 0}.hero-label{font-size:14px;font-weight:700;color:var(--teal)}.hero .lead{font-size:17px;max-width:47em;line-height:1.9}.meta{display:flex;gap:8px 24px;flex-wrap:wrap;padding-top:12px;margin-top:20px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}.kind-strip{display:flex;flex-wrap:wrap;gap:0;background:#e5eef3;padding:0 40px}.kind-strip span{padding:13px 18px;font-size:12px;font-weight:700;border-right:1px solid #ccdbe4}.kind-strip span:first-child{padding-left:0}.reading-tools{padding:24px 0;display:grid;grid-template-columns:1fr auto;gap:14px;align-items:end}.search-label{font-size:12px;display:block;color:var(--muted);margin-bottom:5px}.search-wrap{display:flex;gap:7px}.search-wrap input{width:100%;padding:10px 14px;border:1px solid #b8cad9;border-radius:5px;background:white;color:var(--ink);min-width:0}.search-wrap button{font-size:12px}.search-result{font-size:12px;margin-top:6px;min-height:1.8em;color:var(--muted)}.role-jumps{display:flex;gap:7px;padding-bottom:28px}.role-jumps a{padding:8px 10px;border-radius:4px;background:#e2ebf2;text-decoration:none;font-size:12px;white-space:nowrap}.role-jumps a:hover{background:#d2e5e6}.chapter{padding:38px 42px;background:var(--paper);margin-bottom:18px;border:1px solid #e1e8ef;border-radius:var(--radius);scroll-margin-top:24px}.chapter-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:24px}.chapter-head h2{margin:0}.chapter-head .section-tag{font-size:12px;color:var(--teal);white-space:nowrap}.chapter>p,.chapter>ul,.chapter>ol{max-width:64em}.intro{font-size:16px;color:#3c5368}.note{padding:18px 20px;background:var(--teal-pale);border-left:3px solid var(--teal);margin:22px 0;border-radius:0 5px 5px 0}.note p:last-child{margin-bottom:0}.note.warn{background:var(--amber-pale);border-left-color:var(--amber);color:#644018}.note.issue{background:var(--red-pale);border-left-color:var(--red);color:#733434}.note b{display:block;margin-bottom:5px}.source-line{font-size:12px;line-height:1.9;color:var(--muted);margin:20px 0 0}.source-line a{white-space:nowrap;margin-right:9px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:6px;margin:18px 0 22px}table{width:100%;border-collapse:collapse;font-size:13px;line-height:1.8;text-align:left}th{background:#eaf0f5;font-size:12px;white-space:nowrap}th,td{padding:12px 15px;vertical-align:top;border-bottom:1px solid #e2e9f0}tr:last-child td{border-bottom:0}td:first-child{font-weight:600}td code{font-size:11px}caption{text-align:left;font-weight:700;padding:12px 15px;background:var(--mist)}.wide-table{min-width:700px}.badge{display:inline-block;vertical-align:middle;font-size:11px;padding:2px 8px;border-radius:4px;background:#edf2f7;font-weight:700;color:#465c73;white-space:nowrap}.badge.live{background:#e7f3ed;color:var(--green)}.badge.limited{background:var(--amber-pale);color:var(--amber)}.badge.engine{background:#eef0fa;color:#4b5388}.steps{list-style:none;counter-reset:steps;padding:0;margin:24px 0}.steps>li{position:relative;padding:0 0 24px 48px;margin:0;counter-increment:steps}.steps>li:before{content:counter(steps);position:absolute;left:0;top:0;width:29px;height:29px;display:grid;place-items:center;border-radius:50%;background:var(--teal);color:white;font-weight:700;font-size:13px;line-height:1}.steps>li:not(:last-child):after{content:"";position:absolute;width:1px;background:var(--line);left:14px;top:33px;bottom:5px}.steps strong{display:block;margin-bottom:4px}.steps p{font-size:14px;margin:0}.split{display:grid;grid-template-columns:1fr 1fr;gap:24px}.split>div{min-width:0}.pane{border-top:3px solid var(--teal);padding:16px 0}.pane.alt{border-top-color:#8c6b3a}.pane h3{margin:0 0 12px}.codebox{margin:18px 0}.code-top{display:flex;align-items:center;justify-content:space-between;padding:7px 14px;background:#243e58;color:#d9e8f4;border-radius:7px 7px 0 0;font:11px/1.6 var(--mono);gap:14px}.copy{font:11px/1.5 "Yu Gothic",sans-serif;color:#e9f4fa;background:transparent;border-color:#5e748a;padding:4px 10px}.copy:hover{background:#37566e;color:white}.copy-status{font-size:12px;color:var(--teal);min-height:1em}.facts{margin:20px 0;display:grid;grid-template-columns:155px 1fr;border-top:1px solid var(--line)}.facts dt,.facts dd{margin:0;padding:12px 0;border-bottom:1px solid var(--line);font-size:13px}.facts dt{font-weight:700}.facts dd{padding-left:18px}.disclosure{border:1px solid var(--line);border-radius:6px;margin:14px 0;overflow:hidden}.disclosure summary{padding:14px 18px;cursor:pointer;background:#f7f9fc;font-weight:700;line-height:1.7}.disclosure[open] summary{border-bottom:1px solid var(--line)}.disclosure .detail-body{padding:18px 20px}.detail-body>p:last-child{margin-bottom:0}.simulator{background:#f4f8fb;border:1px solid #c3d8e1;border-radius:8px;padding:22px;margin:22px 0}.sim-title{display:flex;gap:10px;align-items:center;margin-bottom:16px;font-weight:700}.sim-controls{display:grid;grid-template-columns:1fr 1fr;gap:14px}.sim-controls label{font-size:12px;font-weight:700}.sim-controls select{display:block;width:100%;margin-top:5px;padding:9px;border:1px solid #a9c1d1;border-radius:4px;color:var(--ink);background:white;font-size:13px}.sim-check{display:flex;gap:8px;margin:16px 0;font-size:12px;align-items:center}.sim-result{background:white;padding:20px;border-radius:5px;border:1px solid var(--line)}.sim-result h4{margin:0 0 12px}.sim-states{display:flex;gap:12px;flex-wrap:wrap;margin:0 0 14px}.sim-state{border-left:3px solid var(--teal);padding:4px 12px;background:var(--teal-pale)}.sim-state small{display:block}.sim-state b{font:700 15px/1.8 var(--mono)}.sim-state.problem{border-color:var(--amber);background:var(--amber-pale)}.sim-result p{font-size:13px;margin-bottom:8px}.sim-result ol{font-size:13px;margin-bottom:0}.filters{display:flex;flex-wrap:wrap;gap:6px;margin:18px 0 12px}.filters button{font-size:12px;padding:6px 12px}.filters button[aria-pressed=true]{background:var(--teal);color:white;border-color:var(--teal)}.endpoint{font:12px/1.8 var(--mono);overflow-wrap:anywhere}.method{font:700 10px/1.8 var(--mono);display:inline-block;min-width:48px;padding:1px 5px;margin-right:7px;border-radius:3px;background:#dfeef5;color:#245b78}.method.post{background:#e1f0e8;color:#276345}.method.delete{background:#fae9e9;color:#913939}.method.patch{background:#fff0d9;color:#875318}.checklist{list-style:none;padding:0}.checklist li{border-bottom:1px solid var(--line);margin:0;padding:12px 0}.checklist label{display:flex;align-items:flex-start;gap:12px;cursor:pointer;font-size:14px}.checklist input{width:17px;height:17px;flex:0 0 auto;margin-top:5px;accent-color:var(--teal)}.checklist input:checked+span{color:var(--muted);text-decoration:line-through}.progress-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:16px 0}.progress-row progress{height:10px;flex:1;min-width:120px;accent-color:var(--teal)}.progress-row button{font-size:12px;padding:5px 10px}.source-list{list-style:none;padding:0}.source-list li{border-top:1px solid var(--line);padding:17px 0;margin:0;scroll-margin-top:30px}.source-list li b{font-size:13px;display:block;margin-bottom:5px}.source-list a{font:11px/1.8 var(--mono);overflow-wrap:anywhere}.source-list p{font-size:12px;margin:5px 0 0;color:var(--muted)}.footnote{text-align:left;color:var(--muted);font-size:12px;margin:28px 0}.no-results{background:white;padding:30px;text-align:center;border-radius:8px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    .search-wrap button{white-space:nowrap;flex-shrink:0}
+    @media(min-width:1500px){.document{padding-left:54px;padding-right:54px}.topline{padding-left:54px;padding-right:54px}.chapter{padding-left:48px;padding-right:48px}}
+    @media(max-width:1100px){.rail{width:215px;padding:24px 14px}.workspace{margin-left:215px}.document{padding:0 24px 40px}.topline{padding:18px 24px}.hero,.chapter{padding:30px}.reading-tools{grid-template-columns:1fr}.role-jumps{padding-bottom:0}.kind-strip{padding:0 30px}.kind-strip span{padding:11px}.split{gap:18px}.chapter-head h2{font-size:24px}}
+    @media(max-width:780px){html{scroll-padding-top:78px}.rail{display:none;position:fixed;top:58px;width:100%;bottom:0;padding:20px 24px}.rail.open{display:block}.rail .brand,.rail-foot{display:none}.nav-list{columns:2;column-gap:16px}.nav-list li{break-inside:avoid}.workspace{margin-left:0}.mobile-bar{display:flex;position:sticky;top:0;z-index:30;padding:10px 18px;background:var(--navy);color:#eef5fb;align-items:center;justify-content:space-between;font-size:13px}.mobile-bar button{font-size:12px;background:transparent;color:white;border-color:#7f9bb2;padding:5px 12px}.document{padding:0 16px 30px}.topline{padding:15px 18px;font-size:11px}.hero,.chapter{padding:25px 22px}.hero h1{font-size:30px}.hero .lead{font-size:15px}.kind-strip{padding:0 20px}.kind-strip span{font-size:11px;padding:9px 12px 9px 0;margin-right:12px}.chapter{scroll-margin-top:76px}.chapter-head{display:block}.chapter-head .section-tag{display:block;margin-top:5px}.chapter-head h2{font-size:23px}.split{grid-template-columns:1fr;gap:10px}.sim-controls{grid-template-columns:1fr}.simulator{padding:16px}.sim-result{padding:16px}.facts{grid-template-columns:100px 1fr}.facts dd{padding-left:12px}.role-jumps{flex-wrap:wrap}.role-jumps a{font-size:11px}.code-top{font-size:10px}.topline span{max-width:65%}pre{font-size:11px;padding:17px}th,td{padding:10px 12px}.source-list a{font-size:10px}.hero-label{font-size:12px}}
+    @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+    @media print{@page{size:A4;margin:16mm}.rail,.mobile-bar,.topline,.reading-tools,.filters,.copy,.sim-controls,.sim-check,.progress-row button,.skip{display:none!important}.workspace{margin:0}.document{max-width:none;padding:0}.hero{border-top:3px solid var(--teal);padding:16px 0}.kind-strip{padding:0;background:none;border-bottom:1px solid var(--line)}.chapter{display:block!important;border:0;border-radius:0;padding:25px 0;margin:0;break-inside:auto}.chapter-head{break-after:avoid}h2,h3,summary{break-after:avoid}body{background:white;font-size:10pt}.hero h1{font-size:25pt}.hero .lead{font-size:12pt}.chapter h2{font-size:18pt}table{font-size:8pt}.table-wrap{overflow:visible}.wide-table{min-width:0}pre{white-space:pre-wrap;font-size:8pt;background:#edf1f5;color:#142b42}.code-top{background:#dfe7ed;color:#142b42}details{display:block}.simulator{break-inside:avoid}.no-results{display:none!important}a{color:#205264}.checklist label{font-size:10pt}.source-list li{break-inside:avoid}.source-list a{font-size:8pt}.footnote{font-size:8pt}}
+  </style>
+</head>
+<body>
+<a class="skip" href="#main">本文へ移動</a>
+<header class="mobile-bar"><b>AVA / Registry Guide</b><button id="menu-toggle" type="button" aria-expanded="false" aria-controls="chapter-nav">目次を開く</button></header>
+<aside class="rail" id="chapter-nav" aria-label="章のナビゲーション">
+  <div class="brand"><span class="brand-mark" aria-hidden="true">AVA</span><div><b>Agent Registry</b><small>実装から学ぶオンボーディング</small></div></div>
+  <nav aria-label="目次">
+    <p class="nav-group">まず理解する</p>
+    <ul class="nav-list">
+      <li><a href="#overview">全体像と読み方</a></li><li><a href="#capabilities">提供機能と実装範囲</a></li><li><a href="#data-model">レコードとデータ構造</a></li>
+    </ul>
+    <p class="nav-group">処理を理解する</p>
+    <ul class="nav-list">
+      <li><a href="#registration">登録処理の詳細</a></li><li><a href="#policy">承認ポリシーの解析</a></li><li><a href="#approval">承認キューと状態</a></li><li><a href="#auto-publish">自動登録の別経路</a></li><li><a href="#references">参照実装の使い分け</a></li>
+    </ul>
+    <p class="nav-group">導入して使う</p>
+    <ul class="nav-list">
+      <li><a href="#setup">環境・権限の準備</a></li><li><a href="#first-run">初回登録の手順</a></li><li><a href="#api">APIリファレンス</a></li><li><a href="#operations">制約とトラブル対応</a></li><li><a href="#completion">完了チェック</a></li><li><a href="#sources">解析根拠・ソース一覧</a></li>
+    </ul>
+  </nav>
+  <div class="rail-foot">対象: このrepoのチェックアウト<br>確認日: 2026-11-03<br>基点コミット: 416422b<a href="aws-agent-registry-guide-ja.md">Markdown版を開く</a></div>
+</aside>
+<div class="workspace">
+  <div class="topline"><span>sample-agentic-value-accelerator / オンボーディング</span><button type="button" id="print-guide">印刷 / PDF保存</button></div>
+  <main class="document" id="main">
+    <header class="hero">
+      <div class="hero-label">AWS Agent Registry と AVA Control Plane</div>
+      <h1>実装から学ぶ<br>Agent Registry</h1>
+      <p class="lead">何を登録できるのか。どこで承認され、どの状態で公開されるのか。<br>このrepoのコードに沿って、初回登録から運用までを読み解くガイドです。</p>
+      <div class="meta"><span>読者: 開発者・承認者・プラットフォーム担当者</span><span>確認日: 2026-11-03</span><span>解析: ソース・ルート・設定の静的照合</span></div>
+    </header>
+    <div class="kind-strip" aria-label="登録対象"><span>Agents</span><span>MCP Servers</span><span>A2A Servers</span><span>Skills</span><span>Custom Resources</span></div>
+    <div class="reading-tools">
+      <div><label class="search-label" for="chapter-search">章の検索（例: quorum、タグ、503）</label><div class="search-wrap"><input id="chapter-search" type="search" placeholder="キーワードで章を絞り込む" autocomplete="off"><button type="button" id="clear-search">クリア</button></div><div class="search-result" id="search-result" role="status" aria-live="polite">全14章を表示しています。</div></div>
+      <div class="role-jumps" aria-label="目的別の入口"><a href="#first-run">登録する開発者</a><a href="#policy">承認する管理者</a><a href="#setup">基盤を構築する担当者</a></div>
+    </div>
+    <noscript><div class="note">JavaScriptが無効です。本文・API表・ソースリンクはそのまま読めます。章検索、承認シミュレーション、コピー、チェック保存はJavaScriptを有効にすると利用できます。</div></noscript>
+    <p class="no-results" id="no-results" hidden>該当する章がありません。キーワードを短くするか、検索をクリアしてください。</p>
+
+    <section class="chapter" id="overview" data-chapter>
+      <div class="chapter-head"><h2>全体像と読み方</h2><span class="section-tag">資産を発見可能な定義にする</span></div>
+      <p class="intro">このrepoの中心機能は、5種類の資産をAWS Agent Registryに保存し、AVA側のポリシーと承認キューを組み合わせて登録・承認・廃止を管理することです。</p>
+      <div class="table-wrap"><table><thead><tr><th>構成要素</th><th>責務</th><th>見分けるポイント</th></tr></thead><tbody>
+        <tr><td>AWS Agent Registry</td><td>レコード、descriptor、AWSタグ、ライフサイクル状態の保存</td><td>AWS側の実体。通常の共通クライアントは <code>agent-registry-control</code> を使用</td></tr>
+        <tr><td>Registry画面</td><td>登録対象ごとの一覧、カタログからの登録、廃止</td><td><code>/registry</code> が入口。画面URLとAPIのprefixは異なる</td></tr>
+        <tr><td>Approval Policies</td><td>登録時にどの扱いを選ぶかのルール</td><td><code>/secure/approval-policies</code>。AVA側のDynamoDBデータ</td></tr>
+        <tr><td>Approval Queue</td><td>要求・ポリシーのsnapshot・判断履歴の保存と操作</td><td><code>/operate/approvals</code>。AWSレコードとは別に保存される</td></tr>
+        <tr><td>Govern → Agent Registry</td><td>デプロイ、AgentCoreなどの複数ソースを統合してガバナンスを表示</td><td><code>/govern/agents</code>。デモデータを合成する実装もあり、AWS保存一覧と一致するとは限らない</td></tr>
+      </tbody></table></div>
+      <div class="note"><b>「登録」の意味</b><p>名前・接続先・能力などをカタログ化する操作です。画面の <strong>Deploy to Registry</strong> も定義の登録APIを呼びます。これだけでAgent runtime、認証基盤、MCP Serverのプロセス、Skillの実行環境が作成されるわけではありません。</p></div>
+      <h3>解析の範囲</h3>
+      <p>現行の画面ルーティング、FastAPIの公開ルート、共有クライアント、承認エンジン、Terraform、成功hook、関連参照実装を照合しました。グラフの索引カバレッジも確認し、索引対象外のKYCテンプレートは直接読み取りました。実アカウントのAPI呼び出しやデプロイは実施していません。</p>
+      <p>本HTMLはオフラインで読める単一ファイルです。シミュレーターはローカルの学習機能で、AWSに接続しません。ソースリンクを開くには元のrepoのディレクトリ構造を維持してください。</p>
+      <p class="source-line">根拠: <a href="#s-routes">画面・API接続</a><a href="#s-pages">登録画面</a><a href="#s-govern">Govern集約</a></p>
+    </section>
+
+    <section class="chapter" id="capabilities" data-chapter>
+      <div class="chapter-head"><h2>提供機能と実装範囲</h2><span class="section-tag">UI・API・補助実装を分けて把握する</span></div>
+      <div class="table-wrap"><table class="wide-table"><caption>5種類の資産と登録先</caption><thead><tr><th>資産 / 画面</th><th>AWSレコード・descriptor</th><th>提供機能</th></tr></thead><tbody>
+        <tr><td>Agents<br><code>/registry/agents</code></td><td><code>AGENT</code> / <code>custom</code><br>AWSタグ <code>Kind=agent</code></td><td>一覧、詳細、登録、廃止。runtime・参照先・能力・認証ヒントを保存。画面ではキュレーション済みカタログから登録可能</td></tr>
+        <tr><td>MCP Servers<br><code>/mcp</code></td><td><code>MCP</code> / <code>mcpServer</code><br><code>Kind=mcp</code></td><td>一覧、詳細、登録、更新、廃止、カタログ。URL、認証・ヘッダー情報、委任方式、カテゴリ等を管理</td></tr>
+        <tr><td>A2A Servers<br><code>/a2a</code></td><td><code>AGENT</code> / <code>a2aAgentCard</code><br><code>Kind=a2a</code></td><td>一覧、詳細、登録、更新、廃止、カタログ、AgentCard取得。登録時にAgentCardを取得してinline保存</td></tr>
+        <tr><td>Skills<br><code>/registry/skills</code></td><td><code>SKILL</code> / <code>agentSkillsDefinition</code><br><code>Kind=skill</code></td><td>一覧、詳細、登録、廃止、カタログ。kind、入力変数、出力スキーマ等の定義を管理。Skill実行エンジンとは別</td></tr>
+        <tr><td>Custom Resources<br><code>/registry/custom-resources</code></td><td><code>CUSTOM</code> / <code>custom</code><br><code>Kind</code> は利用者指定</td><td>一覧、詳細、登録、廃止。画面フォームに加え、APIから自由形式のJSON metadataを登録可能</td></tr>
+      </tbody></table></div>
+      <div class="split"><div class="pane"><h3>共通で提供されるもの</h3><ul><li>登録前のポリシー評価と承認申請</li><li>状態ポーリング、ID・JSON・日時の正規化</li><li>承認要求とポリシーsnapshotの保存</li><li>論理的な廃止 <code>DEPRECATED</code></li></ul></div><div class="pane alt"><h3>範囲を確認するもの</h3><ul><li>Agents・Skills・CustomにPATCHルートはない</li><li>Delete APIは物理削除ではない</li><li>登録は接続性・実行成功を保証しない</li><li>データプレーン検索・登録前admission検証は別の参照実装で提供</li></ul></div></div>
+      <p>AgentsとA2Aは同じAWS <code>AGENT</code> 型です。AVAはAWSタグで両者を分けるため、タグが取得できない・意図と異なる場合は一覧から除外される可能性があります。</p>
+      <p class="source-line">根拠: <a href="#s-asset-routes">資産別API</a><a href="#s-client">共有クライアント</a><a href="#s-ref">検索・検証の参照実装</a></p>
+    </section>
+
+    <section class="chapter" id="data-model" data-chapter>
+      <div class="chapter-head"><h2>レコードとデータ構造</h2><span class="section-tag">AWSの外枠とAVAの中身</span></div>
+      <p>AWS側のレコード外枠に、AVA固有の情報をdescriptorのJSON文字列として格納します。資産別APIは、その値を画面向けの形に変換して返します。</p>
+      <dl class="facts"><dt>識別子</dt><dd><code>recordArn</code> と <code>recordId</code>。IDが返らない形ではARN末尾から補完。画面向けAPIは <code>agent_id</code>、<code>server_id</code>、<code>skill_id</code>、<code>resource_id</code> を返す</dd><dt>名前</dt><dd>AWSの <code>name</code> は <code>{kind}-{sanitized-display}-{uuid8}</code>。表示用 <code>displayName</code> は別フィールド。通常登録では同じ名前を再送しても同一レコード更新にはならない</dd><dt>descriptor</dt><dd><code>descriptors.&lt;kind&gt;.data</code> にJSON文字列。共有ヘルパーが型別の <code>dataSchemaVersion</code> を指定。<code>custom</code> にはschema versionを送らない</dd><dt>状態</dt><dd>AWSの状態を <code>status_raw</code> で保持し、UI向けの短い <code>status</code> も返す</dd><dt>タグ</dt><dd>AWSリソースタグと、descriptor内の利用者指定タグ配列は別。前者は分類・自動登録の照合にも使う</dd><dt>バージョン</dt><dd>共通の新規登録では <code>recordVersion="1"</code>。App Factoryの別スクリプトは独自の更新・version管理を行う</dd></dl>
+      <div class="codebox"><div class="code-top"><span>構造例 / 通常のAgent登録</span><button class="copy" type="button" data-copy="record-example">コピー</button></div><pre><code id="record-example">{
+  "recordType": "AGENT",
+  "name": "agent-KYC-Review-a1b2c3d4",
+  "displayName": "KYC Review",
+  "recordVersion": "1",
+  "tags": { "ManagedBy": "AVA", "Kind": "agent" },
+  "descriptors": {
+    "custom": {
+      "data": "{\"runtime\":\"custom\",\"runtime_ref\":\"https://example.invalid/agent\",\"capabilities\":[\"kyc\"]}"
+    }
+  }
+}</code></pre></div>
+      <p class="small">上記は保存の形を説明する例です。AWSからの実レスポンスではありません。</p>
+      <div class="table-wrap"><table><caption>共通の新規登録で指定するdescriptor schema version</caption><thead><tr><th>descriptor</th><th>指定値</th></tr></thead><tbody><tr><td><code>mcpServer</code></td><td><code>2025-12-11</code></td></tr><tr><td><code>a2aAgentCard</code></td><td><code>0.3</code></td></tr><tr><td><code>agentSkillsDefinition</code></td><td><code>0.1.0</code></td></tr><tr><td><code>custom</code></td><td>dataSchemaVersionを送らない</td></tr></tbody></table></div>
+      <h3>読取時の正規化 <code>_hydrate()</code></h3>
+      <ul><li><code>createdAt</code>・<code>updatedAt</code> のdatetime値をISO文字列に変換します。</li><li>4種類のdescriptor枝の <code>data</code> をJSON解析し、<code>dataParsed</code> を追加します。解析失敗時は <code>None</code> になります。</li><li><code>recordId</code> が欠けていてARNがあれば、末尾からIDを抽出します。</li></ul>
+      <h3>一覧取得の実装上のコスト</h3>
+      <p><code>list_records()</code> はページを反復し、既定100件 × 最大50ページの上限を持ちます。Agents/A2AのタグフィルターはAWSの一覧フィルターへ渡さず、取得後に全条件を照合します。タグがなければレコードARNで <code>ListTagsForResource</code> を追加呼び出しします。</p>
+      <div class="note warn"><b>データが増えたときの意味</b><p>最大5,000件のguardと、タグ取得による追加リクエストがあるため、大規模な全件探索や任意タグ検索をそのまま担う設計とはみなさず、件数・遅延・ページ継続の扱いを確認します。</p></div>
+      <p class="source-line">根拠: <a href="#s-client">build_record_name / create_record / list_records / _hydrate</a><a href="#s-asset-routes">資産別の _to_ui</a></p>
+    </section>
+
+    <section class="chapter" id="registration" data-chapter>
+      <div class="chapter-head"><h2>登録処理の詳細</h2><span class="section-tag">通常登録APIの成功経路と失敗経路</span></div>
+      <ol class="steps"><li><strong>設定とAPI権限を確認</strong><p>登録は <code>VIEWER</code> の権限要件。registry IDが空ならルートは503。<code>_registry_id()</code> は環境変数の空行・文字列 <code>None</code> を除いて最初の有効な行を使います。</p></li><li><strong>登録ポリシーを評価</strong><p><code>evaluate(kind, resource_id=登録名, action="register")</code> を実行。denyなら403で終了。auto_approveなら最終目標をAPPROVED、それ以外はPENDING_APPROVALにします。</p></li><li><strong>資産のdescriptorを組み立てる</strong><p>通常Agentはcustom、MCPはmcpServer、A2AはAgentCard、SkillはagentSkillsDefinition、Customは自由JSON。タグと表示名を含めて <code>CreateRegistryRecord</code> を呼びます。</p></li><li><strong>DRAFTへの遷移を待ち、承認申請</strong><p><code>_wait_for_status(..., target={"DRAFT"}, timeout_s=15)</code> を呼び、その後 <code>SubmitRegistryRecordForApproval</code> を実行します。</p></li><li><strong>自動承認または承認キューへ</strong><p>自動承認ならPENDING_APPROVALを最大15秒待って状態変更を試行。手動承認なら <code>enqueue_approval()</code> で要求を保存します。</p></li><li><strong>詳細を再取得して画面向けに返す</strong><p>期待した状態を固定値で返すのではなく、<code>get_record()</code> の結果を変換します。201の応答だけでAPPROVEDへの到達を判断しないでください。</p></li></ol>
+      <details class="disclosure"><summary>非同期状態の待機は、どこまで保証するか</summary><div class="detail-body"><p><code>_wait_for_status()</code> は0.5秒ごとにGetを行い、読取のClientErrorは待機中に無視します。期限切れでは例外を投げず、最後に観測した状態を返して警告を記録します。呼出元はこの返却値を使って処理を止めていません。</p><p>承認申請・自動承認の状態変更でもClientErrorをログに残して進む経路があります。そのため「申請APIを呼んだ」と「目的の状態に到達した」は別の確認事項です。</p></div></details>
+      <details class="disclosure"><summary>A2A: AgentCardの取得と、登録を拒否する場合</summary><div class="detail-body"><p>入力が <code>agent.json</code> で終わらない場合、<code>.well-known/agent.json</code> に書き換えて取得します。<code>safe_fetch.fetch_json()</code> に10秒timeoutとサイズ上限を渡し、JSON objectであることも確認します。</p><p>fetch guardが拒否するprivate・loopback・link-local・不正URLなどは登録を拒否します。許可されたprivate peerが必要な場合は <code>SAFE_FETCH_ALLOWED_PRIVATE_CIDRS</code> を担当者が検討します。一方、応答しない相手などの取得失敗では空のAgentCardで登録を続ける経路があります。レコードが存在することと、能力情報が取得できたことを区別してください。</p></div></details>
+      <details class="disclosure"><summary>更新と廃止の実装</summary><div class="detail-body"><p>MCP・A2AのPATCHは、既存descriptor内のデータを読み、指定された項目を書き換えてUpdateRegistryRecordを呼びます。登録フローと同じポリシー評価・キュー作成が自動的に適用されるとは考えないでください。</p><p>新規publishではMCPに <code>2025-12-11</code>、A2Aに <code>0.3</code> を指定する一方、両PATCHルートのdescriptorでは <code>dataSchemaVersion="1.0"</code> が固定されています。この不一致はソースで確認した事項で、実サービスが更新を受理するかは未検証です。更新機能を採用する際は対象SDK・サービスとの互換性を確認してください。</p><p>公開DELETEルートは <code>reg.deprecate()</code> 経由でDEPRECATEDにします。共有クライアントには物理削除ヘルパーもありますが、ここで紹介するDELETEルートはそれを呼びません。</p></div></details>
+      <p class="source-line">根拠: <a href="#s-client">create_record / _wait_for_status / set_status</a><a href="#s-asset-routes">登録・更新・廃止ルート</a><a href="#s-a2a">AgentCard取得</a></p>
+    </section>
+
+    <section class="chapter" id="policy" data-chapter>
+      <div class="chapter-head"><h2>承認ポリシーの解析</h2><span class="section-tag">エンジンの能力と設定APIの差</span></div>
+      <p>ポリシーの実体はAVA側のDynamoDBです。評価エンジンは有効なポリシーを読み、kind・資産名・actionの条件が一致する候補から、優先順位が最も高い1件を選びます。</p>
+      <div class="table-wrap"><table><thead><tr><th>判定項目</th><th>実装</th><th>登録時の具体値</th></tr></thead><tbody><tr><td>resource_kind</td><td><code>*</code> または入力kindと完全一致</td><td><code>agent</code> / <code>mcp</code> / <code>a2a</code> / <code>skill</code> / <code>custom</code></td></tr><tr><td>resource_pattern</td><td><code>fnmatch.fnmatchcase()</code> のglob照合。大文字小文字を区別</td><td>利用者が指定した登録名。AWS側で生成されるUUID付きnameではない</td></tr><tr><td>action_pattern</td><td>同じくglob照合</td><td><code>register</code>。キュー行に保存する既定actionの <code>publish</code> とは異なる</td></tr></tbody></table></div>
+      <h3>複数一致したときの優先順位</h3>
+      <ol><li>モードの厳しさ: <code>deny &gt; require_approval &gt; auto_approve</code></li><li>resource_patternの具体性</li><li>action_patternの具体性</li><li>required_roleの厳しさ: <code>ADMIN &gt; OPERATOR &gt; VIEWER</code></li><li>policy_idによる決定的なタイブレーク</li></ol>
+      <p class="small">具体性のスコアは、<code>*</code> または空なら0、それ以外は「文字数 − 5 ×（*と?の数）」を最低1として計算する簡易尺度です。kindの具体性自体はscoreに含まれません。</p>
+      <div class="note warn"><b>標準の設定APIでは、3モードすべてを設定できるわけではありません</b><p>エンジンは <code>mode</code> を読む実装ですが、<code>PolicyCreate</code> / <code>PolicyUpdate</code> にはmode項目がありません。保存行にmodeがない場合、有効な一致ポリシーは <code>require_approval</code> と解釈されます。denyや明示auto_approveの分岐があることを、通常の設定画面から指定できることと同一視しないでください。</p></div>
+      <div class="table-wrap"><table><thead><tr><th>差分</th><th>ソースで確認できること</th><th>オンボーディングでの扱い</th></tr></thead><tbody><tr><td>設定APIのkind</td><td><code>application, harness, memory, mcp, a2a, identity, *</code> を受け付ける</td><td><code>agent / skill / custom</code> 専用kindは標準APIで作成・更新不可。横断ルールには <code>*</code> を使い、名前・action条件で影響を確認</td></tr><tr><td>モード未指定</td><td>一致した有効ポリシーはrequire_approval</td><td>手動承認は有効な一致ポリシーで構成する</td></tr><tr><td>ポリシー未一致</td><td>auto_approveを返す</td><td>「設定しなければ承認待ち」ではない</td></tr><tr><td>テーブル未設定・読取ClientError</td><td>空のポリシー一覧として扱う</td><td>未一致と同じ自動承認に進む経路がある。テーブル・IAM・ログの確認が必要</td></tr><tr><td>ポリシー取得のページング</td><td><code>_load_active_policies()</code> は1回のscan応答のItemsを使い、継続キーを処理しない</td><td>scan結果が複数ページになる規模では、すべてのポリシーを評価できるとは限らない</td></tr></tbody></table></div>
+      <details class="disclosure"><summary>手動承認用ポリシーの例と、その適用範囲</summary><div class="detail-body"><p>次のJSONは <code>POST /api/v1/approval-policies</code> の入力例です。ADMIN権限が必要です。<code>mode</code> を指定せず、作成された有効な一致ポリシーを手動承認ルールとして使います。</p><div class="codebox"><div class="code-top"><span>PolicyCreate / リクエスト例</span><button class="copy" type="button" data-copy="policy-example">コピー</button></div><pre><code id="policy-example">{
+  "name": "Onboarding registrations require review",
+  "description": "研修用の名前で始まる登録を管理者が確認する",
+  "resource_kind": "*",
+  "resource_pattern": "onboarding-*",
+  "action_pattern": "register",
+  "required_role": "ADMIN",
+  "quorum": 1,
+  "sla_hours": 24
+}</code></pre></div><p><code>*</code> は他の資産kindにも一致します。同名パターンの範囲と、既存のより厳しいルールの有無を確認してください。デプロイ成功hookはこの評価エンジンを呼ばないため、このルールだけで自動登録を手動承認に変えることはできません。</p></div></details>
+      <p class="source-line">根拠: <a href="#s-policy">evaluate / _score / _normalize_mode / _load_active_policies</a><a href="#s-policy-api">PolicyCreate / PolicyUpdate / create_policy</a></p>
+    </section>
+
+    <section class="chapter" id="approval" data-chapter>
+      <div class="chapter-head"><h2>承認キューと状態</h2><span class="section-tag">AWSとDynamoDBの2つの状態を読む</span></div>
+      <div class="table-wrap"><table><thead><tr><th>AWS / status_raw</th><th>AVAのstatus</th><th>意味</th></tr></thead><tbody><tr><td><code>CREATING</code></td><td><code>pending</code></td><td>作成処理中</td></tr><tr><td><code>DRAFT</code></td><td><code>pending</code></td><td>作成済み・申請前</td></tr><tr><td><code>PENDING_APPROVAL</code></td><td><code>pending</code></td><td>承認待ち</td></tr><tr><td><code>APPROVED</code></td><td><code>active</code></td><td>承認済み</td></tr><tr><td><code>REJECTED</code></td><td><code>rejected</code></td><td>拒否済み</td></tr><tr><td><code>DEPRECATED</code></td><td><code>deprecated</code></td><td>取消・廃止</td></tr><tr><td><code>CREATE_FAILED / UPDATE_FAILED</code></td><td><code>failed</code></td><td>作成・更新失敗</td></tr></tbody></table></div>
+      <p><code>pending</code> だけでは作成中・DRAFT・承認待ちが区別できません。調査では返却IDと <code>status_raw</code> を使います。</p>
+      <h3>承認要求に保存する情報</h3>
+      <p><code>enqueue_approval()</code> はrequest_id、対象record ID/ARN、<code>resource_kind=registry_record:&lt;kind&gt;</code>、依頼者、理由、policy ID・名前・snapshot、必要ロール、quorum、SLA、判断配列、作成・更新・期限日時を保存します。要求テーブル未設定やput_itemのClientErrorではログを残してNoneを返します。</p>
+      <h3>承認・拒否の反映</h3>
+      <p><code>_record_decision()</code> は要求が <code>pending</code> か確認し、AWS側の状態変更を試みた後、DynamoDBの判断・状態を更新します。承認はAPPROVED、拒否はREJECTED、取消はDEPRECATEDです。Identity Providerも同じ要求形式を使いますが、その実体の更新はDynamoDBで、AWS Registryの第6の資産型ではありません。</p>
+      <div class="note issue"><b>2つの状態はトランザクションとして確定しません</b><p>AWSの状態変更が失敗してもキュー行を確定する経路があります。逆にAWS変更後のDynamoDB更新が失敗することも考えられます。後者は処理順から導く障害時の可能性です。現実装ではquorumを複数人で集めず、1回の判断で確定します。既に確定した要求への再判断は409になるため、単純な再承認を復旧策にはできません。</p></div>
+      <div class="simulator" id="approval-lab">
+        <div class="sim-title">状態を試して理解する <span class="badge">学習用 / AWS接続なし</span></div>
+        <p class="small">通常時の呼び出しが成功する前提の説明モデルです。modeの選択はエンジンの分岐を表しており、標準設定画面の選択肢を再現したものではありません。</p>
+        <div class="sim-controls">
+          <label for="sim-route">登録経路<select id="sim-route"><option value="normal">通常の登録API</option><option value="deploy">デプロイ成功hook</option></select></label>
+          <label for="sim-mode">ポリシーの評価条件<select id="sim-mode"><option value="require">有効な一致ルール / 手動承認</option><option value="none">一致するルールなし</option><option value="read-error">ポリシー読取ClientError</option><option value="deny">明示mode=deny（エンジンの分岐）</option><option value="auto">明示mode=auto_approve（エンジンの分岐）</option></select></label>
+          <label for="sim-decision">キューでの判断<select id="sim-decision"><option value="pending">まだ判断しない</option><option value="approved">承認</option><option value="denied">拒否</option><option value="cancelled">取消</option></select></label>
+        </div>
+        <label class="sim-check"><input id="sim-failure" type="checkbox">手動判断時のAWS状態更新が失敗したケースを表示する</label>
+        <div class="sim-result" id="sim-result" aria-live="polite"><p>JavaScriptを有効にすると、条件に応じたAWS・キューの状態を確認できます。</p></div>
+      </div>
+      <p class="source-line">根拠: <a href="#s-client">enqueue_approval / set_status</a><a href="#s-approval">_record_decision とロール制御</a><a href="#s-asset-routes">status変換</a></p>
+    </section>
+
+    <section class="chapter" id="auto-publish" data-chapter>
+      <div class="chapter-head"><h2>自動登録の別経路</h2><span class="section-tag">共通デプロイの成功イベントから公開する</span></div>
+      <p>Control PlaneのTerraformは、共通のデプロイStep Functionsの成功イベントをEventBridgeからLambdaへ渡す <code>deployment_success_hook</code> を接続します。通常の登録APIを呼び出す仕組みではなく、Lambda自身がRegistry APIを使用します。</p>
+      <ol class="steps"><li><strong>deployment IDを抽出してDynamoDBを読む</strong><p>該当deploymentが存在し、保存状態が小文字比較で <code>deployed</code> の場合に続行します。IDなし・行なし・未デプロイではスキップします。</p></li><li><strong>既登録を確認する</strong><p>同じ <code>DeploymentId</code> のAWSタグを持つレコードが見つかる場合は再作成をスキップします。通常登録のUUID生成とは異なる、デプロイ単位の重複抑止です。</p></li><li><strong>runtimeと参照先を出力から決める</strong><p>UI/App/Dashboard URLがあれば <code>runtime=web-app</code>。なければAgentCore runtime ARN、runtime ID、最後はdeployment IDを参照します。</p></li><li><strong>AGENTレコードを作成し、APPROVEDへの遷移を試みる</strong><p><code>Kind=agent</code>、<code>Source=foundry-deploy</code>、<code>DeploymentId</code> を付与。DRAFTを待ち、申請、PENDING_APPROVALを待ち、APPROVEDに変更します。</p></li><li><strong>承認済みの履歴を保存する</strong><p>キュー表に <code>status=approved</code>、systemの判断、<code>policy_name="AVA Default: Application deploy auto-approves"</code> を記録します。</p></li></ol>
+      <div class="table-wrap"><table><thead><tr><th>比較</th><th>通常の登録API</th><th>成功hook</th></tr></thead><tbody><tr><td>入口</td><td>資産別POSTルート</td><td>Terraformで指定したStep Functionsの成功イベント</td></tr><tr><td>ポリシー評価</td><td><code>approval_policy_engine.evaluate()</code></td><td>呼び出さない</td></tr><tr><td>承認先</td><td>評価結果に応じて承認待ち / 自動承認</td><td>自動承認を試みる</td></tr><tr><td>キュー行</td><td>require_approval時にpendingで作成</td><td>approvedの履歴行として作成</td></tr><tr><td>重複抑止</td><td>生成名にUUID。再POSTは新規作成になりうる</td><td>DeploymentIdタグで既登録確認</td></tr><tr><td>公開失敗</td><td>失敗箇所によりエラー / 警告後続行</td><td>handlerは例外を捕捉して <code>ok:false</code> を返す経路がある。履歴書込もbest effort</td></tr></tbody></table></div>
+      <div class="note warn"><b>デプロイ成功と、公開・承認履歴の成功を分けて確認する</b><p>hookで作られたレコードはWeb UIへの参照だけの場合もあります。また、通常登録用の手動承認ポリシーがこの経路に適用されるわけではありません。履歴行もAWSの実状態を再検証してから確定する仕組みとは限らないため、AWS側の状態を照合してください。</p></div>
+      <p>この配線は共通Step Functionsが対象です。別のAaaS・独自スクリプト・外部パイプラインによるデプロイにまで同じhookが働くとは推定しません。重複チェックと作成も一つの原子的操作ではないため、同時イベントの扱いは別途検証事項です。</p>
+      <p class="source-line">根拠: <a href="#s-infra">Terraformの接続</a><a href="#s-hook">handler / _already_published / _publish / _write_queue_row</a></p>
+    </section>
+
+    <section class="chapter" id="references" data-chapter>
+      <div class="chapter-head"><h2>参照実装の使い分け</h2><span class="section-tag">repo内の「Registry」を区別する</span></div>
+      <h3>App Factory: デプロイ済みruntimeの公開</h3>
+      <p><code>applications/app_factory/scripts/publish_to_registry.py</code> はruntimeとuse caseからAgentCard・descriptorを構築します。<code>app-factory-&lt;use_case_id&gt;</code> を名前として既存レコードを検索し、あればversionを更新、なければ作成し、承認申請を行います。</p>
+      <p>主なCLI引数は <code>--registry-arn</code>、<code>--runtime-arn</code>、<code>--use-case-id</code>、<code>--region</code>、<code>--output-json</code> です。成功hookの自動承認とは異なり、このスクリプトは承認申請までを扱います。Registry ID/ARN・descriptor・versionの形が通常の共有クライアントと異なるため、使用するSDKとの適合は経路別に確認します。</p>
+      <h3>agentcore-in-a-box: 検索とadmission検証</h3>
+      <p>LambdaのRegistry処理には <code>read</code>、<code>search</code>、<code>curate</code> が実装されています。searchはデータプレーンの <code>search_registry_records(searchQuery, registryIds, maxResults)</code> を呼び、上限を25件に抑えます。ソースの意図は承認済みレコードの検索です。検索失敗時には200応答の中の <code>error</code> を返す経路があるため、HTTPコードだけを成功判定にしません。</p>
+      <div class="table-wrap"><table><thead><tr><th>検証対象</th><th>admissionチェック</th></tr></thead><tbody><tr><td>共通</td><td>descriptorのinline内容がJSON objectとして解析可能で空ではないこと、名前とversionがあること</td></tr><tr><td>MCP</td><td>remote endpointの存在、設定に応じたHTTPS、各endpointのhostが管理対象JWT境界に属すること</td></tr><tr><td>非MCP</td><td>所有チームを表す項目があること</td></tr><tr><td>validate / submit</td><td>validateは読取のみ。submitは検証失敗なら422で止め、合格時に承認申請</td></tr><tr><td>approve / reject / deprecate</td><td>Registryの状態変更を呼ぶ。curateは管理者向けの別の操作面</td></tr></tbody></table></div>
+      <p>管理対象JWT境界の検証はdescriptorのendpoint hostと設定を照合するものです。実際のJWT認証をその場で試験することとは区別します。この検証器は <code>descriptorType</code> と <code>inlineContent</code> を読む別の形で、Control Planeの <code>descriptors.*.data</code> 方式へそのまま適用されるものではありません。</p>
+      <details class="disclosure"><summary>agent-safety / KYCで同じ名前が現れたら</summary><div class="detail-body"><p><strong>agent-safety:</strong> ダッシュボードはAWS registryとレコードの列挙APIを持ちます。一方、<code>/api/registry</code>、予算・同期など独自の管理APIも併存しています。ローカルのAgent管理とAWSサービスを名前だけで同一視しないでください。ソース内の提供リージョン一覧は実装中の固定値であり、AWSの最新の提供状況を保証しません。</p><p><strong>KYC Registry Proxy:</strong> 該当CloudFormationのDescriptionは「Lambda + API Gateway fronting DynamoDB」です。これはDynamoDBベースの別実装であり、AWS Agent Registryとの統合として数えません。</p></div></details>
+      <p class="source-line">根拠: <a href="#s-factory">App Factory公開</a><a href="#s-ref">read / search / curate / _validate_descriptor</a><a href="#s-safety">agent-safety</a><a href="#s-kyc">KYCテンプレート</a></p>
+    </section>
+
+    <section class="chapter" id="setup" data-chapter>
+      <div class="chapter-head"><h2>環境・権限の準備</h2><span class="section-tag">プラットフォーム担当者の確認項目</span></div>
+      <p>Control Plane全体の起動・デプロイは <a href="../../platform/control_plane/README.md">Control Plane README</a> と <a href="contributor-guide-ja.md">開発者向けオンボーディング</a> を参照してください。ここではRegistry固有の配線を確認します。</p>
+      <ol class="steps"><li><strong>AWS SDK・CLIがサービスモデルを持つか確認</strong><p>依存定義の下限はboto3 / botocoreともに1.43.0。実際の環境で <code>agent-registry-control</code> を扱えることを確認します。Terraformのregistryモジュールは <code>aws agent-registry-control help</code> の成功を検査します。</p></li><li><strong>対象アカウント・リージョンを確認</strong><p>Control Planeの共有クライアントは <code>settings.AWS_REGION</code> を使用。<code>GOVERN_AWS_REGION</code> は監督対象fleetの設定であり、Registry接続リージョンと同じ意味ではありません。サービス利用可否は対象環境で確認します。</p></li><li><strong>Terraformでregistryを構築</strong><p><code>modules/agent_registry</code> はAWS CLIで同名registryを探索して再利用、なければ作成します。既定名はAVA。CLIや作成の失敗ではエラーにする実装です。</p></li><li><strong>バックエンドへ出力値を接続</strong><p>ECSタスクの <code>AGENT_REGISTRY_ID</code>、<code>AGENT_REGISTRY_ARN</code>、<code>AGENT_REGISTRY_NAME</code> を確認。設定変更後は稼働タスクが新設定を受け取ったかも確認します。</p></li><li><strong>IAMと承認テーブルを確認</strong><p>ECSにはRegistry作成・読取・更新・承認・タグ・検索等の権限設定があります。AWS権限だけでなく、承認ポリシーと承認要求のDynamoDB設定・アクセスも必要です。</p></li><li><strong>承認の初期ルールと運用を決定</strong><p>一致ポリシーがないと通常登録は自動承認へ進みます。手動承認を試す場合は名前パターン等が一致する有効ルールを作り、キュー生成とAWS状態を確認します。</p></li></ol>
+      <div class="codebox"><div class="code-top"><span>適用済み環境の設定確認 / 読取のみ</span><button class="copy" type="button" data-copy="setup-code">コピー</button></div><pre><code id="setup-code">cd platform/control_plane/infrastructure
+terraform output -raw agent_registry_id
+terraform output -raw agent_registry_arn
+terraform output -raw agent_registry_name</code></pre></div>
+      <div class="note warn"><b>AWS側のauto_approveとAVAポリシーは別です</b><p>registryモジュールの <code>auto_approve</code> は既定false。しかしAVAのコード自身が申請・APPROVEDへの変更を呼ぶ経路があります。この変数だけで全レコードが手動承認になると判断しないでください。</p></div>
+      <h3>APIのロール要件</h3>
+      <div class="table-wrap"><table><thead><tr><th>操作</th><th>APIの要件</th><th>補足</th></tr></thead><tbody><tr><td>資産の一覧・詳細・登録</td><td><code>VIEWER</code></td><td>登録後の承認をポリシーで分ける設計</td></tr><tr><td>MCP / A2A更新、資産の廃止</td><td><code>OPERATOR</code></td><td>通常登録とは別の操作</td></tr><tr><td>承認要求の作成・取消</td><td><code>OPERATOR</code></td><td>通常登録ではバックエンドが要求を作成する</td></tr><tr><td>承認・拒否・一括判断</td><td><code>ADMIN</code></td><td>要求行にあるrequired_roleとは別にAPIで固定要件を持つ</td></tr><tr><td>承認ポリシーの作成・更新</td><td><code>ADMIN</code></td><td>quorumなどの保存と、実際の強制は区別する</td></tr></tbody></table></div>
+      <p class="source-line">根拠: <a href="#s-infra">Terraform / ECS / outputs</a><a href="#s-config">設定と依存定義</a><a href="#s-policy-api">ポリシーAPI</a><a href="#s-approval">承認API</a></p>
+    </section>
+
+    <section class="chapter" id="first-run" data-chapter>
+      <div class="chapter-head"><h2>初回登録の手順</h2><span class="section-tag">小さな登録で一連の状態を確認する</span></div>
+      <h3>画面から始める</h3>
+      <ol><li>Control Planeにログインし、<code>/registry</code> を開きます。</li><li>AgentsまたはSkillsのカタログを開き、<strong>Deploy to Registry</strong> で登録します。Custom Resourcesは <strong>Register custom resource</strong> から名前・kind・説明・タグを指定できます。</li><li>登録済み一覧の状態を確認します。<code>active</code> はAPPROVED、<code>pending</code> は詳細な <code>status_raw</code> の確認が必要です。</li><li>承認待ちならADMINが <code>/operate/approvals</code> で対象と理由を確認して判断します。</li><li>要求の状態とAWSレコードの状態が一致したことを確認します。</li><li>テスト終了後、DeleteでDEPRECATEDへの変更を確認します。runtimeや接続先の削除は別操作です。</li></ol>
+      <h3>APIで独自Agentを登録する</h3>
+      <p>以下の例は実行用のひな形です。HTMLからは実行しません。<code>AVA_API</code> は既定の <code>/api/v1</code> を含むAPIベースURL、<code>AVA_TOKEN</code> は対象環境のログイントークンに置き換えてください。stage / ROOT_PATHがある環境ではURLに含めます。</p>
+      <div class="codebox"><div class="code-top"><span>一覧取得と独自Agentの登録</span><button class="copy" type="button" data-copy="agent-curl">コピー</button></div><pre><code id="agent-curl">export AVA_API='https://&lt;control-plane-api&gt;/api/v1'
+export AVA_TOKEN='&lt;login-token&gt;'
+
+curl --fail-with-body --silent --show-error \
+  -H "Authorization: Bearer ${AVA_TOKEN}" \
+  "${AVA_API}/agents/list"
+
+curl --fail-with-body --silent --show-error \
+  -X POST "${AVA_API}/agents" \
+  -H "Authorization: Bearer ${AVA_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "onboarding-kyc-review",
+    "runtime": "custom",
+    "runtime_ref": "https://example.invalid/your-agent",
+    "description": "オンボーディング用の登録例",
+    "capabilities": ["kyc", "document-review"],
+    "auth_hint": "oauth2",
+    "category": "kyc",
+    "source": "custom"
+  }'</code></pre></div>
+      <p><code>example.invalid</code> は例示用です。実際の接続先へ変更します。<code>auth_hint=oauth2</code> は方式のメタデータであり、この指定でOAuth2の設定や資格情報が作られるわけではありません。</p>
+      <div class="note"><b>登録後に控えるもの</b><p><code>agent_id</code>、<code>record_arn</code>、<code>status</code>、<code>status_raw</code>。手動承認を試す場合は先の <code>onboarding-*</code> ポリシーが有効かを確認します。新規POSTを何度も再送すると別レコードが作られる可能性があります。</p></div>
+      <details class="disclosure"><summary>自由形式のJSONを持つCustom Resourceを登録する</summary><div class="detail-body"><p>画面フォームより詳細なmetadataを保存する場合はAPIを使います。descriptor内の <code>tags</code> 配列はAWSリソースタグとは別です。</p><div class="codebox"><div class="code-top"><span>POST /custom-resources</span><button class="copy" type="button" data-copy="custom-curl">コピー</button></div><pre><code id="custom-curl">curl --fail-with-body --silent --show-error \
+  -X POST "${AVA_API}/custom-resources" \
+  -H "Authorization: Bearer ${AVA_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "onboarding-kyc-rules",
+    "kind": "knowledge-base",
+    "description": "KYCルールの参照先を共有",
+    "tags": ["kyc", "onboarding"],
+    "metadata": {
+      "owner_team": "compliance",
+      "reference": "&lt;knowledge-base-id-or-url&gt;"
+    }
+  }'</code></pre></div></div></details>
+      <p class="source-line">根拠: <a href="#s-pages">実際に接続される登録画面</a><a href="#s-auth-client">フロントエンドのAPI認証</a><a href="#s-asset-routes">入力モデルと登録ルート</a></p>
+    </section>
+
+    <section class="chapter" id="api" data-chapter>
+      <div class="chapter-head"><h2>APIリファレンス</h2><span class="section-tag">既定prefix: /api/v1</span></div>
+      <p><code>{id}</code> は各APIの返却IDです。ここに記載するのはAVAバックエンドのHTTPルートであり、AWS SDKのAPI名ではありません。</p>
+      <div class="filters" role="group" aria-label="対象APIの絞り込み"><button type="button" data-api-filter="all" aria-pressed="true">すべて</button><button type="button" data-api-filter="agent" aria-pressed="false">Agents</button><button type="button" data-api-filter="mcp" aria-pressed="false">MCP</button><button type="button" data-api-filter="a2a" aria-pressed="false">A2A</button><button type="button" data-api-filter="skill" aria-pressed="false">Skills</button><button type="button" data-api-filter="custom" aria-pressed="false">Custom</button><button type="button" data-api-filter="approval" aria-pressed="false">承認キュー</button><button type="button" data-api-filter="policy" aria-pressed="false">ポリシー</button></div>
+      <p class="small" id="api-filter-status" role="status">全対象のAPIを表示しています。</p>
+      <div class="table-wrap"><table class="wide-table" id="api-table"><thead><tr><th>対象</th><th>HTTPルート（prefixからの相対）</th><th>用途 / 補足</th></tr></thead><tbody>
+        <tr data-api-kind="agent"><td>Agents</td><td class="endpoint"><span class="method">GET</span>/agents/list<br><span class="method">GET</span>/agents/{id}<br><span class="method">GET</span>/agents/curated<br><span class="method post">POST</span>/agents<br><span class="method delete">DELETE</span>/agents/{id}</td><td>一覧 / 詳細 / カタログ / 登録 / 廃止。更新PATCHなし</td></tr>
+        <tr data-api-kind="mcp"><td>MCP Servers</td><td class="endpoint"><span class="method">GET</span>/mcp/list<br><span class="method">GET</span>/mcp/{id}<br><span class="method">GET</span>/mcp/curated<br><span class="method post">POST</span>/mcp<br><span class="method patch">PATCH</span>/mcp/{id}<br><span class="method delete">DELETE</span>/mcp/{id}</td><td>一覧 / 詳細 / カタログ / 登録 / 更新 / 廃止</td></tr>
+        <tr data-api-kind="a2a"><td>A2A Servers</td><td class="endpoint"><span class="method">GET</span>/a2a/list<br><span class="method">GET</span>/a2a/{id}<br><span class="method">GET</span>/a2a/curated<br><span class="method post">POST</span>/a2a<br><span class="method post">POST</span>/a2a/fetch-card<br><span class="method patch">PATCH</span>/a2a/{id}<br><span class="method delete">DELETE</span>/a2a/{id}</td><td>一覧 / 詳細 / カタログ / 登録 / AgentCard取得 / 更新 / 廃止</td></tr>
+        <tr data-api-kind="skill"><td>Skills</td><td class="endpoint"><span class="method">GET</span>/skills/list<br><span class="method">GET</span>/skills/{id}<br><span class="method">GET</span>/skills/curated<br><span class="method post">POST</span>/skills<br><span class="method delete">DELETE</span>/skills/{id}</td><td>一覧 / 詳細 / カタログ / 登録 / 廃止。更新PATCHなし</td></tr>
+        <tr data-api-kind="custom"><td>Custom Resources</td><td class="endpoint"><span class="method">GET</span>/custom-resources/list<br><span class="method">GET</span>/custom-resources/{id}<br><span class="method post">POST</span>/custom-resources<br><span class="method delete">DELETE</span>/custom-resources/{id}</td><td>一覧 / 詳細 / 登録 / 廃止。任意JSON metadataを受け取る</td></tr>
+        <tr data-api-kind="approval"><td>Approval Queue</td><td class="endpoint"><span class="method">GET</span>/approval-requests/list<br><span class="method">GET</span>/approval-requests/{id}<br><span class="method">GET</span>/approval-requests/summary/counts<br><span class="method post">POST</span>/approval-requests<br><span class="method post">POST</span>/approval-requests/{id}/approve<br><span class="method post">POST</span>/approval-requests/{id}/deny<br><span class="method post">POST</span>/approval-requests/{id}/cancel<br><span class="method post">POST</span>/approval-requests/batch-approve<br><span class="method post">POST</span>/approval-requests/batch-deny</td><td>一覧 / 詳細 / 集計 / 作成 / 承認 / 拒否 / 取消 / 一括判断。確定済み要求への再判断は409</td></tr>
+        <tr data-api-kind="policy"><td>Approval Policies</td><td class="endpoint"><span class="method">GET</span>/approval-policies/list<br><span class="method post">POST</span>/approval-policies<br><span class="method patch">PATCH</span>/approval-policies/{id}<br><span class="method post">POST</span>/approval-policies/match</td><td>主要な参照・作成・更新・一致候補確認。設定モデルと実際のevaluate処理の違いは承認ポリシー章を参照</td></tr>
+      </tbody></table></div>
+      <div class="table-wrap"><table><caption>新規登録の主な入力</caption><thead><tr><th>対象</th><th>必須項目</th><th>任意項目の例</th></tr></thead><tbody><tr><td>Agent</td><td><code>name</code>、<code>runtime_ref</code></td><td>runtime、capabilities、auth_hint、category、description、source、curated_id</td></tr><tr><td>Skill</td><td><code>name</code></td><td>kind、input_variables、output_schema、tags、posture、source、curated_id</td></tr><tr><td>Custom</td><td><code>name</code></td><td>kind、description、tags、metadata</td></tr></tbody></table></div>
+      <p class="source-line">根拠: <a href="#s-routes">main.pyのinclude_router</a><a href="#s-asset-routes">資産別ルート</a><a href="#s-policy-api">ポリシールート</a><a href="#s-approval">承認ルート</a></p>
+    </section>
+
+    <section class="chapter" id="operations" data-chapter>
+      <div class="chapter-head"><h2>制約とトラブル対応</h2><span class="section-tag">実装から分かる運用上の確認点</span></div>
+      <div class="table-wrap"><table><thead><tr><th>症状</th><th>確認・対応の順序</th></tr></thead><tbody><tr><td>登録が503</td><td>AGENT_REGISTRY_ID、Terraform出力、ECSタスクの環境変数を確認。空文字・None混入の扱いと、新タスクへの反映も確認</td></tr><tr><td>CLI / SDKがサービスを認識しない</td><td>Terraformを実行するシェルと実バックエンドのSDKをそれぞれ確認。依存バージョンの下限だけでは判断しない</td></tr><tr><td>登録が403</td><td>APIロール要件とdeny分岐を切り分ける。denyは評価エンジンにはあるが標準ポリシー入力モデルにはmode項目がない</td></tr><tr><td>A2Aが400 / Card取得が失敗</td><td>URLの形式、fetch guardの拒否理由、private CIDR許可の必要性を確認。一般の取得失敗は空Card登録に進む場合がある</td></tr><tr><td>期待に反して自動承認</td><td>active状態、kind、名前の大文字小文字、glob、action=register、読取エラーを確認。成功hook経路かどうかも確認</td></tr><tr><td>pending表示が続く</td><td>status_rawでCREATING / DRAFT / PENDING_APPROVALを区別し、作成・申請・状態変更のログを確認。15秒timeoutは処理を強制中断しない</td></tr><tr><td>キューとAWSの状態が違う</td><td>要求IDとrecord ID/ARNを対応付け、両方の状態・判断・APIログを確認。確定済み要求への再判断は409。必要なAWS状態修正は担当者が有効な遷移を確認して実施</td></tr><tr><td>画面の一覧が空</td><td>API応答、IAM、ID、リージョンを確認。Agents・SkillsはPromise.allSettledにより失敗が明確に表示されない経路もある。成功した空一覧と区別</td></tr><tr><td>Deleteしたのに残る</td><td>DEPRECATEDへの変更を確認。物理削除やruntimeの停止は公開DELETEの処理ではない</td></tr><tr><td>カタログから同じ資産を追加できない</td><td>Agents画面はcurated_id、runtime_ref、表示名などで追加済みを照合。deprecatedも追加済みに数えるため、廃止後もカタログが抑止される場合がある</td></tr><tr><td>GovernとRegistryで件数が違う</td><td>Governの複数ソースとデモデータ合成を確認。AWS保存レコードだけを数えている画面とは限らない</td></tr><tr><td>紹介文がComing soon</td><td>現行App.tsxの接続先を優先。旧RegistryAgents / RegistryCustomのplaceholderや紹介文が残るが、現行は実際のLanding画面へ接続されている</td></tr></tbody></table></div>
+      <h3>運用開始前に理解しておく境界</h3>
+      <ul><li><strong>複数人承認:</strong> quorumの値を保存しても、現行の承認処理は1回の判断で確定します。</li><li><strong>監査の完全性:</strong> 通常登録の自動承認経路はrequire_approval用キュー作成を通りません。成功hookは別途承認済み履歴を書きます。「すべての経路に同じキュー履歴がある」とは言えません。</li><li><strong>障害時の整合性:</strong> record作成・申請・承認・キュー保存は複数の呼び出しで、全体のrollback処理は共有登録フローにはありません。</li><li><strong>規模:</strong> 一覧の50ページguard、タグ取得の追加呼出し、ポリシーscanの継続未処理を確認します。</li><li><strong>再試行:</strong> UUID名の通常登録を再POSTすると新規レコードになりえます。成功hookのDeploymentId照合やApp Factoryの名前照合とは扱いが異なります。</li></ul>
+      <p class="source-line">根拠: <a href="#s-client">共有ヘルパー</a><a href="#s-policy">評価処理</a><a href="#s-approval">判断処理</a><a href="#s-pages">登録画面</a><a href="#s-hook">自動登録</a></p>
+    </section>
+
+    <section class="chapter" id="completion" data-chapter>
+      <div class="chapter-head"><h2>完了チェック</h2><span class="section-tag">対象環境で確認する項目</span></div>
+      <p>この資料のソース確認・HTML表示確認と、利用環境での導入確認は別です。次の項目を対象環境で確認してください。チェック状態は、このブラウザのローカル保存が利用できる場合に保存されます。</p>
+      <div class="progress-row"><label for="onboarding-progress" id="progress-label">0 / 8 完了</label><progress id="onboarding-progress" max="8" value="0">0 / 8</progress><button type="button" id="reset-checks">チェックをリセット</button></div>
+      <ul class="checklist" id="onboarding-checklist">
+        <li><label><input type="checkbox" data-check="kind"><span>登録したい資産を5種類のどれで扱うか説明できる。</span></label></li>
+        <li><label><input type="checkbox" data-check="environment"><span>registry ID・ARN・リージョンと、利用する画面/APIを確認した。</span></label></li>
+        <li><label><input type="checkbox" data-check="policy"><span>ポリシーのkind・名前パターン・action=registerと、未一致時の扱いを確認した。</span></label></li>
+        <li><label><input type="checkbox" data-check="registration"><span>テスト資産を登録し、ID・status・status_rawを控えた。</span></label></li>
+        <li><label><input type="checkbox" data-check="approval"><span>手動承認を使う場合、キュー生成、管理者の判断、AWS状態の一致を確認した。</span></label></li>
+        <li><label><input type="checkbox" data-check="deploy"><span>自動デプロイを使う場合、対象Step Functionsと、公開・履歴記録の結果を確認した。</span></label></li>
+        <li><label><input type="checkbox" data-check="failure"><span>quorum、ポリシー設定API、障害時整合性、再試行の制約を理解した。</span></label></li>
+        <li><label><input type="checkbox" data-check="deprecation"><span>テスト資産を廃止し、DEPRECATEDへの変更を確認した。</span></label></li>
+      </ul>
+      <p class="small" id="storage-note" role="status">チェックは学習・確認用です。AWSやチームの共有状態は変更しません。</p>
+    </section>
+
+    <section class="chapter" id="sources" data-chapter>
+      <div class="chapter-head"><h2>解析根拠・ソース一覧</h2><span class="section-tag">断定の範囲を確認できるように</span></div>
+      <p>基点コミットは <code>416422b</code>、確認日は2026-11-03です。根拠はその時点の作業ツリーです。グラフ検索・呼出関係・実装snippet・設定ファイルを照合しました。カバレッジ確認の「記録された欠落なし」は、完全性や実行時動作の証明ではありません。</p>
+      <p>以下の行番号は調査時点の位置です。生ソースを開くリンクはファイルへの相対リンクで、表示環境によっては行への移動をサポートしません。</p>
+      <ul class="source-list">
+        <li id="s-routes"><b>画面・バックエンドの接続</b><a href="../../platform/control_plane/frontend/src/App.tsx#L207">platform/control_plane/frontend/src/App.tsx</a><p>207–218行付近: Registryの現行Landing画面とGovern。291 / 298行付近: Approval Queue / Policies。</p><a href="../../platform/control_plane/backend/src/main.py#L263">platform/control_plane/backend/src/main.py</a><p>263–272行付近ほか: API_PREFIXと各routerの接続。ROOT_PATH付きの接続も定義。</p></li>
+        <li id="s-client"><b>共通のAWS Agent Registryクライアント</b><a href="../../platform/control_plane/backend/src/services/agent_registry_client.py#L107">platform/control_plane/backend/src/services/agent_registry_client.py</a><p>49–79: client・registry ID、90–101: 名前、107–190: create、193–218: wait、229–266: set_status、291–345: list、372–396: hydrate、405–558: 型別publish、568–647: enqueue。</p></li>
+        <li id="s-asset-routes"><b>資産別モデル・公開API・状態変換</b><a href="../../platform/control_plane/backend/src/api/routes/agents.py">platform/control_plane/backend/src/api/routes/agents.py</a><br><a href="../../platform/control_plane/backend/src/api/routes/mcp.py">platform/control_plane/backend/src/api/routes/mcp.py</a><br><a href="../../platform/control_plane/backend/src/api/routes/a2a.py">platform/control_plane/backend/src/api/routes/a2a.py</a><br><a href="../../platform/control_plane/backend/src/api/routes/skills.py">platform/control_plane/backend/src/api/routes/skills.py</a><br><a href="../../platform/control_plane/backend/src/api/routes/custom_resources.py">platform/control_plane/backend/src/api/routes/custom_resources.py</a><p>Agents登録174–234、MCP登録183–240 / 更新244–295、A2A登録371–450 / 更新454–520、Skills登録154–220、Custom登録114–168。</p></li>
+        <li id="s-policy"><b>ポリシー評価エンジン</b><a href="../../platform/control_plane/backend/src/services/approval_policy_engine.py#L98">platform/control_plane/backend/src/services/approval_policy_engine.py</a><p>98–107: 読取、具体性・優先度、125–135: score、138–151: mode正規化、157–197: evaluate。</p></li>
+        <li id="s-policy-api"><b>ポリシー設定の入力モデル・許可kind</b><a href="../../platform/control_plane/backend/src/api/routes/approval_policies.py#L130">platform/control_plane/backend/src/api/routes/approval_policies.py</a><p>RESOURCE_KINDS、PolicyCreate / PolicyUpdate、130行以降: 作成、160行以降: 更新、196–222: 一致候補処理。mode項目と専用kindの不足を直接照合。</p></li>
+        <li id="s-approval"><b>承認キューの判断処理</b><a href="../../platform/control_plane/backend/src/api/routes/approval_requests.py#L161">platform/control_plane/backend/src/api/routes/approval_requests.py</a><p>161–250: _record_decision、254行以降: approve / deny / batch / cancel。quorum未強制とAWS変更失敗時の継続を確認。</p></li>
+        <li id="s-a2a"><b>A2AのAgentCard取得</b><a href="../../platform/control_plane/backend/src/api/routes/a2a.py#L228">platform/control_plane/backend/src/api/routes/a2a.py</a><p>228–294: _fetch_agent_card。371–450: 取得拒否と空Cardでの継続経路。</p></li>
+        <li id="s-hook"><b>デプロイ成功hookのLambda</b><a href="../../platform/control_plane/infrastructure/modules/deployment_success_hook/lambda_src/index.py">platform/control_plane/infrastructure/modules/deployment_success_hook/lambda_src/index.py</a><p>64–99: 既登録確認、118–233: publish、236–295: 履歴、320–358: handler。policy engineを呼ばない公開処理と、成功履歴の独立書込。</p></li>
+        <li id="s-infra"><b>Terraformによる構築と配線</b><a href="../../platform/control_plane/infrastructure/main.tf#L383">platform/control_plane/infrastructure/main.tf</a><br><a href="../../platform/control_plane/infrastructure/modules/agent_registry/main.tf">platform/control_plane/infrastructure/modules/agent_registry/main.tf</a><br><a href="../../platform/control_plane/infrastructure/modules/agent_registry/variables.tf">platform/control_plane/infrastructure/modules/agent_registry/variables.tf</a><br><a href="../../platform/control_plane/infrastructure/modules/ecs/main.tf">platform/control_plane/infrastructure/modules/ecs/main.tf</a><br><a href="../../platform/control_plane/infrastructure/outputs.tf">platform/control_plane/infrastructure/outputs.tf</a><p>親main.tf 383行付近: registry、456–471: hook接続。ECS main.tf 378–402付近: IAM、821行付近: 環境変数。</p></li>
+        <li id="s-config"><b>バックエンド設定・依存</b><a href="../../platform/control_plane/backend/src/core/config.py">platform/control_plane/backend/src/core/config.py</a><br><a href="../../platform/control_plane/backend/requirements.txt">platform/control_plane/backend/requirements.txt</a><p>AWS_REGION、AGENT_REGISTRY_*、API_PREFIX、ROOT_PATH、boto3 / botocoreの依存下限。</p></li>
+        <li id="s-pages"><b>現行登録画面</b><a href="../../platform/control_plane/frontend/src/components/agents/AgentsLanding.tsx">platform/control_plane/frontend/src/components/agents/AgentsLanding.tsx</a><br><a href="../../platform/control_plane/frontend/src/components/skills/SkillsLanding.tsx">platform/control_plane/frontend/src/components/skills/SkillsLanding.tsx</a><br><a href="../../platform/control_plane/frontend/src/components/customresources/CustomResourcesLanding.tsx">platform/control_plane/frontend/src/components/customresources/CustomResourcesLanding.tsx</a><p>カタログ登録、廃止、Promise.allSettled、Agentsの追加済み抑止、Customフォームを確認。</p></li>
+        <li id="s-auth-client"><b>フロントエンドの認証ヘッダー</b><a href="../../platform/control_plane/frontend/src/components/agents/api.ts">platform/control_plane/frontend/src/components/agents/api.ts</a><p>API prefix、auth_tokenからのBearerヘッダー、登録・一覧の型。</p></li>
+        <li id="s-govern"><b>Governの集約とデモデータ</b><a href="../../platform/control_plane/frontend/src/components/govern/useAgentRegistry.ts">platform/control_plane/frontend/src/components/govern/useAgentRegistry.ts</a><p>523行付近: 複数の取得元。623行以降: mockデータとliveデータの合成。</p></li>
+        <li id="s-factory"><b>App Factoryの公開スクリプト</b><a href="../../applications/app_factory/scripts/publish_to_registry.py">applications/app_factory/scripts/publish_to_registry.py</a><p>AgentCard生成、既存名の検索、160–215: create-or-updateと申請、224行以降: CLI引数。</p></li>
+        <li id="s-ref"><b>agentcore-in-a-boxのRegistry参照実装</b><a href="../../applications/reference_implementations/agentcore-in-a-box/lambda/agentcore-primitives/registry.py">applications/reference_implementations/agentcore-in-a-box/lambda/agentcore-primitives/registry.py</a><p>83–143: admission検証、169–194: read、197–216: search、219–268: curate。別のdescriptor形式を使う。</p></li>
+        <li id="s-safety"><b>agent-safetyダッシュボード</b><a href="../../applications/reference_implementations/agent-safety/dashboard/api.py#L877">applications/reference_implementations/agent-safety/dashboard/api.py</a><p>877–945: AWS側registry・レコードの一覧。独自registry・予算・同期APIも別に存在。</p></li>
+        <li id="s-kyc"><b>KYCの別registry</b><a href="../../applications/reference_implementations/kyc-governance-insights/deploy/console-services/registry-proxy/template-cfn.yaml">applications/reference_implementations/kyc-governance-insights/deploy/console-services/registry-proxy/template-cfn.yaml</a><p>索引対象外のためソースを直接確認。DescriptionとテンプレートからDynamoDB前段のLambda / API Gatewayであることを確認。</p></li>
+      </ul>
+      <div class="note"><b>検証状況</b><p>実装の呼出関係・公開ルート・設定・入力例の照合を実施しています。AWS側の最新仕様、実アカウントでの権限や可用性、全障害条件の再現はこの資料作成の検証範囲に含みません。</p></div>
+    </section>
+    <footer class="footnote">AVA AWS Agent Registry オンボーディング / 2026-11-03<br><a href="aws-agent-registry-guide-ja.md">Markdown版</a> · <a href="#main">ページ先頭へ</a></footer>
+  </main>
+</div>
+<div class="sr-only" role="status" aria-live="polite" id="copy-feedback"></div>
+<script>
+(() => {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const chapters = [...document.querySelectorAll('[data-chapter]')];
+  const search = $('chapter-search');
+  const chapterText = new Map(chapters.map(section => [section, section.textContent.normalize('NFKC').toLocaleLowerCase('ja')]));
+  function filterChapters() {
+    const terms = search.value.normalize('NFKC').toLocaleLowerCase('ja').trim().split(/\s+/).filter(Boolean);
+    let count = 0;
+    chapters.forEach(section => {
+      const match = terms.every(term => chapterText.get(section).includes(term));
+      section.hidden = !match;
+      if (match) count++;
+    });
+    $('search-result').textContent = terms.length ? `${chapters.length}章中 ${count}章が一致しました。複数語はすべてを含む章を表示します。` : `全${chapters.length}章を表示しています。`;
+    $('no-results').hidden = count !== 0;
+  }
+  search.addEventListener('input', filterChapters);
+  $('clear-search').addEventListener('click', () => { search.value = ''; filterChapters(); search.focus(); });
+  const menu = $('menu-toggle');
+  function closeMenu(restoreFocus = false) {
+    $('chapter-nav').classList.remove('open');
+    menu.setAttribute('aria-expanded', 'false');
+    menu.textContent = '目次を開く';
+    if (restoreFocus) menu.focus();
+  }
+  menu.addEventListener('click', () => {
+    const opening = menu.getAttribute('aria-expanded') !== 'true';
+    $('chapter-nav').classList.toggle('open', opening);
+    menu.setAttribute('aria-expanded', String(opening));
+    menu.textContent = opening ? '目次を閉じる' : '目次を開く';
+  });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape' && menu.getAttribute('aria-expanded') === 'true') closeMenu(true); });
+  document.querySelectorAll('a[href^="#"]').forEach(link => link.addEventListener('click', () => {
+    if (search.value) { search.value = ''; filterChapters(); }
+    closeMenu();
+  }));
+  if ('IntersectionObserver' in window) {
+    const observer = new IntersectionObserver(entries => {
+      const entry = entries.find(item => item.isIntersecting);
+      if (!entry) return;
+      document.querySelectorAll('.nav-list a').forEach(link => {
+        if (link.getAttribute('href') === '#' + entry.target.id) link.setAttribute('aria-current', 'location');
+        else link.removeAttribute('aria-current');
+      });
+    }, { rootMargin: '-8% 0px -65% 0px', threshold: 0 });
+    chapters.forEach(section => observer.observe(section));
+  }
+  document.querySelectorAll('[data-api-filter]').forEach(button => button.addEventListener('click', () => {
+    const kind = button.dataset.apiFilter;
+    document.querySelectorAll('[data-api-filter]').forEach(item => item.setAttribute('aria-pressed', String(item === button)));
+    document.querySelectorAll('[data-api-kind]').forEach(row => { row.hidden = kind !== 'all' && row.dataset.apiKind !== kind; });
+    $('api-filter-status').textContent = kind === 'all' ? '全対象のAPIを表示しています。' : `${button.textContent} のAPIを表示しています。`;
+  }));
+  function updateSimulation() {
+    const hook = $('sim-route').value === 'deploy';
+    const mode = $('sim-mode').value;
+    const requiresReview = !hook && mode === 'require';
+    const decision = $('sim-decision').value;
+    $('sim-mode').disabled = hook;
+    $('sim-decision').disabled = !requiresReview;
+    $('sim-failure').disabled = !requiresReview || decision === 'pending';
+    const failedUpdate = requiresReview && decision !== 'pending' && $('sim-failure').checked;
+    let aws = 'PENDING_APPROVAL', queue = 'pending', message = '', mismatch = false;
+    let calls = [];
+    if (hook) {
+      aws = 'APPROVED'; queue = 'approved（履歴）';
+      message = '成功hookはポリシーエンジンを呼ばず、APPROVEDへの変更を試みます。ここではAWS変更・履歴書込が成功した場合を表示しています。ポリシー条件とキュー判断の入力は適用されません。';
+      calls = ['deploymentの保存状態とDeploymentIdタグを確認', 'Create → DRAFT待機 → Submit → PENDING_APPROVAL待機', 'UpdateRegistryRecordStatus(APPROVED)', 'DynamoDBへsystemの承認済み履歴を記録'];
+    } else if (mode === 'deny') {
+      aws = '作成なし'; queue = '作成なし';
+      message = '評価がdenyならHTTP 403で終了し、登録・承認申請・キュー作成を行いません。明示modeの通常設定APIへの追加は未実装です。';
+      calls = ['evaluate()でdenyを選択', 'HTTP 403を返して終了'];
+    } else if (!requiresReview) {
+      aws = 'APPROVED'; queue = '作成なし';
+      message = mode === 'read-error' ? 'ポリシー読取のClientErrorは空の一覧として扱われ、未一致時と同じ自動承認へ進みます。' : mode === 'none' ? '一致した有効ルールがない場合、通常登録は自動承認へ進みます。' : 'エンジンが明示auto_approveを選んだケースです。標準のポリシー入力モデルにはmode項目がありません。';
+      calls = ['evaluate() → auto_approve', 'Create → DRAFT待機 → Submit → PENDING_APPROVAL待機', 'UpdateRegistryRecordStatus(APPROVED)', 'require_approval用enqueue_approvalは呼ばない'];
+    } else {
+      calls = ['evaluate() → require_approval', 'Create → DRAFT待機 → Submit', 'DynamoDBへpendingの承認要求を作成'];
+      if (decision === 'pending') {
+        message = 'AWSは承認待ち、DynamoDBの要求もpendingです。ここでは申請・キュー書込が成功した状態を表示しています。';
+      } else {
+        queue = decision;
+        const target = { approved: 'APPROVED', denied: 'REJECTED', cancelled: 'DEPRECATED' }[decision];
+        aws = failedUpdate ? 'PENDING_APPROVAL' : target;
+        mismatch = failedUpdate;
+        calls.push(`AWSの状態を${target}へ変更${failedUpdate ? 'しようとして失敗' : ''}`);
+        calls.push(`DynamoDBの要求を${decision}で確定`);
+        message = failedUpdate ? 'AWS状態更新が失敗してもキューの判断は保存される経路です。両者は不一致になります。確定済み要求の再判断は409になるため、再承認だけでは復旧できません。' : '1回の判断でキューを確定します。保存されたquorumが2以上でも、この実装では複数人の合意を待ちません。';
+      }
+    }
+    $('sim-result').innerHTML = `<h4>${mismatch ? '状態が一致しないケース' : 'この条件での状態'}</h4><div class="sim-states"><div class="sim-state ${mismatch ? 'problem' : ''}"><small>AWS Registry</small><b>${aws}</b></div><div class="sim-state ${mismatch ? 'problem' : ''}"><small>AVA Approval Queue</small><b>${queue}</b></div></div><p>${message}</p><ol>${calls.map(call => `<li>${call}</li>`).join('')}</ol>`;
+  }
+  ['sim-route','sim-mode','sim-decision','sim-failure'].forEach(id => $(id).addEventListener('change', updateSimulation));
+  updateSimulation();
+  let copyTimer;
+  document.querySelectorAll('[data-copy]').forEach(button => button.addEventListener('click', async () => {
+    const code = $(button.dataset.copy);
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('Clipboard unavailable');
+      await navigator.clipboard.writeText(code.textContent);
+      button.textContent = 'コピー済み';
+      $('copy-feedback').textContent = 'コードをクリップボードへコピーしました。';
+      window.clearTimeout(copyTimer);
+      copyTimer = window.setTimeout(() => document.querySelectorAll('[data-copy]').forEach(item => item.textContent = 'コピー'), 1800);
+    } catch (_) {
+      const range = document.createRange(); range.selectNodeContents(code);
+      const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+      button.textContent = 'コードを選択しました';
+      $('copy-feedback').textContent = '自動コピーを利用できないためコードを選択しました。キーボードでコピーしてください。';
+    }
+  }));
+  const checks = [...document.querySelectorAll('[data-check]')];
+  const storageKey = 'ava-registry-onboarding-416422b-v1';
+  function progress() {
+    const count = checks.filter(input => input.checked).length;
+    $('onboarding-progress').value = count;
+    $('onboarding-progress').textContent = `${count} / ${checks.length}`;
+    $('progress-label').textContent = `${count} / ${checks.length} 完了`;
+  }
+  try {
+    const saved = JSON.parse(localStorage.getItem(storageKey) || '{}');
+    if (saved && typeof saved === 'object') checks.forEach(input => input.checked = saved[input.dataset.check] === true);
+  } catch (_) { $('storage-note').textContent = 'ローカル保存を利用できません。チェックはこのページを開いている間のみ保持します。'; }
+  function saveChecks() {
+    progress();
+    try { localStorage.setItem(storageKey, JSON.stringify(Object.fromEntries(checks.map(input => [input.dataset.check, input.checked])))); }
+    catch (_) { $('storage-note').textContent = 'ローカル保存を利用できません。チェックはこのページを開いている間のみ保持します。'; }
+  }
+  checks.forEach(input => input.addEventListener('change', saveChecks));
+  $('reset-checks').addEventListener('click', () => { checks.forEach(input => input.checked = false); saveChecks(); });
+  progress();
+  let printState = null;
+  window.addEventListener('beforeprint', () => {
+    if (printState) return;
+    printState = { query: search.value, details: [...document.querySelectorAll('details')].map(item => [item,item.open]), rows: [...document.querySelectorAll('[data-api-kind]')].map(item => [item,item.hidden]) };
+    search.value = ''; filterChapters();
+    printState.details.forEach(([item]) => item.open = true);
+    printState.rows.forEach(([item]) => item.hidden = false);
+  });
+  window.addEventListener('afterprint', () => {
+    if (!printState) return;
+    search.value = printState.query; filterChapters();
+    printState.details.forEach(([item,open]) => item.open = open);
+    printState.rows.forEach(([item,hidden]) => item.hidden = hidden);
+    printState = null;
+  });
+  $('print-guide').addEventListener('click', () => window.print());
+  filterChapters();
+})();
+</script>
+</body>
+</html>
