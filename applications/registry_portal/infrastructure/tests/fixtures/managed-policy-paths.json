@@ -1,0 +1,126 @@
+{
+  "format_version": "1.2",
+  "resource_changes": [],
+  "planned_values": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "module.permissions.aws_iam_role_policy_attachment.unsafe",
+          "type": "aws_iam_role_policy_attachment",
+          "mode": "managed",
+          "values": {
+            "policy_arn": "arn:aws:iam::aws:policy/AdministratorAccess"
+          }
+        },
+        {
+          "address": "module.permissions.aws_iam_policy_attachment.unsafe",
+          "type": "aws_iam_policy_attachment",
+          "mode": "managed",
+          "values": {
+            "policy_arn": "arn:aws:iam::aws:policy/AdministratorAccess"
+          }
+        },
+        {
+          "address": "module.permissions.aws_iam_user_policy_attachment.unsafe",
+          "type": "aws_iam_user_policy_attachment",
+          "mode": "managed",
+          "values": {
+            "policy_arn": "arn:aws:iam::aws:policy/AdministratorAccess"
+          }
+        },
+        {
+          "address": "module.permissions.aws_iam_group_policy_attachment.unsafe",
+          "type": "aws_iam_group_policy_attachment",
+          "mode": "managed",
+          "values": {
+            "policy_arn": "arn:aws:iam::aws:policy/AdministratorAccess"
+          }
+        },
+        {
+          "address": "module.permissions.aws_iam_role_policy_attachments_exclusive.unsafe",
+          "type": "aws_iam_role_policy_attachments_exclusive",
+          "mode": "managed",
+          "values": {
+            "policy_arns": [
+              "arn:aws:iam::aws:policy/AdministratorAccess"
+            ]
+          }
+        },
+        {
+          "address": "module.permissions.aws_iam_user_policy_attachments_exclusive.unsafe",
+          "type": "aws_iam_user_policy_attachments_exclusive",
+          "mode": "managed",
+          "values": {
+            "policy_arns": [
+              "arn:aws:iam::aws:policy/AdministratorAccess"
+            ]
+          }
+        },
+        {
+          "address": "module.permissions.aws_iam_group_policy_attachments_exclusive.unsafe",
+          "type": "aws_iam_group_policy_attachments_exclusive",
+          "mode": "managed",
+          "values": {
+            "policy_arns": [
+              "arn:aws:iam::aws:policy/AdministratorAccess"
+            ]
+          }
+        },
+        {
+          "address": "module.permissions.aws_ssoadmin_managed_policy_attachment.unsafe",
+          "type": "aws_ssoadmin_managed_policy_attachment",
+          "mode": "managed",
+          "values": {
+            "managed_policy_arn": "arn:aws:iam::aws:policy/AdministratorAccess"
+          }
+        },
+        {
+          "address": "module.permissions.aws_ssoadmin_managed_policy_attachments_exclusive.unsafe",
+          "type": "aws_ssoadmin_managed_policy_attachments_exclusive",
+          "mode": "managed",
+          "values": {
+            "managed_policy_arns": [
+              "arn:aws:iam::aws:policy/AdministratorAccess"
+            ]
+          }
+        },
+        {
+          "address": "module.permissions.aws_ssoadmin_customer_managed_policy_attachment.unsafe",
+          "type": "aws_ssoadmin_customer_managed_policy_attachment",
+          "mode": "managed",
+          "values": {
+            "customer_managed_policy_reference": [
+              {
+                "name": "AdministratorAccess",
+                "path": "/"
+              }
+            ]
+          }
+        },
+        {
+          "address": "module.permissions.aws_ssoadmin_customer_managed_policy_attachments_exclusive.unsafe",
+          "type": "aws_ssoadmin_customer_managed_policy_attachments_exclusive",
+          "mode": "managed",
+          "values": {
+            "customer_managed_policy_references": [
+              {
+                "name": "AdministratorAccess",
+                "path": "/"
+              }
+            ]
+          }
+        },
+        {
+          "address": "module.permissions.aws_iam_role.unsafe",
+          "type": "aws_iam_role",
+          "mode": "managed",
+          "values": {
+            "managed_policy_arns": [
+              "arn:aws:iam::aws:policy/AdministratorAccess"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
