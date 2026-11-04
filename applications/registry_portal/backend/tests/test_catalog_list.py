@@ -305,6 +305,36 @@ def test_next_token_from_viewer_is_relayed_to_registry_and_last_page_has_none() 
     }
 
 
+def test_a2a_agent_list_filters_at_registry_and_relays_its_page_tokens() -> None:
+    transport = FakeTransport()
+    transport.registry.append(
+        page(summary("rec-a2a", descriptorTypes=["a2aAgentCard"]), next_token="a2a-page-3")
+    )
+
+    status, body = call(
+        make_handler(transport),
+        catalog_event({"type": "AGENT", "a2a": "true", "nextToken": "a2a-page-2"}),
+    )
+
+    assert status == 200
+    assert [item["recordId"] for item in body["items"]] == ["rec-a2a"]
+    assert body["nextToken"] == "a2a-page-3"
+    [request] = transport.to(LIST_URL)
+    expected = botocore_discovery_request(
+        "list_discoverable_registry_records",
+        registryId=REGISTRY_ARN,
+        filters=[
+            {"name": "recordType", "values": ["AGENT"]},
+            {"name": "descriptorType", "values": ["a2aAgentCard"]},
+        ],
+        maxResults=50,
+        nextToken="a2a-page-2",
+    )
+    assert request.method == expected["method"]
+    assert request.url == expected["url"]
+    assert request.json() == json.loads(expected["body"])
+
+
 def test_empty_page_with_next_token_is_returned_as_is() -> None:
     # AWS はページが疎であることを保証しない。0件でも nextToken があれば続きがある
     transport = FakeTransport()
@@ -372,10 +402,22 @@ def test_repeated_registry_401_stops_after_one_refresh_and_reports_failure() -> 
         {"type": "AGENT", "registryId": "otherRegistry0001"},
         {"type": "AGENT", "endpoint": "https://attacker.example.com"},
         {"type": "AGENT", "maxResults": "100"},
+        {"type": "AGENT", "descriptorType": "a2aAgentCard"},
+        {"type": "AGENT", "a2a": "false"},
+        {"type": "AGENT", "a2a": "true,true"},
+        {"type": "MCP", "a2a": "true"},
     ],
-    ids=["registry-id", "endpoint", "max-results"],
+    ids=[
+        "registry-id",
+        "endpoint",
+        "max-results",
+        "descriptor",
+        "a2a-false",
+        "a2a-repeated",
+        "a2a-mcp",
+    ],
 )
-def test_query_parameters_other_than_type_and_next_token_are_rejected(
+def test_unapproved_catalog_list_parameters_are_rejected(
     query: dict[str, str],
 ) -> None:
     transport = FakeTransport()

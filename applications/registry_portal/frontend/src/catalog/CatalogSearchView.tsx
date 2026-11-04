@@ -7,24 +7,25 @@ import { CATALOG_TYPES } from './recordTypes'
 type SearchView =
   | { status: 'idle' }
   | { status: 'loading'; request: CatalogSearchRequest }
-  | { status: 'ready'; items: CatalogItem[] }
+  | { status: 'ready'; items: CatalogItem[]; request: CatalogSearchRequest }
   | { status: 'error'; request: CatalogSearchRequest; error: ApiError }
 
 type Props = {
   api: ApiClient
   onRelogin: () => void
   onOpenDetail: (item: CatalogItem) => void
+  onBrowseA2a: () => void
   children: ReactNode
 }
 
-export function CatalogSearchView({ api, onRelogin, onOpenDetail, children }: Props) {
+export function CatalogSearchView({ api, onRelogin, onOpenDetail, onBrowseA2a, children }: Props) {
   const [view, setView] = useState<SearchView>({ status: 'idle' })
   const [recordType, setRecordType] = useState('')
   useEffect(() => {
     if (view.status !== 'loading') return
     let active = true
     api.searchCatalog(view.request).then(
-      (items) => active && setView({ status: 'ready', items }),
+      (items) => active && setView({ status: 'ready', items, request: view.request }),
       (failure: unknown) => {
         if (!active) return
         const error =
@@ -119,7 +120,24 @@ export function CatalogSearchView({ api, onRelogin, onOpenDetail, children }: Pr
                 onRetry={() => setView({ status: 'loading', request: view.request })}
               />
             ) : view.items.length === 0 ? (
-              <p role="status">条件に一致するカタログ項目はありません。</p>
+              <>
+                <p role="status">
+                  {view.request.a2a === undefined
+                    ? '条件に一致するカタログ項目はありません。'
+                    : '取得した候補（最大20件）に、A2A の条件に一致する Agent はありません。'}
+                </p>
+                {view.request.a2a === true && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onBrowseA2a()
+                      setView({ status: 'idle' })
+                    }}
+                  >
+                    A2A の Agent 一覧を開く
+                  </button>
+                )}
+              </>
             ) : (
               <CatalogItems items={view.items} onOpenDetail={onOpenDetail} />
             )}

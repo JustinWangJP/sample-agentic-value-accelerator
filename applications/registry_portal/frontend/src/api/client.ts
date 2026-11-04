@@ -154,7 +154,11 @@ export type ApiClientOptions = {
 export type ApiClient = {
   getMe: () => Promise<Me>
   /** nextToken はバックエンドが中継する AWS の値で、SPA では中身を解釈しない */
-  listCatalog: (type: CatalogRecordType, nextToken?: string) => Promise<CatalogPage>
+  listCatalog: (
+    type: CatalogRecordType,
+    nextToken?: string,
+    a2aOnly?: boolean,
+  ) => Promise<CatalogPage>
   searchCatalog: (query: CatalogSearchRequest) => Promise<CatalogItem[]>
   getCatalogDetail: (recordId: string) => Promise<CatalogDetail>
 }
@@ -213,8 +217,9 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
 
   return {
     getMe: () => request<Me>('/api/me'),
-    listCatalog: (type, nextToken) => {
+    listCatalog: (type, nextToken, a2aOnly) => {
       const query = new URLSearchParams({ type })
+      if (type === 'AGENT' && a2aOnly) query.set('a2a', 'true')
       if (nextToken !== undefined) query.set('nextToken', nextToken)
       return request<CatalogPage>(`/api/catalog?${query.toString()}`)
     },

@@ -151,6 +151,32 @@ describe('カタログ検索と詳細画面', () => {
     expect(results.textContent).toContain('受注エージェント')
   })
 
+  it('A2A 検索が0件のときは候補の範囲を示し、A2A の一覧を開ける', async () => {
+    const { calls } = await mount(
+      jsonResponse(200, { items: [] }),
+      jsonResponse(200, { items: [agent], nextToken: 'a2a-token' }),
+      jsonResponse(200, { items: [], nextToken: null }),
+      jsonResponse(200, { items: [agent], nextToken: null }),
+    )
+
+    await changeSelect('a2a', 'true')
+    await search('受注')
+
+    expect(element('[aria-label="検索結果"]').textContent).toContain(
+      '取得した候補（最大20件）に、A2A の条件に一致する Agent はありません。',
+    )
+    await clickButton('A2A の Agent 一覧を開く')
+    expect(calls.at(-1)?.url).toBe('/api/catalog?type=AGENT&a2a=true')
+    expect(element<HTMLInputElement>('input[name="a2aOnly"]').checked).toBe(true)
+    await clickButton('次のページ')
+    expect(calls.at(-1)?.url).toBe('/api/catalog?type=AGENT&a2a=true&nextToken=a2a-token')
+    expect(element('[aria-label="ページ"]').textContent).toContain('ページ 2')
+
+    await act(() => element<HTMLInputElement>('input[name="a2aOnly"]').click())
+    expect(calls.at(-1)?.url).toBe('/api/catalog?type=AGENT')
+    expect(element('[aria-label="ページ"]').textContent).toContain('ページ 1')
+  })
+
   it('一覧から開いた SKILL.md の HTML・スクリプトを文字列として表示する', async () => {
     const skillMarkdown = '# 手順\n<script>alert(1)</script>\n<img src=x onerror=alert(1)>\n[リンク](javascript:alert(1))'
     const { calls } = await mount(

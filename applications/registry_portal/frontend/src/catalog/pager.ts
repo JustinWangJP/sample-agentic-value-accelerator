@@ -14,6 +14,7 @@ export type CatalogViewState =
 
 export type CatalogState = {
   type: CatalogRecordType
+  a2aOnly: boolean
   /** 各ページを取得するときに渡す nextToken。先頭ページは undefined */
   pageTokens: (string | undefined)[]
   /** 表示中のページ番号（1始まり） */
@@ -23,9 +24,15 @@ export type CatalogState = {
 
 const loading: CatalogViewState = { status: 'loading' }
 
-/** 種別の1ページ目。種別の切り替えと「最初のページに戻る」にも使う */
-export function initialCatalogState(type: CatalogRecordType): CatalogState {
-  return { type, pageTokens: [undefined], pageNumber: 1, view: loading }
+/** 指定した種別とフィルターの1ページ目 */
+export function initialCatalogState(type: CatalogRecordType, a2aOnly = false): CatalogState {
+  return {
+    type,
+    a2aOnly: type === 'AGENT' && a2aOnly,
+    pageTokens: [undefined],
+    pageNumber: 1,
+    view: loading,
+  }
 }
 
 export function currentPageToken(state: CatalogState): string | undefined {

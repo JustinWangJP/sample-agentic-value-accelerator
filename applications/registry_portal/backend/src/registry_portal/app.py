@@ -16,7 +16,7 @@ from registry_portal.auth import Caller, authorize
 from registry_portal.catalog import get_catalog_detail, list_catalog, search_catalog
 from registry_portal.config import load_auth_settings, load_discovery_settings
 from registry_portal.errors import ApiError, RequestValidationError, RouteNotFoundError
-from registry_portal.services.catalog_references import PublishedReferences, ReferencesClient
+from registry_portal.services.catalog_supplement import CatalogSupplement, SupplementClient
 from registry_portal.services.discovery import DiscoveryDependencies, create_discovery_client
 
 logger = logging.getLogger(__name__)
@@ -102,7 +102,7 @@ def create_management_handler(
     environ: Mapping[str, str],
     *,
     discovery: DiscoveryDependencies | None = None,
-    references_client: ReferencesClient | None = None,
+    supplement_client: SupplementClient | None = None,
 ) -> Handler:
     """管理 handler を作る。認証・発見の設定が不足していれば、ここで起動エラーにする。
 
@@ -115,10 +115,8 @@ def create_management_handler(
         discovery_settings, discovery or DiscoveryDependencies()
     )
     table_name = environ.get("CATALOG_REFERENCES_TABLE_NAME", "").strip()
-    references = (
-        PublishedReferences(table_name, discovery_settings, references_client)
-        if table_name
-        else None
+    supplement = (
+        CatalogSupplement(table_name, discovery_settings, supplement_client) if table_name else None
     )
 
     def get_catalog(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
@@ -151,7 +149,7 @@ def create_management_handler(
                     raise RequestValidationError(
                         "カタログ詳細にクエリパラメーターは指定できません。"
                     )
-                status, body = get_catalog_detail(discovery_client, record_id, references)
+                status, body = get_catalog_detail(discovery_client, record_id, supplement)
             else:
                 raise RouteNotFoundError()
             return _json_response(status, body)

@@ -28,29 +28,36 @@ export function CatalogView({ api, onRelogin }: Props) {
   const [state, setState] = useState<CatalogState>(() => initialCatalogState('AGENT'))
   const [selectedItem, setSelectedItem] = useState<CatalogItem | null>(null)
   const isLoading = state.view.status === 'loading'
-  const { type } = state
+  const { type, a2aOnly } = state
   const token = currentPageToken(state)
 
   useEffect(() => {
     if (!isLoading) return
     // 種別やページを切り替えたら、古い応答は捨てる
     let active = true
-    api.listCatalog(type, token).then(
+    api.listCatalog(type, token, a2aOnly).then(
       (page) => active && setState((current) => pageReceived(current, page)),
       (error: unknown) => active && setState((current) => pageFailed(current, error)),
     )
     return () => {
       active = false
     }
-  }, [api, isLoading, type, token])
+  }, [api, isLoading, type, a2aOnly, token])
 
   return (
     <>
       <div hidden={selectedItem !== null}>
-        <CatalogSearchView api={api} onRelogin={onRelogin} onOpenDetail={setSelectedItem}>
+        <CatalogSearchView
+          api={api}
+          onRelogin={onRelogin}
+          onOpenDetail={setSelectedItem}
+          onBrowseA2a={() => setState(initialCatalogState('AGENT', true))}
+        >
           <CatalogPanel
             state={state}
             onSelectType={(next) => setState(initialCatalogState(next))}
+            onFilterA2a={(checked) => setState(initialCatalogState('AGENT', checked))}
+            onFirstPage={() => setState(initialCatalogState(type, a2aOnly))}
             onNext={() => setState(goNext)}
             onPrevious={() => setState(goPrevious)}
             onRetry={() => setState(reloadPage)}
@@ -75,6 +82,8 @@ export function CatalogView({ api, onRelogin }: Props) {
 type PanelProps = {
   state: CatalogState
   onSelectType: (type: CatalogRecordType) => void
+  onFilterA2a: (checked: boolean) => void
+  onFirstPage: () => void
   onNext: () => void
   onPrevious: () => void
   onRetry: () => void
@@ -86,6 +95,8 @@ type PanelProps = {
 export function CatalogPanel({
   state,
   onSelectType,
+  onFilterA2a,
+  onFirstPage,
   onNext,
   onPrevious,
   onRetry,
@@ -115,6 +126,17 @@ export function CatalogPanel({
       </div>
 
       <div role="tabpanel" aria-label={catalogTypeLabel(state.type)}>
+        {state.type === 'AGENT' && (
+          <label>
+            <input
+              type="checkbox"
+              name="a2aOnly"
+              checked={state.a2aOnly}
+              onChange={(event) => onFilterA2a(event.target.checked)}
+            />
+            A2A の Agent のみ
+          </label>
+        )}
         {view.status === 'loading' ? (
           <p role="status">読み込んでいます…</p>
         ) : view.status === 'error' ? (
@@ -125,7 +147,7 @@ export function CatalogPanel({
             </button>
             {state.pageNumber > 1 && (
               // nextToken の期限切れなどで同じページを取り直しても解決しない場合の戻り道
-              <button type="button" onClick={() => onSelectType(state.type)}>
+              <button type="button" onClick={onFirstPage}>
                 最初のページに戻る
               </button>
             )}
@@ -139,7 +161,7 @@ export function CatalogPanel({
           <p>
             {view.page.nextToken !== null
               ? 'このページには項目がありません。次のページを確認してください。'
-              : `公開承認済みの ${catalogTypeLabel(state.type)} はありません。`}
+              : `公開承認済みの ${state.a2aOnly ? 'A2A の Agent' : catalogTypeLabel(state.type)} はありません。`}
           </p>
         ) : (
           <CatalogItems items={view.page.items} onOpenDetail={onOpenDetail} />

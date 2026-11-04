@@ -91,8 +91,10 @@ def test_viewer_searches_natural_language_with_only_allowlisted_filters() -> Non
         registryIds=[REGISTRY_ARN],
         maxResults=20,
         filters={
-            "recordType": {"$eq": "AGENT"},
-            "customMetadata.dataClassification": {"$eq": "private"},
+            "$and": [
+                {"recordType": {"$eq": "AGENT"}},
+                {"customMetadata.dataClassification": {"$eq": "private"}},
+            ],
         },
     )
     assert request.method == expected["method"]
@@ -262,6 +264,18 @@ def test_related_references_are_read_for_the_published_version() -> None:
     with Stubber(dynamodb) as stubber:
         stubber.add_response(
             "get_item",
+            {"Item": {"ownerTeam": {"S": "team-agents"}}},
+            expected_params={
+                "TableName": "registry-auxiliary",
+                "ConsistentRead": True,
+                "Key": {
+                    "pk": {"S": f"REGISTRY#{REGISTRY_ARN}#RECORD#agentAbc1234"},
+                    "sk": {"S": "MANAGEMENT"},
+                },
+            },
+        )
+        stubber.add_response(
+            "get_item",
             {
                 "Item": {
                     "relatedReferences": {
@@ -291,13 +305,63 @@ def test_related_references_are_read_for_the_published_version() -> None:
                 transport=transport,
                 secrets_client=FakeSecrets().client,
             ),
-            references_client=dynamodb,
+            supplement_client=dynamodb,
         )
         status, body = call(handler, detail_event("agentAbc1234"))
         stubber.assert_no_pending_responses()
 
     assert status == 200
+    assert body["ownerTeam"] == "team-agents"
     assert body["relatedReferences"] == [{"recordId": SKILL_ID, "recordVersion": "2.3.4"}]
+
+
+@pytest.mark.parametrize(
+    ("management", "owner_team"),
+    [
+        ({"Item": {"ownerTeam": {"S": "team-current"}}}, "team-current"),
+        ({"Item": {"managed": {"BOOL": False}, "ownerTeam": {"S": "team-old"}}}, "team-legacy"),
+        ({}, "team-legacy"),
+    ],
+)
+def test_detail_uses_authoritative_owner_team_or_falls_back_for_unmanaged_records(
+    management: dict[str, Any], owner_team: str
+) -> None:
+    transport = SearchTransport()
+    record = hit(SKILL_ID, "agentSkillsDefinition")
+    record["recordType"] = "SKILL"
+    record["customMetadata"] = {"ownerTeam": "team-legacy", "contact": "public@example.com"}
+    transport.registry.append(json_response(200, {"registryRecords": [record], "errors": []}))
+    dynamodb = boto3.client(
+        "dynamodb",
+        region_name="us-east-1",
+        aws_access_key_id="testing",
+        aws_secret_access_key="testing",
+    )
+    with Stubber(dynamodb) as stubber:
+        stubber.add_response(
+            "get_item",
+            management,
+            expected_params={
+                "TableName": "registry-auxiliary",
+                "ConsistentRead": True,
+                "Key": {
+                    "pk": {"S": f"REGISTRY#{REGISTRY_ARN}#RECORD#{SKILL_ID}"},
+                    "sk": {"S": "MANAGEMENT"},
+                },
+            },
+        )
+        handler = create_management_handler(
+            {**ENV, "CATALOG_REFERENCES_TABLE_NAME": "registry-auxiliary"},
+            discovery=DiscoveryDependencies(
+                transport=transport, secrets_client=FakeSecrets().client
+            ),
+            supplement_client=dynamodb,
+        )
+        status, body = call(handler, detail_event())
+        assert status == 200
+        assert body["ownerTeam"] == owner_team
+        assert body["contact"] == "public@example.com"
+        stubber.assert_no_pending_responses()
 
 
 def test_search_never_exposes_a_non_public_record() -> None:

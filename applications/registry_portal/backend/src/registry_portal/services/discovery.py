@@ -320,15 +320,17 @@ class DiscoveryClient:
         self._search_url = f"{settings.registry_endpoint}/discoverable-records-search"
         self._batch_url = f"{settings.registry_endpoint}/discoverable-records-batch"
 
-    def list_records(self, record_type: CatalogRecordType, next_token: str | None) -> CatalogPage:
+    def list_records(
+        self, record_type: CatalogRecordType, next_token: str | None, *, a2a_only: bool = False
+    ) -> CatalogPage:
         """公開承認済みの Registry レコードを、種別で絞り込んで1ページ分返す。
 
         AWS はページが疎であることを保証しない（0件でも nextToken が返ることがある）。
         """
-        payload: dict[str, Any] = {
-            "filters": [{"name": "recordType", "values": [record_type]}],
-            "maxResults": PAGE_SIZE,
-        }
+        filters = [{"name": "recordType", "values": [record_type]}]
+        if a2a_only:
+            filters.append({"name": "descriptorType", "values": ["a2aAgentCard"]})
+        payload: dict[str, Any] = {"filters": filters, "maxResults": PAGE_SIZE}
         if next_token is not None:
             payload["nextToken"] = next_token
         response = self._request(self._list_url, payload)
@@ -350,7 +352,12 @@ class DiscoveryClient:
         )
         filters: dict[str, object] = {"recordType": record_type_filter}
         if search.data_classification is not None:
-            filters["customMetadata.dataClassification"] = {"$eq": search.data_classification}
+            filters = {
+                "$and": [
+                    filters,
+                    {"customMetadata.dataClassification": {"$eq": search.data_classification}},
+                ],
+            }
         response = self._request(
             self._search_url,
             {
