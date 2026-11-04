@@ -6,15 +6,17 @@ handler は API Gateway HTTP API（payload format 2.0）のイベントを受け
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from collections.abc import Callable, Mapping
 from typing import Any
 
 from registry_portal.auth import Caller, authorize
-from registry_portal.catalog import list_catalog
+from registry_portal.catalog import get_catalog_detail, list_catalog, search_catalog
 from registry_portal.config import load_auth_settings, load_discovery_settings
-from registry_portal.errors import ApiError, RouteNotFoundError
+from registry_portal.errors import ApiError, RequestValidationError, RouteNotFoundError
+from registry_portal.services.catalog_references import PublishedReferences, ReferencesClient
 from registry_portal.services.discovery import DiscoveryDependencies, create_discovery_client
 
 logger = logging.getLogger(__name__)
@@ -62,6 +64,22 @@ def _query_of(event: LambdaEvent) -> Mapping[str, str]:
     return {str(key): str(value) for key, value in query.items()}
 
 
+def _json_body(event: LambdaEvent) -> Mapping[str, Any]:
+    error = RequestValidationError("リクエスト本文には JSON オブジェクトを指定してください。")
+    raw = event.get("body")
+    if not isinstance(raw, str) or len(raw) > 8192:
+        raise error
+    try:
+        body = json.loads(
+            base64.b64decode(raw, validate=True) if event.get("isBase64Encoded") else raw
+        )
+    except (ValueError, RecursionError):
+        raise error from None
+    if not isinstance(body, Mapping):
+        raise error
+    return body
+
+
 def get_me(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
     """自分の主体・業務ロール・所属チームを返す。"""
     return 200, {
@@ -84,6 +102,7 @@ def create_management_handler(
     environ: Mapping[str, str],
     *,
     discovery: DiscoveryDependencies | None = None,
+    references_client: ReferencesClient | None = None,
 ) -> Handler:
     """管理 handler を作る。認証・発見の設定が不足していれば、ここで起動エラーにする。
 
@@ -91,24 +110,50 @@ def create_management_handler(
     通信は最初のリクエストまで行わない。
     """
     settings = load_auth_settings(environ)
+    discovery_settings = load_discovery_settings(environ)
     discovery_client = create_discovery_client(
-        load_discovery_settings(environ), discovery or DiscoveryDependencies()
+        discovery_settings, discovery or DiscoveryDependencies()
+    )
+    table_name = environ.get("CATALOG_REFERENCES_TABLE_NAME", "").strip()
+    references = (
+        PublishedReferences(table_name, discovery_settings, references_client)
+        if table_name
+        else None
     )
 
     def get_catalog(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
         # Viewer（ログインした全員）が閲覧できる。発見用 M2M トークンでポータルが代理で問い合わせる
         return list_catalog(discovery_client, _query_of(event))
 
-    routes: Mapping[str, Route] = {**MANAGEMENT_ROUTES, "GET /api/catalog": get_catalog}
+    def post_search(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        if _query_of(event):
+            raise RequestValidationError("検索条件はリクエスト本文に指定してください。")
+        return search_catalog(discovery_client, _json_body(event))
+
+    routes: Mapping[str, Route] = {
+        **MANAGEMENT_ROUTES,
+        "GET /api/catalog": get_catalog,
+        "POST /api/catalog/search": post_search,
+    }
 
     def handler(event: LambdaEvent, context: Any) -> LambdaResponse:
         request_id = _request_context(event).get("requestId")
         try:
             caller = authorize(_claims_of(event), settings)
-            route = routes.get(_route_key(event))
-            if route is None:
+            key = _route_key(event)
+            route = routes.get(key)
+            detail_prefix = "GET /api/catalog/"
+            record_id = key.removeprefix(detail_prefix)
+            if route is not None:
+                status, body = route(caller, event)
+            elif key.startswith(detail_prefix) and record_id and "/" not in record_id:
+                if _query_of(event):
+                    raise RequestValidationError(
+                        "カタログ詳細にクエリパラメーターは指定できません。"
+                    )
+                status, body = get_catalog_detail(discovery_client, record_id, references)
+            else:
                 raise RouteNotFoundError()
-            status, body = route(caller, event)
             return _json_response(status, body)
         except ApiError as error:
             # ログにはトークンや claims の全文を出さない
