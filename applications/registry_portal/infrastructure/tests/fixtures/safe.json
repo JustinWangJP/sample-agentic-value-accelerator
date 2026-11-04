@@ -1,0 +1,22 @@
+{
+  "format_version": "1.2",
+  "resource_changes": [],
+  "planned_values": {
+    "root_module": {
+      "child_modules": [
+        {
+          "resources": [
+            {
+              "address": "module.roles.aws_iam_role_policy.management",
+              "mode": "managed",
+              "type": "aws_iam_role_policy",
+              "values": {
+                "policy": "{\"Statement\": [{\"Effect\": \"Allow\", \"Action\": [\"secretsmanager:GetSecretValue\"], \"Resource\": \"arn:aws:secretsmanager:us-east-1:123456789012:secret:discovery-AbCdEf\"}, {\"Effect\": \"Deny\", \"Action\": [\"agent-registry:*\"], \"Resource\": \"*\"}]}"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

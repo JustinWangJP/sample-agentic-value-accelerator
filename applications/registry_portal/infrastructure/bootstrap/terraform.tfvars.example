@@ -1,0 +1,6 @@
+aws_account_id               = "123456789012"
+state_bucket_name            = "registry-portal-state-123456789012"
+spa_bucket_name              = "registry-portal-dev-123456789012"
+cognito_user_pool_id         = "us-east-1_Example"
+identity_center_instance_arn = "arn:aws:sso:::instance/ssoins-0000000000000000"
+deployer_group_id            = "00000000-0000-0000-0000-000000000000"
