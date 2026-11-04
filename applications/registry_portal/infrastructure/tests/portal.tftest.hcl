@@ -19,6 +19,10 @@ variables {
 run "security_boundaries" {
   command = plan
   assert {
+    condition     = length(aws_iam_role.management.managed_policy_arns) == 0
+    error_message = "管理 Lambda には managed policy を付与せず、空集合を plan で確定してください。"
+  }
+  assert {
     condition     = aws_s3_bucket_public_access_block.spa.block_public_acls && aws_s3_bucket_public_access_block.spa.block_public_policy && aws_s3_bucket_public_access_block.spa.ignore_public_acls && aws_s3_bucket_public_access_block.spa.restrict_public_buckets
     error_message = "SPA バケットの公開アクセスを全面的に禁止してください。"
   }

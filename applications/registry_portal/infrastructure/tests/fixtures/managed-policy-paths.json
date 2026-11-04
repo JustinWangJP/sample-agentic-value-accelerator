@@ -102,7 +102,7 @@
           "type": "aws_ssoadmin_customer_managed_policy_attachments_exclusive",
           "mode": "managed",
           "values": {
-            "customer_managed_policy_references": [
+            "customer_managed_policy_reference": [
               {
                 "name": "AdministratorAccess",
                 "path": "/"

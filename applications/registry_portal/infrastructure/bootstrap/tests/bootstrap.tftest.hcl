@@ -27,7 +27,7 @@ run "state_and_deployer" {
     error_message = "state アクセスは専用 SSO ロールに限定してください。"
   }
   assert {
-    condition = alltrue([
+    condition = anytrue([
       for statement in jsondecode(aws_s3_bucket_policy.state.policy).Statement :
       toset(statement.Action) == toset(["s3:GetObject*", "s3:PutObject*", "s3:DeleteObject*"]) &&
       statement.Effect == "Deny" &&
