@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { CatalogView } from './catalog/CatalogView'
 import type { StartupState } from './startup'
 
 type Props = { startup: Promise<StartupState> }
@@ -36,23 +37,26 @@ export function StartupView({ state }: { state: StartupState | null }) {
           )}
         </div>
       ) : (
-        <section aria-labelledby="me-heading">
-          <h2 id="me-heading">自分の主体・業務ロール・所属チーム</h2>
-          <dl>
-            <dt>発行元（iss）</dt>
-            <dd>{state.me.principal.issuer}</dd>
-            <dt>主体（sub）</dt>
-            <dd>{state.me.principal.subject}</dd>
-            <dt>業務ロール</dt>
-            <dd>{state.me.roles.join('、')}</dd>
-            <dt>所属チーム</dt>
-            <dd>{state.me.teams.length > 0 ? state.me.teams.join('、') : '所属チームなし'}</dd>
-          </dl>
-          <p className="note">
-            アクセストークンはメモリー上だけで保持しています。ページを再読み込みすると、もう一度 SSO
-            でログインします。
-          </p>
-        </section>
+        <>
+          <section aria-labelledby="me-heading">
+            <h2 id="me-heading">自分の主体・業務ロール・所属チーム</h2>
+            <dl>
+              <dt>発行元（iss）</dt>
+              <dd>{state.me.principal.issuer}</dd>
+              <dt>主体（sub）</dt>
+              <dd>{state.me.principal.subject}</dd>
+              <dt>業務ロール</dt>
+              <dd>{state.me.roles.join('、')}</dd>
+              <dt>所属チーム</dt>
+              <dd>{state.me.teams.length > 0 ? state.me.teams.join('、') : '所属チームなし'}</dd>
+            </dl>
+            <p className="note">
+              アクセストークンはメモリー上だけで保持しています。ページを再読み込みすると、もう一度 SSO
+              でログインします。
+            </p>
+          </section>
+          <CatalogView api={state.api} onRelogin={state.relogin} />
+        </>
       )}
     </main>
   )

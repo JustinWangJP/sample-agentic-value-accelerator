@@ -12,8 +12,10 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from registry_portal.auth import Caller, authorize
-from registry_portal.config import load_auth_settings
+from registry_portal.catalog import list_catalog
+from registry_portal.config import load_auth_settings, load_discovery_settings
 from registry_portal.errors import ApiError, RouteNotFoundError
+from registry_portal.services.discovery import DiscoveryDependencies, create_discovery_client
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,12 @@ def _route_key(event: LambdaEvent) -> str:
     return f"{http.get('method', '')} {http.get('path', '')}"
 
 
+def _query_of(event: LambdaEvent) -> Mapping[str, str]:
+    """クエリ文字列。HTTP API は同じ名前の値をカンマで連結した1つの文字列にして渡す。"""
+    query = _mapping_or_empty(event.get("queryStringParameters"))
+    return {str(key): str(value) for key, value in query.items()}
+
+
 def get_me(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
     """自分の主体・業務ロール・所属チームを返す。"""
     return 200, {
@@ -72,15 +80,32 @@ MANAGEMENT_ROUTES: Mapping[str, Route] = {
 }
 
 
-def create_management_handler(environ: Mapping[str, str]) -> Handler:
-    """管理 handler を作る。認証設定が不足していれば、ここで起動エラーにする。"""
+def create_management_handler(
+    environ: Mapping[str, str],
+    *,
+    discovery: DiscoveryDependencies | None = None,
+) -> Handler:
+    """管理 handler を作る。認証・発見の設定が不足していれば、ここで起動エラーにする。
+
+    discovery（発見アダプターの外部部品）はテストでフェイクに差し替える。
+    通信は最初のリクエストまで行わない。
+    """
     settings = load_auth_settings(environ)
+    discovery_client = create_discovery_client(
+        load_discovery_settings(environ), discovery or DiscoveryDependencies()
+    )
+
+    def get_catalog(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        # Viewer（ログインした全員）が閲覧できる。発見用 M2M トークンでポータルが代理で問い合わせる
+        return list_catalog(discovery_client, _query_of(event))
+
+    routes: Mapping[str, Route] = {**MANAGEMENT_ROUTES, "GET /api/catalog": get_catalog}
 
     def handler(event: LambdaEvent, context: Any) -> LambdaResponse:
         request_id = _request_context(event).get("requestId")
         try:
             caller = authorize(_claims_of(event), settings)
-            route = MANAGEMENT_ROUTES.get(_route_key(event))
+            route = routes.get(_route_key(event))
             if route is None:
                 raise RouteNotFoundError()
             status, body = route(caller, event)

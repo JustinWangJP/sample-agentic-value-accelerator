@@ -52,3 +52,30 @@ class RouteNotFoundError(ApiError):
     status = 404
     code = "NOT_FOUND"
     default_message = "指定された API は存在しません。"
+
+
+class RequestValidationError(ApiError):
+    """リクエストの値が不正。"""
+
+    status = 400
+    code = "VALIDATION_ERROR"
+    default_message = "リクエストの指定が正しくありません。"
+
+
+class InvalidPageTokenError(ApiError):
+    """ページの指定（nextToken）が不正、または期限切れ。"""
+
+    status = 400
+    code = "INVALID_PAGE_TOKEN"
+    default_message = "ページの指定が正しくありません。最初のページから表示し直してください。"
+
+
+class DiscoveryUnavailableError(ApiError):
+    """Registry の発見 API から結果を得られなかった（認証・接続・応答の異常）。
+
+    結果が0件の場合とは区別する。AWS のエラー内容は利用者に返さない。
+    """
+
+    status = 502
+    code = "DISCOVERY_UNAVAILABLE"
+    default_message = "カタログを取得できませんでした。時間をおいて再度お試しください。"
