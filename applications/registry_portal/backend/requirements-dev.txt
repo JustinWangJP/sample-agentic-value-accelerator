@@ -4,3 +4,5 @@ pytest==8.3.4
 black==24.10.0
 flake8==7.1.1
 mypy==1.13.0
+# mypy strict 用の型スタブ（boto3 と同じ版に揃える）
+boto3-stubs[secretsmanager]==1.43.123

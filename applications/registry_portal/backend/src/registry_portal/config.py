@@ -56,6 +56,8 @@ class DiscoverySettings:
     client_id: str
     # 発見用 M2M client の secret を保管した Secrets Manager の ARN
     client_secret_arn: str
+    # secret のリージョン。ARN から導出する
+    client_secret_region: str
     # 要求する scope（スペース区切り。空なら client の既定）
     scope: str
 
@@ -68,6 +70,10 @@ _REQUIRED_DISCOVERY_KEYS = (
 )
 _REGISTRY_ARN = re.compile(
     r"arn:aws(?:-[a-z]+)*:agent-registry:(?P<region>[a-z0-9-]+):\d{12}:registry/[A-Za-z0-9]{12,16}"
+)
+
+_SECRET_ARN = re.compile(
+    r"arn:aws(?:-[a-z]+)*:secretsmanager:(?P<region>[a-z0-9-]+):\d{12}:secret:.+"
 )
 
 
@@ -85,11 +91,18 @@ def load_discovery_settings(environ: Mapping[str, str]) -> DiscoverySettings:
         raise ConfigurationError(
             "発見設定が正しくありません: DISCOVERY_TOKEN_URL は https で指定してください"
         )
+    client_secret_arn = environ["DISCOVERY_CLIENT_SECRET_ARN"].strip()
+    secret_match = _SECRET_ARN.fullmatch(client_secret_arn)
+    if secret_match is None:
+        raise ConfigurationError(
+            "発見設定が正しくありません: DISCOVERY_CLIENT_SECRET_ARN の形式が不正です"
+        )
     return DiscoverySettings(
         registry_arn=registry_arn,
         region=match.group("region"),
         token_url=token_url,
         client_id=environ["DISCOVERY_CLIENT_ID"].strip(),
-        client_secret_arn=environ["DISCOVERY_CLIENT_SECRET_ARN"].strip(),
+        client_secret_arn=client_secret_arn,
+        client_secret_region=secret_match.group("region"),
         scope=environ.get("DISCOVERY_SCOPE", "").strip(),
     )

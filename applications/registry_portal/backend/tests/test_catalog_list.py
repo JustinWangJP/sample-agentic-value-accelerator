@@ -8,9 +8,11 @@ import logging
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs
 
+import boto3
 import pytest
+from botocore.stub import Stubber
 
 from registry_portal.app import create_management_handler
 from registry_portal.services.http import TransportError, TransportResponse
@@ -21,7 +23,6 @@ REGISTRY_ARN = "arn:aws:agent-registry:us-east-1:123456789012:registry/abcdEFGH1
 TOKEN_URL = "https://discovery.auth.us-east-1.amazoncognito.com/oauth2/token"
 SECRET_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:discovery-m2m-AbCdEf"
 CLIENT_SECRET = "s3cr3t-client-value"
-SESSION_TOKEN = "lambda-session-token-value"
 
 ENV = {
     "COGNITO_ISSUER": ISSUER,
@@ -31,7 +32,6 @@ ENV = {
     "DISCOVERY_CLIENT_ID": "discovery-m2m-client",
     "DISCOVERY_CLIENT_SECRET_ARN": SECRET_ARN,
     "DISCOVERY_SCOPE": "registry/discovery.read",
-    "AWS_SESSION_TOKEN": SESSION_TOKEN,
 }
 
 LIST_URL = (
@@ -79,11 +79,10 @@ def summary(record_id: str, record_type: str = "AGENT", **overrides: Any) -> dic
 
 @dataclass
 class FakeTransport:
-    """Secrets Manager 拡張、Cognito のトークンエンドポイント、Registry の発見 API を模す。"""
+    """Cognito のトークンエンドポイントと、Registry の発見 API を模す。"""
 
     registry: deque[TransportResponse | TransportError] = field(default_factory=deque)
     tokens: deque[TransportResponse | TransportError] = field(default_factory=deque)
-    secret_string: str = CLIENT_SECRET
     requests: list[SentRequest] = field(default_factory=list)
     issued: int = 0
 
@@ -96,8 +95,6 @@ class FakeTransport:
         timeout: float,
     ) -> TransportResponse:
         self.requests.append(SentRequest(method, url, dict(headers), body))
-        if url.startswith("http://localhost:2773/secretsmanager/get"):
-            return json_response(200, {"SecretString": self.secret_string})
         if url == TOKEN_URL:
             return self._next(self.tokens) if self.tokens else self._issue()
         if url == LIST_URL:
@@ -124,6 +121,43 @@ class FakeTransport:
 
     def to(self, url: str) -> list[SentRequest]:
         return [r for r in self.requests if r.url.split("?")[0] == url.split("?")[0]]
+
+
+class FakeSecrets:
+    """Secrets Manager の GetSecretValue を Botocore Stubber で模す。
+
+    応答は呼ばれる回数だけ積む。積んだ数より多く呼ばれると Stubber が失敗させる。
+    """
+
+    def __init__(self, *secret_strings: str, error_code: str | None = None) -> None:
+        self.client = boto3.client(
+            "secretsmanager",
+            region_name="us-east-1",
+            aws_access_key_id="testing",
+            aws_secret_access_key="testing",
+        )
+        self.stubber = Stubber(self.client)
+        if error_code is not None:
+            self._fail(error_code)
+        for secret_string in secret_strings or (() if error_code else (CLIENT_SECRET,)):
+            self._respond(secret_string)
+        self.stubber.activate()
+
+    def _respond(self, secret_string: str) -> None:
+        self.stubber.add_response(
+            "get_secret_value",
+            {"ARN": SECRET_ARN, "Name": "discovery-m2m", "SecretString": secret_string},
+            expected_params={"SecretId": SECRET_ARN},
+        )
+
+    def _fail(self, code: str) -> None:
+        self.stubber.add_client_error(
+            "get_secret_value",
+            service_error_code=code,
+            service_message=f"詳細 {SECRET_ARN}",
+            http_status_code=400,
+            expected_params={"SecretId": SECRET_ARN},
+        )
 
 
 class Clock:
@@ -161,8 +195,19 @@ def catalog_event(
     }
 
 
-def make_handler(transport: FakeTransport, clock: Clock | None = None) -> Any:
-    return create_management_handler(ENV, transport=transport, clock=clock or Clock())
+def basic_credentials(request: SentRequest) -> str:
+    return base64.b64decode(request.headers["authorization"].removeprefix("Basic ")).decode()
+
+
+def make_handler(
+    transport: FakeTransport, clock: Clock | None = None, secrets: FakeSecrets | None = None
+) -> Any:
+    return create_management_handler(
+        ENV,
+        transport=transport,
+        clock=clock or Clock(),
+        secrets_client=(secrets or FakeSecrets()).client,
+    )
 
 
 def call(handler: Any, event: dict[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -222,16 +267,13 @@ def test_viewer_lists_first_page_of_agents_with_m2m_bearer_token() -> None:
         "filters": [{"name": "recordType", "values": ["AGENT"]}],
         "maxResults": 50,
     }
-    # client credentials で M2M トークンを取得する。secret は Secrets Manager 拡張から得る
+    # client credentials で M2M トークンを取得する。secret は Secrets Manager から得る
     [token_request] = transport.to(TOKEN_URL)
     assert parse_qs(token_request.body.decode() if token_request.body else "") == {
         "grant_type": ["client_credentials"],
         "scope": ["registry/discovery.read"],
     }
-    assert token_request.headers["authorization"].startswith("Basic ")
-    [secret_request] = transport.to("http://localhost:2773/secretsmanager/get")
-    assert parse_qs(urlsplit(secret_request.url).query) == {"secretId": [SECRET_ARN]}
-    assert secret_request.headers["x-aws-parameters-secrets-token"] == SESSION_TOKEN
+    assert basic_credentials(token_request) == f"discovery-m2m-client:{CLIENT_SECRET}"
 
 
 def page(*records: dict[str, Any], next_token: str | None = None) -> TransportResponse:
@@ -274,7 +316,8 @@ def test_empty_page_with_next_token_is_returned_as_is() -> None:
 def test_m2m_token_is_reused_until_shortly_before_expiry() -> None:
     transport = FakeTransport()
     clock = Clock()
-    handler = make_handler(transport, clock)
+    secrets = FakeSecrets()
+    handler = make_handler(transport, clock, secrets)
     transport.registry.extend([page(), page(), page()])
 
     call(handler, catalog_event({"type": "AGENT"}))
@@ -286,8 +329,8 @@ def test_m2m_token_is_reused_until_shortly_before_expiry() -> None:
     bearer = [r.headers["authorization"] for r in transport.to(LIST_URL)]
     assert bearer == ["Bearer m2m-token-1", "Bearer m2m-token-1", "Bearer m2m-token-2"]
     assert len(transport.to(TOKEN_URL)) == 2
-    # secret はメモリー上で再利用する
-    assert len(transport.to("http://localhost:2773/secretsmanager/get")) == 1
+    # secret はメモリー上で再利用する（GetSecretValue は1回だけ）
+    secrets.stubber.assert_no_pending_responses()
 
 
 def test_registry_401_refreshes_token_once_and_succeeds() -> None:
@@ -482,19 +525,16 @@ def test_logs_never_contain_jwt_or_secret(caplog: pytest.LogCaptureFixture) -> N
 
     assert caplog.records, "失敗の記録はログに残す"
     logged = caplog.text
-    for secret in (CLIENT_SECRET, SESSION_TOKEN, "m2m-token-", "Bearer", "Basic"):
+    for secret in (CLIENT_SECRET, "m2m-token-", "Bearer", "Basic"):
         assert secret not in logged
 
 
-def basic_credentials(request: SentRequest) -> str:
-    return base64.b64decode(request.headers["authorization"].removeprefix("Basic ")).decode()
-
-
 def test_client_secret_stored_as_json_uses_client_secret_field() -> None:
-    transport = FakeTransport(secret_string=json.dumps({"client_secret": "json-secret"}))
+    transport = FakeTransport()
     transport.registry.append(page())
+    secrets = FakeSecrets(json.dumps({"client_secret": "json-secret"}))
 
-    status, _ = call(make_handler(transport), catalog_event({"type": "AGENT"}))
+    status, _ = call(make_handler(transport, secrets=secrets), catalog_event({"type": "AGENT"}))
 
     assert status == 200
     assert basic_credentials(transport.to(TOKEN_URL)[0]) == "discovery-m2m-client:json-secret"
@@ -505,13 +545,16 @@ def test_rejected_client_credentials_refetch_secret_on_next_request() -> None:
     transport = FakeTransport()
     transport.tokens.append(json_response(400, {"error": "invalid_client"}))
     transport.registry.append(page())
-    handler = make_handler(transport)
+    secrets = FakeSecrets("old-secret", "rotated-secret")
+    handler = make_handler(transport, secrets=secrets)
 
     first, _ = call(handler, catalog_event({"type": "AGENT"}))
     second, _ = call(handler, catalog_event({"type": "AGENT"}))
 
     assert (first, second) == (502, 200)
-    assert len(transport.to("http://localhost:2773/secretsmanager/get")) == 2
+    secrets.stubber.assert_no_pending_responses()
+    credentials = [basic_credentials(r) for r in transport.to(TOKEN_URL)]
+    assert credentials == ["discovery-m2m-client:old-secret", "discovery-m2m-client:rotated-secret"]
 
 
 @pytest.mark.parametrize("token", ["m2m-token\r\nx-injected: 1", "秘密の値", "has space"])
@@ -528,3 +571,21 @@ def test_malformed_access_token_is_not_sent_or_logged(
     assert body["error"]["code"] == "DISCOVERY_UNAVAILABLE"
     assert transport.to(LIST_URL) == []
     assert token not in caplog.text
+
+
+@pytest.mark.parametrize("code", ["AccessDeniedException", "ResourceNotFoundException"])
+def test_secret_retrieval_failure_is_reported_without_calling_token_endpoint(
+    code: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    transport = FakeTransport()
+    secrets = FakeSecrets(error_code=code)
+
+    status, body = call(make_handler(transport, secrets=secrets), catalog_event({"type": "AGENT"}))
+
+    assert status == 502
+    assert body["error"]["code"] == "DISCOVERY_UNAVAILABLE"
+    assert transport.requests == []
+    # AWS のエラーメッセージ（ARN を含みうる）はログに出さず、エラーコードだけを残す
+    assert code in caplog.text
+    assert SECRET_ARN not in caplog.text

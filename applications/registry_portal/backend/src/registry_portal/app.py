@@ -10,7 +10,9 @@ import json
 import logging
 import time
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+import boto3
 
 from registry_portal.auth import Caller, authorize
 from registry_portal.catalog import CatalogDiscovery, list_catalog
@@ -18,6 +20,9 @@ from registry_portal.config import load_auth_settings, load_discovery_settings
 from registry_portal.errors import ApiError, RouteNotFoundError
 from registry_portal.services.discovery import Clock, create_discovery_client
 from registry_portal.services.http import Transport, urllib_transport
+
+if TYPE_CHECKING:
+    from mypy_boto3_secretsmanager import SecretsManagerClient
 
 logger = logging.getLogger(__name__)
 
@@ -87,14 +92,21 @@ def create_management_handler(
     *,
     transport: Transport = urllib_transport,
     clock: Clock = time.monotonic,
+    secrets_client: SecretsManagerClient | None = None,
 ) -> Handler:
     """管理 handler を作る。認証・発見の設定が不足していれば、ここで起動エラーにする。
 
-    transport と clock はテストでフェイクに差し替える。通信は最初のリクエストまで行わない。
+    transport・clock・secrets_client はテストでフェイクに差し替える。通信は最初のリクエストまで行わない。
     """
     settings = load_auth_settings(environ)
+    discovery_settings = load_discovery_settings(environ)
+    if secrets_client is None:
+        # 認証情報は Lambda の実行ロールから得る。リージョンは secret の ARN に合わせる
+        secrets_client = boto3.client(
+            "secretsmanager", region_name=discovery_settings.client_secret_region
+        )
     discovery: CatalogDiscovery = create_discovery_client(
-        load_discovery_settings(environ), transport, clock, environ
+        discovery_settings, transport, clock, secrets_client
     )
 
     def get_catalog(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:

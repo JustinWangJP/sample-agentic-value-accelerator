@@ -262,6 +262,8 @@ def test_missing_auth_settings_fail_at_startup(environ: dict[str, str]) -> None:
         {"REGISTRY_ARN": "arn:aws:bedrock-agentcore:us-east-1:123456789012:registry/abcdEFGH1234"},
         # トークンエンドポイントは https に限る
         {"DISCOVERY_TOKEN_URL": "http://discovery.example.com/oauth2/token"},
+        # secret は Secrets Manager の ARN で指定する（名前だけは受け付けない）
+        {"DISCOVERY_CLIENT_SECRET_ARN": "discovery-m2m"},
     ],
     ids=[
         "no-registry",
@@ -271,6 +273,7 @@ def test_missing_auth_settings_fail_at_startup(environ: dict[str, str]) -> None:
         "registry-id-only",
         "old-namespace",
         "http-token-url",
+        "secret-name-only",
     ],
 )
 def test_missing_or_invalid_discovery_settings_fail_at_startup(overrides: dict[str, str]) -> None:

@@ -1,13 +1,12 @@
 """発見アダプター: JWT 認可の Registry に、発見用 M2M トークンで問い合わせる。
 
-- 発見用 M2M client の secret は、AWS Parameters and Secrets Lambda Extension を通じて
-  Secrets Manager から取得し、メモリー上だけに保持する
+- 発見用 M2M client の secret は、Boto3 で Secrets Manager から取得し、メモリー上だけに保持する
 - M2M トークン（client credentials）は有効期限を考慮して再利用する
 - Registry が 401 を返したら、トークンを取り直して再試行する。再試行は1回に限る
 - トークン、secret、応答の本文はログに出さない。出すのは HTTP ステータスと処理の種類だけ
 
 Registry の発見 API は Boto3 では JWT 認可に対応しないため、HTTP で直接呼ぶ（設計書
-「管理用の IAM と発見用の JWT を分ける」）。
+「管理用の IAM と発見用の JWT を分ける」）。Secrets Manager は IAM 認可なので Boto3 を使う。
 """
 
 from __future__ import annotations
@@ -18,12 +17,17 @@ import logging
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, urlencode
+
+from botocore.exceptions import BotoCoreError, ClientError
 
 from registry_portal.config import DiscoverySettings
 from registry_portal.errors import DiscoveryUnavailableError, InvalidPageTokenError
 from registry_portal.services.http import Transport, TransportError, TransportResponse
+
+if TYPE_CHECKING:
+    from mypy_boto3_secretsmanager import SecretsManagerClient
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +40,6 @@ MAX_AUTH_RETRIES = 1
 # 1ページの件数。AWS の上限は100
 PAGE_SIZE = 50
 HTTP_TIMEOUT_SECONDS = 5.0
-SECRETS_EXTENSION_URL = "http://localhost:2773/secretsmanager/get"
 # アクセストークン（JWT）として受け付ける文字。改行などを含む値をヘッダーに載せない
 _ACCESS_TOKEN = re.compile(r"[A-Za-z0-9\-_.~+/=]+")
 
@@ -49,34 +52,34 @@ def _parse_json_object(response: TransportResponse) -> Mapping[str, Any] | None:
     return value if isinstance(value, Mapping) else None
 
 
-class ExtensionSecretSource:
-    """Secrets Manager の secret を、Lambda 拡張（localhost）経由で取得する。
+class SecretsManagerSecretSource:
+    """発見用 M2M client の secret を、Boto3 で Secrets Manager から取得する。
 
     SecretString が JSON オブジェクトで `client_secret` を持てばその値を、そうでなければ
     SecretString 全体を client secret として使う。
     """
 
-    def __init__(self, secret_arn: str, transport: Transport, environ: Mapping[str, str]) -> None:
+    def __init__(self, client: SecretsManagerClient, secret_arn: str) -> None:
+        self._client = client
         self._secret_arn = secret_arn
-        self._transport = transport
-        # Lambda の実行環境では、拡張の認証に AWS_SESSION_TOKEN を使う。呼び出し時点の値を読む
-        self._environ = environ
         self._cached: str | None = None
 
     def get(self) -> str:
         if self._cached is not None:
             return self._cached
-        url = f"{SECRETS_EXTENSION_URL}?{urlencode({'secretId': self._secret_arn})}"
-        headers = {"x-aws-parameters-secrets-token": self._environ.get("AWS_SESSION_TOKEN", "")}
         try:
-            response = self._transport("GET", url, headers, None, HTTP_TIMEOUT_SECONDS)
-        except TransportError as error:
-            logger.warning("発見用 secret の取得に失敗しました: transport=%s", error)
+            response = self._client.get_secret_value(SecretId=self._secret_arn)
+        except ClientError as error:
+            # AWS のエラーメッセージは ARN などを含みうるので、エラーコードだけを残す
+            code = error.response.get("Error", {}).get("Code", "unknown")
+            logger.warning("発見用 secret の取得に失敗しました: code=%s", code)
             raise DiscoveryUnavailableError() from None
-        body = _parse_json_object(response) if response.status == 200 else None
-        secret_string = body.get("SecretString") if body else None
-        if not isinstance(secret_string, str) or not secret_string:
-            logger.warning("発見用 secret の取得に失敗しました: status=%s", response.status)
+        except BotoCoreError as error:
+            logger.warning("発見用 secret の取得に失敗しました: error=%s", type(error).__name__)
+            raise DiscoveryUnavailableError() from None
+        secret_string = response.get("SecretString")
+        if not secret_string:
+            logger.warning("発見用 secret の取得に失敗しました: SecretString がありません")
             raise DiscoveryUnavailableError()
         self._cached = _client_secret_of(secret_string)
         return self._cached
@@ -111,7 +114,7 @@ class M2MTokenProvider:
     def __init__(
         self,
         settings: DiscoverySettings,
-        secrets: ExtensionSecretSource,
+        secrets: SecretsManagerSecretSource,
         transport: Transport,
         clock: Clock,
     ) -> None:
@@ -303,8 +306,8 @@ def create_discovery_client(
     settings: DiscoverySettings,
     transport: Transport,
     clock: Clock,
-    environ: Mapping[str, str],
+    secrets_client: SecretsManagerClient,
 ) -> DiscoveryClient:
-    secrets = ExtensionSecretSource(settings.client_secret_arn, transport, environ)
+    secrets = SecretsManagerSecretSource(secrets_client, settings.client_secret_arn)
     tokens = M2MTokenProvider(settings, secrets, transport, clock)
     return DiscoveryClient(settings, tokens, transport)
