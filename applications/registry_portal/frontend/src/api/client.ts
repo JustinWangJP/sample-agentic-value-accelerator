@@ -45,6 +45,26 @@ export type CatalogPage = {
   nextToken: string | null
 }
 
+export type CatalogSearchRequest = {
+  query: string
+  type?: CatalogRecordType
+  a2a?: boolean
+  dataClassification?: 'public' | 'private'
+}
+
+export type CatalogReference = { recordId: string; recordVersion: string }
+
+export type CatalogDetail = CatalogItem & {
+  definition: Record<string, unknown>
+  ownerTeam: string
+  contact: string
+  termsOfUse: string
+  connectionReference: string
+  dataClassification: string
+  skillMarkdown: string
+  relatedReferences: CatalogReference[] | null
+}
+
 /** 認証が必要なときのメッセージ。バックエンドの AuthenticationError の既定文言と同じ */
 export const UNAUTHENTICATED_MESSAGE = '認証が必要です。ログインし直してください。'
 
@@ -80,6 +100,51 @@ function isErrorDto(value: unknown): value is ErrorDto {
   )
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function hasStrings(object: Record<string, unknown>, keys: readonly string[]): boolean {
+  return keys.every((key) => typeof object[key] === 'string')
+}
+
+function isCatalogItem(value: unknown): value is CatalogItem {
+  return (
+    isObject(value) &&
+    hasStrings(value, ['recordId', 'name', 'displayName', 'description', 'recordVersion', 'updatedAt']) &&
+    (value.recordType === 'AGENT' || value.recordType === 'MCP' || value.recordType === 'SKILL') &&
+    Array.isArray(value.descriptorTypes) &&
+    value.descriptorTypes.every((type) => typeof type === 'string') &&
+    typeof value.isA2A === 'boolean'
+  )
+}
+
+function isCatalogReference(value: unknown): value is CatalogReference {
+  return isObject(value) && hasStrings(value, ['recordId', 'recordVersion'])
+}
+
+function isCatalogDetail(value: unknown): value is CatalogDetail {
+  return (
+    isObject(value) &&
+    isObject(value.definition) &&
+    hasStrings(value, [
+      'ownerTeam',
+      'contact',
+      'termsOfUse',
+      'connectionReference',
+      'dataClassification',
+      'skillMarkdown',
+    ]) &&
+    (value.relatedReferences === null ||
+      (Array.isArray(value.relatedReferences) && value.relatedReferences.every(isCatalogReference))) &&
+    isCatalogItem(value)
+  )
+}
+
+function invalidResponse(status: number): ApiError {
+  return new ApiError(status, 'INVALID_RESPONSE', 'API から想定外の応答が返されました。')
+}
+
 export type ApiClientOptions = {
   baseUrl: string
   fetch: typeof fetch
@@ -90,10 +155,12 @@ export type ApiClient = {
   getMe: () => Promise<Me>
   /** nextToken はバックエンドが中継する AWS の値で、SPA では中身を解釈しない */
   listCatalog: (type: CatalogRecordType, nextToken?: string) => Promise<CatalogPage>
+  searchCatalog: (query: CatalogSearchRequest) => Promise<CatalogItem[]>
+  getCatalogDetail: (recordId: string) => Promise<CatalogDetail>
 }
 
 export function createApiClient(options: ApiClientOptions): ApiClient {
-  async function request<T>(path: string): Promise<T> {
+  async function request<T>(path: string, payload?: CatalogSearchRequest): Promise<T> {
     const token = options.getAccessToken()
     if (!token) {
       throw new ApiError(401, 'UNAUTHENTICATED', UNAUTHENTICATED_MESSAGE)
@@ -101,9 +168,17 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     let response: Response
     try {
       // baseUrl の末尾の / は loadConfig で取り除き済み
-      response = await options.fetch(`${options.baseUrl}${path}`, {
-        headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
-      })
+      const headers = { authorization: `Bearer ${token}`, accept: 'application/json' }
+      response = await options.fetch(
+        `${options.baseUrl}${path}`,
+        payload === undefined
+          ? { headers }
+          : {
+              method: 'POST',
+              headers: { ...headers, 'content-type': 'application/json' },
+              body: JSON.stringify(payload),
+            },
+      )
     } catch {
       throw new ApiError(0, 'NETWORK_ERROR', 'API に接続できません。ネットワークを確認してください。')
     }
@@ -131,7 +206,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       )
     }
     if (body === undefined) {
-      throw new ApiError(response.status, 'INVALID_RESPONSE', 'API から想定外の応答が返されました。')
+      throw invalidResponse(response.status)
     }
     return body as T
   }
@@ -142,6 +217,18 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       const query = new URLSearchParams({ type })
       if (nextToken !== undefined) query.set('nextToken', nextToken)
       return request<CatalogPage>(`/api/catalog?${query.toString()}`)
+    },
+    searchCatalog: async (query) => {
+      const body = await request<unknown>('/api/catalog/search', query)
+      if (!isObject(body) || !Array.isArray(body.items) || !body.items.every(isCatalogItem)) {
+        throw invalidResponse(200)
+      }
+      return body.items
+    },
+    getCatalogDetail: async (recordId) => {
+      const body = await request<unknown>(`/api/catalog/${encodeURIComponent(recordId)}`)
+      if (!isCatalogDetail(body)) throw invalidResponse(200)
+      return body
     },
   }
 }

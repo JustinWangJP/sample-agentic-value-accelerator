@@ -16,6 +16,7 @@ const render = (state: CatalogState) =>
       onPrevious: noop,
       onRetry: noop,
       onRelogin: noop,
+      onOpenDetail: noop,
     }),
   )
 

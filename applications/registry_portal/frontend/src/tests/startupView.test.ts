@@ -3,14 +3,15 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { StartupView } from '../App'
-import type { ApiClient } from '../api/client'
+import { createApiClient } from '../api/client'
 import type { StartupState } from '../startup'
 
 // 静的な描画では effect が動かないので、API は呼ばれない
-const unusedApi: ApiClient = {
-  getMe: () => Promise.reject(new Error('呼ばれない想定')),
-  listCatalog: () => Promise.reject(new Error('呼ばれない想定')),
-}
+const unusedApi = createApiClient({
+  baseUrl: '',
+  fetch: () => Promise.reject(new Error('呼ばれない想定')),
+  getAccessToken: () => 'viewer-token',
+})
 
 const render = (state: StartupState | null) => renderToStaticMarkup(createElement(StartupView, { state }))
 

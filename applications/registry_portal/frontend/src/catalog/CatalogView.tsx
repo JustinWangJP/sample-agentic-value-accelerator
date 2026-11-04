@@ -1,5 +1,9 @@
 import { useEffect, useState } from 'react'
 import type { ApiClient, CatalogItem, CatalogRecordType } from '../api/client'
+import { CatalogDetailView } from './CatalogDetailView'
+import { CatalogItems } from './CatalogItems'
+import { CatalogSearchView } from './CatalogSearchView'
+import { CATALOG_TYPES, catalogTypeLabel } from './recordTypes'
 import {
   canGoNext,
   canGoPrevious,
@@ -13,16 +17,6 @@ import {
   type CatalogState,
 } from './pager'
 
-/** 画面の入口。A2A は Agent のプロトコル属性として表示する */
-const CATALOG_TABS: { type: CatalogRecordType; label: string }[] = [
-  { type: 'AGENT', label: 'Agent' },
-  { type: 'MCP', label: 'MCP サーバー' },
-  { type: 'SKILL', label: 'Skill' },
-]
-
-const labelOf = (type: CatalogRecordType) =>
-  CATALOG_TABS.find((tab) => tab.type === type)?.label ?? type
-
 type Props = {
   api: ApiClient
   /** ログインし直す（401 のとき） */
@@ -32,6 +26,7 @@ type Props = {
 /** カタログ項目を種別ごとにページ単位で一覧する */
 export function CatalogView({ api, onRelogin }: Props) {
   const [state, setState] = useState<CatalogState>(() => initialCatalogState('AGENT'))
+  const [selectedItem, setSelectedItem] = useState<CatalogItem | null>(null)
   const isLoading = state.view.status === 'loading'
   const { type } = state
   const token = currentPageToken(state)
@@ -50,14 +45,30 @@ export function CatalogView({ api, onRelogin }: Props) {
   }, [api, isLoading, type, token])
 
   return (
-    <CatalogPanel
-      state={state}
-      onSelectType={(next) => setState(initialCatalogState(next))}
-      onNext={() => setState(goNext)}
-      onPrevious={() => setState(goPrevious)}
-      onRetry={() => setState(reloadPage)}
-      onRelogin={onRelogin}
-    />
+    <>
+      <div hidden={selectedItem !== null}>
+        <CatalogSearchView api={api} onRelogin={onRelogin} onOpenDetail={setSelectedItem}>
+          <CatalogPanel
+            state={state}
+            onSelectType={(next) => setState(initialCatalogState(next))}
+            onNext={() => setState(goNext)}
+            onPrevious={() => setState(goPrevious)}
+            onRetry={() => setState(reloadPage)}
+            onRelogin={onRelogin}
+            onOpenDetail={setSelectedItem}
+          />
+        </CatalogSearchView>
+      </div>
+      {selectedItem !== null && (
+        <CatalogDetailView
+          key={selectedItem.recordId}
+          api={api}
+          item={selectedItem}
+          onRelogin={onRelogin}
+          onClose={() => setSelectedItem(null)}
+        />
+      )}
+    </>
   )
 }
 
@@ -68,6 +79,7 @@ type PanelProps = {
   onPrevious: () => void
   onRetry: () => void
   onRelogin: () => void
+  onOpenDetail: (item: CatalogItem) => void
 }
 
 /** カタログの表示（状態だけから描画する） */
@@ -78,6 +90,7 @@ export function CatalogPanel({
   onPrevious,
   onRetry,
   onRelogin,
+  onOpenDetail,
 }: PanelProps) {
   const { view } = state
   return (
@@ -88,7 +101,7 @@ export function CatalogPanel({
         利用する前に、所有チームの利用条件を確認してください。
       </p>
       <div role="tablist" aria-label="種別" className="tabs">
-        {CATALOG_TABS.map((tab) => (
+        {CATALOG_TYPES.map((tab) => (
           <button
             key={tab.type}
             type="button"
@@ -101,7 +114,7 @@ export function CatalogPanel({
         ))}
       </div>
 
-      <div role="tabpanel" aria-label={labelOf(state.type)}>
+      <div role="tabpanel" aria-label={catalogTypeLabel(state.type)}>
         {view.status === 'loading' ? (
           <p role="status">読み込んでいます…</p>
         ) : view.status === 'error' ? (
@@ -126,14 +139,10 @@ export function CatalogPanel({
           <p>
             {view.page.nextToken !== null
               ? 'このページには項目がありません。次のページを確認してください。'
-              : `公開承認済みの ${labelOf(state.type)} はありません。`}
+              : `公開承認済みの ${catalogTypeLabel(state.type)} はありません。`}
           </p>
         ) : (
-          <ul className="catalog-items">
-            {view.page.items.map((item) => (
-              <CatalogItemCard key={item.recordId} item={item} />
-            ))}
-          </ul>
+          <CatalogItems items={view.page.items} onOpenDetail={onOpenDetail} />
         )}
 
         <nav aria-label="ページ" className="pager">
@@ -147,19 +156,5 @@ export function CatalogPanel({
         </nav>
       </div>
     </section>
-  )
-}
-
-function CatalogItemCard({ item }: { item: CatalogItem }) {
-  return (
-    <li className="catalog-item">
-      <h3>{item.displayName || item.name}</h3>
-      <p className="meta">
-        <code>{item.name}</code>
-        {item.recordVersion && <span>版 {item.recordVersion}</span>}
-        {item.isA2A && <span className="badge">A2A</span>}
-      </p>
-      {item.description && <p>{item.description}</p>}
-    </li>
   )
 }
