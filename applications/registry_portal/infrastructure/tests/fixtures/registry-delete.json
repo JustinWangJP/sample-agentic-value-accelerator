@@ -1,0 +1,1 @@
+{"format_version": "1.2", "resource_changes": [{"address": "aws_agent_registry_registry.test", "mode": "managed", "type": "aws_agent_registry_registry", "change": {"actions": ["delete"], "after": {}, "after_unknown": {}}}], "planned_values": {"root_module": {"resources": []}}}

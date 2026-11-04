@@ -1,4 +1,4 @@
-# Registry ポータルの CI（テスト・Lint・型検査のみ）
+# Registry ポータルの CI（テスト・Lint・型検査・IaC 検査）
 #
 # ADR-0004 に従い、AWS への反映は一切行わない。
 # AWS の認証情報・OIDC ロール（id-token: write）はこのワークフローに持たせない。
@@ -74,3 +74,46 @@ jobs:
         run: npm run typecheck
       - name: build
         run: npm run build
+
+  infrastructure:
+    name: infrastructure（plan ガード / Terraform / Lambda パッケージ）
+    runs-on: ubuntu-latest
+    env:
+      AWS_EC2_METADATA_DISABLED: "true"
+      AWS_CONFIG_FILE: /dev/null
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
+    defaults:
+      run:
+        working-directory: applications/registry_portal
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+          terraform_wrapper: false
+      - name: plan ガードと手動配信の境界
+        run: python3 -m unittest discover -s infrastructure/tests -v
+      - name: SPA の URL 解決
+        run: node --test infrastructure/tests/spa_rewrite.test.mjs
+      - name: シェル構文
+        run: bash -n scripts/deploy.sh
+      - name: 固定版 SDK を同梱した Lambda ZIP
+        run: python3 scripts/build_lambda.py --output "$RUNNER_TEMP/management.zip"
+      - name: Terraform fmt
+        run: terraform -chdir=infrastructure fmt -check -recursive
+      - name: Terraform validate と AWS 接続なしの mock plan
+        run: |
+          terraform -chdir=infrastructure init -backend=false -input=false
+          terraform -chdir=infrastructure validate
+          terraform -chdir=infrastructure test
+          terraform -chdir=infrastructure/bootstrap init -backend=false -input=false
+          terraform -chdir=infrastructure/bootstrap validate
+          terraform -chdir=infrastructure/bootstrap test
