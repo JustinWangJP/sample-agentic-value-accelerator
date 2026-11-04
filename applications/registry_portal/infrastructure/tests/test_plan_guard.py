@@ -36,6 +36,8 @@ class PlanGuardTests(unittest.TestCase):
             ("managed-attachment", False),
             ("pass-role", False),
             ("legacy-registry-action", False),
+            ("submit-registry-approval", False),
+            ("legacy-submit-registry-approval", False),
         ]:
             with self.subTest(fixture=fixture):
                 result = subprocess.run(

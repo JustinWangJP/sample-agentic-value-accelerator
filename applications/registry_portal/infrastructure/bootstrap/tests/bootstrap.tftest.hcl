@@ -30,6 +30,13 @@ run "state_and_deployer" {
     error_message = "deployer に Registry の書き込みと決裁を拒否してください。"
   }
   assert {
+    condition = alltrue([
+      for action in ["agent-registry:SubmitRegistryRecordForApproval", "bedrock-agentcore:SubmitRegistryRecordForApproval"] :
+      contains(jsondecode(aws_ssoadmin_permission_set_inline_policy.deployer.inline_policy).Statement[0].Action, action)
+    ])
+    error_message = "deployer には新旧 Registry API の申請操作を明示的に拒否してください。"
+  }
+  assert {
     condition     = length(replace(aws_ssoadmin_permission_set_inline_policy.deployer.inline_policy, "/\\s/", "")) <= 10240
     error_message = "permission set の inline policy は非空白10240文字以内にしてください。"
   }
