@@ -647,7 +647,8 @@ def test_list_request_matches_botocore_model_serialization(query: dict[str, str]
     call(make_handler(transport), catalog_event(query))
     [sent] = transport.to(LIST_URL)
 
-    expected = botocore_list_request(
+    expected = botocore_discovery_request(
+        "list_discoverable_registry_records",
         registryId=REGISTRY_ARN,
         filters=[{"name": "recordType", "values": [query["type"]]}],
         maxResults=50,
@@ -659,8 +660,8 @@ def test_list_request_matches_botocore_model_serialization(query: dict[str, str]
     assert sent.json() == json.loads(expected["body"])
 
 
-def botocore_list_request(**params: Any) -> dict[str, Any]:
-    """Botocore が ListDiscoverableRegistryRecords を送る直前のリクエストを取り出す（送信はしない）。"""
+def botocore_discovery_request(operation: str, **params: Any) -> dict[str, Any]:
+    """Botocore が送る直前のリクエストを取り出す（送信はしない）。"""
     client = boto3.client(
         "agent-registry",
         region_name="us-east-1",
@@ -676,9 +677,8 @@ def botocore_list_request(**params: Any) -> dict[str, Any]:
         captured.update(method=request.method, url=request.url, body=request.body)
         raise _Captured()
 
-    client.meta.events.register(
-        "before-send.agent-registry.ListDiscoverableRegistryRecords", capture
-    )
+    api_name = client.meta.method_to_api_mapping[operation]
+    client.meta.events.register(f"before-send.agent-registry.{api_name}", capture)
     with pytest.raises(_Captured):
-        client.list_discoverable_registry_records(**params)
+        getattr(client, operation)(**params)
     return captured

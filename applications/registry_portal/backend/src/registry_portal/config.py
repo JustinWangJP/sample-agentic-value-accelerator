@@ -63,10 +63,14 @@ class DiscoverySettings:
     scope: str
 
     @property
+    def registry_endpoint(self) -> str:
+        return f"https://agent-registry.{self.registry_region}.api.aws"
+
+    @property
     def discoverable_records_list_url(self) -> str:
         """ListDiscoverableRegistryRecords の宛先。ARN は1つの path 要素として符号化する（Botocore と同じ）。"""
         return (
-            f"https://agent-registry.{self.registry_region}.api.aws/registries/"
+            f"{self.registry_endpoint}/registries/"
             f"{quote(self.registry_arn, safe='')}/discoverable-records-list"
         )
 

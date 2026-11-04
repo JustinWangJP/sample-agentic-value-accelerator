@@ -79,3 +79,11 @@ class DiscoveryUnavailableError(ApiError):
     status = 502
     code = "DISCOVERY_UNAVAILABLE"
     default_message = "カタログを取得できませんでした。時間をおいて再度お試しください。"
+
+
+class CatalogItemNotFoundError(ApiError):
+    """公開承認済みのカタログ項目が見つからない。"""
+
+    status = 404
+    code = "CATALOG_ITEM_NOT_FOUND"
+    default_message = "公開承認済みのカタログ項目が見つかりませんでした。"

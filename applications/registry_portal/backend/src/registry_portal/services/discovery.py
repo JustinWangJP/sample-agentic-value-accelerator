@@ -29,9 +29,12 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from registry_portal.config import DiscoverySettings
 from registry_portal.domain.catalog import (
+    CATALOG_RECORD_TYPES,
+    CatalogDetail,
     CatalogItem,
     CatalogPage,
     CatalogRecordType,
+    CatalogSearch,
     is_catalog_record_type,
 )
 from registry_portal.services.http import (
@@ -52,6 +55,7 @@ Clock = Callable[[], float]
 TOKEN_EXPIRY_MARGIN_SECONDS = 60
 # 1ページの件数。AWS の上限は100
 PAGE_SIZE = 50
+SEARCH_LIMIT = 20
 HTTP_TIMEOUT_SECONDS = 5.0
 # アクセストークン（JWT）として受け付ける文字。改行などを含む値をヘッダーに載せない
 _ACCESS_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9\-_.~+/=]+")
@@ -216,7 +220,12 @@ def _parse_item(value: Any) -> CatalogItem | None:
         return None
     if not is_catalog_record_type(record_type):
         return None
-    descriptor_types = value.get("descriptorTypes")
+    descriptors = value.get("descriptors")
+    descriptor_types = (
+        [kind for kind, definition in descriptors.items() if isinstance(definition, Mapping)]
+        if isinstance(descriptors, Mapping)
+        else value.get("descriptorTypes")
+    )
     return CatalogItem(
         record_id=record_id,
         name=name,
@@ -248,6 +257,45 @@ def _parse_page(response: TransportResponse) -> CatalogPage | None:
     return CatalogPage(items=tuple(parsed), next_token=next_token or None)
 
 
+def _mapping_or_empty(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _parse_detail(record: Mapping[str, Any]) -> CatalogDetail | None:
+    item = _parse_item(record)
+    descriptors = _mapping_or_empty(record.get("descriptors"))
+    if item is None or not item.record_version or not item.descriptor_types or not descriptors:
+        return None
+    metadata = _mapping_or_empty(record.get("customMetadata"))
+
+    definition = dict(descriptors)
+    skill = dict(_mapping_or_empty(descriptors.get("agentSkillsDefinition")))
+    additional_data = dict(_mapping_or_empty(skill.get("additionalData")))
+    skill_md = dict(_mapping_or_empty(additional_data.get("skillMd")))
+    skill_markdown = _str_or_empty(skill_md.pop("data", None))
+    if skill_markdown:
+        if skill_md:
+            additional_data["skillMd"] = skill_md
+        else:
+            del additional_data["skillMd"]
+        if additional_data:
+            skill["additionalData"] = additional_data
+        else:
+            del skill["additionalData"]
+        definition["agentSkillsDefinition"] = skill
+
+    return CatalogDetail(
+        item=item,
+        definition=definition,
+        owner_team=_str_or_empty(metadata.get("ownerTeam")),
+        contact=_str_or_empty(metadata.get("contact")),
+        terms_of_use=_str_or_empty(metadata.get("termsOfUse")),
+        connection_reference=_str_or_empty(metadata.get("connectionReference")),
+        data_classification=_str_or_empty(metadata.get("dataClassification")),
+        skill_markdown=skill_markdown,
+    )
+
+
 def _rejects_next_token(response: TransportResponse) -> bool:
     """ValidationException（rest-json）の fieldList に nextToken があるか。"""
     if response.status != 400:
@@ -259,7 +307,7 @@ def _rejects_next_token(response: TransportResponse) -> bool:
 
 
 class DiscoveryClient:
-    """Registry の発見 API（ListDiscoverableRegistryRecords）を呼ぶ。"""
+    """JWT 認可の Registry 発見 API を呼ぶ。"""
 
     def __init__(
         self, settings: DiscoverySettings, tokens: M2MTokenProvider, transport: Transport
@@ -267,7 +315,10 @@ class DiscoveryClient:
         self._tokens = tokens
         self._transport = transport
         # 宛先は設定の Registry ARN だけから決まる。利用者の入力は使わない
+        self._registry_arn = settings.registry_arn
         self._list_url = settings.discoverable_records_list_url
+        self._search_url = f"{settings.registry_endpoint}/discoverable-records-search"
+        self._batch_url = f"{settings.registry_endpoint}/discoverable-records-batch"
 
     def list_records(self, record_type: CatalogRecordType, next_token: str | None) -> CatalogPage:
         """公開承認済みの Registry レコードを、種別で絞り込んで1ページ分返す。
@@ -280,17 +331,7 @@ class DiscoveryClient:
         }
         if next_token is not None:
             payload["nextToken"] = next_token
-        body = json.dumps(payload).encode()
-
-        response = self._post(body)
-        if response.status == 401:
-            # トークンが失効・取り消された可能性がある。取り直して1回だけ再試行する
-            logger.info("発見 API が 401 を返しました。トークンを取り直して再試行します")
-            self._tokens.invalidate()
-            response = self._post(body)
-            if response.status == 401:
-                raise _unavailable("発見 API の認証に失敗しました: 再取得後も 401 でした")
-
+        response = self._request(self._list_url, payload)
         if next_token is not None and _rejects_next_token(response):
             logger.info("発見 API が nextToken を拒否しました: status=400")
             raise PageTokenRejected()
@@ -299,14 +340,91 @@ class DiscoveryClient:
             raise _unavailable("発見 API が想定外の応答を返しました: status=%s", response.status)
         return page
 
-    def _post(self, body: bytes) -> TransportResponse:
+    def search_records(self, search: CatalogSearch) -> tuple[CatalogItem, ...]:
+        """AWS の順位を保ってカタログ項目を返す。"""
+        record_type = search.record_type
+        if search.a2a is not None:
+            record_type = "AGENT"
+        record_type_filter: dict[str, object] = (
+            {"$eq": record_type} if record_type else {"$in": CATALOG_RECORD_TYPES}
+        )
+        filters: dict[str, object] = {"recordType": record_type_filter}
+        if search.data_classification is not None:
+            filters["customMetadata.dataClassification"] = {"$eq": search.data_classification}
+        response = self._request(
+            self._search_url,
+            {
+                "registryIds": [self._registry_arn],
+                "searchQuery": search.query,
+                "maxResults": SEARCH_LIMIT,
+                "filters": filters,
+            },
+        )
+        body = _ok_json(response)
+        records = body.get("registryRecords") if body is not None else None
+        if not isinstance(records, list):
+            raise _unavailable("検索 API が想定外の応答を返しました: status=%s", response.status)
+
+        items: list[CatalogItem] = []
+        for result in records[:SEARCH_LIMIT]:
+            record = _mapping_or_empty(result)
+            item = _parse_item(record)
+            if (
+                item is None
+                or record.get("status") != "APPROVED"
+                or not isinstance(record.get("descriptors"), Mapping)
+            ):
+                raise _unavailable("検索 API の公開承認済みレコードを読み取れませんでした")
+            # AWS の検索フィルタは descriptor を受け付けない。順位を保って Agent Card を判定する
+            if search.a2a is None or (item.record_type == "AGENT" and item.is_a2a == search.a2a):
+                items.append(item)
+        return tuple(items)
+
+    def get_record(self, record_id: str) -> CatalogDetail | None:
+        """指定した1件の公開承認済みの版を取得する。"""
+        response = self._request(
+            self._batch_url,
+            {"entries": [{"registryId": self._registry_arn, "recordIds": [record_id]}]},
+        )
+        body = _ok_json(response)
+        records = body.get("registryRecords") if body is not None else None
+        errors = body.get("errors") if body is not None else None
+        if records == [] and isinstance(errors, list) and len(errors) == 1:
+            error = _mapping_or_empty(errors[0])
+            if (
+                error.get("recordId") == record_id
+                and error.get("errorCode") == "RESOURCE_NOT_FOUND"
+            ):
+                return None
+        if isinstance(records, list) and len(records) == 1 and errors == []:
+            record = _mapping_or_empty(records[0])
+            if record.get("recordId") == record_id and record.get("status") == "APPROVED":
+                if not is_catalog_record_type(record.get("recordType")):
+                    return None
+                detail = _parse_detail(record)
+                if detail is not None:
+                    return detail
+        raise _unavailable("詳細 API が想定外の応答を返しました: status=%s", response.status)
+
+    def _request(self, url: str, payload: Mapping[str, Any]) -> TransportResponse:
+        body = json.dumps(payload).encode()
+        response = self._post(url, body)
+        if response.status == 401:
+            logger.info("発見 API が 401 を返しました。トークンを取り直して再試行します")
+            self._tokens.invalidate()
+            response = self._post(url, body)
+            if response.status == 401:
+                raise _unavailable("発見 API の認証に失敗しました: 再取得後も 401 でした")
+        return response
+
+    def _post(self, url: str, body: bytes) -> TransportResponse:
         headers = {
             "authorization": f"Bearer {self._tokens.get()}",
             "content-type": "application/json",
             "accept": "application/json",
         }
         try:
-            return self._transport("POST", self._list_url, headers, body, HTTP_TIMEOUT_SECONDS)
+            return self._transport("POST", url, headers, body, HTTP_TIMEOUT_SECONDS)
         except TransportError as error:
             raise _unavailable("発見 API の呼び出しに失敗しました: transport=%s", error) from None
 
