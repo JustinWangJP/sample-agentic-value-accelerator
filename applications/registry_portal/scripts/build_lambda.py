@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from importlib.metadata import Distribution
 import json
 from pathlib import Path
 import shutil
@@ -42,9 +43,17 @@ def main() -> int:
             ],
             check=True,
         )
+        pinned_versions = dict(
+            line.strip().split("==", 1)
+            for line in (ROOT / "backend/requirements.txt").read_text().splitlines()
+            if "==" in line
+        )
         for package in ("boto3", "botocore"):
-            metadata = target / f"{package}-1.43.123.dist-info/METADATA"
-            if not metadata.is_file():
+            version = pinned_versions.get(package)
+            if not version:
+                raise RuntimeError(f"SDK の固定バージョンがありません: {package}")
+            metadata = target / f"{package}-{version}.dist-info/METADATA"
+            if not metadata.is_file() or Distribution.at(metadata.parent).version != version:
                 raise RuntimeError(f"固定版 SDK を同梱できませんでした: {package}")
         for service in ("agent-registry", "agent-registry-control"):
             if not (target / "botocore/data" / service).is_dir():
