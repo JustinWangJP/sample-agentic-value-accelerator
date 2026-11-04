@@ -24,9 +24,11 @@ export default function App({ startup }: Props) {
       ) : state.status === 'error' ? (
         <div role="alert" className="error">
           <p>{state.message}</p>
-          <button type="button" onClick={() => window.location.assign('/')}>
-            もう一度ログインする
-          </button>
+          {state.canRetryLogin && (
+            <button type="button" onClick={() => window.location.assign('/')}>
+              もう一度ログインする
+            </button>
+          )}
         </div>
       ) : (
         <section aria-labelledby="me-heading">

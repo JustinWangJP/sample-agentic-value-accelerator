@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from registry_portal import app as app_module
 from registry_portal.app import create_management_handler
 from registry_portal.config import ConfigurationError
 
@@ -122,6 +123,27 @@ def test_request_without_token_is_rejected_with_common_error_dto() -> None:
     [
         # ID トークン（token_use が access でない）。ID トークンは client_id ではなく aud を持つ
         access_claims(token_use="id", client_id=None, aud=HUMAN_CLIENT_ID),
+        # 別 issuer のトークン
+        access_claims(iss="https://cognito-idp.us-east-1.amazonaws.com/us-east-1_OTHER"),
+        # sub がないトークン
+        access_claims(sub=None),
+    ],
+    ids=["id-token", "other-issuer", "no-sub"],
+)
+def test_tokens_that_cannot_authenticate_a_human_are_rejected_with_401(
+    claims: dict[str, Any],
+) -> None:
+    status, body = call(http_event(claims=claims))
+
+    assert status == 401
+    assert body["error"]["code"] == "UNAUTHENTICATED"
+    assert body["error"]["requestId"] == "req-123"
+    assert "principal" not in body
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
         # 別の client のアクセストークン
         access_claims(client_id="some-other-client"),
         # 発見用 M2M client のアクセストークン（client credentials。sub は client_id）
@@ -131,20 +153,41 @@ def test_request_without_token_is_rejected_with_common_error_dto() -> None:
             username=None,
             scope="registry/discovery.read",
         ),
-        # 別 issuer のトークン
-        access_claims(iss="https://cognito-idp.us-east-1.amazonaws.com/us-east-1_OTHER"),
-        # sub がないトークン
-        access_claims(sub=None),
     ],
-    ids=["id-token", "other-client", "discovery-m2m", "other-issuer", "no-sub"],
+    ids=["other-client", "discovery-m2m"],
 )
-def test_tokens_not_issued_to_the_portal_spa_are_rejected(claims: dict[str, Any]) -> None:
+def test_valid_tokens_of_other_clients_are_forbidden_with_403(claims: dict[str, Any]) -> None:
+    # 正規に発行されたトークンなので、ログインし直しても解決しない。401 ではなく 403 で拒否する
     status, body = call(http_event(claims=claims))
 
-    assert status == 401
-    assert body["error"]["code"] == "UNAUTHENTICATED"
-    assert body["error"]["requestId"] == "req-123"
-    assert "principal" not in body
+    assert status == 403
+    assert body == {
+        "error": {
+            "code": "FORBIDDEN",
+            "message": "このクライアントのトークンはポータル API では受け付けません。",
+            "requestId": "req-123",
+        }
+    }
+
+
+def test_unexpected_exception_returns_internal_error_dto_without_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken_route(caller: Any, event: Any) -> Any:
+        raise RuntimeError("内部の詳細: arn:aws:secret")
+
+    monkeypatch.setitem(app_module.MANAGEMENT_ROUTES, "GET /api/me", broken_route)
+
+    status, body = call(http_event(claims=access_claims()))
+
+    assert status == 500
+    assert body == {
+        "error": {
+            "code": "INTERNAL_ERROR",
+            "message": "内部エラーが発生しました。時間をおいて再度お試しください。",
+            "requestId": "req-123",
+        }
+    }
 
 
 def test_x_user_email_header_does_not_change_principal() -> None:

@@ -8,7 +8,25 @@ import { ConfigError, loadConfig } from './config'
 export type StartupState =
   | { status: 'redirecting' }
   | { status: 'ready'; me: Me }
-  | { status: 'error'; message: string }
+  /** canRetryLogin: ログインし直せば解決しうるか（403 など権限の問題では false） */
+  | { status: 'error'; message: string; canRetryLogin: boolean }
+
+export const UNEXPECTED_STARTUP_ERROR = '起動中に想定外のエラーが発生しました。'
+
+function toErrorState(error: unknown): StartupState {
+  if (error instanceof ApiError) {
+    // 403 は正規のトークンでも許可されない呼び出し。ログインし直しても解決しない
+    return { status: 'error', message: error.message, canRetryLogin: error.status !== 403 }
+  }
+  if (error instanceof ConfigError) {
+    // 設定の不足はビルド時の問題なので、ログインし直しても解決しない
+    return { status: 'error', message: error.message, canRetryLogin: false }
+  }
+  if (error instanceof LoginError) {
+    return { status: 'error', message: error.message, canRetryLogin: true }
+  }
+  return { status: 'error', message: UNEXPECTED_STARTUP_ERROR, canRetryLogin: true }
+}
 
 export async function startup(
   env: Record<string, string | undefined>,
@@ -26,9 +44,6 @@ export async function startup(
     })
     return { status: 'ready', me: await api.getMe() }
   } catch (error) {
-    if (error instanceof ConfigError || error instanceof LoginError || error instanceof ApiError) {
-      return { status: 'error', message: error.message }
-    }
-    return { status: 'error', message: '起動中に想定外のエラーが発生しました。' }
+    return toErrorState(error)
   }
 }

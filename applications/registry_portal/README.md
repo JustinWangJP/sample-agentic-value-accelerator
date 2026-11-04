@@ -33,7 +33,11 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 | `registry-admin` | Admin |
 | `team-*` | 所属チーム |
 
+`registry-publisher` を持てば、`team-*` がなくても業務ロールは Publisher と表示します。下書きの作成・編集・申請・廃止依頼では、対象の所有チームが所属チームに含まれることを別途検査します（後続の #7・#9・#13 で実装。設計書「ロールと所有」）。
+
 メールアドレスや `x-user-email` などのリクエストヘッダーは、主体や権限の判定に使いません。
+
+認証できないトークン（トークンなし、ID トークン、別 issuer、`sub` なし）は 401 `UNAUTHENTICATED` で拒否します。署名は正しいが人間用 SPA client 以外に発行されたトークン（別 client、発見用 M2M client）は、ログインし直しても解決しないため 403 `FORBIDDEN` で拒否します。SPA は 403 のとき「もう一度ログインする」を表示しません。
 
 ### API
 

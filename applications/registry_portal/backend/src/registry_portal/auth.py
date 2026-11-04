@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from registry_portal.config import AuthSettings
-from registry_portal.errors import AuthenticationError
+from registry_portal.errors import AuthenticationError, ForbiddenError
 
 
 @dataclass(frozen=True)
@@ -65,6 +65,12 @@ def authorize(claims: Mapping[str, Any] | None, settings: AuthSettings) -> Calle
     - 主体（`sub`）があること
 
     メールアドレスやリクエストヘッダー（`x-user-email` など）は判定に使わない。
+
+    人間の主体として認証できないトークンは 401（AuthenticationError）、
+    正規だが人間用 SPA client 以外に発行されたトークンは 403（ForbiddenError）で拒否する。
+
+    業務ロールはグループだけから導出する（表示用）。Publisher の書き込み操作で
+    所属チーム（`team-*`）を必須とする検査は、各操作の認可で行う（設計書「ロールと所有」）。
     """
     if not claims:
         raise AuthenticationError()
@@ -73,7 +79,8 @@ def authorize(claims: Mapping[str, Any] | None, settings: AuthSettings) -> Calle
     if claims.get("iss") != settings.issuer:
         raise AuthenticationError("このトークンの発行元は受け付けません。")
     if claims.get("client_id") != settings.human_client_id:
-        raise AuthenticationError("このクライアントのトークンは受け付けません。")
+        # 正規に発行されたトークンなので、ログインし直しても解決しない。401 ではなく 403 とする
+        raise ForbiddenError("このクライアントのトークンはポータル API では受け付けません。")
     subject = claims.get("sub")
     if not isinstance(subject, str) or not subject:
         raise AuthenticationError("トークンに主体（sub）が含まれていません。")

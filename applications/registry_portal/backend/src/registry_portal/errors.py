@@ -25,11 +25,25 @@ class ApiError(Exception):
 
 
 class AuthenticationError(ApiError):
-    """トークンがない、またはポータル API で受け付けないトークン。"""
+    """トークンがない、または人間の主体として認証できないトークン。
+
+    ログインし直せば解決しうる場合に使う（トークンなし、ID トークン、別 issuer、sub なし）。
+    """
 
     status = 401
     code = "UNAUTHENTICATED"
     default_message = "認証が必要です。ログインし直してください。"
+
+
+class ForbiddenError(ApiError):
+    """署名検証を通った正規のトークンだが、この API では受け付けない呼び出し元。
+
+    ログインし直しても解決しない場合に使う（別 client、発見用 M2M client など）。
+    """
+
+    status = 403
+    code = "FORBIDDEN"
+    default_message = "この操作を行う権限がありません。"
 
 
 class RouteNotFoundError(ApiError):

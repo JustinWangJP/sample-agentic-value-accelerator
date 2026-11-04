@@ -164,7 +164,7 @@ MVP1 の承認は1段とし、申請者と最終編集者以外の Curator が1�
 | 業務ロール | 表し方 | できること |
 |---|---|---|
 | Viewer | ログインした全員（グループなし） | カタログの閲覧・検索 |
-| Publisher | Cognito グループ `registry-publisher` とチームグループ（例: `team-payments`） | 所属チームの Registry レコードの下書き作成・編集・申請・廃止依頼 |
+| Publisher | Cognito グループ `registry-publisher`。書き込みには、チームグループ（例: `team-payments`）による所属チームも必要 | 所属チームが所有チームである Registry レコードの下書き作成・編集・申請・廃止依頼 |
 | Curator | `registry-curator` | 審査待ちの閲覧、決裁、公開停止、廃止 |
 | Admin | `registry-admin` | 未管理レコードの取り込み、所有チームの変更、回復操作 |
 | サービス主体 | CI 専用 M2M client。設定で1つの所有チームに紐付ける | 下書きの作成・更新・申請のみ。決裁はできない |
@@ -173,7 +173,22 @@ MVP1 の承認は1段とし、申請者と最終編集者以外の Curator が1�
 
 ユーザーの作成とグループの割り当ては Admin が Cognito 側で行う。セルフサインアップは無効にし、ポータルにはユーザー管理画面を作らない。
 
+業務ロールの導出と、操作の認可は分けて扱う。
+
+- **導出**: 業務ロールは Cognito グループだけから導出する。`registry-publisher` を持てば、`team-*` がなくても業務ロールは Publisher になる。`GET /api/me` はこの導出結果を表示する。
+- **認可**: Publisher の書き込み操作（下書きの作成・編集・申請・廃止依頼）では、業務ロールが Publisher であることに加えて、対象 Registry レコードの所有チームが呼び出し元の所属チームに含まれることを検査する。所属チームがない Publisher は、どの Registry レコードにも書き込めない（403）。この検査は各操作の Issue（#7、#9、#13）で実装する。
+
 スコープは呼び出せる API の範囲を、グループは業務ロールを表す。人間用 API の audience には人間用 client だけを、CI 用 API にはサービス主体だけを受け入れる。発見用 M2M client はポータル API では一切受け入れない。
+
+### 401 と 403 の使い分け
+
+| 状況 | 応答 | 理由 |
+|---|---|---|
+| トークンなし、ID トークン（`token_use` が access でない）、別 issuer、`sub` なし、期限切れ | 401 `UNAUTHENTICATED` | 人間の主体として認証できない。ログインし直せば解決しうる |
+| 署名検証を通った正規のトークンだが、人間用 SPA client 以外（別 client、発見用 M2M client）に発行されたもの | 403 `FORBIDDEN` | ログインし直しても解決しない |
+| 認証済みだが、業務ロールや所属チームが操作に足りない | 403 `FORBIDDEN` | 同上 |
+
+SPA は 401 のときだけ「もう一度ログインする」を案内し、403 では案内しない。
 
 ## 承認の状態と整合性
 
@@ -254,7 +269,9 @@ Registry が EventBridge の default バスに送るイベントを、ルール1
 | 監査 | 操作履歴は補助テーブルに無期限で保存する。CloudTrail は既存の組織 trail を使う。WORM（S3 Object Lock）は付けない |
 | ネットワーク | Lambda は VPC に入れず、公開 AWS API へ TLS で接続する。VPC、NAT Gateway、ALB、ECS、VPC Link、WAF は追加しない（ADR-0003） |
 
-SPA のトークンはメモリー上だけで保持し、ページを再読み込みしたら SSO にリダイレクトし直す方式でよい。API には ID トークンではなく、scope を持つアクセストークンを渡す。Lambda でも `token_use=access` を確認する。[PKCE](https://docs.aws.amazon.com/cognito/latest/developerguide/using-pkce-in-authorization-code.html)、[HTTP API JWT authorizer](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-jwt-authorizer.html)
+SPA のトークンはメモリー上だけで保持し、ページを再読み込みしたら SSO にリダイレクトし直す方式でよい。API には ID トークンではなく、scope を持つアクセストークンを渡す。Lambda でも `token_use=access` を確認する。
+
+route ごとの scope 検証を有効にするには、Cognito のリソースサーバーにポータル用のカスタム scope を定義し、人間用 client に許可したうえで、SPA の `VITE_COGNITO_SCOPES` にその scope を含める必要がある。#3 の時点では SPA の既定値は `openid` だけで、JWT authorizer の scope 検証はまだない。カスタム scope の定義と SPA 設定の更新は、JWT authorizer を作る #5 で行う。[PKCE](https://docs.aws.amazon.com/cognito/latest/developerguide/using-pkce-in-authorization-code.html)、[HTTP API JWT authorizer](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-jwt-authorizer.html)
 
 Lambda を3個に分けるのは、IAM の職責を分けるためである。同じ Python パッケージからビルドしてもよいが、handler と実行ロールはそれぞれ別にする。`UpdateRegistryRecordStatus` は公開承認・却下・廃止に共通の IAM action なので、どの遷移を許すかは決裁 Lambda のコマンドごとに検査する。クライアントから AWS の `status` を任意に受け取る API は作らない。
 
@@ -345,7 +362,7 @@ MVP1 で接続先の ARN と関連参照を明示的に保存しておけば、�
 
 | 分類 | 受入条件 |
 |---|---|
-| 権限 | トークンなし、期限切れ、別 issuer、別 client、ID トークン、発見用 M2M のトークンを拒否する。Viewer による登録、Publisher による決裁、他チームの下書きの取得、サービス主体による決裁を拒否する |
+| 権限 | トークンなし、期限切れ、別 issuer、別 client、ID トークン、発見用 M2M のトークンを拒否する。Viewer による登録、Publisher による決裁、他チームの下書きの取得、所属チームのない Publisher による書き込み、サービス主体による決裁を拒否する。認証できないトークンは 401、正規だが許可しない呼び出し元は 403 とする |
 | 主体 | `x-user-email` を偽装しても、申請者や決裁者は変わらない。申請者や最終編集者による自己承認を拒否する |
 | 種別 | Agent・A2A・MCP サーバー・Skill の定義を AWS が受理する。不正な schema version と種別の組合せには日本語のエラーを表示する |
 | 分類 | confidential 相当の登録、`dev` 以外の environment、公開中の版以下の recordVersion を拒否する |
