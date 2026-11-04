@@ -46,7 +46,7 @@ class BuildLambdaTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual(json.loads(result.stdout)["lambda_zip"], str(output))
+            self.assertEqual(json.loads(result.stdout)["lambda_zip"], str(output.resolve()))
             with zipfile.ZipFile(output) as archive:
                 self.assertIn("boto3-9.8.7.dist-info/METADATA", archive.namelist())
                 self.assertIn("botocore-9.8.7.dist-info/METADATA", archive.namelist())
