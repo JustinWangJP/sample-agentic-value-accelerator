@@ -48,7 +48,7 @@ AVA（Agentic Value Accelerator）は、AWS 向けのエージェント基盤と
 
 ## コミットとプルリクエスト
 
-最近の履歴と同様に Conventional Commits 形式を使用します。例: `feat(fsi): 引受審査のトリアージを追加`、`fix(deploy): ドメインの仮値を修正`。大きな変更は、着手前に Issue を作成してください。PR は `.github/pull_request_template.md` を使用し、`main` を対象に提出します。変更内容、関連する Issue や仕様、テスト結果を記載し、必要な文書を更新してください。UI の変更にはスクリーンショットを添付します。レビューと @vivibui の承認要件は `.github/CONTRIBUTING.md` に従ってください。
+最近の履歴と同様に Conventional Commits 形式を使用します。例: `feat(fsi): 引受審査のトリアージを追加`、`fix(deploy): ドメインの仮値を修正`。大きな変更は、着手前に Issue を作成してください。PR は `.github/pull_request_template.md` を使用し、`develop` を対象に提出します（`main` へは `develop` からのリリース PR と hotfix だけ）。作業ブランチは `develop` から `feature/<issue番号>-<概要>` の形で作ります。ブランチの種類、マージ方式、リリース、本家（aws-samples）との取り込み・還元は `docs/branch-strategy-ja.md` と ADR-0005 に従ってください。変更内容、関連する Issue や仕様、テスト結果を記載し、必要な文書を更新してください。UI の変更にはスクリーンショットを添付します。`.github/CONTRIBUTING.md` のレビューと @vivibui の承認要件は、本家へ還元する PR にだけ適用します。
 
 ## セキュリティと設定
 

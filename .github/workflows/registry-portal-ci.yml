@@ -10,7 +10,7 @@ on:
       - "applications/registry_portal/**"
       - ".github/workflows/registry-portal-ci.yml"
   push:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - "applications/registry_portal/**"
       - ".github/workflows/registry-portal-ci.yml"
