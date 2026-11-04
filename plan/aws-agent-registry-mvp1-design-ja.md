@@ -182,13 +182,16 @@ MVP1 の承認は1段とし、申請者と最終編集者以外の Curator が1�
 
 ### 401 と 403 の使い分け
 
-| 状況 | 応答 | 理由 |
-|---|---|---|
-| トークンなし、ID トークン（`token_use` が access でない）、別 issuer、`sub` なし、期限切れ | 401 `UNAUTHENTICATED` | 人間の主体として認証できない。ログインし直せば解決しうる |
-| 署名検証を通った正規のトークンだが、人間用 SPA client 以外（別 client、発見用 M2M client）に発行されたもの | 403 `FORBIDDEN` | ログインし直しても解決しない |
-| 認証済みだが、業務ロールや所属チームが操作に足りない | 403 `FORBIDDEN` | 同上 |
+| 状況 | 応答 | 返す場所 | 理由 |
+|---|---|---|---|
+| トークンなし、署名不正、期限切れ、別 issuer・audience | 401 | API Gateway の JWT authorizer（`{"message":"Unauthorized"}`。共通 DTO ではない） | 人間の主体として認証できない。ログインし直せば解決しうる |
+| ID トークン（`token_use` が access でない）、別 issuer、`sub` なし、authorizer の情報が想定外の形 | 401 `UNAUTHENTICATED` | Lambda（共通 DTO） | 同上。authorizer の設定誤りに備えて再確認する |
+| 署名検証を通った正規のトークンだが、人間用 SPA client 以外（別 client、発見用 M2M client）に発行されたもの | 403 `FORBIDDEN` | Lambda（共通 DTO） | ログインし直しても解決しない |
+| 認証済みだが、業務ロールや所属チームが操作に足りない | 403 `FORBIDDEN` | Lambda（共通 DTO） | 同上 |
 
-SPA は 401 のときだけ「もう一度ログインする」を案内し、403 では案内しない。
+- 有効期限（`exp`）は authorizer が必ず検証し、設定で外せないので、Lambda では再確認しない。issuer・client など設定を誤りうる項目だけを Lambda で再確認する。
+- HTTP API には応答を書き換える仕組み（Gateway Responses）がないため、authorizer の 401 は共通 DTO にならない。SPA は、共通 DTO でない 401 も `UNAUTHENTICATED` として扱い、同じ日本語メッセージを表示する。
+- SPA が「もう一度ログインする」を案内するのは、401 とログイン（PKCE）の失敗のときだけとする。403、設定エラー、通信エラー、5xx、想定外のエラーでは、ログインし直しても解決しないので案内しない。
 
 ## 承認の状態と整合性
 

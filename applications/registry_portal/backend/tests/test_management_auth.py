@@ -190,6 +190,22 @@ def test_unexpected_exception_returns_internal_error_dto_without_details(
     }
 
 
+@pytest.mark.parametrize(
+    "authorizer",
+    ["not-a-mapping", ["jwt"], {"jwt": "not-a-mapping"}, {"jwt": {"claims": "[a b]"}}],
+    ids=["string", "list", "jwt-string", "claims-string"],
+)
+def test_malformed_authorizer_context_is_rejected_with_401(authorizer: Any) -> None:
+    # 想定外の型でも 500 にせず、トークンなしと同じく 401 にする
+    event = http_event(claims=None)
+    event["requestContext"]["authorizer"] = authorizer
+
+    status, body = call(event)
+
+    assert status == 401
+    assert body["error"]["code"] == "UNAUTHENTICATED"
+
+
 def test_x_user_email_header_does_not_change_principal() -> None:
     claims = access_claims(**{"cognito:groups": "[registry-publisher team-payments]"})
     _, without_header = call(http_event(claims=claims))

@@ -36,20 +36,20 @@ const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '')
  * 未設定の項目があれば ConfigError とする。開発用に認証を通す既定値は持たない。
  */
 export function loadConfig(env: Env): PortalConfig {
-  const value = (key: string) => (env[key] ?? '').trim()
-  const missing = REQUIRED_KEYS.filter((key) => value(key) === '')
+  const readEnv = (key: string) => (env[key] ?? '').trim()
+  const missing = REQUIRED_KEYS.filter((key) => readEnv(key) === '')
   if (missing.length > 0) {
     throw new ConfigError(`認証設定が不足しています: ${missing.join(', ')}`)
   }
-  const cognitoDomain = trimTrailingSlash(value('VITE_COGNITO_DOMAIN'))
+  const cognitoDomain = trimTrailingSlash(readEnv('VITE_COGNITO_DOMAIN'))
   if (!cognitoDomain.startsWith('https://')) {
     throw new ConfigError('認証設定が正しくありません: VITE_COGNITO_DOMAIN は https で指定してください')
   }
   return {
     cognitoDomain,
-    clientId: value('VITE_COGNITO_CLIENT_ID'),
-    redirectUri: value('VITE_REDIRECT_URI'),
-    apiBaseUrl: trimTrailingSlash(value('VITE_API_BASE_URL')),
-    scopes: value('VITE_COGNITO_SCOPES') || 'openid',
+    clientId: readEnv('VITE_COGNITO_CLIENT_ID'),
+    redirectUri: readEnv('VITE_REDIRECT_URI'),
+    apiBaseUrl: trimTrailingSlash(readEnv('VITE_API_BASE_URL')),
+    scopes: readEnv('VITE_COGNITO_SCOPES') || 'openid',
   }
 }

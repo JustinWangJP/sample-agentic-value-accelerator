@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 from registry_portal.config import AuthSettings
@@ -18,21 +19,29 @@ class Principal:
     subject: str
 
 
+class Role(StrEnum):
+    """業務ロール。値は API の応答と SPA の `Role` 型に合わせる。"""
+
+    VIEWER = "Viewer"
+    PUBLISHER = "Publisher"
+    CURATOR = "Curator"
+    ADMIN = "Admin"
+
+
 @dataclass(frozen=True)
 class Caller:
     """認可済みの呼び出し元。"""
 
     principal: Principal
-    roles: tuple[str, ...]
+    roles: tuple[Role, ...]
     teams: tuple[str, ...]
 
 
 # 業務ロールと Cognito グループの対応。Viewer はログインした全員で、グループを持たない。
-VIEWER = "Viewer"
-_ROLE_GROUPS: tuple[tuple[str, str], ...] = (
-    ("Publisher", "registry-publisher"),
-    ("Curator", "registry-curator"),
-    ("Admin", "registry-admin"),
+_ROLE_GROUPS: tuple[tuple[Role, str], ...] = (
+    (Role.PUBLISHER, "registry-publisher"),
+    (Role.CURATOR, "registry-curator"),
+    (Role.ADMIN, "registry-admin"),
 )
 TEAM_GROUP_PREFIX = "team-"
 
@@ -57,7 +66,8 @@ def authorize(claims: Mapping[str, Any] | None, settings: AuthSettings) -> Calle
     """検証済みの claims を検査し、呼び出し元を返す。
 
     HTTP API の JWT authorizer が署名・有効期限・audience を検証した後でも、
-    Lambda 側で次を再確認する（多層防御）。
+    設定の誤りに備えて Lambda 側で次を再確認する（多層防御）。
+    有効期限（`exp`）は authorizer が必ず検証し、設定で外せないため再確認しない（設計書「401 と 403 の使い分け」）。
 
     - アクセストークンであること（`token_use=access`。ID トークンは拒否する）
     - 想定した issuer であること
@@ -86,7 +96,7 @@ def authorize(claims: Mapping[str, Any] | None, settings: AuthSettings) -> Calle
         raise AuthenticationError("トークンに主体（sub）が含まれていません。")
 
     groups = _parse_groups(claims.get("cognito:groups"))
-    roles = (VIEWER,) + tuple(role for role, group in _ROLE_GROUPS if group in groups)
+    roles = (Role.VIEWER,) + tuple(role for role, group in _ROLE_GROUPS if group in groups)
     teams = tuple(
         sorted(
             g for g in groups if g.startswith(TEAM_GROUP_PREFIX) and len(g) > len(TEAM_GROUP_PREFIX)

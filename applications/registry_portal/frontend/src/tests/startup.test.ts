@@ -1,53 +1,29 @@
 // 起動処理が各種エラーを画面用の状態に変換することを、ブラウザ環境をフェイクにして検証する（Seam 2）
 import { describe, expect, it } from 'vitest'
-import type { AuthEnvironment } from '../auth/session'
-import { startup, UNEXPECTED_STARTUP_ERROR } from '../startup'
+import { startup, UNEXPECTED_STARTUP_ERROR, type StartupState } from '../startup'
+import {
+  fakeBrowser,
+  jsonResponse,
+  storePendingLogin,
+  TEST_CONFIG,
+  TEST_VITE_ENV,
+} from './helpers'
 
-const ENV = {
-  VITE_COGNITO_DOMAIN: 'https://portal.auth.us-east-1.amazoncognito.com',
-  VITE_COGNITO_CLIENT_ID: 'human-spa-client',
-  VITE_REDIRECT_URI: 'https://portal.example.com/',
-  VITE_API_BASE_URL: 'https://api.example.com',
-}
-
-const PENDING_KEY = 'registry-portal.pending-login'
-
-function jsonResponse(status: number, body: unknown): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  })
-}
+const CALLBACK_URL = 'https://portal.example.com/?code=auth-code&state=s-1'
 
 /** 認可コードのコールバックで起動し、トークン交換 → /api/me の順に応答するブラウザ環境 */
-function callbackBrowser(meResponse: Response | Error): AuthEnvironment {
-  const items = new Map<string, string>([
-    [PENDING_KEY, JSON.stringify({ state: 's-1', verifier: 'v-1' })],
-  ])
-  const responses: (Response | Error)[] = [
+function callbackBrowser(meResponse: Response | Error) {
+  const fake = fakeBrowser(CALLBACK_URL, [
     jsonResponse(200, { access_token: 'access-token-value', expires_in: 3600 }),
     meResponse,
-  ]
-  return {
-    location: { href: 'https://portal.example.com/?code=auth-code&state=s-1', assign: () => {} },
-    history: { replaceState: () => {} },
-    sessionStorage: {
-      getItem: (key: string) => items.get(key) ?? null,
-      setItem: (key: string, value: string) => {
-        items.set(key, value)
-      },
-      removeItem: (key: string) => {
-        items.delete(key)
-      },
-    },
-    fetch: async () => {
-      const response = responses.shift()
-      if (response === undefined) throw new Error('想定外の fetch 呼び出し')
-      if (response instanceof Error) throw response
-      return response
-    },
-    crypto: globalThis.crypto,
-  }
+  ])
+  storePendingLogin(fake.sessionStorage)
+  return fake
+}
+
+function errorOf(state: StartupState) {
+  if (state.status !== 'error') throw new Error(`error を期待したが ${state.status} だった`)
+  return state
 }
 
 describe('起動処理の結果', () => {
@@ -58,77 +34,83 @@ describe('起動処理の結果', () => {
       teams: [],
     }
 
-    const state = await startup(ENV, callbackBrowser(jsonResponse(200, me)))
+    const state = await startup(TEST_VITE_ENV, callbackBrowser(jsonResponse(200, me)).browser)
 
     expect(state).toEqual({ status: 'ready', me })
   })
 
-  it('設定が不足していれば、ログインし直す案内をせずに設定エラーを表示する', async () => {
-    const state = await startup({}, callbackBrowser(new Error('呼ばれない')))
-
-    expect(state).toMatchObject({ status: 'error', canRetryLogin: false })
-    expect(state.status === 'error' && state.message).toContain('認証設定が不足しています')
-  })
-
-  it('API が 401 を返したら、共通エラー DTO のメッセージとログインし直す案内を表示する', async () => {
-    const state = await startup(
-      ENV,
-      callbackBrowser(
-        jsonResponse(401, {
-          error: { code: 'UNAUTHENTICATED', message: '認証が必要です。ログインし直してください。' },
-        }),
-      ),
+  it('API が 401 を返したら、メッセージとログインし直す操作を返す', async () => {
+    const fake = callbackBrowser(
+      jsonResponse(401, {
+        error: { code: 'UNAUTHENTICATED', message: '認証が必要です。ログインし直してください。' },
+      }),
     )
 
-    expect(state).toEqual({
-      status: 'error',
-      message: '認証が必要です。ログインし直してください。',
-      canRetryLogin: true,
-    })
+    const state = errorOf(await startup(TEST_VITE_ENV, fake.browser))
+
+    expect(state.message).toBe('認証が必要です。ログインし直してください。')
+    // ログインし直すと、コールバック URL（SPA の入口）から改めて SSO を始める
+    state.retryLogin?.()
+    expect(fake.redirects).toEqual([TEST_CONFIG.redirectUri])
   })
 
-  it('API が 403 を返したら、ログインし直す案内をせずにメッセージを表示する', async () => {
-    const state = await startup(
-      ENV,
-      callbackBrowser(
-        jsonResponse(403, {
-          error: {
-            code: 'FORBIDDEN',
-            message: 'このクライアントのトークンはポータル API では受け付けません。',
-          },
-        }),
-      ),
-    )
+  it('ログインに失敗したら、ログインし直す操作を返す', async () => {
+    const fake = fakeBrowser('https://portal.example.com/?code=auth-code&state=forged')
+    storePendingLogin(fake.sessionStorage)
 
-    expect(state).toEqual({
-      status: 'error',
-      message: 'このクライアントのトークンはポータル API では受け付けません。',
-      canRetryLogin: false,
-    })
+    const state = errorOf(await startup(TEST_VITE_ENV, fake.browser))
+
+    expect(state.retryLogin).toBeTypeOf('function')
   })
 
-  it('ログインに失敗したら、ログインし直す案内を表示する', async () => {
-    const browser = callbackBrowser(new Error('呼ばれない'))
-    browser.location.href = 'https://portal.example.com/?code=auth-code&state=forged'
+  it.each([
+    [
+      '403',
+      jsonResponse(403, {
+        error: {
+          code: 'FORBIDDEN',
+          message: 'このクライアントのトークンはポータル API では受け付けません。',
+        },
+      }),
+      'このクライアントのトークンはポータル API では受け付けません。',
+    ],
+    [
+      '500',
+      jsonResponse(500, {
+        error: {
+          code: 'INTERNAL_ERROR',
+          message: '内部エラーが発生しました。時間をおいて再度お試しください。',
+        },
+      }),
+      '内部エラーが発生しました。時間をおいて再度お試しください。',
+    ],
+    [
+      '通信エラー',
+      new TypeError('Failed to fetch'),
+      'API に接続できません。ネットワークを確認してください。',
+    ],
+  ])('%s では、ログインし直す操作を返さない', async (_label, meResponse, message) => {
+    const state = errorOf(await startup(TEST_VITE_ENV, callbackBrowser(meResponse).browser))
 
-    const state = await startup(ENV, browser)
-
-    expect(state).toMatchObject({ status: 'error', canRetryLogin: true })
+    expect(state).toEqual({ status: 'error', message })
   })
 
-  it('想定外のエラーでは、内部のメッセージを出さずに固定の文言を表示する', async () => {
-    const browser = callbackBrowser(new Error('呼ばれない'))
+  it('設定が不足していれば、ログインし直す操作を返さずに設定エラーを表示する', async () => {
+    const state = errorOf(await startup({}, callbackBrowser(new Error('呼ばれない')).browser))
+
+    expect(state.message).toContain('認証設定が不足しています')
+    expect(state.retryLogin).toBeUndefined()
+  })
+
+  it('想定外のエラーでは、内部のメッセージを出さず、ログインし直す操作も返さない', async () => {
+    const fake = callbackBrowser(new Error('呼ばれない'))
     // ストレージが使えないなど、ログイン処理が分類しない例外
-    browser.sessionStorage.getItem = () => {
+    fake.browser.sessionStorage.getItem = () => {
       throw new TypeError('内部の詳細')
     }
 
-    const state = await startup(ENV, browser)
+    const state = await startup(TEST_VITE_ENV, fake.browser)
 
-    expect(state).toEqual({
-      status: 'error',
-      message: UNEXPECTED_STARTUP_ERROR,
-      canRetryLogin: true,
-    })
+    expect(state).toEqual({ status: 'error', message: UNEXPECTED_STARTUP_ERROR })
   })
 })

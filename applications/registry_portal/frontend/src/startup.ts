@@ -3,37 +3,50 @@
 // React の外で1回だけ実行する（StrictMode の二重実行でコールバック処理が重複しないようにするため）
 import { ApiError, createApiClient, type Me } from './api/client'
 import { createAuthSession, LoginError, type AuthEnvironment } from './auth/session'
-import { ConfigError, loadConfig } from './config'
+import { ConfigError, loadConfig, type PortalConfig } from './config'
 
 export type StartupState =
   | { status: 'redirecting' }
   | { status: 'ready'; me: Me }
-  /** canRetryLogin: ログインし直せば解決しうるか（403 など権限の問題では false） */
-  | { status: 'error'; message: string; canRetryLogin: boolean }
+  /**
+   * retryLogin: ログインし直せば解決しうるとき（401 とログイン失敗）だけ持つ。
+   * 403・設定エラー・通信エラー・想定外のエラーでは持たない（設計書「401 と 403 の使い分け」）
+   */
+  | { status: 'error'; message: string; retryLogin?: () => void }
 
 export const UNEXPECTED_STARTUP_ERROR = '起動中に想定外のエラーが発生しました。'
 
-function toErrorState(error: unknown): StartupState {
+function toErrorState(
+  error: unknown,
+  browser: AuthEnvironment,
+  config: PortalConfig | null,
+): StartupState {
+  const retryLogin = config ? () => browser.location.assign(config.redirectUri) : undefined
   if (error instanceof ApiError) {
-    // 403 は正規のトークンでも許可されない呼び出し。ログインし直しても解決しない
-    return { status: 'error', message: error.message, canRetryLogin: error.status !== 403 }
-  }
-  if (error instanceof ConfigError) {
-    // 設定の不足はビルド時の問題なので、ログインし直しても解決しない
-    return { status: 'error', message: error.message, canRetryLogin: false }
+    return error.requiresLogin
+      ? { status: 'error', message: error.message, retryLogin }
+      : { status: 'error', message: error.message }
   }
   if (error instanceof LoginError) {
-    return { status: 'error', message: error.message, canRetryLogin: true }
+    return { status: 'error', message: error.message, retryLogin }
   }
-  return { status: 'error', message: UNEXPECTED_STARTUP_ERROR, canRetryLogin: true }
+  if (error instanceof ConfigError) {
+    return { status: 'error', message: error.message }
+  }
+  return { status: 'error', message: UNEXPECTED_STARTUP_ERROR }
 }
 
+/**
+ * @param viteEnv ビルド時の環境変数（import.meta.env）
+ * @param browser ブラウザの機能（location・history・sessionStorage・fetch・crypto）
+ */
 export async function startup(
-  env: Record<string, string | undefined>,
+  viteEnv: Record<string, string | undefined>,
   browser: AuthEnvironment,
 ): Promise<StartupState> {
+  let config: PortalConfig | null = null
   try {
-    const config = loadConfig(env)
+    config = loadConfig(viteEnv)
     const session = createAuthSession(config, browser)
     const result = await session.start()
     if (result.status === 'redirecting') return result
@@ -44,6 +57,6 @@ export async function startup(
     })
     return { status: 'ready', me: await api.getMe() }
   } catch (error) {
-    return toErrorState(error)
+    return toErrorState(error, browser, config)
   }
 }

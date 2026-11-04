@@ -34,19 +34,23 @@ def _json_response(status: int, body: Mapping[str, Any]) -> LambdaResponse:
     }
 
 
+def _mapping_or_empty(value: Any) -> Mapping[str, Any]:
+    """想定外の型（文字列・配列など）は空として扱い、500 ではなく認証エラーにする。"""
+    return value if isinstance(value, Mapping) else {}
+
+
 def _request_context(event: LambdaEvent) -> Mapping[str, Any]:
-    context = event.get("requestContext")
-    return context if isinstance(context, Mapping) else {}
+    return _mapping_or_empty(event.get("requestContext"))
 
 
 def _claims_of(event: LambdaEvent) -> Mapping[str, Any] | None:
-    authorizer = _request_context(event).get("authorizer") or {}
-    claims = (authorizer.get("jwt") or {}).get("claims")
+    authorizer = _mapping_or_empty(_request_context(event).get("authorizer"))
+    claims = _mapping_or_empty(authorizer.get("jwt")).get("claims")
     return claims if isinstance(claims, Mapping) else None
 
 
 def _route_key(event: LambdaEvent) -> str:
-    http = _request_context(event).get("http") or {}
+    http = _mapping_or_empty(_request_context(event).get("http"))
     return f"{http.get('method', '')} {http.get('path', '')}"
 
 
@@ -58,7 +62,7 @@ def get_me(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
             "issuer": caller.principal.issuer,
             "subject": caller.principal.subject,
         },
-        "roles": list(caller.roles),
+        "roles": [role.value for role in caller.roles],
         "teams": list(caller.teams),
     }
 

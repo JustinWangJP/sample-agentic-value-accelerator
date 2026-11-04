@@ -1,59 +1,7 @@
 // ログイン（Authorization Code + PKCE）の振る舞いを、fetch・storage・location をフェイクにして検証する（Seam 2）
 import { describe, expect, it } from 'vitest'
-import { createAuthSession, type AuthEnvironment } from '../auth/session'
-import type { PortalConfig } from '../config'
-
-const config: PortalConfig = {
-  cognitoDomain: 'https://portal.auth.us-east-1.amazoncognito.com',
-  clientId: 'human-spa-client',
-  redirectUri: 'https://portal.example.com/',
-  apiBaseUrl: 'https://api.example.com',
-  scopes: 'openid',
-}
-
-class MemoryStorage {
-  readonly items = new Map<string, string>()
-  getItem(key: string): string | null {
-    return this.items.get(key) ?? null
-  }
-  setItem(key: string, value: string): void {
-    this.items.set(key, value)
-  }
-  removeItem(key: string): void {
-    this.items.delete(key)
-  }
-}
-
-type FetchCall = { url: string; init?: RequestInit }
-
-function fakeEnvironment(href: string, responses: Response[] = []) {
-  const calls: FetchCall[] = []
-  const redirects: string[] = []
-  const replacedUrls: string[] = []
-  const sessionStorage = new MemoryStorage()
-  const env: AuthEnvironment = {
-    location: {
-      href,
-      assign: (url: string) => {
-        redirects.push(url)
-      },
-    },
-    history: {
-      replaceState: (_data: unknown, _unused: string, url?: string | URL | null) => {
-        replacedUrls.push(String(url))
-      },
-    },
-    sessionStorage,
-    fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-      calls.push({ url: String(input), init })
-      const response = responses.shift()
-      if (!response) throw new Error('想定外の fetch 呼び出し')
-      return response
-    },
-    crypto: globalThis.crypto,
-  }
-  return { env, calls, redirects, replacedUrls, sessionStorage }
-}
+import { createAuthSession } from '../auth/session'
+import { fakeBrowser, jsonResponse, storePendingLogin, TEST_CONFIG as config } from './helpers'
 
 // 期待値は実装を使わず、Web Crypto で独立に計算する
 async function sha256Base64Url(text: string): Promise<string> {
@@ -68,9 +16,9 @@ async function sha256Base64Url(text: string): Promise<string> {
 
 describe('未ログインでの起動', () => {
   it('PKCE（S256）付きで Cognito の authorize エンドポイントへリダイレクトする', async () => {
-    const fake = fakeEnvironment('https://portal.example.com/')
+    const fake = fakeBrowser('https://portal.example.com/')
 
-    const result = await createAuthSession(config, fake.env).start()
+    const result = await createAuthSession(config, fake.browser).start()
 
     expect(result.status).toBe('redirecting')
     expect(fake.redirects).toHaveLength(1)
@@ -94,18 +42,9 @@ describe('未ログインでの起動', () => {
   })
 })
 
-function jsonResponse(status: number, body: unknown): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  })
-}
-
-const PENDING_KEY = 'registry-portal.pending-login'
-
 describe('コールバックでの起動', () => {
   it('認可コードを code_verifier 付きで交換し、アクセストークンをメモリー上だけで保持する', async () => {
-    const fake = fakeEnvironment('https://portal.example.com/?code=auth-code&state=s-1', [
+    const fake = fakeBrowser('https://portal.example.com/?code=auth-code&state=s-1', [
       jsonResponse(200, {
         access_token: 'access-token-value',
         id_token: 'id-token-value',
@@ -114,8 +53,8 @@ describe('コールバックでの起動', () => {
         expires_in: 3600,
       }),
     ])
-    fake.sessionStorage.setItem(PENDING_KEY, JSON.stringify({ state: 's-1', verifier: 'v-1' }))
-    const session = createAuthSession(config, fake.env)
+    storePendingLogin(fake.sessionStorage)
+    const session = createAuthSession(config, fake.browser)
 
     const result = await session.start()
 
@@ -143,16 +82,16 @@ describe('コールバックでの起動', () => {
   })
 
   it('再読み込みすると新しいセッションにはトークンがなく、SSO へリダイレクトする', async () => {
-    const first = fakeEnvironment('https://portal.example.com/?code=auth-code&state=s-1', [
+    const first = fakeBrowser('https://portal.example.com/?code=auth-code&state=s-1', [
       jsonResponse(200, { access_token: 'access-token-value', expires_in: 3600 }),
     ])
-    first.sessionStorage.setItem(PENDING_KEY, JSON.stringify({ state: 's-1', verifier: 'v-1' }))
-    await createAuthSession(config, first.env).start()
+    storePendingLogin(first.sessionStorage)
+    await createAuthSession(config, first.browser).start()
 
     // 同じストレージのまま、ページを読み込み直す
-    const reload = fakeEnvironment('https://portal.example.com/')
+    const reload = fakeBrowser('https://portal.example.com/')
     for (const [key, value] of first.sessionStorage.items) reload.sessionStorage.setItem(key, value)
-    const session = createAuthSession(config, reload.env)
+    const session = createAuthSession(config, reload.browser)
     const result = await session.start()
 
     expect(result.status).toBe('redirecting')
@@ -161,10 +100,10 @@ describe('コールバックでの起動', () => {
   })
 
   it('state が一致しなければコードを交換せずにエラーにする', async () => {
-    const fake = fakeEnvironment('https://portal.example.com/?code=auth-code&state=forged')
-    fake.sessionStorage.setItem(PENDING_KEY, JSON.stringify({ state: 's-1', verifier: 'v-1' }))
+    const fake = fakeBrowser('https://portal.example.com/?code=auth-code&state=forged')
+    storePendingLogin(fake.sessionStorage)
 
-    await expect(createAuthSession(config, fake.env).start()).rejects.toThrow(
+    await expect(createAuthSession(config, fake.browser).start()).rejects.toThrow(
       'ログイン要求を確認できませんでした',
     )
     expect(fake.calls).toEqual([])
@@ -172,21 +111,21 @@ describe('コールバックでの起動', () => {
   })
 
   it('Cognito がエラーを返したら、リダイレクトを繰り返さずにエラーにする', async () => {
-    const fake = fakeEnvironment(
+    const fake = fakeBrowser(
       'https://portal.example.com/?error=access_denied&error_description=denied&state=s-1',
     )
-    fake.sessionStorage.setItem(PENDING_KEY, JSON.stringify({ state: 's-1', verifier: 'v-1' }))
+    storePendingLogin(fake.sessionStorage)
 
-    await expect(createAuthSession(config, fake.env).start()).rejects.toThrow('ログインに失敗しました')
+    await expect(createAuthSession(config, fake.browser).start()).rejects.toThrow('ログインに失敗しました')
     expect(fake.redirects).toEqual([])
   })
 
   it('トークンの交換に失敗したらエラーにする', async () => {
-    const fake = fakeEnvironment('https://portal.example.com/?code=auth-code&state=s-1', [
+    const fake = fakeBrowser('https://portal.example.com/?code=auth-code&state=s-1', [
       jsonResponse(400, { error: 'invalid_grant' }),
     ])
-    fake.sessionStorage.setItem(PENDING_KEY, JSON.stringify({ state: 's-1', verifier: 'v-1' }))
-    const session = createAuthSession(config, fake.env)
+    storePendingLogin(fake.sessionStorage)
+    const session = createAuthSession(config, fake.browser)
 
     await expect(session.start()).rejects.toThrow('ログインに失敗しました')
     expect(session.getAccessToken()).toBeNull()

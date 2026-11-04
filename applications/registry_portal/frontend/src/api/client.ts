@@ -3,6 +3,8 @@
 // - アクセストークン（ID トークンではない）を Bearer で送る
 // - エラーは共通エラー DTO の日本語メッセージを使い、ApiError として返す
 // - JSON でない応答（SPA の index.html など）を成功として扱わない
+// - 401 は、Lambda の共通エラー DTO でも、API Gateway の JWT authorizer の応答
+//   （{"message":"Unauthorized"}）でも、同じ「ログインし直す」エラーとして扱う
 
 export type Principal = {
   type: 'human'
@@ -18,6 +20,9 @@ export type Me = {
   teams: string[]
 }
 
+/** 認証が必要なときのメッセージ。バックエンドの AuthenticationError の既定文言と同じ */
+export const UNAUTHENTICATED_MESSAGE = '認証が必要です。ログインし直してください。'
+
 export class ApiError extends Error {
   readonly status: number
   readonly code: string
@@ -29,6 +34,11 @@ export class ApiError extends Error {
     this.status = status
     this.code = code
     this.requestId = requestId
+  }
+
+  /** ログインし直せば解決しうるエラーか（401。403 などは対象外） */
+  get requiresLogin(): boolean {
+    return this.code === 'UNAUTHENTICATED'
   }
 }
 
@@ -59,11 +69,12 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
   async function request<T>(path: string): Promise<T> {
     const token = options.getAccessToken()
     if (!token) {
-      throw new ApiError(401, 'UNAUTHENTICATED', '認証が必要です。ログインし直してください。')
+      throw new ApiError(401, 'UNAUTHENTICATED', UNAUTHENTICATED_MESSAGE)
     }
     let response: Response
     try {
-      response = await options.fetch(`${options.baseUrl.replace(/\/+$/, '')}${path}`, {
+      // baseUrl の末尾の / は loadConfig で取り除き済み
+      response = await options.fetch(`${options.baseUrl}${path}`, {
         headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
       })
     } catch {
@@ -81,6 +92,10 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
           body.error.message,
           body.error.requestId ?? null,
         )
+      }
+      if (response.status === 401) {
+        // API Gateway の JWT authorizer が拒否した応答（Lambda まで届かず、共通 DTO ではない）
+        throw new ApiError(401, 'UNAUTHENTICATED', UNAUTHENTICATED_MESSAGE)
       }
       throw new ApiError(
         response.status,

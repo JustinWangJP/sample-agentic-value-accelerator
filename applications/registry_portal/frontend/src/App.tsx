@@ -16,6 +16,11 @@ export default function App({ startup }: Props) {
     }
   }, [startup])
 
+  return <StartupView state={state} />
+}
+
+/** 起動処理の状態を表示する。state が null の間は起動処理の完了待ち */
+export function StartupView({ state }: { state: StartupState | null }) {
   return (
     <main className="page">
       <h1>Registry ポータル</h1>
@@ -24,15 +29,15 @@ export default function App({ startup }: Props) {
       ) : state.status === 'error' ? (
         <div role="alert" className="error">
           <p>{state.message}</p>
-          {state.canRetryLogin && (
-            <button type="button" onClick={() => window.location.assign('/')}>
+          {state.retryLogin && (
+            <button type="button" onClick={state.retryLogin}>
               もう一度ログインする
             </button>
           )}
         </div>
       ) : (
         <section aria-labelledby="me-heading">
-          <h2 id="me-heading">自分の主体とロール</h2>
+          <h2 id="me-heading">自分の主体・業務ロール・所属チーム</h2>
           <dl>
             <dt>発行元（iss）</dt>
             <dd>{state.me.principal.issuer}</dd>

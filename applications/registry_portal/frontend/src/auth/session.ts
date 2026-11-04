@@ -28,7 +28,8 @@ export class LoginError extends Error {
 
 const CALLBACK_PARAMS = ['code', 'state', 'error', 'error_description', 'error_uri']
 
-const PENDING_LOGIN_KEY = 'registry-portal.pending-login'
+/** リダイレクトをまたいで state と code_verifier を保持する sessionStorage のキー */
+export const PENDING_LOGIN_KEY = 'registry-portal.pending-login'
 
 export type AuthSession = {
   /** 起動時に呼ぶ。コールバックならトークンを取得し、未ログインなら SSO へリダイレクトする */
@@ -37,30 +38,30 @@ export type AuthSession = {
   getAccessToken: () => string | null
 }
 
-export function createAuthSession(config: PortalConfig, env: AuthEnvironment): AuthSession {
+export function createAuthSession(config: PortalConfig, browser: AuthEnvironment): AuthSession {
   let accessToken: string | null = null
 
   async function redirectToLogin(): Promise<StartResult> {
     const pending: PendingLogin = {
-      state: randomString(env.crypto),
-      verifier: randomString(env.crypto, 48),
+      state: randomString(browser.crypto),
+      verifier: randomString(browser.crypto, 48),
     }
-    env.sessionStorage.setItem(PENDING_LOGIN_KEY, JSON.stringify(pending))
+    browser.sessionStorage.setItem(PENDING_LOGIN_KEY, JSON.stringify(pending))
     const url = new URL('/oauth2/authorize', config.cognitoDomain)
     url.searchParams.set('response_type', 'code')
     url.searchParams.set('client_id', config.clientId)
     url.searchParams.set('redirect_uri', config.redirectUri)
     url.searchParams.set('scope', config.scopes)
     url.searchParams.set('state', pending.state)
-    url.searchParams.set('code_challenge', await codeChallengeS256(env.crypto, pending.verifier))
+    url.searchParams.set('code_challenge', await codeChallengeS256(browser.crypto, pending.verifier))
     url.searchParams.set('code_challenge_method', 'S256')
-    env.location.assign(url.toString())
+    browser.location.assign(url.toString())
     return { status: 'redirecting' }
   }
 
   function takePendingLogin(): PendingLogin | null {
-    const raw = env.sessionStorage.getItem(PENDING_LOGIN_KEY)
-    env.sessionStorage.removeItem(PENDING_LOGIN_KEY)
+    const raw = browser.sessionStorage.getItem(PENDING_LOGIN_KEY)
+    browser.sessionStorage.removeItem(PENDING_LOGIN_KEY)
     if (!raw) return null
     try {
       const value: unknown = JSON.parse(raw)
@@ -81,7 +82,7 @@ export function createAuthSession(config: PortalConfig, env: AuthEnvironment): A
   /** 認可コードなどのパラメーターを URL から取り除き、履歴に残さない */
   function clearCallbackParams(url: URL): void {
     for (const name of CALLBACK_PARAMS) url.searchParams.delete(name)
-    env.history.replaceState(null, '', url.toString())
+    browser.history.replaceState(null, '', url.toString())
   }
 
   async function exchangeCode(code: string, verifier: string): Promise<string> {
@@ -94,7 +95,7 @@ export function createAuthSession(config: PortalConfig, env: AuthEnvironment): A
     })
     let response: Response
     try {
-      response = await env.fetch(new URL('/oauth2/token', config.cognitoDomain).toString(), {
+      response = await browser.fetch(new URL('/oauth2/token', config.cognitoDomain).toString(), {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: body.toString(),
@@ -133,7 +134,7 @@ export function createAuthSession(config: PortalConfig, env: AuthEnvironment): A
 
   return {
     start: async () => {
-      const url = new URL(env.location.href)
+      const url = new URL(browser.location.href)
       if (url.searchParams.has('code') || url.searchParams.has('error')) {
         return handleCallback(url)
       }
