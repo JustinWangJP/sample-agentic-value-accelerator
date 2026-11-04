@@ -118,3 +118,7 @@ plan/demo-script.md
 # Prefer running ASH with --output-dir outside the repo; this is a safety net for
 # the default in-repo output location.
 **/.ash/ash_output/
+
+# Registry ポータルのローカル backend 設定と Lambda 配布物
+applications/registry_portal/infrastructure/backend.hcl
+applications/registry_portal/build/

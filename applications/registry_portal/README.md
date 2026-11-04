@@ -81,7 +81,7 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 | `DISCOVERY_CLIENT_SECRET_ARN` | 発見用 M2M client の secret を保管した Secrets Manager の ARN。Secrets Manager のリージョンは ARN から導出する |
 | `DISCOVERY_SCOPE` | （任意）トークン取得時に要求する scope。空なら client の既定 |
 
-`DISCOVERY_SCOPE` 以外が未設定、または形式が誤っていれば起動エラーにします。開発用に認証を通す設定はありません。管理 Lambda の実行ロールには、`DISCOVERY_CLIENT_SECRET_ARN` に対する `secretsmanager:GetSecretValue` 権限が必要です（IaC は #5 で用意する）。Boto3・Botocore は Lambda ランタイム付属のものを使わず、`requirements.txt` で固定した版を同梱します（設計書「新しいサービス名前空間を使う」）。
+`DISCOVERY_SCOPE` 以外が未設定、または形式が誤っていれば起動エラーにします。開発用に認証を通す設定はありません。管理 Lambda の実行ロールには、`DISCOVERY_CLIENT_SECRET_ARN` に対する `secretsmanager:GetSecretValue` 権限が必要です（下記の専用 Terraform で設定する）。Boto3・Botocore は Lambda ランタイム付属のものを使わず、`requirements.txt` で固定した版を同梱します（設計書「新しいサービス名前空間を使う」）。
 
 ### フロントエンド
 
@@ -102,4 +102,72 @@ npm ci
 npm run lint && npm test && npm run typecheck && npm run build
 ```
 
-GitHub Actions（`.github/workflows/registry-portal-ci.yml`）では上記の検査だけを実行します。AWS の認証情報は持たせず、AWS への反映は行いません（ADR-0004）。
+GitHub Actions（`.github/workflows/registry-portal-ci.yml`）では上記に加え、Terraform と配信スクリプトのローカル検査を実行します。AWS の認証情報は持たせず、AWS への反映は行いません（ADR-0004）。
+
+
+## dev に手動配信する
+
+前提は [ADR-0003](../../docs/adr/0003-public-https-without-waf-and-single-registry.md) と [ADR-0004](../../docs/adr/0004-no-aws-deployment-from-ci.md) に従います。実行には Terraform 1.10 以上、Python 3.13 と pip、Node.js 24 と npm、AWS CLI v2 が必要です。AWS provider は検証した 6.71.0 に固定しています。
+
+Issue #2 の読み取り確認で、既存 Registry、Cognito User Pool、SSO の IdP 名、発見用 M2M client と secret ARN を確定してください。既存 Registry と User Pool 本体は Terraform の管理対象にしません。User Pool の既存ドメインを使い、ポータル用の client、リソースサーバー、業務ロールと `team-*` グループだけを追加します。既に同名のグループや `registry-portal` リソースサーバーがある場合は、その所有者と調整して import してから plan を確認してください。
+
+1. 初回だけ、Identity Center と state バケットを管理できる短期認証情報で bootstrap を実行します。`infrastructure/bootstrap/terraform.tfvars.example` を同ディレクトリの `terraform.tfvars` にコピーし、値を置き換えます。
+
+   ```bash
+   cd applications/registry_portal
+   terraform -chdir=infrastructure/bootstrap init
+   terraform -chdir=infrastructure/bootstrap plan -out=bootstrap.tfplan
+   terraform -chdir=infrastructure/bootstrap show bootstrap.tfplan
+   terraform -chdir=infrastructure/bootstrap apply bootstrap.tfplan
+   ```
+
+   bootstrap は state バケットと `RegistryPortalDeployer` permission set、その既存グループへの割当てを作ります。state バケットはバージョニング、暗号化、公開アクセス禁止を有効にし、state とロックへのアクセスをこの permission set の SSO ロールに限定します。bootstrap 自身の state は初回管理者が暗号化した場所で保管してください。本体の state と混ぜません。permission set は Registry 本体とレコードへの書き込みを明示的に Deny します。CloudFront の作成や API Gateway の一覧など、作成前に ARN がない操作にはサービスに限定した権限を使います。管理 Lambda の実行ロールを渡せるのは Lambda サービスだけです。
+
+2. `infrastructure/backend.hcl.example` と `infrastructure/terraform.tfvars.example` を、それぞれ `infrastructure/backend.hcl` と `infrastructure/dev.tfvars` にコピーします。bootstrap と同じアカウント、バケット名、名前の接頭辞を設定します。secret 値は入力しません。既存 secret が顧客管理 KMS キーを使う場合だけ `discovery_kms_key_arn` を設定します。管理 Lambda には、そのキーの復号を Secrets Manager 経由かつ対象 secret の暗号化コンテキストに限定して付けます。
+
+3. AWS CLI の SSO profile に `RegistryPortalDeployer` を設定し、ログインして配信します。環境変数のアクセスキーは解除してください。profile の `sso_region` は Identity Center の既存リージョンを使います。
+
+   ```bash
+   aws sso login --profile registry-portal-dev
+   AWS_PROFILE=registry-portal-dev scripts/deploy.sh infrastructure/backend.hcl infrastructure/dev.tfvars
+   ```
+
+   スクリプトは SDK 同梱 ZIP を生成し、S3 backend の暗号化と `use_lockfile=true` を強制して初期化します。保存した plan を JSON ガードに通し、同じ plan を表示します。内容を確認して `apply` と入力すると、その保存済み plan だけを反映します。中止、ガード違反、途中のコマンド失敗では後続の操作を行いません。CI 内からの実行と長期アクセスキーは拒否します。
+
+4. apply 後は Terraform の `frontend_config` 出力を使って SPA をビルドします。`openid registry-portal/catalog.read` を含む scope と専用の HTTP API URL が設定されます。ハッシュ付きアセットを S3 に同期し、最後に `index.html` を非キャッシュで配置して CloudFront を無効化します。生成 ZIP と plan JSON は一時ディレクトリから削除します。
+
+CloudFront の接続先は非公開 S3 の REST endpoint だけです。深い SPA URL は viewer request function で `index.html` に解決します。API は独立した HTTP API origin で提供し、CloudFront のエラー差し替えは使いません。CloudFront 側に誤って `/api/*` を送った場合も JSON の 404 を返します。CSP の `connect-src` は Cognito の指定ドメインと us-east-1 の HTTP API ドメインを許可します。API の CORS は当該 CloudFront origin だけに限定します。この依存が循環しないよう、CSP の HTTP API 許可先はリージョン単位です。
+
+HTTP API は `GET /api/me` と `GET /api/catalog` を JWT authorizer と `registry-portal/catalog.read` で保護します。人間用 client は code flow のみを許可し、SPA が PKCE を使用します。人間用 client に secret はありません。Lambda permission は各 GET route の API Gateway 実行 ARN とアカウントに限定します。Function URL と VPC は作りません。管理 Lambda 以外の実行ロールはこの実装単位では作りません。決裁・イベント処理は後続 Issue で追加します。
+
+補助 DynamoDB はオンデマンド、暗号化、PITR、削除保護を有効にします。現時点の閲覧 handler には DynamoDB の権限を付けません。管理 Lambda の IAM はログ、対象 Registry の読み取り、発見用 secret の取得だけです。Registry の発見は IAM ではなく既存の M2M JWT で行います。CloudWatch Logs は API と Lambda とも365日保存し、ログ書式にトークンや応答本文を含めません。
+
+### 反映前ガードをローカルで検査する
+
+```bash
+cd applications/registry_portal
+python3 -m unittest discover -s infrastructure/tests -v
+node --test infrastructure/tests/spa_rewrite.test.mjs
+bash -n scripts/deploy.sh
+terraform -chdir=infrastructure fmt -check -recursive
+terraform -chdir=infrastructure init -backend=false
+terraform -chdir=infrastructure validate
+terraform -chdir=infrastructure test
+terraform -chdir=infrastructure/bootstrap init -backend=false
+terraform -chdir=infrastructure/bootstrap validate
+terraform -chdir=infrastructure/bootstrap test
+```
+
+これらは AWS の認証情報を必要としません。Terraform test は mock provider を使います。JSON ガードは `python3 scripts/check_plan.py <plan.json>` で再実行できます。既存 Registry の create、update、delete、置換、禁止 action の Allow、managed policy の付与、未確定 IAM policy、Function URL を拒否します。Allow の `NotAction` と全権限ワイルドカードも拒否し、Deny 文は許可します。将来の登録・決裁用 IAM を追加するときは、担当 Issue でガードの許可境界と fixture も更新してください。
+
+### dev の手動受入を記録する
+
+この変更では AWS API の呼び出し、bootstrap、plan、apply、アップロード、CloudFront の無効化を実行していません。Issue #2 の読み取り確認も未完了です。次の項目は AWS 権限を持つオペレーターが dev に反映してから Issue #5 に結果を記録します。
+
+- [ ] SSO と PKCE でログインし、`/api/me` とカタログ一覧が表示される。M2M トークン取得から Registry の発見 API まで到達する。
+- [ ] User Pool で業務ロールと `team-*` の所属を割り当て、画面の主体と一致する。
+- [ ] S3 のオブジェクトを匿名で直接取得すると拒否される。CloudFront では取得できる。
+- [ ] SPA の深い URL を再読み込みでき、API の 401、403、404 が HTML の成功応答にならない。
+- [ ] scope 不足、ID トークン、別 issuer、別 client、発見用 M2M client のトークンで API を呼び出せない。
+- [ ] API と Lambda のログに JWT、secret、応答本文が出ていない。
+- [ ] Terraform plan に既存 Registry の作成・変更・削除がなく、専用 permission set と実行ロールの IAM が意図した ARN と action に限定される。
