@@ -118,6 +118,7 @@ resource "aws_ssoadmin_permission_set_inline_policy" "deployer" {
           "agent-registry:CreateRegistry", "agent-registry:UpdateRegistry", "agent-registry:DeleteRegistry",
           "agent-registry:CreateRegistryRecord", "agent-registry:UpdateRegistryRecord",
           "agent-registry:UpdateRegistryRecordStatus", "agent-registry:DeleteRegistryRecord",
+          "agent-registry:SubmitRegistryRecordForApproval", "bedrock-agentcore:SubmitRegistryRecordForApproval",
           "bedrock-agentcore:CreateRegistry*", "bedrock-agentcore:UpdateRegistry*", "bedrock-agentcore:DeleteRegistry*"
         ]
         Resource = "*"
