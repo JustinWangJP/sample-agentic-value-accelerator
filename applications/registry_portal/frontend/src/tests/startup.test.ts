@@ -36,7 +36,29 @@ describe('起動処理の結果', () => {
 
     const state = await startup(TEST_VITE_ENV, callbackBrowser(jsonResponse(200, me)).browser)
 
-    expect(state).toEqual({ status: 'ready', me })
+    expect(state).toMatchObject({ status: 'ready', me })
+  })
+
+  it('ready のとき、同じアクセストークンでカタログを取得でき、ログインし直す操作を持つ', async () => {
+    const me = { principal: { type: 'human', issuer: 'i', subject: 's' }, roles: [], teams: [] }
+    const fake = fakeBrowser(CALLBACK_URL, [
+      jsonResponse(200, { access_token: 'access-token-value', expires_in: 3600 }),
+      jsonResponse(200, me),
+      jsonResponse(200, { items: [], nextToken: null }),
+    ])
+    storePendingLogin(fake.sessionStorage)
+
+    const state = await startup(TEST_VITE_ENV, fake.browser)
+    if (state.status !== 'ready') throw new Error(`ready を期待したが ${state.status} だった`)
+
+    await expect(state.api.listCatalog('AGENT')).resolves.toEqual({ items: [], nextToken: null })
+    const catalogCall = fake.calls[2]
+    expect(catalogCall.url).toBe(`${TEST_CONFIG.apiBaseUrl}/api/catalog?type=AGENT`)
+    expect(new Headers(catalogCall.init?.headers).get('authorization')).toBe(
+      'Bearer access-token-value',
+    )
+    state.relogin()
+    expect(fake.redirects).toEqual([TEST_CONFIG.redirectUri])
   })
 
   it('API が 401 を返したら、メッセージとログインし直す操作を返す', async () => {

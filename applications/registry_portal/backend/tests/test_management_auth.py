@@ -17,10 +17,17 @@ ISSUER = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_EXAMPLE"
 HUMAN_CLIENT_ID = "human-spa-client"
 DISCOVERY_CLIENT_ID = "discovery-m2m-client"
 
-ENV = {
+AUTH_ENV = {
     "COGNITO_ISSUER": ISSUER,
     "HUMAN_CLIENT_ID": HUMAN_CLIENT_ID,
 }
+DISCOVERY_ENV = {
+    "REGISTRY_ARN": "arn:aws:agent-registry:us-east-1:123456789012:registry/abcdEFGH1234",
+    "DISCOVERY_TOKEN_URL": "https://discovery.auth.us-east-1.amazoncognito.com/oauth2/token",
+    "DISCOVERY_CLIENT_ID": DISCOVERY_CLIENT_ID,
+    "DISCOVERY_CLIENT_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:123456789012:secret:x",
+}
+ENV = {**AUTH_ENV, **DISCOVERY_ENV}
 
 
 def access_claims(**overrides: Any) -> dict[str, Any]:
@@ -231,16 +238,44 @@ def test_unknown_route_returns_not_found_with_common_error_dto() -> None:
 @pytest.mark.parametrize(
     "environ",
     [
-        {},
-        {"COGNITO_ISSUER": ISSUER},
-        {"HUMAN_CLIENT_ID": HUMAN_CLIENT_ID},
-        {"COGNITO_ISSUER": " ", "HUMAN_CLIENT_ID": HUMAN_CLIENT_ID},
+        DISCOVERY_ENV,
+        {**DISCOVERY_ENV, "COGNITO_ISSUER": ISSUER},
+        {**DISCOVERY_ENV, "HUMAN_CLIENT_ID": HUMAN_CLIENT_ID},
+        {**DISCOVERY_ENV, "COGNITO_ISSUER": " ", "HUMAN_CLIENT_ID": HUMAN_CLIENT_ID},
     ],
     ids=["none", "no-client-id", "no-issuer", "blank-issuer"],
 )
 def test_missing_auth_settings_fail_at_startup(environ: dict[str, str]) -> None:
     with pytest.raises(ConfigurationError, match="認証設定"):
         create_management_handler(environ)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"REGISTRY_ARN": ""},
+        {"DISCOVERY_TOKEN_URL": ""},
+        {"DISCOVERY_CLIENT_ID": ""},
+        {"DISCOVERY_CLIENT_SECRET_ARN": ""},
+        # Registry ARN 以外（ID だけ、別サービスの ARN）は受け付けない
+        {"REGISTRY_ARN": "abcdEFGH1234"},
+        {"REGISTRY_ARN": "arn:aws:bedrock-agentcore:us-east-1:123456789012:registry/abcdEFGH1234"},
+        # トークンエンドポイントは https に限る
+        {"DISCOVERY_TOKEN_URL": "http://discovery.example.com/oauth2/token"},
+    ],
+    ids=[
+        "no-registry",
+        "no-token-url",
+        "no-client-id",
+        "no-secret",
+        "registry-id-only",
+        "old-namespace",
+        "http-token-url",
+    ],
+)
+def test_missing_or_invalid_discovery_settings_fail_at_startup(overrides: dict[str, str]) -> None:
+    with pytest.raises(ConfigurationError, match="発見設定"):
+        create_management_handler({**ENV, **overrides})
 
 
 def test_lambda_entrypoint_fails_to_load_without_auth_settings(

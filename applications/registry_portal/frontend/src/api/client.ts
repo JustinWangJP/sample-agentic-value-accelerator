@@ -20,6 +20,28 @@ export type Me = {
   teams: string[]
 }
 
+/** カタログの種別（AWS の recordType）。A2A は Agent の descriptor として扱う */
+export type CatalogRecordType = 'AGENT' | 'MCP' | 'SKILL'
+
+/** カタログ項目（公開承認済みの Registry レコードの版）の要約 */
+export type CatalogItem = {
+  recordId: string
+  name: string
+  displayName: string
+  description: string
+  recordType: CatalogRecordType
+  descriptorTypes: string[]
+  isA2A: boolean
+  recordVersion: string
+  updatedAt: string
+}
+
+/** 1ページ分のカタログ項目。nextToken が null なら最後のページ */
+export type CatalogPage = {
+  items: CatalogItem[]
+  nextToken: string | null
+}
+
 /** 認証が必要なときのメッセージ。バックエンドの AuthenticationError の既定文言と同じ */
 export const UNAUTHENTICATED_MESSAGE = '認証が必要です。ログインし直してください。'
 
@@ -63,6 +85,8 @@ export type ApiClientOptions = {
 
 export type ApiClient = {
   getMe: () => Promise<Me>
+  /** nextToken はバックエンドが中継する AWS の値で、SPA では中身を解釈しない */
+  listCatalog: (type: CatalogRecordType, nextToken?: string) => Promise<CatalogPage>
 }
 
 export function createApiClient(options: ApiClientOptions): ApiClient {
@@ -111,5 +135,10 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
 
   return {
     getMe: () => request<Me>('/api/me'),
+    listCatalog: (type, nextToken) => {
+      const query = new URLSearchParams({ type })
+      if (nextToken !== undefined) query.set('nextToken', nextToken)
+      return request<CatalogPage>(`/api/catalog?${query.toString()}`)
+    },
   }
 }

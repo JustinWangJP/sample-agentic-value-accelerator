@@ -3,7 +3,14 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { StartupView } from '../App'
+import type { ApiClient } from '../api/client'
 import type { StartupState } from '../startup'
+
+// 静的な描画では effect が動かないので、API は呼ばれない
+const unusedApi: ApiClient = {
+  getMe: () => Promise.reject(new Error('呼ばれない想定')),
+  listCatalog: () => Promise.reject(new Error('呼ばれない想定')),
+}
 
 const render = (state: StartupState | null) => renderToStaticMarkup(createElement(StartupView, { state }))
 
@@ -21,6 +28,8 @@ describe('起動処理の画面表示', () => {
         roles: ['Viewer', 'Publisher'],
         teams: ['team-payments'],
       },
+      api: unusedApi,
+      relogin: () => {},
     })
 
     expect(html).toContain('自分の主体・業務ロール・所属チーム')
@@ -28,6 +37,9 @@ describe('起動処理の画面表示', () => {
     expect(html).toContain('sub-1')
     expect(html).toContain('Viewer、Publisher')
     expect(html).toContain('team-payments')
+    // ログイン後はカタログを表示する（最初は Agent の1ページ目を読み込み中）
+    expect(html).toContain('カタログ')
+    expect(html).toContain('読み込んでいます')
   })
 
   it('所属チームがなければ、所属チームなしと表示する', () => {
@@ -38,6 +50,8 @@ describe('起動処理の画面表示', () => {
         roles: ['Viewer'],
         teams: [],
       },
+      api: unusedApi,
+      relogin: () => {},
     })
 
     expect(html).toContain('所属チームなし')
