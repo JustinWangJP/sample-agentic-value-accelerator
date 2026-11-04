@@ -36,6 +36,20 @@ POLICY_TYPES = {
     "aws_iam_role",
 }
 
+MANAGED_POLICY_ATTACHMENTS = {
+    "aws_iam_role_policy_attachment",
+    "aws_iam_policy_attachment",
+    "aws_iam_user_policy_attachment",
+    "aws_iam_group_policy_attachment",
+    "aws_iam_role_policy_attachments_exclusive",
+    "aws_iam_user_policy_attachments_exclusive",
+    "aws_iam_group_policy_attachments_exclusive",
+    "aws_ssoadmin_managed_policy_attachment",
+    "aws_ssoadmin_managed_policy_attachments_exclusive",
+    "aws_ssoadmin_customer_managed_policy_attachment",
+    "aws_ssoadmin_customer_managed_policy_attachments_exclusive",
+}
+
 
 def _resources(module: dict[str, Any]) -> list[dict[str, Any]]:
     result = list(module.get("resources", []))
@@ -87,6 +101,8 @@ def check_plan(plan: dict[str, Any]) -> list[str]:
             errors.append(f"{address}: Function URL は使用できません")
         if resource["type"] in POLICY_TYPES:
             unknown = resource["change"].get("after_unknown", {})
+            if resource["type"] == "aws_iam_role" and unknown.get("managed_policy_arns"):
+                errors.append(f"{address}: 未確定の managed policy の付与は検査できません")
             if any(unknown.get(key) for key in ("policy", "inline_policy")):
                 errors.append(f"{address}: 未確定の IAM policy は検査できません")
     resources = _resources(root)
@@ -101,12 +117,9 @@ def check_plan(plan: dict[str, Any]) -> list[str]:
         if kind == "aws_lambda_function_url":
             errors.append(f"{address}: Function URL は使用できません")
         values = resource.get("values", {})
-        if kind in {
-            "aws_iam_role_policy_attachment",
-            "aws_iam_policy_attachment",
-            "aws_iam_user_policy_attachment",
-            "aws_iam_group_policy_attachment",
-        } or (kind == "aws_iam_role" and values.get("managed_policy_arns")):
+        if kind in MANAGED_POLICY_ATTACHMENTS or (
+            kind == "aws_iam_role" and values.get("managed_policy_arns")
+        ):
             errors.append(f"{address}: 内容を検査できない managed policy の付与は使用できません")
         if kind not in POLICY_TYPES:
             continue
