@@ -5,6 +5,7 @@ mock_provider "aws" {
 }
 variables {
   aws_account_id               = "123456789012"
+  bootstrap_admin_role_arn     = "arn:aws:iam::123456789012:role/BootstrapAdministrator"
   state_bucket_name            = "portal-state-test-123456789012"
   spa_bucket_name              = "portal-spa-test-123456789012"
   cognito_user_pool_id         = "us-east-1_Example"

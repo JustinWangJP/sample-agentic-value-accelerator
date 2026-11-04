@@ -19,6 +19,14 @@ variable "state_bucket_name" {
   description = "state 用 S3 バケットのグローバルに一意な名前。"
   type        = string
 }
+variable "bootstrap_admin_role_arn" {
+  description = "bootstrap を管理する既存 IAM ロール ARN。state の内容にはアクセスできず、バケット一覧の拒否だけを免除する。STS セッション ARN ではなく IAM ロール ARN を指定する。"
+  type        = string
+  validation {
+    condition     = can(regex("^arn:aws:iam::${var.aws_account_id}:role/[^*?]+$", var.bootstrap_admin_role_arn))
+    error_message = "bootstrap 管理者には同一アカウントの具体的な IAM ロール ARN を指定してください。"
+  }
+}
 variable "spa_bucket_name" {
   description = "本体スタックの SPA バケット名。"
   type        = string
@@ -91,9 +99,17 @@ resource "aws_s3_bucket_policy" "state" {
         Sid       = "StateOnlyForDeployer"
         Effect    = "Deny"
         Principal = "*"
-        Action    = ["s3:GetObject*", "s3:PutObject*", "s3:DeleteObject*", "s3:ListBucket*"]
-        Resource  = [local.state_arn, "${local.state_arn}/*"]
+        Action    = ["s3:GetObject*", "s3:PutObject*", "s3:DeleteObject*"]
+        Resource  = "${local.state_arn}/*"
         Condition = { ArnNotLike = { "aws:PrincipalArn" = local.sso_role } }
+      },
+      {
+        Sid       = "StateListOnlyForOperators"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = ["s3:ListBucket*"]
+        Resource  = local.state_arn
+        Condition = { ArnNotLike = { "aws:PrincipalArn" = [local.sso_role, var.bootstrap_admin_role_arn] } }
       }
     ]
   })

@@ -121,7 +121,9 @@ Issue #2 の読み取り確認で、既存 Registry、Cognito User Pool、SSO �
    terraform -chdir=infrastructure/bootstrap apply bootstrap.tfplan
    ```
 
-   bootstrap は state バケットと `RegistryPortalDeployer` permission set、その既存グループへの割当てを作ります。state バケットはバージョニング、暗号化、公開アクセス禁止を有効にし、state とロックへのアクセスをこの permission set の SSO ロールに限定します。bootstrap 自身の state は初回管理者が暗号化した場所で保管してください。本体の state と混ぜません。permission set は Registry 本体とレコードへの書き込みを明示的に Deny します。CloudFront の作成や API Gateway の一覧など、作成前に ARN がない操作にはサービスに限定した権限を使います。管理 Lambda の実行ロールを渡せるのは Lambda サービスだけです。
+   bootstrap は state バケットと `RegistryPortalDeployer` permission set、その既存グループへの割当てを作ります。state バケットはバージョニング、暗号化、公開アクセス禁止を有効にし、state とロックの内容へのアクセスをこの permission set の SSO ロールに限定します。`bootstrap_admin_role_arn` には、bootstrap に使用する短期認証情報の元となる既存 IAM ロールの ARN を指定します（STS セッション ARN は指定しません）。このロールは `HeadBucket` に必要なバケット一覧の拒否だけを免除され、state とロックの内容を読み書きする例外にはなりません。バケット管理の権限は既存の管理者ポリシーで付与してください。bootstrap 自身の state は初回管理者が暗号化した場所で保管してください。本体の state と混ぜません。permission set は Registry 本体とレコードへの書き込みを明示的に Deny します。CloudFront の作成や API Gateway の一覧など、作成前に ARN がない操作にはサービスに限定した権限を使います。管理 Lambda の実行ロールを渡せるのは Lambda サービスだけです。
+
+   Issue #2 で `RegistryPortalDeployer` permission set が作成済みの場合は、新規作成せず `aws_ssoadmin_permission_set.deployer` に import します。既存の inline policy とグループへの account assignment も確認し、対応する `aws_ssoadmin_permission_set_inline_policy.deployer` と `aws_ssoadmin_account_assignment.deployer` の import、および既存の管理元との所有の調整を済ませてから plan を確認してください。同じ資源を複数の state で管理しないでください。
 
 2. `infrastructure/backend.hcl.example` と `infrastructure/terraform.tfvars.example` を、それぞれ `infrastructure/backend.hcl` と `infrastructure/dev.tfvars` にコピーします。bootstrap と同じアカウント、バケット名、名前の接頭辞を設定します。secret 値は入力しません。既存 secret が顧客管理 KMS キーを使う場合だけ `discovery_kms_key_arn` を設定します。管理 Lambda には、そのキーの復号を Secrets Manager 経由かつ対象 secret の暗号化コンテキストに限定して付けます。
 
@@ -162,7 +164,7 @@ terraform -chdir=infrastructure/bootstrap test
 
 ### dev の手動受入を記録する
 
-この変更では AWS API の呼び出し、bootstrap、plan、apply、アップロード、CloudFront の無効化を実行していません。Issue #2 の読み取り確認も未完了です。次の項目は AWS 権限を持つオペレーターが dev に反映してから Issue #5 に結果を記録します。
+この変更では AWS API の呼び出し、bootstrap、plan、apply、アップロード、CloudFront の無効化を実行していません。state バケットの `HeadBucket` とオブジェクト制限は Terraform mock のポリシー assertion だけで確認しており、AWS 上の refresh とアクセス制御は未検証です。Issue #2 の読み取り確認も未完了です。次の項目は AWS 権限を持つオペレーターが dev に反映してから Issue #5 に結果を記録します。
 
 - [ ] SSO と PKCE でログインし、`/api/me` とカタログ一覧が表示される。M2M トークン取得から Registry の発見 API まで到達する。
 - [ ] User Pool で業務ロールと `team-*` の所属を割り当て、画面の主体と一致する。
