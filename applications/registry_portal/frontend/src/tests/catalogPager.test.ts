@@ -5,13 +5,12 @@ import {
   canGoNext,
   canGoPrevious,
   currentPageToken,
-  failed,
+  pageFailed,
   goNext,
   goPrevious,
   initialCatalogState,
-  received,
-  retry,
-  selectType,
+  pageReceived,
+  reloadPage,
 } from '../catalog/pager'
 
 const pageWith = (nextToken: string | null, ...ids: string[]): CatalogPage => ({
@@ -31,7 +30,7 @@ const pageWith = (nextToken: string | null, ...ids: string[]): CatalogPage => ({
 
 describe('カタログのページ送り', () => {
   it('最初は Agent の1ページ目を token なしで読み込む', () => {
-    const state = initialCatalogState()
+    const state = initialCatalogState('AGENT')
 
     expect(state.type).toBe('AGENT')
     expect(state.view).toEqual({ status: 'loading' })
@@ -40,7 +39,7 @@ describe('カタログのページ送り', () => {
   })
 
   it('次のページへ進むと、前の応答の nextToken で読み込む', () => {
-    let state = received(initialCatalogState(), pageWith('token-2', 'a'))
+    let state = pageReceived(initialCatalogState('AGENT'), pageWith('token-2', 'a'))
     expect(canGoNext(state)).toBe(true)
 
     state = goNext(state)
@@ -51,17 +50,17 @@ describe('カタログのページ送り', () => {
   })
 
   it('最後のページ（nextToken なし）と読み込み中は、次のページへ進めない', () => {
-    const last = received(initialCatalogState(), pageWith(null, 'a'))
+    const last = pageReceived(initialCatalogState('AGENT'), pageWith(null, 'a'))
 
     expect(canGoNext(last)).toBe(false)
     expect(goNext(last)).toBe(last)
-    expect(canGoNext(initialCatalogState())).toBe(false)
+    expect(canGoNext(initialCatalogState('AGENT'))).toBe(false)
   })
 
   it('前のページへ戻ると、そのページを取得したときの token で読み込み直す', () => {
-    let state = received(initialCatalogState(), pageWith('token-2', 'a'))
-    state = received(goNext(state), pageWith('token-3', 'b'))
-    state = received(goNext(state), pageWith(null, 'c'))
+    let state = pageReceived(initialCatalogState('AGENT'), pageWith('token-2', 'a'))
+    state = pageReceived(goNext(state), pageWith('token-3', 'b'))
+    state = pageReceived(goNext(state), pageWith(null, 'c'))
     expect(state.pageNumber).toBe(3)
 
     state = goPrevious(state)
@@ -72,7 +71,7 @@ describe('カタログのページ送り', () => {
   })
 
   it('種別を切り替えると、その種別の1ページ目に戻る', () => {
-    const state = selectType('SKILL')
+    const state = initialCatalogState('SKILL')
 
     expect(state.type).toBe('SKILL')
     expect(currentPageToken(state)).toBeUndefined()
@@ -80,9 +79,9 @@ describe('カタログのページ送り', () => {
   })
 
   it('取得の失敗は日本語メッセージで表し、再試行では同じページを読み込み直す', () => {
-    let state = goNext(received(initialCatalogState(), pageWith('token-2', 'a')))
+    let state = goNext(pageReceived(initialCatalogState('AGENT'), pageWith('token-2', 'a')))
 
-    state = failed(
+    state = pageFailed(
       state,
       new ApiError(502, 'DISCOVERY_UNAVAILABLE', 'カタログを取得できませんでした。'),
     )
@@ -92,17 +91,17 @@ describe('カタログのページ送り', () => {
       message: 'カタログを取得できませんでした。',
       requiresLogin: false,
     })
-    state = retry(state)
+    state = reloadPage(state)
     expect(state.view).toEqual({ status: 'loading' })
     expect(currentPageToken(state)).toBe('token-2')
   })
 
   it('401 の失敗はログインし直す必要があることを示し、想定外の例外は汎用の文言にする', () => {
-    const unauthenticated = failed(
-      initialCatalogState(),
+    const unauthenticated = pageFailed(
+      initialCatalogState('AGENT'),
       new ApiError(401, 'UNAUTHENTICATED', '認証が必要です。ログインし直してください。'),
     )
-    const unexpected = failed(initialCatalogState(), new Error('内部の詳細'))
+    const unexpected = pageFailed(initialCatalogState('AGENT'), new Error('内部の詳細'))
 
     expect(unauthenticated.view).toMatchObject({ status: 'error', requiresLogin: true })
     expect(unexpected.view).toEqual({

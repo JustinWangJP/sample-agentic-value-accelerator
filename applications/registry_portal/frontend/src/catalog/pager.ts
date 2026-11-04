@@ -23,7 +23,8 @@ export type CatalogState = {
 
 const loading: CatalogViewState = { status: 'loading' }
 
-export function initialCatalogState(type: CatalogRecordType = 'AGENT'): CatalogState {
+/** 種別の1ページ目。種別の切り替えと「最初のページに戻る」にも使う */
+export function initialCatalogState(type: CatalogRecordType): CatalogState {
   return { type, pageTokens: [undefined], pageNumber: 1, view: loading }
 }
 
@@ -31,16 +32,11 @@ export function currentPageToken(state: CatalogState): string | undefined {
   return state.pageTokens[state.pageTokens.length - 1]
 }
 
-/** 種別を切り替える、または最初のページに戻る */
-export function selectType(type: CatalogRecordType): CatalogState {
-  return initialCatalogState(type)
-}
-
-export function received(state: CatalogState, page: CatalogPage): CatalogState {
+export function pageReceived(state: CatalogState, page: CatalogPage): CatalogState {
   return { ...state, view: { status: 'ready', page } }
 }
 
-export function failed(state: CatalogState, error: unknown): CatalogState {
+export function pageFailed(state: CatalogState, error: unknown): CatalogState {
   const view: CatalogViewState =
     error instanceof ApiError
       ? { status: 'error', message: error.message, requiresLogin: error.requiresLogin }
@@ -77,6 +73,6 @@ export function goPrevious(state: CatalogState): CatalogState {
 }
 
 /** 同じページを読み込み直す */
-export function retry(state: CatalogState): CatalogState {
+export function reloadPage(state: CatalogState): CatalogState {
   return { ...state, view: loading }
 }

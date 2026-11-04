@@ -4,21 +4,31 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Any, Protocol
+from typing import Any
 
-from registry_portal.errors import InvalidPageTokenError, RequestValidationError
-from registry_portal.services.discovery import CatalogItem, CatalogPage
+from registry_portal.domain.catalog import (
+    CATALOG_RECORD_TYPES,
+    CatalogItem,
+    is_catalog_record_type,
+)
+from registry_portal.errors import (
+    DiscoveryUnavailableError,
+    InvalidPageTokenError,
+    RequestValidationError,
+)
+from registry_portal.services.discovery import (
+    DiscoveryClient,
+    DiscoveryUnavailable,
+    PageTokenRejected,
+)
 
-# 画面の入口に対応する AWS の recordType。A2A は Agent の descriptor として扱う
-CATALOG_RECORD_TYPES = ("AGENT", "MCP", "SKILL")
 # 受け付けるクエリパラメーター。Registry ID や endpoint URL は受け取らない
 _ALLOWED_QUERY_KEYS = frozenset({"type", "nextToken"})
 # AWS の nextToken の長さの上限は4096。空白・制御文字・非 ASCII を含むものは拒否する
-_NEXT_TOKEN = re.compile(r"[\x21-\x7e]{1,4096}")
-
-
-class CatalogDiscovery(Protocol):
-    def list_records(self, record_type: str, next_token: str | None) -> CatalogPage: ...
+_NEXT_TOKEN_PATTERN = re.compile(r"[\x21-\x7e]{1,4096}")
+_INVALID_TYPE_MESSAGE = (
+    f"種別（type）には {'、'.join(CATALOG_RECORD_TYPES)} のいずれかを指定してください。"
+)
 
 
 def _item_dto(item: CatalogItem) -> dict[str, Any]:
@@ -36,19 +46,22 @@ def _item_dto(item: CatalogItem) -> dict[str, Any]:
 
 
 def list_catalog(
-    discovery: CatalogDiscovery, query: Mapping[str, str]
+    discovery: DiscoveryClient, query: Mapping[str, str]
 ) -> tuple[int, Mapping[str, Any]]:
     """種別を指定して、カタログ項目を1ページ分返す。"""
     if not set(query) <= _ALLOWED_QUERY_KEYS:
         raise RequestValidationError("指定できないパラメーターが含まれています。")
     record_type = query.get("type")
-    if record_type not in CATALOG_RECORD_TYPES:
-        raise RequestValidationError(
-            "種別（type）には AGENT、MCP、SKILL のいずれかを指定してください。"
-        )
+    if not is_catalog_record_type(record_type):
+        raise RequestValidationError(_INVALID_TYPE_MESSAGE)
     next_token = query.get("nextToken")
-    if next_token is not None and _NEXT_TOKEN.fullmatch(next_token) is None:
+    if next_token is not None and _NEXT_TOKEN_PATTERN.fullmatch(next_token) is None:
         raise InvalidPageTokenError()
 
-    page = discovery.list_records(record_type, next_token)
+    try:
+        page = discovery.list_records(record_type, next_token)
+    except PageTokenRejected:
+        raise InvalidPageTokenError() from None
+    except DiscoveryUnavailable:
+        raise DiscoveryUnavailableError() from None
     return 200, {"items": [_item_dto(item) for item in page.items], "nextToken": page.next_token}

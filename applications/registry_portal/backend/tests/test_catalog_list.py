@@ -15,6 +15,7 @@ import pytest
 from botocore.stub import Stubber
 
 from registry_portal.app import create_management_handler
+from registry_portal.services.discovery import DiscoveryDependencies
 from registry_portal.services.http import TransportError, TransportResponse
 
 ISSUER = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_EXAMPLE"
@@ -204,9 +205,11 @@ def make_handler(
 ) -> Any:
     return create_management_handler(
         ENV,
-        transport=transport,
-        clock=clock or Clock(),
-        secrets_client=(secrets or FakeSecrets()).client,
+        discovery=DiscoveryDependencies(
+            transport=transport,
+            clock=clock or Clock(),
+            secrets_client=(secrets or FakeSecrets()).client,
+        ),
     )
 
 
@@ -433,8 +436,16 @@ def test_next_token_of_maximum_length_is_accepted() -> None:
 
 def test_next_token_rejected_by_registry_asks_viewer_to_start_over() -> None:
     transport = FakeTransport()
+    # AWS の ValidationException（rest-json）。fieldList に nextToken があれば token の誤り
     transport.registry.append(
-        json_response(400, {"message": "Invalid nextToken", "reason": "CANNOT_PARSE"})
+        json_response(
+            400,
+            {
+                "message": "Invalid request",
+                "reason": "FieldValidationFailed",
+                "fieldList": [{"name": "nextToken", "message": "Invalid pagination token"}],
+            },
+        )
     )
 
     status, body = call(
@@ -589,3 +600,85 @@ def test_secret_retrieval_failure_is_reported_without_calling_token_endpoint(
     # AWS のエラーメッセージ（ARN を含みうる）はログに出さず、エラーコードだけを残す
     assert code in caplog.text
     assert SECRET_ARN not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "error_body",
+    [
+        # nextToken 以外の項目の誤り（ポータルの不具合）は、token の誤りと案内しない
+        {
+            "message": "Invalid request",
+            "reason": "FieldValidationFailed",
+            "fieldList": [{"name": "filters", "message": "Duplicate filter name"}],
+        },
+        # どの項目の誤りか分からない
+        {"message": "Invalid request", "reason": "CannotParse"},
+        {"message": "Invalid request", "reason": "FieldValidationFailed", "fieldList": "x"},
+    ],
+    ids=["other-field", "no-field-list", "malformed-field-list"],
+)
+def test_registry_400_not_about_next_token_is_reported_as_unavailable(
+    error_body: dict[str, Any],
+) -> None:
+    transport = FakeTransport()
+    transport.registry.append(json_response(400, error_body))
+
+    status, body = call(
+        make_handler(transport), catalog_event({"type": "AGENT", "nextToken": "page-2-token"})
+    )
+
+    assert status == 502
+    assert body["error"]["code"] == "DISCOVERY_UNAVAILABLE"
+
+
+@pytest.mark.parametrize(
+    "query",
+    [{"type": "SKILL"}, {"type": "MCP", "nextToken": "page-2/token+="}],
+    ids=["first-page", "next-page"],
+)
+def test_list_request_matches_botocore_model_serialization(query: dict[str, str]) -> None:
+    """手で組み立てた発見 API の URL と payload が、固定版 Botocore のモデルと一致する。
+
+    JWT 認可の Registry は Boto3 では呼べないので HTTP で直接呼ぶ。その形が AWS の
+    モデル（agent-registry の ListDiscoverableRegistryRecords）とずれないことを確かめる。
+    """
+    transport = FakeTransport()
+    transport.registry.append(page())
+    call(make_handler(transport), catalog_event(query))
+    [sent] = transport.to(LIST_URL)
+
+    expected = botocore_list_request(
+        registryId=REGISTRY_ARN,
+        filters=[{"name": "recordType", "values": [query["type"]]}],
+        maxResults=50,
+        **({"nextToken": query["nextToken"]} if "nextToken" in query else {}),
+    )
+
+    assert sent.method == expected["method"]
+    assert sent.url == expected["url"]
+    assert sent.json() == json.loads(expected["body"])
+
+
+def botocore_list_request(**params: Any) -> dict[str, Any]:
+    """Botocore が ListDiscoverableRegistryRecords を送る直前のリクエストを取り出す（送信はしない）。"""
+    client = boto3.client(
+        "agent-registry",
+        region_name="us-east-1",
+        aws_access_key_id="testing",
+        aws_secret_access_key="testing",
+    )
+    captured: dict[str, Any] = {}
+
+    class _Captured(Exception):
+        pass
+
+    def capture(request: Any, **_: Any) -> None:
+        captured.update(method=request.method, url=request.url, body=request.body)
+        raise _Captured()
+
+    client.meta.events.register(
+        "before-send.agent-registry.ListDiscoverableRegistryRecords", capture
+    )
+    with pytest.raises(_Captured):
+        client.list_discoverable_registry_records(**params)
+    return captured

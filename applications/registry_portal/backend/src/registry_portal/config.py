@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from urllib.parse import quote
 
 
 class ConfigurationError(RuntimeError):
@@ -49,7 +50,7 @@ class DiscoverySettings:
     # 既存 Registry の ARN（arn:aws:agent-registry:<region>:<account>:registry/<id>）
     registry_arn: str
     # Registry のリージョン。ARN から導出する
-    region: str
+    registry_region: str
     # Cognito のトークンエンドポイント（https://<domain>/oauth2/token）
     token_url: str
     # 発見用 M2M client の client_id
@@ -60,6 +61,14 @@ class DiscoverySettings:
     client_secret_region: str
     # 要求する scope（スペース区切り。空なら client の既定）
     scope: str
+
+    @property
+    def discoverable_records_list_url(self) -> str:
+        """ListDiscoverableRegistryRecords の宛先。ARN は1つの path 要素として符号化する（Botocore と同じ）。"""
+        return (
+            f"https://agent-registry.{self.registry_region}.api.aws/registries/"
+            f"{quote(self.registry_arn, safe='')}/discoverable-records-list"
+        )
 
 
 _REQUIRED_DISCOVERY_KEYS = (
@@ -99,7 +108,7 @@ def load_discovery_settings(environ: Mapping[str, str]) -> DiscoverySettings:
         )
     return DiscoverySettings(
         registry_arn=registry_arn,
-        region=match.group("region"),
+        registry_region=match.group("region"),
         token_url=token_url,
         client_id=environ["DISCOVERY_CLIENT_ID"].strip(),
         client_secret_arn=client_secret_arn,

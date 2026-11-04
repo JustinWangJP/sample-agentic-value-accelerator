@@ -20,7 +20,10 @@ export type Me = {
   teams: string[]
 }
 
-/** カタログの種別（AWS の recordType）。A2A は Agent の descriptor として扱う */
+/**
+ * カタログの種別（AWS の recordType）。A2A は Agent の descriptor として扱う。
+ * バックエンドの CatalogRecordType（backend/src/registry_portal/domain/catalog.py）と同じ値に揃える
+ */
 export type CatalogRecordType = 'AGENT' | 'MCP' | 'SKILL'
 
 /** カタログ項目（公開承認済みの Registry レコードの版）の要約 */

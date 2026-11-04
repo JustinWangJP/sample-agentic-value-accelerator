@@ -4,13 +4,12 @@ import {
   canGoNext,
   canGoPrevious,
   currentPageToken,
-  failed,
+  pageFailed,
   goNext,
   goPrevious,
   initialCatalogState,
-  received,
-  retry,
-  selectType,
+  pageReceived,
+  reloadPage,
   type CatalogState,
 } from './pager'
 
@@ -32,7 +31,7 @@ type Props = {
 
 /** カタログ項目を種別ごとにページ単位で一覧する */
 export function CatalogView({ api, onRelogin }: Props) {
-  const [state, setState] = useState<CatalogState>(() => initialCatalogState())
+  const [state, setState] = useState<CatalogState>(() => initialCatalogState('AGENT'))
   const isLoading = state.view.status === 'loading'
   const { type } = state
   const token = currentPageToken(state)
@@ -42,8 +41,8 @@ export function CatalogView({ api, onRelogin }: Props) {
     // 種別やページを切り替えたら、古い応答は捨てる
     let active = true
     api.listCatalog(type, token).then(
-      (page) => active && setState((current) => received(current, page)),
-      (error: unknown) => active && setState((current) => failed(current, error)),
+      (page) => active && setState((current) => pageReceived(current, page)),
+      (error: unknown) => active && setState((current) => pageFailed(current, error)),
     )
     return () => {
       active = false
@@ -53,10 +52,10 @@ export function CatalogView({ api, onRelogin }: Props) {
   return (
     <CatalogPanel
       state={state}
-      onSelectType={(next) => setState(selectType(next))}
+      onSelectType={(next) => setState(initialCatalogState(next))}
       onNext={() => setState(goNext)}
       onPrevious={() => setState(goPrevious)}
-      onRetry={() => setState(retry)}
+      onRetry={() => setState(reloadPage)}
       onRelogin={onRelogin}
     />
   )

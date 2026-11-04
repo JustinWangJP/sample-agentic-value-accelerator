@@ -2,11 +2,14 @@
 
 - 発見用 M2M client の secret は、Boto3 で Secrets Manager から取得し、メモリー上だけに保持する
 - M2M トークン（client credentials）は有効期限を考慮して再利用する
-- Registry が 401 を返したら、トークンを取り直して再試行する。再試行は1回に限る
+- Registry が 401 を返したら、トークンを取り直して1回だけ再試行する
 - トークン、secret、応答の本文はログに出さない。出すのは HTTP ステータスと処理の種類だけ
 
 Registry の発見 API は Boto3 では JWT 認可に対応しないため、HTTP で直接呼ぶ（設計書
 「管理用の IAM と発見用の JWT を分ける」）。Secrets Manager は IAM 認可なので Boto3 を使う。
+
+失敗はこのモジュールの例外（DiscoveryUnavailable・PageTokenRejected）で表す。
+API の応答（HTTP ステータスと日本語メッセージ）への変換は呼び出し側で行う。
 """
 
 from __future__ import annotations
@@ -15,16 +18,28 @@ import base64
 import json
 import logging
 import re
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 
+import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
 from registry_portal.config import DiscoverySettings
-from registry_portal.errors import DiscoveryUnavailableError, InvalidPageTokenError
-from registry_portal.services.http import Transport, TransportError, TransportResponse
+from registry_portal.domain.catalog import (
+    CatalogItem,
+    CatalogPage,
+    CatalogRecordType,
+    is_catalog_record_type,
+)
+from registry_portal.services.http import (
+    Transport,
+    TransportError,
+    TransportResponse,
+    urllib_transport,
+)
 
 if TYPE_CHECKING:
     from mypy_boto3_secretsmanager import SecretsManagerClient
@@ -35,21 +50,47 @@ Clock = Callable[[], float]
 
 # 有効期限の直前に期限切れになるのを避けるため、この秒数だけ早めに取り直す
 TOKEN_EXPIRY_MARGIN_SECONDS = 60
-# Registry が 401 を返したときに、トークンを取り直して再試行する回数の上限
-MAX_AUTH_RETRIES = 1
 # 1ページの件数。AWS の上限は100
 PAGE_SIZE = 50
 HTTP_TIMEOUT_SECONDS = 5.0
 # アクセストークン（JWT）として受け付ける文字。改行などを含む値をヘッダーに載せない
-_ACCESS_TOKEN = re.compile(r"[A-Za-z0-9\-_.~+/=]+")
+_ACCESS_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9\-_.~+/=]+")
 
 
-def _parse_json_object(response: TransportResponse) -> Mapping[str, Any] | None:
+class DiscoveryUnavailable(Exception):
+    """Registry の発見 API から結果を得られなかった（認証・接続・応答の異常）。0件とは区別する。"""
+
+
+class PageTokenRejected(Exception):
+    """Registry が nextToken を拒否した（期限切れ・改ざんなど）。"""
+
+
+@dataclass(frozen=True)
+class DiscoveryDependencies:
+    """発見アダプターが外部とやり取りする部品。テストではフェイクに差し替える。"""
+
+    transport: Transport = urllib_transport
+    clock: Clock = time.monotonic
+    # None なら Lambda の実行ロールの認証情報で、secret のリージョンのクライアントを作る
+    secrets_client: SecretsManagerClient | None = None
+
+
+def _json_object(raw: bytes | str) -> Mapping[str, Any] | None:
     try:
-        value = json.loads(response.body)
+        value = json.loads(raw)
     except ValueError:
         return None
     return value if isinstance(value, Mapping) else None
+
+
+def _ok_json(response: TransportResponse) -> Mapping[str, Any] | None:
+    return _json_object(response.body) if response.status == 200 else None
+
+
+def _unavailable(message: str, *args: object) -> DiscoveryUnavailable:
+    """失敗をログに残し、送出する例外を返す。ログの引数に秘密の値を渡さないこと。"""
+    logger.warning(message, *args)
+    return DiscoveryUnavailable()
 
 
 class SecretsManagerSecretSource:
@@ -69,34 +110,25 @@ class SecretsManagerSecretSource:
             return self._cached
         try:
             response = self._client.get_secret_value(SecretId=self._secret_arn)
-        except ClientError as error:
+        except (ClientError, BotoCoreError) as error:
             # AWS のエラーメッセージは ARN などを含みうるので、エラーコードだけを残す
-            code = error.response.get("Error", {}).get("Code", "unknown")
-            logger.warning("発見用 secret の取得に失敗しました: code=%s", code)
-            raise DiscoveryUnavailableError() from None
-        except BotoCoreError as error:
-            logger.warning("発見用 secret の取得に失敗しました: error=%s", type(error).__name__)
-            raise DiscoveryUnavailableError() from None
+            code = (
+                error.response.get("Error", {}).get("Code", "unknown")
+                if isinstance(error, ClientError)
+                else type(error).__name__
+            )
+            raise _unavailable("発見用 secret の取得に失敗しました: code=%s", code) from None
         secret_string = response.get("SecretString")
         if not secret_string:
-            logger.warning("発見用 secret の取得に失敗しました: SecretString がありません")
-            raise DiscoveryUnavailableError()
-        self._cached = _client_secret_of(secret_string)
+            raise _unavailable("発見用 secret の取得に失敗しました: SecretString がありません")
+        value = _json_object(secret_string)
+        client_secret = value.get("client_secret") if value is not None else None
+        self._cached = client_secret if isinstance(client_secret, str) else secret_string
         return self._cached
 
     def invalidate(self) -> None:
         """secret のローテーションに備え、次回は取り直す。"""
         self._cached = None
-
-
-def _client_secret_of(secret_string: str) -> str:
-    try:
-        value = json.loads(secret_string)
-    except ValueError:
-        return secret_string
-    if isinstance(value, Mapping) and isinstance(value.get("client_secret"), str):
-        return str(value["client_secret"])
-    return secret_string
 
 
 @dataclass
@@ -153,50 +185,23 @@ class M2MTokenProvider:
                 HTTP_TIMEOUT_SECONDS,
             )
         except TransportError as error:
-            logger.warning("M2M トークンの取得に失敗しました: transport=%s", error)
-            raise DiscoveryUnavailableError() from None
+            raise _unavailable("M2M トークンの取得に失敗しました: transport=%s", error) from None
         if response.status in (400, 401):
             # secret がローテーションされた可能性がある。次回は secret から取り直す
             self._secrets.invalidate()
-        body = _parse_json_object(response) if response.status == 200 else None
+        body = _ok_json(response)
         token = body.get("access_token") if body else None
         expires_in = body.get("expires_in") if body else None
         if (
             not isinstance(token, str)
-            or _ACCESS_TOKEN.fullmatch(token) is None
+            or _ACCESS_TOKEN_PATTERN.fullmatch(token) is None
             or not isinstance(expires_in, int)
             or isinstance(expires_in, bool)
             or expires_in <= 0
         ):
-            logger.warning("M2M トークンの取得に失敗しました: status=%s", response.status)
-            raise DiscoveryUnavailableError()
+            raise _unavailable("M2M トークンの取得に失敗しました: status=%s", response.status)
         refresh_at = self._clock() + max(expires_in - TOKEN_EXPIRY_MARGIN_SECONDS, 0)
         return _CachedToken(value=token, refresh_at=refresh_at)
-
-
-@dataclass(frozen=True)
-class CatalogItem:
-    """カタログ項目の要約（公開承認済みの版）。"""
-
-    record_id: str
-    name: str
-    display_name: str
-    description: str
-    record_type: str
-    descriptor_types: tuple[str, ...]
-    record_version: str
-    updated_at: str
-
-    @property
-    def is_a2a(self) -> bool:
-        return "a2aAgentCard" in self.descriptor_types
-
-
-@dataclass(frozen=True)
-class CatalogPage:
-    items: tuple[CatalogItem, ...]
-    # 次のページがなければ None。AWS の nextToken をそのまま中継する
-    next_token: str | None
 
 
 def _str_or_empty(value: Any) -> str:
@@ -207,15 +212,17 @@ def _parse_item(value: Any) -> CatalogItem | None:
     if not isinstance(value, Mapping):
         return None
     record_id, name, record_type = value.get("recordId"), value.get("name"), value.get("recordType")
-    if not all(isinstance(v, str) and v for v in (record_id, name, record_type)):
+    if not (isinstance(record_id, str) and record_id and isinstance(name, str) and name):
+        return None
+    if not is_catalog_record_type(record_type):
         return None
     descriptor_types = value.get("descriptorTypes")
     return CatalogItem(
-        record_id=str(record_id),
-        name=str(name),
+        record_id=record_id,
+        name=name,
         display_name=_str_or_empty(value.get("displayName")),
         description=_str_or_empty(value.get("description")),
-        record_type=str(record_type),
+        record_type=record_type,
         descriptor_types=(
             tuple(d for d in descriptor_types if isinstance(d, str))
             if isinstance(descriptor_types, list)
@@ -227,7 +234,7 @@ def _parse_item(value: Any) -> CatalogItem | None:
 
 
 def _parse_page(response: TransportResponse) -> CatalogPage | None:
-    body = _parse_json_object(response)
+    body = _ok_json(response)
     if body is None:
         return None
     records = body.get("registryRecords", [])
@@ -235,11 +242,19 @@ def _parse_page(response: TransportResponse) -> CatalogPage | None:
     if not isinstance(records, list) or not (next_token is None or isinstance(next_token, str)):
         return None
     items = [_parse_item(record) for record in records]
-    if any(item is None for item in items):
+    parsed = [item for item in items if item is not None]
+    if len(parsed) != len(items):
         return None
-    return CatalogPage(
-        items=tuple(item for item in items if item is not None),
-        next_token=next_token or None,
+    return CatalogPage(items=tuple(parsed), next_token=next_token or None)
+
+
+def _rejects_next_token(response: TransportResponse) -> bool:
+    """ValidationException（rest-json）の fieldList に nextToken があるか。"""
+    if response.status != 400:
+        return False
+    fields = (_json_object(response.body) or {}).get("fieldList")
+    return isinstance(fields, list) and any(
+        isinstance(field, Mapping) and field.get("name") == "nextToken" for field in fields
     )
 
 
@@ -251,13 +266,10 @@ class DiscoveryClient:
     ) -> None:
         self._tokens = tokens
         self._transport = transport
-        # 宛先は設定の Registry ARN だけから組み立てる。ARN は1つの path 要素として符号化する
-        self._list_url = (
-            f"https://agent-registry.{settings.region}.api.aws/registries/"
-            f"{quote(settings.registry_arn, safe='')}/discoverable-records-list"
-        )
+        # 宛先は設定の Registry ARN だけから決まる。利用者の入力は使わない
+        self._list_url = settings.discoverable_records_list_url
 
-    def list_records(self, record_type: str, next_token: str | None) -> CatalogPage:
+    def list_records(self, record_type: CatalogRecordType, next_token: str | None) -> CatalogPage:
         """公開承認済みの Registry レコードを、種別で絞り込んで1ページ分返す。
 
         AWS はページが疎であることを保証しない（0件でも nextToken が返ることがある）。
@@ -270,44 +282,42 @@ class DiscoveryClient:
             payload["nextToken"] = next_token
         body = json.dumps(payload).encode()
 
-        for attempt in range(MAX_AUTH_RETRIES + 1):
-            headers = {
-                "authorization": f"Bearer {self._tokens.get()}",
-                "content-type": "application/json",
-                "accept": "application/json",
-            }
-            try:
-                response = self._transport(
-                    "POST", self._list_url, headers, body, HTTP_TIMEOUT_SECONDS
-                )
-            except TransportError as error:
-                logger.warning("発見 API の呼び出しに失敗しました: transport=%s", error)
-                raise DiscoveryUnavailableError() from None
-            if response.status != 401:
-                break
-            # トークンが失効・取り消された可能性がある。取り直して再試行する（回数は制限する）
-            logger.info("発見 API が 401 を返しました: attempt=%s", attempt + 1)
+        response = self._post(body)
+        if response.status == 401:
+            # トークンが失効・取り消された可能性がある。取り直して1回だけ再試行する
+            logger.info("発見 API が 401 を返しました。トークンを取り直して再試行します")
             self._tokens.invalidate()
-        else:
-            logger.warning("発見 API の認証に失敗しました: 再取得の上限に達しました")
-            raise DiscoveryUnavailableError()
+            response = self._post(body)
+            if response.status == 401:
+                raise _unavailable("発見 API の認証に失敗しました: 再取得後も 401 でした")
 
-        if response.status == 400 and next_token is not None:
+        if next_token is not None and _rejects_next_token(response):
             logger.info("発見 API が nextToken を拒否しました: status=400")
-            raise InvalidPageTokenError()
-        page = _parse_page(response) if response.status == 200 else None
+            raise PageTokenRejected()
+        page = _parse_page(response)
         if page is None:
-            logger.warning("発見 API が想定外の応答を返しました: status=%s", response.status)
-            raise DiscoveryUnavailableError()
+            raise _unavailable("発見 API が想定外の応答を返しました: status=%s", response.status)
         return page
+
+    def _post(self, body: bytes) -> TransportResponse:
+        headers = {
+            "authorization": f"Bearer {self._tokens.get()}",
+            "content-type": "application/json",
+            "accept": "application/json",
+        }
+        try:
+            return self._transport("POST", self._list_url, headers, body, HTTP_TIMEOUT_SECONDS)
+        except TransportError as error:
+            raise _unavailable("発見 API の呼び出しに失敗しました: transport=%s", error) from None
 
 
 def create_discovery_client(
-    settings: DiscoverySettings,
-    transport: Transport,
-    clock: Clock,
-    secrets_client: SecretsManagerClient,
+    settings: DiscoverySettings, dependencies: DiscoveryDependencies
 ) -> DiscoveryClient:
+    """発見アダプターを組み立てる。通信は最初の呼び出しまで行わない。"""
+    secrets_client = dependencies.secrets_client or boto3.client(
+        "secretsmanager", region_name=settings.client_secret_region
+    )
     secrets = SecretsManagerSecretSource(secrets_client, settings.client_secret_arn)
-    tokens = M2MTokenProvider(settings, secrets, transport, clock)
-    return DiscoveryClient(settings, tokens, transport)
+    tokens = M2MTokenProvider(settings, secrets, dependencies.transport, dependencies.clock)
+    return DiscoveryClient(settings, tokens, dependencies.transport)

@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { CatalogItem, CatalogPage } from '../api/client'
 import { CatalogPanel } from '../catalog/CatalogView'
-import { goNext, initialCatalogState, received, type CatalogState } from '../catalog/pager'
+import { goNext, initialCatalogState, pageReceived, type CatalogState } from '../catalog/pager'
 
 const noop = () => {}
 const render = (state: CatalogState) =>
@@ -49,8 +49,8 @@ describe('カタログ画面の表示', () => {
 
   it('カタログ項目の表示名・名前・版・説明と、A2A かどうかを表示する', () => {
     const html = render(
-      received(
-        initialCatalogState(),
+      pageReceived(
+        initialCatalogState('AGENT'),
         page([item(), item({ recordId: 'rec-2', name: 'plain', displayName: '', isA2A: false })]),
       ),
     )
@@ -65,11 +65,11 @@ describe('カタログ画面の表示', () => {
   })
 
   it('公開承認は実行許可ではないことを明示する', () => {
-    expect(render(initialCatalogState())).toContain('公開承認は実行許可ではありません')
+    expect(render(initialCatalogState('AGENT'))).toContain('公開承認は実行許可ではありません')
   })
 
   it('次のページがあれば進め、1ページ目では前のページに戻れない', () => {
-    const html = render(received(initialCatalogState(), page([item()], 'token-2')))
+    const html = render(pageReceived(initialCatalogState('AGENT'), page([item()], 'token-2')))
 
     expect(html).toMatch(/<button[^>]*>前のページ<\/button>/)
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>前のページ<\/button>/)
@@ -78,8 +78,8 @@ describe('カタログ画面の表示', () => {
   })
 
   it('最後のページでは次のページへ進めない', () => {
-    const state = received(
-      goNext(received(initialCatalogState(), page([item()], 'token-2'))),
+    const state = pageReceived(
+      goNext(pageReceived(initialCatalogState('AGENT'), page([item()], 'token-2'))),
       page([item({ recordId: 'rec-3' })]),
     )
     const html = render(state)
@@ -90,8 +90,8 @@ describe('カタログ画面の表示', () => {
   })
 
   it('0件のときは、続きがなければ「ありません」、続きがあれば次のページを促す', () => {
-    const none = render(received(initialCatalogState('SKILL'), page([])))
-    const sparse = render(received(initialCatalogState('SKILL'), page([], 'token-2')))
+    const none = render(pageReceived(initialCatalogState('SKILL'), page([])))
+    const sparse = render(pageReceived(initialCatalogState('SKILL'), page([], 'token-2')))
 
     expect(none).toContain('公開承認済みの Skill はありません。')
     expect(sparse).toContain('このページには項目がありません。次のページを確認してください。')
@@ -100,7 +100,7 @@ describe('カタログ画面の表示', () => {
 
   it('取得の失敗は0件と区別して表示し、再試行できる', () => {
     const html = render({
-      ...initialCatalogState(),
+      ...initialCatalogState('AGENT'),
       view: { status: 'error', message: 'カタログを取得できませんでした。', requiresLogin: false },
     })
 
@@ -112,16 +112,16 @@ describe('カタログ画面の表示', () => {
   })
 
   it('2ページ目以降で失敗したら、最初のページに戻れる（期限切れの token を再送し続けない）', () => {
-    const onSecondPage = goNext(received(initialCatalogState(), page([item()], 'token-2')))
+    const onSecondPage = goNext(pageReceived(initialCatalogState('AGENT'), page([item()], 'token-2')))
     const error = { status: 'error', message: 'ページの指定が正しくありません。', requiresLogin: false } as const
 
     expect(render({ ...onSecondPage, view: error })).toContain('最初のページに戻る')
-    expect(render({ ...initialCatalogState(), view: error })).not.toContain('最初のページに戻る')
+    expect(render({ ...initialCatalogState('AGENT'), view: error })).not.toContain('最初のページに戻る')
   })
 
   it('401 のときだけ、もう一度ログインするボタンを表示する', () => {
     const html = render({
-      ...initialCatalogState(),
+      ...initialCatalogState('AGENT'),
       view: { status: 'error', message: '認証が必要です。', requiresLogin: true },
     })
 
