@@ -87,3 +87,15 @@ class CatalogItemNotFoundError(ApiError):
     status = 404
     code = "CATALOG_ITEM_NOT_FOUND"
     default_message = "公開承認済みのカタログ項目が見つかりませんでした。"
+
+
+class A2ASearchNotReadyError(ApiError):
+    """A2A 検索用 metadata（isA2A）の準備が終わっておらず、A2A で絞り込む検索を受け付けない。
+
+    未補完のレコードは AWS の検索フィルターで黙って除外され、0件と区別できない。
+    そのため、準備が終わるまでは0件ではなく、このエラーを返す。
+    """
+
+    status = 503
+    code = "A2A_SEARCH_NOT_READY"
+    default_message = "A2A での絞り込み検索は準備中です。A2A の Agent は一覧の「A2A の Agent のみ」で確認してください。"

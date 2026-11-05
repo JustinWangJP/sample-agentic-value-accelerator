@@ -29,13 +29,16 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from registry_portal.config import DiscoverySettings
 from registry_portal.domain.catalog import (
+    A2A_DESCRIPTOR_TYPE,
     CATALOG_RECORD_TYPES,
     CatalogDetail,
     CatalogItem,
     CatalogPage,
     CatalogRecordType,
     CatalogSearch,
+    CatalogSearchResult,
     is_catalog_record_type,
+    is_data_classification,
 )
 from registry_portal.services.http import (
     Transport,
@@ -55,6 +58,7 @@ Clock = Callable[[], float]
 TOKEN_EXPIRY_MARGIN_SECONDS = 60
 # 1ページの件数。AWS の上限は100
 PAGE_SIZE = 50
+# 検索で返す件数。AWS の上限も20
 SEARCH_LIMIT = 20
 HTTP_TIMEOUT_SECONDS = 5.0
 # アクセストークン（JWT）として受け付ける文字。改行などを含む値をヘッダーに載せない
@@ -267,6 +271,7 @@ def _parse_detail(record: Mapping[str, Any]) -> CatalogDetail | None:
     if item is None or not item.record_version or not item.descriptor_types or not descriptors:
         return None
     metadata = _mapping_or_empty(record.get("customMetadata"))
+    classification = metadata.get("dataClassification")
 
     definition = dict(descriptors)
     skill = dict(_mapping_or_empty(descriptors.get("agentSkillsDefinition")))
@@ -288,10 +293,7 @@ def _parse_detail(record: Mapping[str, Any]) -> CatalogDetail | None:
         item=item,
         definition=definition,
         owner_team=_str_or_empty(metadata.get("ownerTeam")),
-        contact=_str_or_empty(metadata.get("contact")),
-        terms_of_use=_str_or_empty(metadata.get("termsOfUse")),
-        connection_reference=_str_or_empty(metadata.get("connectionReference")),
-        data_classification=_str_or_empty(metadata.get("dataClassification")),
+        data_classification=classification if is_data_classification(classification) else None,
         skill_markdown=skill_markdown,
     )
 
@@ -317,8 +319,8 @@ class DiscoveryClient:
         # 宛先は設定の Registry ARN だけから決まる。利用者の入力は使わない
         self._registry_arn = settings.registry_arn
         self._list_url = settings.discoverable_records_list_url
-        self._search_url = f"{settings.registry_endpoint}/discoverable-records-search"
-        self._batch_url = f"{settings.registry_endpoint}/discoverable-records-batch"
+        self._search_url = settings.discoverable_records_search_url
+        self._batch_url = settings.discoverable_records_batch_url
 
     def list_records(
         self, record_type: CatalogRecordType, next_token: str | None, *, a2a_only: bool = False
@@ -329,7 +331,7 @@ class DiscoveryClient:
         """
         filters = [{"name": "recordType", "values": [record_type]}]
         if a2a_only:
-            filters.append({"name": "descriptorType", "values": ["a2aAgentCard"]})
+            filters.append({"name": "descriptorType", "values": [A2A_DESCRIPTOR_TYPE]})
         payload: dict[str, Any] = {"filters": filters, "maxResults": PAGE_SIZE}
         if next_token is not None:
             payload["nextToken"] = next_token
@@ -342,11 +344,14 @@ class DiscoveryClient:
             raise _unavailable("発見 API が想定外の応答を返しました: status=%s", response.status)
         return page
 
-    def search_records(self, search: CatalogSearch) -> tuple[CatalogItem, ...]:
-        """AWS の順位を保ってカタログ項目を返す。"""
-        record_type = search.record_type
-        if search.a2a is not None:
-            record_type = "AGENT"
+    def search_records(self, search: CatalogSearch) -> CatalogSearchResult:
+        """AWS の順位を保ってカタログ項目を返す。
+
+        条件はすべて AWS の検索フィルターに含め、順位付けの前に適用させる。
+        A2A の条件は descriptor から導出した検索用の写し（customMetadata.isA2A）で絞る。
+        写しと descriptor が食い違うレコードは、descriptor を正として除外し、件数を返す。
+        """
+        record_type = search.record_type_filter
         record_type_filter: dict[str, object] = (
             {"$eq": record_type} if record_type else {"$in": CATALOG_RECORD_TYPES}
         )
@@ -373,6 +378,7 @@ class DiscoveryClient:
             raise _unavailable("検索 API が想定外の応答を返しました: status=%s", response.status)
 
         items: list[CatalogItem] = []
+        inconsistent = 0
         for result in records[:SEARCH_LIMIT]:
             record = _mapping_or_empty(result)
             item = _parse_item(record)
@@ -382,18 +388,16 @@ class DiscoveryClient:
                 or not isinstance(record.get("descriptors"), Mapping)
             ):
                 raise _unavailable("検索 API の公開承認済みレコードを読み取れませんでした")
-            if search.a2a is not None:
-                indexed_a2a = _mapping_or_empty(record.get("customMetadata")).get("isA2A")
-                if (
-                    item.record_type != "AGENT"
-                    or indexed_a2a is not search.a2a
-                    or item.is_a2a != search.a2a
-                ):
-                    raise _unavailable(
-                        "検索 API の A2A 検索用 metadata と descriptor が一致しません"
-                    )
+            if search.a2a is not None and item.is_a2a != search.a2a:
+                inconsistent += 1
+                continue
             items.append(item)
-        return tuple(items)
+        if inconsistent:
+            logger.warning(
+                "A2A 検索用 metadata と descriptor が一致しないレコードを除外しました: count=%s",
+                inconsistent,
+            )
+        return CatalogSearchResult(items=tuple(items), inconsistent_a2a_count=inconsistent)
 
     def get_record(self, record_id: str) -> CatalogDetail | None:
         """指定した1件の公開承認済みの版を取得する。"""

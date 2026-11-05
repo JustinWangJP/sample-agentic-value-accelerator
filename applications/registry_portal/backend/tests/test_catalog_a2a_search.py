@@ -8,21 +8,35 @@ import pytest
 
 from registry_portal.services.http import TransportResponse
 
-from test_catalog_discovery import SEARCH_URL, SearchTransport, search_event
-from test_catalog_list import SentRequest, call, json_response, make_handler, summary
+from catalog_helpers import (
+    SEARCH_URL,
+    FakeTransport,
+    SentRequest,
+    call,
+    json_response,
+    make_handler,
+    search_event,
+    summary,
+)
+
+A2A_READY = {"A2A_SEARCH_ENABLED": "true"}
 
 
-def agent(record_id: str, a2a: bool) -> dict[str, Any]:
+def agent(record_id: str, a2a: bool, *, indexed_a2a: bool | None = None) -> dict[str, Any]:
+    """descriptor と、検索用の写し（customMetadata.isA2A）を持つ Agent。"""
     record = summary(
         record_id,
         descriptors={"a2aAgentCard" if a2a else "http": {"data": "{}"}},
-        customMetadata={"isA2A": a2a, "dataClassification": "private"},
+        customMetadata={
+            "isA2A": a2a if indexed_a2a is None else indexed_a2a,
+            "dataClassification": "private",
+        },
     )
     del record["descriptorTypes"]
     return record
 
 
-class RankedSearchTransport(SearchTransport):
+class RankedSearchTransport(FakeTransport):
     """AWS と同様にフィルターを適用してから順位順の上限件数を返す。"""
 
     def __init__(self, records: list[dict[str, Any]]) -> None:
@@ -59,7 +73,7 @@ def test_a2a_filter_finds_matches_beyond_twenty_other_agents(a2a: bool) -> None:
     transport = RankedSearchTransport(records)
 
     status, body = call(
-        make_handler(transport),
+        make_handler(transport, env=A2A_READY),
         search_event({"query": "受注を処理したい", "a2a": a2a, "dataClassification": "private"}),
     )
 
@@ -67,39 +81,46 @@ def test_a2a_filter_finds_matches_beyond_twenty_other_agents(a2a: bool) -> None:
     assert [item["recordId"] for item in body["items"]] == [
         f"match-{index:02d}" for index in range(20)
     ]
-    assert len(transport.to(SEARCH_URL)) == 1
+    assert body["inconsistentA2ACount"] == 0
+    (request,) = transport.to(SEARCH_URL)
+    assert request.json()["filters"] == {
+        "$and": [
+            {"recordType": {"$eq": "AGENT"}},
+            {"customMetadata.isA2A": {"$eq": a2a}},
+            {"customMetadata.dataClassification": {"$eq": "private"}},
+        ],
+    }
 
 
-@pytest.mark.parametrize("metadata", [{}, {"isA2A": False}, {"isA2A": "true"}, {"isA2A": 1}])
-def test_a2a_search_rejects_missing_or_inconsistent_metadata(metadata: dict[str, Any]) -> None:
-    record = agent("inconsistent", True)
-    record["customMetadata"] = metadata
-    transport = SearchTransport()
-    transport.registry.append(json_response(200, {"registryRecords": [record]}))
+@pytest.mark.parametrize("a2a", [True, False])
+def test_records_whose_search_metadata_disagrees_with_the_descriptor_are_excluded_and_counted(
+    a2a: bool,
+) -> None:
+    # 検索用の写しが誤っていても、descriptor を正として扱う。ほかの結果は返す
+    records = [
+        agent("consistent-1", a2a),
+        agent("stale", not a2a, indexed_a2a=a2a),
+        agent("consistent-2", a2a),
+    ]
+    transport = RankedSearchTransport(records)
 
-    status, body = call(make_handler(transport), search_event({"query": "受注", "a2a": True}))
+    status, body = call(
+        make_handler(transport, env=A2A_READY), search_event({"query": "受注", "a2a": a2a})
+    )
 
-    assert status == 502
-    assert body["error"]["code"] == "DISCOVERY_UNAVAILABLE"
-
-
-def test_a2a_search_rejects_descriptors_that_disagree_with_the_filter() -> None:
-    record = agent("inconsistent", False)
-    record["customMetadata"]["isA2A"] = True
-    transport = SearchTransport()
-    transport.registry.append(json_response(200, {"registryRecords": [record]}))
-
-    status, body = call(make_handler(transport), search_event({"query": "受注", "a2a": True}))
-
-    assert status == 502
-    assert body["error"]["code"] == "DISCOVERY_UNAVAILABLE"
+    assert status == 200
+    assert [item["recordId"] for item in body["items"]] == ["consistent-1", "consistent-2"]
+    assert all(item["isA2A"] is a2a for item in body["items"])
+    assert body["inconsistentA2ACount"] == 1
 
 
 def test_a2a_search_schema_error_is_not_reported_as_no_matches() -> None:
-    transport = SearchTransport()
+    transport = FakeTransport()
     transport.registry.append(json_response(400, {"message": "Unknown custom metadata field"}))
 
-    status, body = call(make_handler(transport), search_event({"query": "受注", "a2a": True}))
+    status, body = call(
+        make_handler(transport, env=A2A_READY), search_event({"query": "受注", "a2a": True})
+    )
 
     assert status == 502
     assert body["error"]["code"] == "DISCOVERY_UNAVAILABLE"

@@ -14,7 +14,11 @@ from typing import Any
 
 from registry_portal.auth import Caller, authorize
 from registry_portal.catalog import get_catalog_detail, list_catalog, search_catalog
-from registry_portal.config import load_auth_settings, load_discovery_settings
+from registry_portal.config import (
+    load_auth_settings,
+    load_catalog_settings,
+    load_discovery_settings,
+)
 from registry_portal.errors import ApiError, RequestValidationError, RouteNotFoundError
 from registry_portal.services.catalog_supplement import CatalogSupplement, SupplementClient
 from registry_portal.services.discovery import DiscoveryDependencies, create_discovery_client
@@ -56,6 +60,23 @@ def _claims_of(event: LambdaEvent) -> Mapping[str, Any] | None:
 def _route_key(event: LambdaEvent) -> str:
     http = _mapping_or_empty(_request_context(event).get("http"))
     return f"{http.get('method', '')} {http.get('path', '')}"
+
+
+# path に1つの要素を含むルート。(実際の path の接頭辞, ルート表のキー)
+_PARAMETERIZED_ROUTES = (("GET /api/catalog/", "GET /api/catalog/{recordId}"),)
+
+
+def _route_template(key: str) -> tuple[str, str]:
+    """ルート表のキーと、path パラメーター（なければ空文字）を返す。"""
+    for prefix, template in _PARAMETERIZED_ROUTES:
+        parameter = key.removeprefix(prefix)
+        if key.startswith(prefix) and parameter and "/" not in parameter:
+            return template, parameter
+    return key, ""
+
+
+def _path_parameter(event: LambdaEvent) -> str:
+    return _route_template(_route_key(event))[1]
 
 
 def _query_of(event: LambdaEvent) -> Mapping[str, str]:
@@ -111,47 +132,54 @@ def create_management_handler(
     """
     settings = load_auth_settings(environ)
     discovery_settings = load_discovery_settings(environ)
+    catalog_settings = load_catalog_settings(environ)
     discovery_client = create_discovery_client(
         discovery_settings, discovery or DiscoveryDependencies()
     )
-    table_name = environ.get("CATALOG_REFERENCES_TABLE_NAME", "").strip()
     supplement = (
-        CatalogSupplement(table_name, discovery_settings, supplement_client) if table_name else None
+        CatalogSupplement(
+            catalog_settings.supplement_table_name,
+            discovery_settings.registry_arn,
+            discovery_settings.registry_region,
+            supplement_client,
+        )
+        if catalog_settings.supplement_table_name
+        else None
     )
 
+    # カタログは Viewer（ログインした全員）が閲覧できる。発見用 M2M トークンでポータルが代理で問い合わせる
     def get_catalog(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        # Viewer（ログインした全員）が閲覧できる。発見用 M2M トークンでポータルが代理で問い合わせる
         return list_catalog(discovery_client, _query_of(event))
 
     def post_search(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
         if _query_of(event):
             raise RequestValidationError("検索条件はリクエスト本文に指定してください。")
-        return search_catalog(discovery_client, _json_body(event))
+        return search_catalog(
+            discovery_client,
+            _json_body(event),
+            a2a_search_enabled=catalog_settings.a2a_search_enabled,
+        )
+
+    def get_detail(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        if _query_of(event):
+            raise RequestValidationError("カタログ詳細にクエリパラメーターは指定できません。")
+        return get_catalog_detail(discovery_client, _path_parameter(event), supplement)
 
     routes: Mapping[str, Route] = {
         **MANAGEMENT_ROUTES,
         "GET /api/catalog": get_catalog,
         "POST /api/catalog/search": post_search,
+        "GET /api/catalog/{recordId}": get_detail,
     }
 
     def handler(event: LambdaEvent, context: Any) -> LambdaResponse:
         request_id = _request_context(event).get("requestId")
         try:
             caller = authorize(_claims_of(event), settings)
-            key = _route_key(event)
-            route = routes.get(key)
-            detail_prefix = "GET /api/catalog/"
-            record_id = key.removeprefix(detail_prefix)
-            if route is not None:
-                status, body = route(caller, event)
-            elif key.startswith(detail_prefix) and record_id and "/" not in record_id:
-                if _query_of(event):
-                    raise RequestValidationError(
-                        "カタログ詳細にクエリパラメーターは指定できません。"
-                    )
-                status, body = get_catalog_detail(discovery_client, record_id, supplement)
-            else:
+            route = routes.get(_route_template(_route_key(event))[0])
+            if route is None:
                 raise RouteNotFoundError()
+            status, body = route(caller, event)
             return _json_response(status, body)
         except ApiError as error:
             # ログにはトークンや claims の全文を出さない

@@ -2,220 +2,34 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
-from collections import deque
-from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import parse_qs
 
-import boto3
 import pytest
-from botocore.stub import Stubber
 
-from registry_portal.app import create_management_handler
-from registry_portal.services.discovery import DiscoveryDependencies
 from registry_portal.services.http import TransportError, TransportResponse
 
-ISSUER = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_EXAMPLE"
-HUMAN_CLIENT_ID = "human-spa-client"
-REGISTRY_ARN = "arn:aws:agent-registry:us-east-1:123456789012:registry/abcdEFGH1234"
-TOKEN_URL = "https://discovery.auth.us-east-1.amazoncognito.com/oauth2/token"
-SECRET_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:discovery-m2m-AbCdEf"
-CLIENT_SECRET = "s3cr3t-client-value"
-
-ENV = {
-    "COGNITO_ISSUER": ISSUER,
-    "HUMAN_CLIENT_ID": HUMAN_CLIENT_ID,
-    "REGISTRY_ARN": REGISTRY_ARN,
-    "DISCOVERY_TOKEN_URL": TOKEN_URL,
-    "DISCOVERY_CLIENT_ID": "discovery-m2m-client",
-    "DISCOVERY_CLIENT_SECRET_ARN": SECRET_ARN,
-    "DISCOVERY_SCOPE": "registry/discovery.read",
-}
-
-LIST_URL = (
-    "https://agent-registry.us-east-1.api.aws/registries/"
-    "arn%3Aaws%3Aagent-registry%3Aus-east-1%3A123456789012%3Aregistry%2FabcdEFGH1234"
-    "/discoverable-records-list"
+from catalog_helpers import (
+    CLIENT_SECRET,
+    LIST_URL,
+    REGISTRY_ARN,
+    SECRET_ARN,
+    TOKEN_URL,
+    Clock,
+    FakeSecrets,
+    FakeTransport,
+    access_claims,
+    basic_credentials,
+    botocore_discovery_request,
+    call,
+    catalog_event,
+    json_response,
+    make_handler,
+    page,
+    summary,
 )
-
-
-@dataclass
-class SentRequest:
-    method: str
-    url: str
-    headers: dict[str, str]
-    body: bytes | None
-
-    def json(self) -> Any:
-        assert self.body is not None
-        return json.loads(self.body)
-
-
-def json_response(status: int, body: Any) -> TransportResponse:
-    return TransportResponse(status=status, body=json.dumps(body).encode())
-
-
-def summary(record_id: str, record_type: str = "AGENT", **overrides: Any) -> dict[str, Any]:
-    """ListDiscoverableRegistryRecords が返す DiscoverableRegistryRecordSummary。"""
-    record: dict[str, Any] = {
-        "registryArn": REGISTRY_ARN,
-        "recordArn": f"{REGISTRY_ARN}/record/{record_id}",
-        "recordId": record_id,
-        "name": f"name-{record_id}",
-        "displayName": f"表示名 {record_id}",
-        "description": f"説明 {record_id}",
-        "recordType": record_type,
-        "descriptorTypes": ["custom"],
-        "recordVersion": "1.0.0",
-        "status": "APPROVED",
-        "createdAt": "2026-11-01T00:00:00Z",
-        "updatedAt": "2026-11-02T00:00:00Z",
-    }
-    record.update(overrides)
-    return record
-
-
-@dataclass
-class FakeTransport:
-    """Cognito のトークンエンドポイントと、Registry の発見 API を模す。"""
-
-    registry: deque[TransportResponse | TransportError] = field(default_factory=deque)
-    tokens: deque[TransportResponse | TransportError] = field(default_factory=deque)
-    requests: list[SentRequest] = field(default_factory=list)
-    issued: int = 0
-
-    def __call__(
-        self,
-        method: str,
-        url: str,
-        headers: dict[str, str],
-        body: bytes | None,
-        timeout: float,
-    ) -> TransportResponse:
-        self.requests.append(SentRequest(method, url, dict(headers), body))
-        if url == TOKEN_URL:
-            return self._next(self.tokens) if self.tokens else self._issue()
-        if url == LIST_URL:
-            return self._next(self.registry)
-        raise AssertionError(f"想定外の宛先: {url}")
-
-    def _issue(self) -> TransportResponse:
-        self.issued += 1
-        return json_response(
-            200,
-            {
-                "access_token": f"m2m-token-{self.issued}",
-                "expires_in": 3600,
-                "token_type": "Bearer",
-            },
-        )
-
-    @staticmethod
-    def _next(queue: deque[TransportResponse | TransportError]) -> TransportResponse:
-        item = queue.popleft()
-        if isinstance(item, TransportError):
-            raise item
-        return item
-
-    def to(self, url: str) -> list[SentRequest]:
-        return [r for r in self.requests if r.url.split("?")[0] == url.split("?")[0]]
-
-
-class FakeSecrets:
-    """Secrets Manager の GetSecretValue を Botocore Stubber で模す。
-
-    応答は呼ばれる回数だけ積む。積んだ数より多く呼ばれると Stubber が失敗させる。
-    """
-
-    def __init__(self, *secret_strings: str, error_code: str | None = None) -> None:
-        self.client = boto3.client(
-            "secretsmanager",
-            region_name="us-east-1",
-            aws_access_key_id="testing",
-            aws_secret_access_key="testing",
-        )
-        self.stubber = Stubber(self.client)
-        if error_code is not None:
-            self._fail(error_code)
-        for secret_string in secret_strings or (() if error_code else (CLIENT_SECRET,)):
-            self._respond(secret_string)
-        self.stubber.activate()
-
-    def _respond(self, secret_string: str) -> None:
-        self.stubber.add_response(
-            "get_secret_value",
-            {"ARN": SECRET_ARN, "Name": "discovery-m2m", "SecretString": secret_string},
-            expected_params={"SecretId": SECRET_ARN},
-        )
-
-    def _fail(self, code: str) -> None:
-        self.stubber.add_client_error(
-            "get_secret_value",
-            service_error_code=code,
-            service_message=f"詳細 {SECRET_ARN}",
-            http_status_code=400,
-            expected_params={"SecretId": SECRET_ARN},
-        )
-
-
-class Clock:
-    def __init__(self) -> None:
-        self.now = 1_000_000.0
-
-    def __call__(self) -> float:
-        return self.now
-
-
-def access_claims() -> dict[str, Any]:
-    return {
-        "iss": ISSUER,
-        "sub": "11111111-2222-3333-4444-555555555555",
-        "client_id": HUMAN_CLIENT_ID,
-        "token_use": "access",
-    }
-
-
-def catalog_event(
-    query: dict[str, str] | None = None, claims: dict[str, Any] | None = None
-) -> dict[str, Any]:
-    return {
-        "version": "2.0",
-        "routeKey": "GET /api/catalog",
-        "rawPath": "/api/catalog",
-        "headers": {},
-        "queryStringParameters": query,
-        "requestContext": {
-            "requestId": "req-cat",
-            "http": {"method": "GET", "path": "/api/catalog"},
-            "authorizer": {"jwt": {"claims": claims or access_claims(), "scopes": None}},
-        },
-        "isBase64Encoded": False,
-    }
-
-
-def basic_credentials(request: SentRequest) -> str:
-    return base64.b64decode(request.headers["authorization"].removeprefix("Basic ")).decode()
-
-
-def make_handler(
-    transport: FakeTransport, clock: Clock | None = None, secrets: FakeSecrets | None = None
-) -> Any:
-    return create_management_handler(
-        ENV,
-        discovery=DiscoveryDependencies(
-            transport=transport,
-            clock=clock or Clock(),
-            secrets_client=(secrets or FakeSecrets()).client,
-        ),
-    )
-
-
-def call(handler: Any, event: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-    response = handler(event, None)
-    return response["statusCode"], json.loads(response["body"])
 
 
 def test_viewer_lists_first_page_of_agents_with_m2m_bearer_token() -> None:
@@ -277,13 +91,6 @@ def test_viewer_lists_first_page_of_agents_with_m2m_bearer_token() -> None:
         "scope": ["registry/discovery.read"],
     }
     assert basic_credentials(token_request) == f"discovery-m2m-client:{CLIENT_SECRET}"
-
-
-def page(*records: dict[str, Any], next_token: str | None = None) -> TransportResponse:
-    body: dict[str, Any] = {"registryRecords": list(records)}
-    if next_token is not None:
-        body["nextToken"] = next_token
-    return json_response(200, body)
 
 
 def test_next_token_from_viewer_is_relayed_to_registry_and_last_page_has_none() -> None:
@@ -700,27 +507,3 @@ def test_list_request_matches_botocore_model_serialization(query: dict[str, str]
     assert sent.method == expected["method"]
     assert sent.url == expected["url"]
     assert sent.json() == json.loads(expected["body"])
-
-
-def botocore_discovery_request(operation: str, **params: Any) -> dict[str, Any]:
-    """Botocore が送る直前のリクエストを取り出す（送信はしない）。"""
-    client = boto3.client(
-        "agent-registry",
-        region_name="us-east-1",
-        aws_access_key_id="testing",
-        aws_secret_access_key="testing",
-    )
-    captured: dict[str, Any] = {}
-
-    class _Captured(Exception):
-        pass
-
-    def capture(request: Any, **_: Any) -> None:
-        captured.update(method=request.method, url=request.url, body=request.body)
-        raise _Captured()
-
-    api_name = client.meta.method_to_api_mapping[operation]
-    client.meta.events.register(f"before-send.agent-registry.{api_name}", capture)
-    with pytest.raises(_Captured):
-        getattr(client, operation)(**params)
-    return captured
