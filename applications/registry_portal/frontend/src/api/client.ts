@@ -24,7 +24,28 @@ export type Me = {
  * カタログの種別（AWS の recordType）。A2A は Agent の descriptor として扱う。
  * バックエンドの CatalogRecordType（backend/src/registry_portal/domain/catalog.py）と同じ値に揃える
  */
-export type CatalogRecordType = 'AGENT' | 'MCP' | 'SKILL'
+export const CATALOG_RECORD_TYPES = ['AGENT', 'MCP', 'SKILL'] as const
+export type CatalogRecordType = (typeof CATALOG_RECORD_TYPES)[number]
+
+/**
+ * データ分類（custom metadata の dataClassification）。可視性は制御しない。
+ * バックエンドの DataClassification と同じ値に揃える
+ */
+export const DATA_CLASSIFICATIONS = ['public', 'private'] as const
+export type DataClassification = (typeof DATA_CLASSIFICATIONS)[number]
+
+/** A2A は Agent の descriptor なので、A2A の絞り込みは Agent（または種別の指定なし）にだけ使える */
+export function supportsA2AFilter(type: CatalogRecordType | null): boolean {
+  return type === null || type === 'AGENT'
+}
+
+function isCatalogRecordType(value: unknown): value is CatalogRecordType {
+  return CATALOG_RECORD_TYPES.some((type) => type === value)
+}
+
+function isDataClassification(value: unknown): value is DataClassification {
+  return DATA_CLASSIFICATIONS.some((classification) => classification === value)
+}
 
 /** カタログ項目（公開承認済みの Registry レコードの版）の要約 */
 export type CatalogItem = {
@@ -44,6 +65,41 @@ export type CatalogPage = {
   items: CatalogItem[]
   nextToken: string | null
 }
+
+/** 検索条件。query は必須（1〜256文字）。条件だけで探す場合は一覧を使う */
+export type CatalogSearchRequest = {
+  query: string
+  type?: CatalogRecordType
+  a2a?: boolean
+  dataClassification?: DataClassification
+}
+
+export type CatalogSearchResult = {
+  items: CatalogItem[]
+  /** A2A 検索用 metadata と定義（descriptor）が食い違うため除外した件数 */
+  inconsistentA2ACount: number
+}
+
+export type CatalogReference = { recordId: string; recordVersion: string }
+
+/**
+ * カタログ項目の詳細。
+ * 連絡先・利用条件・接続先の参照・関連参照は、補助テーブルの公開版スナップショットから読む。
+ * null はスナップショットを取得できなかったこと（未取得）、空文字は値がないこと（未登録）を表す
+ */
+export type CatalogDetail = CatalogItem & {
+  definition: Record<string, unknown>
+  ownerTeam: string
+  contact: string | null
+  termsOfUse: string | null
+  connectionReference: string | null
+  dataClassification: DataClassification | null
+  skillMarkdown: string
+  relatedReferences: CatalogReference[] | null
+}
+
+/** A2A 検索用 metadata の準備が終わっておらず、A2A の絞り込み検索を受け付けないときのエラーコード */
+export const A2A_SEARCH_NOT_READY = 'A2A_SEARCH_NOT_READY'
 
 /** 認証が必要なときのメッセージ。バックエンドの AuthenticationError の既定文言と同じ */
 export const UNAUTHENTICATED_MESSAGE = '認証が必要です。ログインし直してください。'
@@ -67,6 +123,11 @@ export class ApiError extends Error {
   }
 }
 
+/** 想定外の例外も含め、画面に出せる ApiError にそろえる */
+export function toApiError(failure: unknown, fallbackMessage: string): ApiError {
+  return failure instanceof ApiError ? failure : new ApiError(0, 'UNEXPECTED_ERROR', fallbackMessage)
+}
+
 type ErrorDto = { error: { code: string; message: string; requestId?: string | null } }
 
 function isErrorDto(value: unknown): value is ErrorDto {
@@ -80,6 +141,61 @@ function isErrorDto(value: unknown): value is ErrorDto {
   )
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function hasStrings(object: Record<string, unknown>, keys: readonly string[]): boolean {
+  return keys.every((key) => typeof object[key] === 'string')
+}
+
+function isCatalogItem(value: unknown): value is CatalogItem {
+  return (
+    isObject(value) &&
+    hasStrings(value, ['recordId', 'name', 'displayName', 'description', 'recordVersion', 'updatedAt']) &&
+    isCatalogRecordType(value.recordType) &&
+    Array.isArray(value.descriptorTypes) &&
+    value.descriptorTypes.every((type) => typeof type === 'string') &&
+    typeof value.isA2A === 'boolean'
+  )
+}
+
+function isCatalogReference(value: unknown): value is CatalogReference {
+  return isObject(value) && hasStrings(value, ['recordId', 'recordVersion'])
+}
+
+function isStringOrNull(value: unknown): value is string | null {
+  return value === null || typeof value === 'string'
+}
+
+function isCatalogSearchResult(value: unknown): value is CatalogSearchResult {
+  return (
+    isObject(value) &&
+    Array.isArray(value.items) &&
+    value.items.every(isCatalogItem) &&
+    Number.isInteger(value.inconsistentA2ACount)
+  )
+}
+
+function isCatalogDetail(value: unknown): value is CatalogDetail {
+  return (
+    isObject(value) &&
+    isObject(value.definition) &&
+    hasStrings(value, ['ownerTeam', 'skillMarkdown']) &&
+    isStringOrNull(value.contact) &&
+    isStringOrNull(value.termsOfUse) &&
+    isStringOrNull(value.connectionReference) &&
+    (value.dataClassification === null || isDataClassification(value.dataClassification)) &&
+    (value.relatedReferences === null ||
+      (Array.isArray(value.relatedReferences) && value.relatedReferences.every(isCatalogReference))) &&
+    isCatalogItem(value)
+  )
+}
+
+function invalidResponse(status: number): ApiError {
+  return new ApiError(status, 'INVALID_RESPONSE', 'API から想定外の応答が返されました。')
+}
+
 export type ApiClientOptions = {
   baseUrl: string
   fetch: typeof fetch
@@ -89,11 +205,18 @@ export type ApiClientOptions = {
 export type ApiClient = {
   getMe: () => Promise<Me>
   /** nextToken はバックエンドが中継する AWS の値で、SPA では中身を解釈しない */
-  listCatalog: (type: CatalogRecordType, nextToken?: string) => Promise<CatalogPage>
+  listCatalog: (
+    type: CatalogRecordType,
+    nextToken?: string,
+    a2aOnly?: boolean,
+  ) => Promise<CatalogPage>
+  searchCatalog: (query: CatalogSearchRequest) => Promise<CatalogSearchResult>
+  getCatalogDetail: (recordId: string) => Promise<CatalogDetail>
 }
 
 export function createApiClient(options: ApiClientOptions): ApiClient {
-  async function request<T>(path: string): Promise<T> {
+  /** GET は本文なし、POST は JSON の本文を送る */
+  async function request<T>(method: 'GET' | 'POST', path: string, payload?: unknown): Promise<T> {
     const token = options.getAccessToken()
     if (!token) {
       throw new ApiError(401, 'UNAUTHENTICATED', UNAUTHENTICATED_MESSAGE)
@@ -101,9 +224,17 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     let response: Response
     try {
       // baseUrl の末尾の / は loadConfig で取り除き済み
-      response = await options.fetch(`${options.baseUrl}${path}`, {
-        headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
-      })
+      const headers = { authorization: `Bearer ${token}`, accept: 'application/json' }
+      response = await options.fetch(
+        `${options.baseUrl}${path}`,
+        method === 'GET'
+          ? { headers }
+          : {
+              method,
+              headers: { ...headers, 'content-type': 'application/json' },
+              body: JSON.stringify(payload),
+            },
+      )
     } catch {
       throw new ApiError(0, 'NETWORK_ERROR', 'API に接続できません。ネットワークを確認してください。')
     }
@@ -131,17 +262,28 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       )
     }
     if (body === undefined) {
-      throw new ApiError(response.status, 'INVALID_RESPONSE', 'API から想定外の応答が返されました。')
+      throw invalidResponse(response.status)
     }
     return body as T
   }
 
   return {
-    getMe: () => request<Me>('/api/me'),
-    listCatalog: (type, nextToken) => {
+    getMe: () => request<Me>('GET', '/api/me'),
+    listCatalog: (type, nextToken, a2aOnly) => {
       const query = new URLSearchParams({ type })
+      if (supportsA2AFilter(type) && a2aOnly) query.set('a2a', 'true')
       if (nextToken !== undefined) query.set('nextToken', nextToken)
-      return request<CatalogPage>(`/api/catalog?${query.toString()}`)
+      return request<CatalogPage>('GET', `/api/catalog?${query.toString()}`)
+    },
+    searchCatalog: async (query) => {
+      const body = await request<unknown>('POST', '/api/catalog/search', query)
+      if (!isCatalogSearchResult(body)) throw invalidResponse(200)
+      return body
+    },
+    getCatalogDetail: async (recordId) => {
+      const body = await request<unknown>('GET', `/api/catalog/${encodeURIComponent(recordId)}`)
+      if (!isCatalogDetail(body)) throw invalidResponse(200)
+      return body
     },
   }
 }

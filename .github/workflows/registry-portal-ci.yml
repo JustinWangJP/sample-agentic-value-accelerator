@@ -9,11 +9,13 @@ on:
     paths:
       - "applications/registry_portal/**"
       - ".github/workflows/registry-portal-ci.yml"
+      - ".pre-commit-config.yaml"
   push:
     branches: [main, develop]
     paths:
       - "applications/registry_portal/**"
       - ".github/workflows/registry-portal-ci.yml"
+      - ".pre-commit-config.yaml"
 
 permissions:
   contents: read
@@ -43,9 +45,11 @@ jobs:
       - name: pytest
         run: pytest
       - name: Flake8
-        run: flake8 src tests
+        run: flake8 src tests ../scripts
       - name: Black
-        run: black --check src tests
+        run: black --config pyproject.toml --check src tests ../scripts
+      - name: import 境界
+        run: python ../scripts/check_imports.py
       - name: mypy
         run: mypy
 

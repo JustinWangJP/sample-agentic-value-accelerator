@@ -1,5 +1,5 @@
 # Registry ポータル バックエンドの実行時依存
 # Boto3 / Botocore は Lambda ランタイム付属の版に左右されないよう、動作確認した版で固定して同梱する。
-# 現時点では Secrets Manager（発見用 M2M client の secret の取得）だけに使う。
+# Secrets Manager（発見用 M2M client の secret の取得）と DynamoDB（カタログの補助情報の読み取り）に使う。
 boto3==1.43.123
 botocore==1.43.123

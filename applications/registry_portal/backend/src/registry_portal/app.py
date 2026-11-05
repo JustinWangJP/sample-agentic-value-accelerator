@@ -6,15 +6,21 @@ handler は API Gateway HTTP API（payload format 2.0）のイベントを受け
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from collections.abc import Callable, Mapping
 from typing import Any
 
 from registry_portal.auth import Caller, authorize
-from registry_portal.catalog import list_catalog
-from registry_portal.config import load_auth_settings, load_discovery_settings
-from registry_portal.errors import ApiError, RouteNotFoundError
+from registry_portal.catalog import get_catalog_detail, list_catalog, search_catalog
+from registry_portal.config import (
+    load_auth_settings,
+    load_catalog_settings,
+    load_discovery_settings,
+)
+from registry_portal.errors import ApiError, RequestValidationError, RouteNotFoundError
+from registry_portal.services.catalog_supplement import CatalogSupplement, SupplementClient
 from registry_portal.services.discovery import DiscoveryDependencies, create_discovery_client
 
 logger = logging.getLogger(__name__)
@@ -56,10 +62,43 @@ def _route_key(event: LambdaEvent) -> str:
     return f"{http.get('method', '')} {http.get('path', '')}"
 
 
+# path に1つの要素を含むルート。(実際の path の接頭辞, ルート表のキー)
+_PARAMETERIZED_ROUTES = (("GET /api/catalog/", "GET /api/catalog/{recordId}"),)
+
+
+def _route_template(key: str) -> tuple[str, str]:
+    """ルート表のキーと、path パラメーター（なければ空文字）を返す。"""
+    for prefix, template in _PARAMETERIZED_ROUTES:
+        parameter = key.removeprefix(prefix)
+        if key.startswith(prefix) and parameter and "/" not in parameter:
+            return template, parameter
+    return key, ""
+
+
+def _path_parameter(event: LambdaEvent) -> str:
+    return _route_template(_route_key(event))[1]
+
+
 def _query_of(event: LambdaEvent) -> Mapping[str, str]:
     """クエリ文字列。HTTP API は同じ名前の値をカンマで連結した1つの文字列にして渡す。"""
     query = _mapping_or_empty(event.get("queryStringParameters"))
     return {str(key): str(value) for key, value in query.items()}
+
+
+def _json_body(event: LambdaEvent) -> Mapping[str, Any]:
+    error = RequestValidationError("リクエスト本文には JSON オブジェクトを指定してください。")
+    raw = event.get("body")
+    if not isinstance(raw, str) or len(raw) > 8192:
+        raise error
+    try:
+        body = json.loads(
+            base64.b64decode(raw, validate=True) if event.get("isBase64Encoded") else raw
+        )
+    except (ValueError, RecursionError):
+        raise error from None
+    if not isinstance(body, Mapping):
+        raise error
+    return body
 
 
 def get_me(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
@@ -84,6 +123,7 @@ def create_management_handler(
     environ: Mapping[str, str],
     *,
     discovery: DiscoveryDependencies | None = None,
+    supplement_client: SupplementClient | None = None,
 ) -> Handler:
     """管理 handler を作る。認証・発見の設定が不足していれば、ここで起動エラーにする。
 
@@ -91,21 +131,52 @@ def create_management_handler(
     通信は最初のリクエストまで行わない。
     """
     settings = load_auth_settings(environ)
+    discovery_settings = load_discovery_settings(environ)
+    catalog_settings = load_catalog_settings(environ)
     discovery_client = create_discovery_client(
-        load_discovery_settings(environ), discovery or DiscoveryDependencies()
+        discovery_settings, discovery or DiscoveryDependencies()
+    )
+    supplement = (
+        CatalogSupplement(
+            catalog_settings.supplement_table_name,
+            discovery_settings.registry_arn,
+            discovery_settings.registry_region,
+            supplement_client,
+        )
+        if catalog_settings.supplement_table_name
+        else None
     )
 
+    # カタログは Viewer（ログインした全員）が閲覧できる。発見用 M2M トークンでポータルが代理で問い合わせる
     def get_catalog(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        # Viewer（ログインした全員）が閲覧できる。発見用 M2M トークンでポータルが代理で問い合わせる
         return list_catalog(discovery_client, _query_of(event))
 
-    routes: Mapping[str, Route] = {**MANAGEMENT_ROUTES, "GET /api/catalog": get_catalog}
+    def post_search(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        if _query_of(event):
+            raise RequestValidationError("検索条件はリクエスト本文に指定してください。")
+        return search_catalog(
+            discovery_client,
+            _json_body(event),
+            a2a_search_enabled=catalog_settings.a2a_search_enabled,
+        )
+
+    def get_detail(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        if _query_of(event):
+            raise RequestValidationError("カタログ詳細にクエリパラメーターは指定できません。")
+        return get_catalog_detail(discovery_client, _path_parameter(event), supplement)
+
+    routes: Mapping[str, Route] = {
+        **MANAGEMENT_ROUTES,
+        "GET /api/catalog": get_catalog,
+        "POST /api/catalog/search": post_search,
+        "GET /api/catalog/{recordId}": get_detail,
+    }
 
     def handler(event: LambdaEvent, context: Any) -> LambdaResponse:
         request_id = _request_context(event).get("requestId")
         try:
             caller = authorize(_claims_of(event), settings)
-            route = routes.get(_route_key(event))
+            route = routes.get(_route_template(_route_key(event))[0])
             if route is None:
                 raise RouteNotFoundError()
             status, body = route(caller, event)

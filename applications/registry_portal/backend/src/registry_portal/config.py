@@ -63,12 +63,26 @@ class DiscoverySettings:
     scope: str
 
     @property
+    def registry_endpoint(self) -> str:
+        return f"https://agent-registry.{self.registry_region}.api.aws"
+
+    @property
     def discoverable_records_list_url(self) -> str:
         """ListDiscoverableRegistryRecords の宛先。ARN は1つの path 要素として符号化する（Botocore と同じ）。"""
         return (
-            f"https://agent-registry.{self.registry_region}.api.aws/registries/"
+            f"{self.registry_endpoint}/registries/"
             f"{quote(self.registry_arn, safe='')}/discoverable-records-list"
         )
+
+    @property
+    def discoverable_records_search_url(self) -> str:
+        """SearchDiscoverableRegistryRecords の宛先。Registry は本文の registryIds で指定する。"""
+        return f"{self.registry_endpoint}/discoverable-records-search"
+
+    @property
+    def discoverable_records_batch_url(self) -> str:
+        """BatchGetDiscoverableRegistryRecord の宛先。Registry は本文の entries で指定する。"""
+        return f"{self.registry_endpoint}/discoverable-records-batch"
 
 
 _REQUIRED_DISCOVERY_KEYS = (
@@ -114,4 +128,27 @@ def load_discovery_settings(environ: Mapping[str, str]) -> DiscoverySettings:
         client_secret_arn=client_secret_arn,
         client_secret_region=secret_match.group("region"),
         scope=environ.get("DISCOVERY_SCOPE", "").strip(),
+    )
+
+
+@dataclass(frozen=True)
+class CatalogSettings:
+    """カタログの検索・詳細に使う任意の設定。"""
+
+    # 補助テーブル（DynamoDB）の名前。None なら所有チームの正本と公開版スナップショットを読まない
+    supplement_table_name: str | None
+    # A2A 検索用 metadata（isA2A）の補完と確認が終わったら true にする
+    a2a_search_enabled: bool
+
+
+def load_catalog_settings(environ: Mapping[str, str]) -> CatalogSettings:
+    """環境変数からカタログの設定を読み込む。真偽値の形式の誤りは ConfigurationError とする。"""
+    a2a_search = environ.get("A2A_SEARCH_ENABLED", "").strip()
+    if a2a_search not in ("", "true", "false"):
+        raise ConfigurationError(
+            "カタログ設定が正しくありません: A2A_SEARCH_ENABLED は true または false で指定してください"
+        )
+    return CatalogSettings(
+        supplement_table_name=environ.get("SUPPLEMENT_TABLE_NAME", "").strip() or None,
+        a2a_search_enabled=a2a_search == "true",
     )

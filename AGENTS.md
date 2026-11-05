@@ -5,18 +5,6 @@
 - すべての会話・コード内コメント・ドキュメント・エラーメッセージは日本語で記述する。
 - 変数名・ファイル名は英語を使用してよい。
 - 技術用語は必要に応じて英語を併記する。
-### 基本ルール
-
-- すべての会話は日本語で行う
-- コード内のコメントは日本語で記述
-- エラーメッセージの説明は日本語
-- ドキュメント生成は日本語
-- 変数名やファイル名は英語可
-
-### 技術用語
-
-- 技術用語は必要に応じて英語併記
-
 ## プロジェクト構成とモジュール配置
 
 AVA（Agentic Value Accelerator）は、AWS 向けのエージェント基盤とデプロイ可能なアプリケーションを提供します。
@@ -30,6 +18,8 @@ AVA（Agentic Value Accelerator）は、AWS 向けのエージェント基盤と
 ## ビルド・テスト・開発コマンド
 
 各コマンドは、次に示すディレクトリで実行してください。
+
+Registry ポータルの開発は [applications/registry_portal/README.md の「開発」](applications/registry_portal/README.md#開発)、作業環境と Git 操作は [開発環境の手順](docs/agents/development-environment.md) を参照してください。
 
 - `platform/control_plane/`: `.env.example` を `.env` にコピーし、ルートの README に従って AWS 接続を設定します。`finch compose up --build -d` でローカル環境を起動します。
 - `platform/control_plane/backend/`: 仮想環境を使用し、`pip install -r requirements.txt` で依存パッケージをインストールします。
