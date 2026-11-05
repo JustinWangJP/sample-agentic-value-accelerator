@@ -1,5 +1,3 @@
-"""Publisher の下書き操作。Registry の内容と補助ストアの所有情報を結合する。"""
-
 from __future__ import annotations
 
 import re
@@ -24,6 +22,18 @@ from registry_portal.errors import ApiError, ForbiddenError, RequestValidationEr
 from registry_portal.services.draft_store import DraftStore, StoreConflict
 
 
+AWS_REJECTED_ERRORS = frozenset(
+    {
+        "ValidationException",
+        "AccessDeniedException",
+        "ConflictException",
+        "ResourceNotFoundException",
+        "ThrottlingException",
+        "ServiceQuotaExceededException",
+    }
+)
+
+
 class DraftConflict(ApiError):
     status = 409
     code = "CONTENT_CONFLICT"
@@ -41,6 +51,38 @@ class DraftUnavailable(ApiError):
 def require_publisher(caller: Caller) -> None:
     if Role.PUBLISHER not in caller.roles or not caller.teams:
         raise ForbiddenError()
+
+
+def validate_management(management: Mapping[str, Any] | None) -> None:
+    if management is None:
+        return
+    if (
+        not isinstance(management.get("managed"), bool)
+        or not isinstance(management.get("ownerTeam"), str)
+        or not management["ownerTeam"]
+        or any(
+            key in management and not isinstance(management[key], str)
+            for key in ("contact", "termsOfUse", "connectionReference")
+        )
+        or (
+            management.get("publishedVersion") is not None
+            and not isinstance(management["publishedVersion"], str)
+        )
+    ):
+        raise DraftUnavailable(
+            "保存された管理情報の形式が正しくありません。管理者に連絡してください。"
+        )
+
+
+def published_version(record: Mapping[str, Any], management: Mapping[str, Any]) -> str | None:
+    version = (
+        record.get("recordVersion")
+        if record["status"] == "APPROVED"
+        else management.get("publishedVersion")
+    )
+    if version is not None and not isinstance(version, str):
+        raise DraftUnavailable()
+    return version
 
 
 class AgentDrafts:
@@ -116,12 +158,7 @@ class AgentDrafts:
                     **draft.create_payload(),
                 )
             except ClientError as error:
-                if error.response["Error"]["Code"] in (
-                    "ValidationException",
-                    "AccessDeniedException",
-                    "ConflictException",
-                    "ResourceNotFoundException",
-                ):
+                if error.response["Error"]["Code"] in AWS_REJECTED_ERRORS:
                     self.store.abort(operation, "AWS_REJECTED")
                     raise RequestValidationError(
                         "Registry が下書きの保存を拒否しました。入力と設定を確認してください。"
@@ -140,6 +177,13 @@ class AgentDrafts:
             "message": "結果確認中です。確認が終わるまで、この下書きへの書き込みを停止しています。",
         }
 
+    def _failed(self, operation: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
+        return 200, {
+            "operationId": operation["operationId"],
+            "operationState": "FAILED",
+            "message": "操作は失敗しました。内容を確認して再実行してください。",
+        }
+
     def _management(self, caller: Caller, record_id: str) -> dict[str, Any]:
         require_publisher(caller)
         if not re.fullmatch(r"[A-Za-z0-9]{12}", record_id):
@@ -148,6 +192,7 @@ class AgentDrafts:
             management = self.store.get(self.store.record_pk(record_id), "MANAGEMENT")
         except (BotoCoreError, ClientError):
             raise DraftUnavailable() from None
+        validate_management(management)
         if (
             not management
             or management.get("managed") is not True
@@ -195,11 +240,7 @@ class AgentDrafts:
             "contentHash": content_hash(record, management),
             "status": record["status"],
             "hasDraft": record["status"] not in ("APPROVED", "DEPRECATED"),
-            "publishedVersion": (
-                record["recordVersion"]
-                if record["status"] == "APPROVED"
-                else management.get("publishedVersion")
-            ),
+            "publishedVersion": published_version(record, management),
         }
 
     def get(self, caller: Caller, record_id: str) -> tuple[int, dict[str, Any]]:
@@ -235,6 +276,7 @@ class AgentDrafts:
             items = []
             for record in response["registryRecords"]:
                 management = self.store.get(self.store.record_pk(record["recordId"]), "MANAGEMENT")
+                validate_management(management)
                 if (
                     not management
                     or management.get("managed") is not True
@@ -251,11 +293,7 @@ class AgentDrafts:
                         "ownerTeam": management["ownerTeam"],
                         "status": record["status"],
                         "hasDraft": record["status"] not in ("APPROVED", "DEPRECATED"),
-                        "publishedVersion": (
-                            record.get("recordVersion")
-                            if record["status"] == "APPROVED"
-                            else management.get("publishedVersion")
-                        ),
+                        "publishedVersion": published_version(record, management),
                         "operationId": lock["operationId"] if lock else None,
                     }
                 )
@@ -274,11 +312,7 @@ class AgentDrafts:
             if operation["state"] == "SUCCEEDED":
                 return 200, operation["result"]
             if operation["state"] == "FAILED":
-                return 200, {
-                    "operationId": op_id,
-                    "operationState": "FAILED",
-                    "message": "操作は失敗しました。内容を確認して再実行してください。",
-                }
+                return self._failed(operation)
             if operation.get("recordId"):
                 status, result = self._verify(operation)
                 return (200 if status == 201 else status), result
@@ -343,19 +377,23 @@ class AgentDrafts:
                 self.store.abort(operation, "IMMUTABLE_NAME")
                 raise RequestValidationError("name は作成後に変更できません。")
             self._detail(record, management)
-            published = (
-                record.get("recordVersion")
-                if record["status"] == "APPROVED"
-                else management.get("publishedVersion")
-            )
+            published = published_version(record, management)
             if published and not version_is_greater(draft.fields["recordVersion"], published):
                 self.store.abort(operation, "INVALID_VERSION")
                 raise RequestValidationError("recordVersion は公開中の版より大きくしてください。")
             operation["management"] = {**management, "publishedVersion": published}
             self.store.save_pending(operation)
-            self._client().update_registry_record(
-                registryId=self.registry, recordId=record_id, **draft.update_payload()
-            )
+            try:
+                self._client().update_registry_record(
+                    registryId=self.registry, recordId=record_id, **draft.update_payload()
+                )
+            except ClientError as error:
+                if error.response["Error"]["Code"] in AWS_REJECTED_ERRORS:
+                    self.store.abort(operation, "AWS_REJECTED")
+                    raise RequestValidationError(
+                        "Registry が下書きの保存を拒否しました。入力と設定を確認してください。"
+                    ) from None
+                return self._pending(operation)
             status, result = self._verify(operation)
             return (200 if status == 201 else status), result
         except (BotoCoreError, ClientError, StoreConflict):
@@ -367,6 +405,9 @@ class AgentDrafts:
         )
         if record["status"] in ("CREATING", "UPDATING"):
             return self._pending(operation)
+        if record["status"] in ("CREATE_FAILED", "UPDATE_FAILED"):
+            self.store.abort(operation, record["status"])
+            return self._failed(operation)
         draft = AgentDraft.parse(operation["draft"])
         if (
             content_hash(record) != content_hash(draft.create_payload())

@@ -1,5 +1,3 @@
-"""条件付きロックと下書き操作の意図・結果を1テーブルで保存する。"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -130,26 +128,36 @@ class DraftStore:
             "operationId = :op",
         )
         control["Put"]["ExpressionAttributeValues"] = {":op": {"S": op_id}}
-        self._transact(
-            [
-                control,
-                self._put(
-                    {
-                        "pk": operation["lockPk"],
-                        "sk": f"AUDIT#{op_id}#RESULT",
-                        "errorCode": code,
-                    }
-                ),
+        items = [
+            control,
+            self._put(
+                {
+                    "pk": operation["lockPk"],
+                    "sk": f"AUDIT#{op_id}#RESULT",
+                    "errorCode": code,
+                }
+            ),
+            {
+                "Delete": {
+                    "TableName": self.table,
+                    "Key": self._key(operation["lockPk"], "LOCK"),
+                    "ConditionExpression": "operationId = :op",
+                    "ExpressionAttributeValues": {":op": {"S": op_id}},
+                }
+            },
+        ]
+        if operation["kind"] == "CREATE" and operation.get("recordId"):
+            items.append(
                 {
                     "Delete": {
                         "TableName": self.table,
-                        "Key": self._key(operation["lockPk"], "LOCK"),
+                        "Key": self._key(self.record_pk(operation["recordId"]), "LOCK"),
                         "ConditionExpression": "operationId = :op",
                         "ExpressionAttributeValues": {":op": {"S": op_id}},
                     }
-                },
-            ]
-        )
+                }
+            )
+        self._transact(items)
 
     def finish(
         self,

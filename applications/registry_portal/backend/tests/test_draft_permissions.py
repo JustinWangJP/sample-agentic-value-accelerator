@@ -1,5 +1,3 @@
-"""管理 Lambda の下書き用 IAM を、デプロイせずに確認する（Seam 3）。"""
-
 import json
 from pathlib import Path
 

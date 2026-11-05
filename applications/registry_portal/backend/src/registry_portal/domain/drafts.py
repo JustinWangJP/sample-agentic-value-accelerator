@@ -1,5 +1,3 @@
-"""custom Agent 下書きの入力と、Registry の内容ハッシュ。"""
-
 from __future__ import annotations
 
 import hashlib

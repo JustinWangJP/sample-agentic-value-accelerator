@@ -217,7 +217,6 @@ export type ApiClient = DraftApi & {
 }
 
 export function createApiClient(options: ApiClientOptions): ApiClient {
-  /** GET は本文なし、POST と PATCH は JSON の本文を送る */
   async function request<T>(
     method: 'GET' | 'POST' | 'PATCH',
     path: string,

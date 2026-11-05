@@ -1,5 +1,3 @@
-"""Publisher の Agent 下書きを handler・実 SDK・補助テーブルで検証する（Seam 1）。"""
-
 import json
 from datetime import datetime, timezone
 
@@ -341,6 +339,183 @@ def test_unknown_create_can_retry_with_the_same_aws_client_token():
         assert status == 201
         assert created["operationId"] == pending["operationId"]
         assert created["recordId"] == RECORD_ID
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_create_timeout_can_be_retried_with_identical_input_and_client_token():
+    from botocore.exceptions import ReadTimeoutError
+
+    registry, db = clients()
+    create = registry.create_registry_record
+    requests = []
+
+    def timeout_once(**params):
+        requests.append(params)
+        if len(requests) == 1:
+            raise ReadTimeoutError(endpoint_url="https://example.com")
+        return create(**params)
+
+    registry.create_registry_record = timeout_once
+    with Stubber(registry) as stub:
+        handler = handler_for(registry, db)
+        status, pending = call(handler, event(body=DRAFT))
+        assert status == 202
+        for _ in range(3):
+            assert (
+                call(handler, event("GET", f"/api/operations/{pending['operationId']}"))[0] == 202
+            )
+        stub_create(stub)
+        status, saved = call(handler, event(body=DRAFT))
+        assert status == 201
+        assert requests[0] == requests[1]
+        assert requests[1]["clientToken"] == pending["operationId"] == saved["operationId"]
+        stub.assert_no_pending_responses()
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    [
+        "ValidationException",
+        "AccessDeniedException",
+        "ConflictException",
+        "ResourceNotFoundException",
+        "ThrottlingException",
+    ],
+)
+@mock_aws
+def test_rejected_update_releases_lock_so_publisher_can_correct_and_save(error_code):
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub_create(stub)
+        handler = handler_for(registry, db)
+        _, created = call(handler, event(body=DRAFT))
+        request = event(
+            "PATCH",
+            f"/api/records/{RECORD_ID}",
+            {
+                "draft": {**DRAFT, "description": "修正する説明"},
+                "expectedContentHash": created["contentHash"],
+            },
+        )
+        stub.add_response("get_registry_record", record())
+        stub.add_client_error("update_registry_record", error_code, http_status_code=400)
+        status, rejected = call(handler, request)
+        assert status == 400
+        assert rejected["error"]["code"] == "VALIDATION_ERROR"
+        stub.add_response("get_registry_record", record())
+        stub.add_response("update_registry_record", record(status="UPDATING"))
+        stub.add_response("get_registry_record", record(description="修正する説明"))
+        status, saved = call(handler, request)
+        assert status == 200
+        assert saved["operationState"] == "SUCCEEDED"
+        stub.assert_no_pending_responses()
+
+
+@pytest.mark.parametrize("error_code", ["ThrottlingException", "ServiceQuotaExceededException"])
+@mock_aws
+def test_rejected_create_releases_name_for_a_new_operation(error_code):
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub.add_client_error("create_registry_record", error_code, http_status_code=429)
+        handler = handler_for(registry, db)
+        assert call(handler, event(body=DRAFT))[0] == 400
+        assert call(handler, event(body=DRAFT))[0] == 409
+        stub_create(stub)
+        assert call(handler, event(body=DRAFT, key="new-operation"))[0] == 201
+        stub.assert_no_pending_responses()
+
+
+@pytest.mark.parametrize("kind", ["CREATE", "UPDATE"])
+@mock_aws
+def test_terminal_aws_failure_is_saved_and_releases_all_locks(kind):
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        handler = handler_for(registry, db)
+        if kind == "CREATE":
+            stub.add_response(
+                "create_registry_record", {"recordArn": RECORD_ARN, "status": "CREATING"}
+            )
+            stub.add_response("get_registry_record", record(status="CREATING"))
+            status, pending = call(handler, event(body=DRAFT))
+        else:
+            stub_create(stub)
+            _, created = call(handler, event(body=DRAFT))
+            stub.add_response("get_registry_record", record())
+            stub.add_response("update_registry_record", record(status="UPDATING"))
+            stub.add_response("get_registry_record", record(status="UPDATING"))
+            status, pending = call(
+                handler,
+                event(
+                    "PATCH",
+                    f"/api/records/{RECORD_ID}",
+                    {"draft": DRAFT, "expectedContentHash": created["contentHash"]},
+                ),
+            )
+        assert status == 202
+        stub.add_response("get_registry_record", record(status=f"{kind}_FAILED"))
+        operation_request = event("GET", f"/api/operations/{pending['operationId']}")
+        status, failed = call(handler, operation_request)
+        assert status == 200
+        assert failed["operationState"] == "FAILED"
+        assert call(handler, operation_request) == (200, failed)
+        if kind == "CREATE":
+            stub_create(stub)
+            assert call(handler, event(body=DRAFT, key="retry-after-failure"))[0] == 201
+        stub.add_response("get_registry_record", record())
+        status, detail = call(handler, event("GET", f"/api/records/{RECORD_ID}"))
+        assert status == 200
+        stub.add_response("get_registry_record", record())
+        stub.add_response("update_registry_record", record(status="UPDATING"))
+        stub.add_response("get_registry_record", record())
+        status, saved = call(
+            handler,
+            event(
+                "PATCH",
+                f"/api/records/{RECORD_ID}",
+                {"draft": DRAFT, "expectedContentHash": detail["contentHash"]},
+            ),
+        )
+        assert status == 200
+        assert saved["operationState"] == "SUCCEEDED"
+        stub.assert_no_pending_responses()
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {"ownerTeam": {"L": [{"S": "team-payments"}]}},
+        {"managed": {"S": "true"}},
+        {"contact": {"N": "123"}},
+        {"publishedVersion": {"L": []}},
+    ],
+)
+@mock_aws
+def test_invalid_management_is_an_http_error_instead_of_empty_or_forbidden(invalid):
+    registry, db = clients()
+    db.put_item(
+        TableName=SUPPLEMENT_TABLE,
+        Item={
+            "pk": {"S": f"REGISTRY#{REGISTRY_ARN}#RECORD#{RECORD_ID}"},
+            "sk": {"S": "MANAGEMENT"},
+            "managed": {"BOOL": True},
+            "ownerTeam": {"S": "team-payments"},
+            **invalid,
+        },
+    )
+    with Stubber(registry) as stub:
+        summary = {
+            key: value
+            for key, value in record().items()
+            if key not in ("descriptors", "customMetadata")
+        }
+        stub.add_response("list_registry_records", {"registryRecords": [summary]})
+        handler = handler_for(registry, db)
+        for request in [event("GET", "/api/records"), event("GET", f"/api/records/{RECORD_ID}")]:
+            status, body = call(handler, request)
+            assert status == 502
+            assert body["error"]["code"] == "REGISTRY_UNAVAILABLE"
+            assert "管理情報" in body["error"]["message"]
         stub.assert_no_pending_responses()
 
 

@@ -210,7 +210,7 @@ function OperationCheck({
 }: {
   api: ApiClient
   operationId: string
-  onDone: () => void
+  onDone: (operation: DraftOperation) => void
   onRelogin: () => void
 }) {
   const [message, setMessage] = useState('結果確認中です。確定するまで書き込みを停止しています。')
@@ -221,7 +221,7 @@ function OperationCheck({
     setError(null)
     try {
       const result = await api.getDraftOperation(operationId)
-      if (result.operationState === 'SUCCEEDED') onDone()
+      if (result.operationState !== 'VERIFYING') onDone(result)
       else setMessage(result.message)
     } catch (failure) {
       setError(toApiError(failure, '処理結果を取得できませんでした。'))
@@ -277,25 +277,35 @@ function DraftEditor({
         },
   )
   const [hash, setHash] = useState(initial.kind === 'edit' ? initial.detail.contentHash : '')
+  const [createKey, setCreateKey] = useState(initial.kind === 'new' ? initial.key : '')
   const [save, setSave] = useState<SaveState>({ kind: 'idle' })
-  const disabled =
-    save.kind === 'saving' ||
-    save.kind === 'result' ||
-    (initial.kind === 'new' &&
-      save.kind === 'error' &&
-      (save.error.status === 0 || save.error.status >= 500))
-  async function submit() {
-    if (save.kind === 'saving' || save.kind === 'result') return
+  const resultLocked = save.kind === 'result' && save.operation.operationState !== 'FAILED'
+  const uncertain = save.kind === 'error' && (save.error.status === 0 || save.error.status >= 500)
+  const saveDisabled =
+    save.kind === 'saving' || resultLocked || (initial.kind === 'edit' && uncertain)
+  const disabled = saveDisabled || uncertain
+  const canRetryCreate =
+    initial.kind === 'new' && save.kind === 'result' && save.operation.operationState === 'VERIFYING'
+  async function submit(retryCreate = false) {
+    if (saveDisabled && !(retryCreate && canRetryCreate)) return
     setSave({ kind: 'saving' })
     try {
       const operation =
         initial.kind === 'new'
-          ? await api.createDraft(draft, initial.key)
+          ? await api.createDraft(draft, createKey)
           : await api.updateDraft(initial.detail.recordId, draft, hash)
-      setSave({ kind: 'result', operation })
+      receiveResult(operation)
     } catch (failure) {
-      setSave({ kind: 'error', error: toApiError(failure, '下書きを保存できませんでした。') })
+      const error = toApiError(failure, '下書きを保存できませんでした。')
+      if (initial.kind === 'new' && error.status === 400) setCreateKey(crypto.randomUUID())
+      setSave({ kind: 'error', error })
     }
+  }
+  function receiveResult(operation: DraftOperation) {
+    if (initial.kind === 'new' && operation.operationState === 'FAILED') {
+      setCreateKey(crypto.randomUUID())
+    }
+    setSave({ kind: 'result', operation })
   }
   async function reload() {
     if (initial.kind !== 'edit') return
@@ -380,11 +390,16 @@ function DraftEditor({
             </select>
           </label>
         </fieldset>
-        <button type="submit" disabled={save.kind === 'saving' || save.kind === 'result'}>
+        <button type="submit" disabled={saveDisabled}>
           下書きを保存
         </button>
       </form>
       {save.kind === 'saving' && <p role="status">保存しています…</p>}
+      {canRetryCreate && (
+        <button type="button" onClick={() => void submit(true)}>
+          同じ入力とキーで作成を再試行
+        </button>
+      )}
       {save.kind === 'error' && (
         <>
           <DraftError error={save.error} onRelogin={onRelogin} />
@@ -398,9 +413,11 @@ function DraftEditor({
               </button>
             </>
           )}
-          {disabled && (
+          {uncertain && (
             <p>
-              作成結果が不明です。同じ入力とキーで保存を再試行してください。この画面を閉じて新しく作成すると重複する可能性があります。
+              {initial.kind === 'new'
+                ? '作成結果が不明です。同じ入力とキーで保存を再試行してください。この画面を閉じて新しく作成すると重複する可能性があります。'
+                : '更新結果が不明です。一覧に戻り、対象の「処理結果を確認」で結果を確認してください。'}
             </p>
           )}
         </>
@@ -408,11 +425,16 @@ function DraftEditor({
       {save.kind === 'result' &&
         (save.operation.operationState === 'SUCCEEDED' ? (
           <p role="status">下書きを保存しました。公開版は変わりません。</p>
+        ) : save.operation.operationState === 'FAILED' ? (
+          <p role="alert">{save.operation.message}</p>
         ) : (
           <OperationCheck
             api={api}
             operationId={save.operation.operationId}
-            onDone={onBack}
+            onDone={(operation) => {
+              if (operation.operationState === 'SUCCEEDED') onBack()
+              else receiveResult(operation)
+            }}
             onRelogin={onRelogin}
           />
         ))}
