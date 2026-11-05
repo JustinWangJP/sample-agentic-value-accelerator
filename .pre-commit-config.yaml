@@ -1,0 +1,27 @@
+repos:
+  - repo: local
+    hooks:
+      - id: registry-portal-black
+        name: Registry ポータルの Black
+        language: system
+        entry: sh -c 'cd applications/registry_portal/backend && .venv/bin/black --config pyproject.toml --check src tests ../scripts'
+        files: ^applications/registry_portal/(backend/.*\.py|scripts/.*\.py)$
+        pass_filenames: false
+      - id: registry-portal-flake8
+        name: Registry ポータルの Flake8
+        language: system
+        entry: sh -c 'cd applications/registry_portal/backend && .venv/bin/flake8 src tests ../scripts'
+        files: ^applications/registry_portal/(backend/.*\.py|scripts/.*\.py)$
+        pass_filenames: false
+      - id: registry-portal-imports
+        name: Registry ポータルの import 境界
+        language: system
+        entry: python3 applications/registry_portal/scripts/check_imports.py
+        files: ^applications/registry_portal/(backend/.*\.py|scripts/.*\.py)$
+        pass_filenames: false
+      - id: registry-portal-eslint
+        name: Registry ポータルの ESLint
+        language: system
+        entry: sh -c 'cd applications/registry_portal/frontend && npm run lint'
+        files: ^applications/registry_portal/frontend/
+        pass_filenames: false

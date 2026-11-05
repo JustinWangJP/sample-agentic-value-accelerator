@@ -71,7 +71,7 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 
 #### A2A 検索を有効にする
 
-A2A の判定は descriptor（Agent Card の有無）が正本です。ただし AWS の検索フィルターは descriptor の種類を条件にできないため、descriptor から導出した真偽値を custom metadata の `isA2A` に検索用の写しとして持たせ、それで絞り込みます。`isA2A` がないレコードはフィルターで黙って除外され、0件と区別できません。そのため A2A 検索は既定で無効にしています。無効の間は、`a2a` を指定した検索に 503 `A2A_SEARCH_NOT_READY` を返します。SPA はこれを0件とも障害とも別の状態として表示し、一覧の「A2A の Agent のみ」（`descriptorType` で絞る）へ案内します。
+A2A の判定と検索用の写しの設計理由は [ADR-0006](../../docs/adr/0006-a2a-search-metadata-as-copy.md) を参照してください。A2A 検索は既定で無効です。無効の間は `a2a` を指定した検索に 503 `A2A_SEARCH_NOT_READY` を返し、SPA は一覧の「A2A の Agent のみ」へ案内します。
 
 次の準備が終わってから、管理 Lambda の環境変数 `A2A_SEARCH_ENABLED` を `true` にしてください。このポータルは Registry の schema を変更しません。また、Registry への書き込みは ADR-0001 に従います。
 
@@ -86,7 +86,7 @@ A2A の判定は descriptor（Agent Card の有無）が正本です。ただし
 
 所有チームは、補助テーブルの管理情報（正本）から取得します。パーティションキー `pk` は `REGISTRY#{registryArn}#RECORD#{recordId}`、ソートキー `sk` は `MANAGEMENT` です。管理情報の `ownerTeam` は Cognito のチームグループ名を表す文字列です。未管理レコード（管理情報がない、または `managed` が `false`）と補助テーブルが未設定の場合は、公開中のレコードの `customMetadata.ownerTeam`（検索用の写し）を表示用に参照します。管理情報の読み取りに失敗した場合や、管理対象の項目に所有チームがない場合は 502 `DISCOVERY_UNAVAILABLE` を返します。
 
-連絡先・利用条件・接続先の参照・関連参照は、補助テーブルに保存した公開中の版のスナップショット（設計書「補助テーブルに保存するもの」の公開内容のスナップショット）から取得します。これらは検索や絞り込みに使わないため、custom metadata には置きません。パーティションキー `pk` は管理情報と同じで、ソートキー `sk` は `PUBLISHED#{recordVersion}` です。申請・決裁処理（#9・#10）が、公開した版について次の属性を保存します。
+連絡先・利用条件・接続先の参照・関連参照は、補助テーブルに保存した公開中の版のスナップショット（[ADR-0007](../../docs/adr/0007-published-snapshot-for-detail.md)）から取得します。パーティションキー `pk` は管理情報と同じで、ソートキー `sk` は `PUBLISHED#{recordVersion}` です。申請・決裁処理（#9・#10）が、公開した版について次の属性を保存します。
 
 | 属性 | 型 | 内容 |
 |---|---|---|
@@ -129,12 +129,15 @@ A2A の判定は descriptor（Agent Card の有無）が正本です。ただし
 
 ## 開発
 
+初回の環境準備・キャッシュ設定・フックの導入は [開発環境の手順](../../docs/agents/development-environment.md) を参照してください。レビュー時の判断基準は [CODING_STANDARDS.md](CODING_STANDARDS.md) を参照してください。
+
 ```bash
 # バックエンド
 cd applications/registry_portal/backend
 python3.13 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
-pytest && flake8 src tests && black --check src tests && mypy
+pytest && flake8 src tests ../scripts && black --config pyproject.toml --check src tests ../scripts && mypy
+python ../scripts/check_imports.py
 
 # フロントエンド
 cd applications/registry_portal/frontend
