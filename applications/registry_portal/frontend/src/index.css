@@ -134,3 +134,8 @@ dd {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+.note.warning {
+  border-left: 4px solid #b45309;
+  padding-left: 0.5rem;
+}

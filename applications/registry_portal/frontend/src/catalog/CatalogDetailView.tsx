@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { ApiError, type ApiClient, type CatalogDetail, type CatalogItem } from '../api/client'
+import type { ApiClient, ApiError, CatalogDetail, CatalogItem } from '../api/client'
 import { CatalogRequestError } from './CatalogRequestError'
 import { catalogTypeLabel } from './recordTypes'
+import { settleWhileActive } from './requests'
 
 type DetailView =
   | { status: 'loading' }
@@ -23,21 +24,16 @@ export function CatalogDetailView({ api, item, onRelogin, onClose }: Props) {
   useEffect(() => heading.current?.focus(), [])
   useEffect(() => {
     if (!isLoading) return
-    let active = true
-    api.getCatalogDetail(recordId).then(
-      (detail) => active && setView({ status: 'ready', detail }),
-      (failure: unknown) => {
-        if (!active) return
-        const error =
-          failure instanceof ApiError
-            ? failure
-            : new ApiError(0, 'UNEXPECTED_ERROR', 'カタログの詳細を取得できませんでした。')
-        setView({ status: 'error', error })
-      },
+    return settleWhileActive(
+      api.getCatalogDetail(recordId),
+      'カタログの詳細を取得できませんでした。',
+      (settled) =>
+        setView(
+          settled.ok
+            ? { status: 'ready', detail: settled.value }
+            : { status: 'error', error: settled.error },
+        ),
     )
-    return () => {
-      active = false
-    }
   }, [api, isLoading, recordId])
 
   const record = view.status === 'ready' ? view.detail : item
@@ -64,6 +60,11 @@ export function CatalogDetailView({ api, item, onRelogin, onClose }: Props) {
   )
 }
 
+/** null は公開版スナップショットを取得できなかったこと、空文字は値が登録されていないことを表す */
+function snapshotValue(value: string | null): string {
+  return value === null ? '未取得' : value || '未登録'
+}
+
 function DetailContents({ detail }: { detail: CatalogDetail }) {
   return (
     <>
@@ -84,13 +85,13 @@ function DetailContents({ detail }: { detail: CatalogDetail }) {
         <dt>所有チーム</dt>
         <dd>{detail.ownerTeam || '未登録'}</dd>
         <dt>連絡先</dt>
-        <dd>{detail.contact || '未登録'}</dd>
+        <dd>{snapshotValue(detail.contact)}</dd>
         <dt>利用条件</dt>
-        <dd>{detail.termsOfUse || '未登録'}</dd>
+        <dd>{snapshotValue(detail.termsOfUse)}</dd>
         <dt>データ分類</dt>
-        <dd>{detail.dataClassification || '未登録'}</dd>
+        <dd>{detail.dataClassification ?? '未登録'}</dd>
         <dt>接続先の参照</dt>
-        <dd>{detail.connectionReference || '未登録'}</dd>
+        <dd>{snapshotValue(detail.connectionReference)}</dd>
       </dl>
       <h3>関連参照</h3>
       {detail.relatedReferences === null ? (

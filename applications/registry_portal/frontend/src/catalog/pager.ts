@@ -2,7 +2,12 @@
 //
 // AWS の nextToken は前にしか進めないため、取得したページごとの token を積んで「前のページ」を実現する。
 // AWS はページが疎であることを保証しないので、0件のページでも nextToken があれば次へ進める。
-import { ApiError, type CatalogPage, type CatalogRecordType } from '../api/client'
+import {
+  supportsA2AFilter,
+  toApiError,
+  type CatalogPage,
+  type CatalogRecordType,
+} from '../api/client'
 
 export const UNEXPECTED_CATALOG_ERROR = 'カタログの表示中に想定外のエラーが発生しました。'
 
@@ -28,7 +33,7 @@ const loading: CatalogViewState = { status: 'loading' }
 export function initialCatalogState(type: CatalogRecordType, a2aOnly = false): CatalogState {
   return {
     type,
-    a2aOnly: type === 'AGENT' && a2aOnly,
+    a2aOnly: supportsA2AFilter(type) && a2aOnly,
     pageTokens: [undefined],
     pageNumber: 1,
     view: loading,
@@ -44,11 +49,8 @@ export function pageReceived(state: CatalogState, page: CatalogPage): CatalogSta
 }
 
 export function pageFailed(state: CatalogState, error: unknown): CatalogState {
-  const view: CatalogViewState =
-    error instanceof ApiError
-      ? { status: 'error', message: error.message, requiresLogin: error.requiresLogin }
-      : { status: 'error', message: UNEXPECTED_CATALOG_ERROR, requiresLogin: false }
-  return { ...state, view }
+  const { message, requiresLogin } = toApiError(error, UNEXPECTED_CATALOG_ERROR)
+  return { ...state, view: { status: 'error', message, requiresLogin } }
 }
 
 export function canGoNext(state: CatalogState): boolean {

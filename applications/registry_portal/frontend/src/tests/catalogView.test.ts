@@ -12,7 +12,7 @@ const render = (state: CatalogState) =>
     createElement(CatalogPanel, {
       state,
       onSelectType: noop,
-      onFilterA2a: noop,
+      onFilterA2A: noop,
       onFirstPage: noop,
       onNext: noop,
       onPrevious: noop,

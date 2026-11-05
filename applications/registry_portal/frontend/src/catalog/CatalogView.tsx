@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
-import type { ApiClient, CatalogItem, CatalogRecordType } from '../api/client'
+import { supportsA2AFilter, type ApiClient, type CatalogItem, type CatalogRecordType } from '../api/client'
 import { CatalogDetailView } from './CatalogDetailView'
 import { CatalogItems } from './CatalogItems'
+import { CatalogRequestError } from './CatalogRequestError'
 import { CatalogSearchView } from './CatalogSearchView'
 import { CATALOG_TYPES, catalogTypeLabel } from './recordTypes'
+import { settleWhileActive } from './requests'
 import {
   canGoNext,
   canGoPrevious,
@@ -14,6 +16,7 @@ import {
   initialCatalogState,
   pageReceived,
   reloadPage,
+  UNEXPECTED_CATALOG_ERROR,
   type CatalogState,
 } from './pager'
 
@@ -34,14 +37,11 @@ export function CatalogView({ api, onRelogin }: Props) {
   useEffect(() => {
     if (!isLoading) return
     // 種別やページを切り替えたら、古い応答は捨てる
-    let active = true
-    api.listCatalog(type, token, a2aOnly).then(
-      (page) => active && setState((current) => pageReceived(current, page)),
-      (error: unknown) => active && setState((current) => pageFailed(current, error)),
+    return settleWhileActive(api.listCatalog(type, token, a2aOnly), UNEXPECTED_CATALOG_ERROR, (settled) =>
+      setState((current) =>
+        settled.ok ? pageReceived(current, settled.value) : pageFailed(current, settled.error),
+      ),
     )
-    return () => {
-      active = false
-    }
   }, [api, isLoading, type, a2aOnly, token])
 
   return (
@@ -51,12 +51,12 @@ export function CatalogView({ api, onRelogin }: Props) {
           api={api}
           onRelogin={onRelogin}
           onOpenDetail={setSelectedItem}
-          onBrowseA2a={() => setState(initialCatalogState('AGENT', true))}
+          onBrowseA2A={() => setState(initialCatalogState('AGENT', true))}
         >
           <CatalogPanel
             state={state}
             onSelectType={(next) => setState(initialCatalogState(next))}
-            onFilterA2a={(checked) => setState(initialCatalogState('AGENT', checked))}
+            onFilterA2A={(checked) => setState(initialCatalogState('AGENT', checked))}
             onFirstPage={() => setState(initialCatalogState(type, a2aOnly))}
             onNext={() => setState(goNext)}
             onPrevious={() => setState(goPrevious)}
@@ -82,7 +82,7 @@ export function CatalogView({ api, onRelogin }: Props) {
 type PanelProps = {
   state: CatalogState
   onSelectType: (type: CatalogRecordType) => void
-  onFilterA2a: (checked: boolean) => void
+  onFilterA2A: (checked: boolean) => void
   onFirstPage: () => void
   onNext: () => void
   onPrevious: () => void
@@ -95,7 +95,7 @@ type PanelProps = {
 export function CatalogPanel({
   state,
   onSelectType,
-  onFilterA2a,
+  onFilterA2A,
   onFirstPage,
   onNext,
   onPrevious,
@@ -126,13 +126,13 @@ export function CatalogPanel({
       </div>
 
       <div role="tabpanel" aria-label={catalogTypeLabel(state.type)}>
-        {state.type === 'AGENT' && (
+        {supportsA2AFilter(state.type) && (
           <label>
             <input
               type="checkbox"
               name="a2aOnly"
               checked={state.a2aOnly}
-              onChange={(event) => onFilterA2a(event.target.checked)}
+              onChange={(event) => onFilterA2A(event.target.checked)}
             />
             A2A の Agent のみ
           </label>
@@ -140,23 +140,14 @@ export function CatalogPanel({
         {view.status === 'loading' ? (
           <p role="status">読み込んでいます…</p>
         ) : view.status === 'error' ? (
-          <div role="alert" className="error">
-            <p>{view.message}</p>
-            <button type="button" onClick={onRetry}>
-              再試行
-            </button>
+          <CatalogRequestError error={view} onRetry={onRetry} onRelogin={onRelogin}>
             {state.pageNumber > 1 && (
               // nextToken の期限切れなどで同じページを取り直しても解決しない場合の戻り道
               <button type="button" onClick={onFirstPage}>
                 最初のページに戻る
               </button>
             )}
-            {view.requiresLogin && (
-              <button type="button" onClick={onRelogin}>
-                もう一度ログインする
-              </button>
-            )}
-          </div>
+          </CatalogRequestError>
         ) : view.page.items.length === 0 ? (
           <p>
             {view.page.nextToken !== null
