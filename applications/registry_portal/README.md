@@ -64,7 +64,28 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 - **障害と0件の区別**: Registry やトークンエンドポイントの失敗（5xx、429、403、タイムアウト、想定外の応答）は 502 `DISCOVERY_UNAVAILABLE` とし、0件の結果とは区別します。AWS のエラー内容は利用者に返しません。
 - **ログ**: JWT、client secret、セッショントークン、応答の本文は出しません。出すのは HTTP ステータスと処理の種類だけです。
 
-検索は `SearchDiscoverableRegistryRecords` を呼び出します。本文は `query`（256文字以内）と任意の `type`（`AGENT`、`MCP`、`SKILL`）、`a2a`（真偽値）、`dataClassification`（`public`、`private`）を受け付けます。検索語を空にする場合は、少なくとも1つの絞り込み条件が必要です。AWS に渡すフィルタは種別と分類だけです。A2A の指定時は Agent に絞って検索し、取得した上位20件を Agent Card descriptor の有無で絞ります。絞り込み後も AWS の順位を保ちます。検索候補に一致する Agent がない場合は、その旨を表示します。検索候補の外にある A2A の Agent も一覧のフィルターとページ送りで探せます。[AWS の検索フィルタ仕様](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-search-records.html)
+検索は `SearchDiscoverableRegistryRecords` を呼び出します。本文は `query`（256文字以内）と任意の `type`（`AGENT`、`MCP`、`SKILL`）、`a2a`（真偽値）、`dataClassification`（`public`、`private`）を受け付けます。検索語を空にする場合は、少なくとも1つの絞り込み条件が必要です。A2A の指定時は `recordType=AGENT` と `customMetadata.isA2A` を、分類の指定時は `customMetadata.dataClassification` を AWS の検索フィルターに含めます。AWS はこれらの条件を順位付け前に適用するため、対象全体から関連度順の最大20件を返します。返却順はそのまま保ちます。[AWS の検索フィルター仕様](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-search-records.html)
+
+#### A2A 検索用 metadata を準備する
+
+このポータルは Registry の schema やレコードを変更しません。導入担当者は A2A 検索を利用する前に、既存 Registry を次の順で準備してください。
+
+1. AWS コンソールで対象 Registry の **Custom metadata schema** から **Manage schema** を開きます。`AGENT` のフィールドに `isA2A` を Boolean 型かつ Required として追加します。既存の共通フィールドと種別ごとのフィールドを残してください。JSON で編集する場合の追加内容は次のとおりです。schema 全体の置き換え例ではありません。[schema の設定手順](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-custom-metadata-schema.html)
+
+   ```json
+   {
+     "type": "object",
+     "properties": {"isA2A": {"type": "boolean"}},
+     "required": ["isA2A"]
+   }
+   ```
+
+2. 公開中の全 `AGENT` レコードを全ページ確認します。各レコードの descriptor に `a2aAgentCard` があれば `customMetadata.isA2A=true`、なければ `false` を設定します。文字列の `"true"` や `"false"` は使用しません。既存の `ownerTeam` や `dataClassification` などを保持してください。CLI の `update-registry-record --custom-metadata` は全 metadata を置き換えるため、既存値も含めて渡します。[metadata の更新手順](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-custom-metadata-values.html)
+3. 更新したレコードを通常の承認手順で公開します。schema を追加するだけでは既存の公開版に値は補完されません。未補完のレコードは検索フィルターから漏れるため、既存レコードの補完と公開が終わるまで A2A 検索を利用しないでください。
+4. 検索インデックスへの反映後、A2A の一覧を全ページ確認した結果と `a2a=true` の検索結果を照合します。検索は最大20件なので、レコード名を検索語にして各公開版を個別に確認します。A2A 以外の Agent も `a2a=false` で確認してください。
+5. 以後の作成・更新・同期でも descriptor から `isA2A` を導出し、公開する版と同時に保存します。この値は利用者の任意入力ではなく、検索用の写しとして維持してください。
+
+A2A 検索では、返却された `isA2A` が JSON の真偽値であり、指定条件と Agent Card descriptor の有無に一致することを検査します。不一致や欠落は 502 `DISCOVERY_UNAVAILABLE` にします。AWS が schema 未定義などで検索を拒否した場合も同じエラーです。フィルターで除外された未補完レコードは応答から検出できないため、導入時の全件確認が必要です。
 
 詳細は `BatchGetDiscoverableRegistryRecord` に ID を1件渡します。公開中の版が見つからなければ 404 `CATALOG_ITEM_NOT_FOUND` を返します。連絡先・利用条件・接続先の参照は、公開中のレコードの `customMetadata` にある文字列（`contact`、`termsOfUse`、`connectionReference`）を表示します。値がなければ「未登録」と表示します。定義と SKILL.md はテキストとして表示します。
 

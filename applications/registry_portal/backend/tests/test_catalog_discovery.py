@@ -54,16 +54,18 @@ def search_event(payload: Any, *, encode: bool = False) -> dict[str, Any]:
 
 
 def hit(record_id: str, descriptor: str = "a2aAgentCard") -> dict[str, Any]:
-    record = summary(record_id, descriptors={descriptor: {"data": "{}"}})
+    record = summary(
+        record_id,
+        descriptors={descriptor: {"data": "{}"}},
+        customMetadata={"isA2A": descriptor == "a2aAgentCard"},
+    )
     del record["descriptorTypes"]
     return record
 
 
 def test_viewer_searches_natural_language_with_only_allowlisted_filters() -> None:
     transport = SearchTransport()
-    transport.registry.append(
-        json_response(200, {"registryRecords": [hit("z"), hit("b", "http"), hit("a")]})
-    )
+    transport.registry.append(json_response(200, {"registryRecords": [hit("z"), hit("a")]}))
 
     status, body = call(
         make_handler(transport),
@@ -93,6 +95,7 @@ def test_viewer_searches_natural_language_with_only_allowlisted_filters() -> Non
         filters={
             "$and": [
                 {"recordType": {"$eq": "AGENT"}},
+                {"customMetadata.isA2A": {"$eq": True}},
                 {"customMetadata.dataClassification": {"$eq": "private"}},
             ],
         },
@@ -140,15 +143,20 @@ def test_search_rejects_invalid_or_unapproved_fields_before_external_requests(pa
     assert transport.requests == []
 
 
-def test_non_a2a_filter_keeps_only_agents_without_agent_cards() -> None:
+def test_non_a2a_filter_is_applied_by_registry_before_ranking() -> None:
     transport = SearchTransport()
-    transport.registry.append(json_response(200, {"registryRecords": [hit("a"), hit("b", "http")]}))
+    transport.registry.append(json_response(200, {"registryRecords": [hit("b", "http")]}))
 
     status, body = call(make_handler(transport), search_event({"query": "", "a2a": False}))
 
     assert status == 200
     assert [item["recordId"] for item in body["items"]] == ["b"]
-    assert transport.to(SEARCH_URL)[0].json()["filters"] == {"recordType": {"$eq": "AGENT"}}
+    assert transport.to(SEARCH_URL)[0].json()["filters"] == {
+        "$and": [
+            {"recordType": {"$eq": "AGENT"}},
+            {"customMetadata.isA2A": {"$eq": False}},
+        ],
+    }
 
 
 def test_no_search_match_is_a_successful_empty_response() -> None:

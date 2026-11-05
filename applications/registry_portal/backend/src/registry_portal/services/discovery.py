@@ -350,14 +350,14 @@ class DiscoveryClient:
         record_type_filter: dict[str, object] = (
             {"$eq": record_type} if record_type else {"$in": CATALOG_RECORD_TYPES}
         )
-        filters: dict[str, object] = {"recordType": record_type_filter}
+        conditions: list[dict[str, object]] = [{"recordType": record_type_filter}]
+        if search.a2a is not None:
+            conditions.append({"customMetadata.isA2A": {"$eq": search.a2a}})
         if search.data_classification is not None:
-            filters = {
-                "$and": [
-                    filters,
-                    {"customMetadata.dataClassification": {"$eq": search.data_classification}},
-                ],
-            }
+            conditions.append(
+                {"customMetadata.dataClassification": {"$eq": search.data_classification}}
+            )
+        filters: dict[str, object] = conditions[0] if len(conditions) == 1 else {"$and": conditions}
         response = self._request(
             self._search_url,
             {
@@ -382,9 +382,17 @@ class DiscoveryClient:
                 or not isinstance(record.get("descriptors"), Mapping)
             ):
                 raise _unavailable("検索 API の公開承認済みレコードを読み取れませんでした")
-            # AWS の検索フィルタは descriptor を受け付けない。順位を保って Agent Card を判定する
-            if search.a2a is None or (item.record_type == "AGENT" and item.is_a2a == search.a2a):
-                items.append(item)
+            if search.a2a is not None:
+                indexed_a2a = _mapping_or_empty(record.get("customMetadata")).get("isA2A")
+                if (
+                    item.record_type != "AGENT"
+                    or indexed_a2a is not search.a2a
+                    or item.is_a2a != search.a2a
+                ):
+                    raise _unavailable(
+                        "検索 API の A2A 検索用 metadata と descriptor が一致しません"
+                    )
+            items.append(item)
         return tuple(items)
 
     def get_record(self, record_id: str) -> CatalogDetail | None:

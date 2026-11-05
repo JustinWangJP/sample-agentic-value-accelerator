@@ -151,7 +151,7 @@ describe('カタログ検索と詳細画面', () => {
     expect(results.textContent).toContain('受注エージェント')
   })
 
-  it('A2A 検索が0件のときは候補の範囲を示し、A2A の一覧を開ける', async () => {
+  it('A2A 検索が0件のときは該当なしを示し、A2A の一覧を開ける', async () => {
     const { calls } = await mount(
       jsonResponse(200, { items: [] }),
       jsonResponse(200, { items: [agent], nextToken: 'a2a-token' }),
@@ -163,7 +163,7 @@ describe('カタログ検索と詳細画面', () => {
     await search('受注')
 
     expect(element('[aria-label="検索結果"]').textContent).toContain(
-      '取得した候補（最大20件）に、A2A の条件に一致する Agent はありません。',
+      '条件に一致するカタログ項目はありません。',
     )
     await clickButton('A2A の Agent 一覧を開く')
     expect(calls.at(-1)?.url).toBe('/api/catalog?type=AGENT&a2a=true')

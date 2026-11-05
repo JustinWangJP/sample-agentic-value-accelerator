@@ -82,7 +82,6 @@ export function CatalogSearchView({ api, onRelogin, onOpenDetail, onBrowseA2a, c
               A2A
               <select
                 name="a2a"
-                aria-describedby="catalog-a2a-note"
                 disabled={recordType !== '' && recordType !== 'AGENT'}
               >
                 <option value="">指定なし</option>
@@ -99,9 +98,6 @@ export function CatalogSearchView({ api, onRelogin, onOpenDetail, onBrowseA2a, c
               </select>
             </label>
           </div>
-          <p id="catalog-a2a-note" className="note">
-            A2A を指定すると、関連度が高い順に取得した最大20件の Agent から絞り込みます。
-          </p>
           <button type="submit">検索する</button>
           {view.status !== 'idle' && (
             <button type="button" onClick={() => setView({ status: 'idle' })}>
@@ -122,9 +118,7 @@ export function CatalogSearchView({ api, onRelogin, onOpenDetail, onBrowseA2a, c
             ) : view.items.length === 0 ? (
               <>
                 <p role="status">
-                  {view.request.a2a === undefined
-                    ? '条件に一致するカタログ項目はありません。'
-                    : '取得した候補（最大20件）に、A2A の条件に一致する Agent はありません。'}
+                  条件に一致するカタログ項目はありません。
                 </p>
                 {view.request.a2a === true && (
                   <button
