@@ -20,8 +20,10 @@ from registry_portal.config import (
     load_discovery_settings,
 )
 from registry_portal.errors import ApiError, RequestValidationError, RouteNotFoundError
+from registry_portal.drafts import AgentDrafts, require_publisher
 from registry_portal.services.catalog_supplement import CatalogSupplement, SupplementClient
 from registry_portal.services.discovery import DiscoveryDependencies, create_discovery_client
+from registry_portal.services.draft_store import DraftStore
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +65,12 @@ def _route_key(event: LambdaEvent) -> str:
 
 
 # path に1つの要素を含むルート。(実際の path の接頭辞, ルート表のキー)
-_PARAMETERIZED_ROUTES = (("GET /api/catalog/", "GET /api/catalog/{recordId}"),)
+_PARAMETERIZED_ROUTES = (
+    ("GET /api/catalog/", "GET /api/catalog/{recordId}"),
+    ("GET /api/records/", "GET /api/records/{recordId}"),
+    ("PATCH /api/records/", "PATCH /api/records/{recordId}"),
+    ("GET /api/operations/", "GET /api/operations/{operationId}"),
+)
 
 
 def _route_template(key: str) -> tuple[str, str]:
@@ -85,10 +92,10 @@ def _query_of(event: LambdaEvent) -> Mapping[str, str]:
     return {str(key): str(value) for key, value in query.items()}
 
 
-def _json_body(event: LambdaEvent) -> Mapping[str, Any]:
+def _json_body(event: LambdaEvent, max_length: int = 8192) -> Mapping[str, Any]:
     error = RequestValidationError("リクエスト本文には JSON オブジェクトを指定してください。")
     raw = event.get("body")
-    if not isinstance(raw, str) or len(raw) > 8192:
+    if not isinstance(raw, str) or len(raw) > max_length:
         raise error
     try:
         body = json.loads(
@@ -124,6 +131,8 @@ def create_management_handler(
     *,
     discovery: DiscoveryDependencies | None = None,
     supplement_client: SupplementClient | None = None,
+    registry_client: Any = None,
+    draft_store_client: Any = None,
 ) -> Handler:
     """管理 handler を作る。認証・発見の設定が不足していれば、ここで起動エラーにする。
 
@@ -146,6 +155,17 @@ def create_management_handler(
         if catalog_settings.supplement_table_name
         else None
     )
+    drafts = AgentDrafts(
+        discovery_settings.registry_arn,
+        discovery_settings.registry_region,
+        DraftStore(
+            catalog_settings.supplement_table_name or "",
+            discovery_settings.registry_arn,
+            discovery_settings.registry_region,
+            draft_store_client,
+        ),
+        registry_client,
+    )
 
     # カタログは Viewer（ログインした全員）が閲覧できる。発見用 M2M トークンでポータルが代理で問い合わせる
     def get_catalog(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
@@ -165,11 +185,41 @@ def create_management_handler(
             raise RequestValidationError("カタログ詳細にクエリパラメーターは指定できません。")
         return get_catalog_detail(discovery_client, _path_parameter(event), supplement)
 
+    def post_record(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        require_publisher(caller)
+        if not catalog_settings.supplement_table_name:
+            raise RequestValidationError(
+                "下書きの補助テーブルが未設定です。管理者に連絡してください。"
+            )
+        headers = _mapping_or_empty(event.get("headers"))
+        key = next(
+            (str(value) for name, value in headers.items() if name.lower() == "idempotency-key"),
+            "",
+        )
+        return drafts.create(caller, _json_body(event, 131072), key)
+
+    def get_record(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        return drafts.get(caller, _path_parameter(event))
+
+    def list_records(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        return drafts.list(caller, _query_of(event))
+
+    def patch_record(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        return drafts.update(caller, _path_parameter(event), _json_body(event, 131072))
+
+    def get_operation(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        return drafts.operation(caller, _path_parameter(event))
+
     routes: Mapping[str, Route] = {
         **MANAGEMENT_ROUTES,
         "GET /api/catalog": get_catalog,
         "POST /api/catalog/search": post_search,
         "GET /api/catalog/{recordId}": get_detail,
+        "POST /api/records": post_record,
+        "GET /api/records": list_records,
+        "GET /api/records/{recordId}": get_record,
+        "PATCH /api/records/{recordId}": patch_record,
+        "GET /api/operations/{operationId}": get_operation,
     }
 
     def handler(event: LambdaEvent, context: Any) -> LambdaResponse:

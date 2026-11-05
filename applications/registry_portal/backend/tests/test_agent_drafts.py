@@ -1,0 +1,678 @@
+"""Publisher の Agent 下書きを handler・実 SDK・補助テーブルで検証する（Seam 1）。"""
+
+import json
+from datetime import datetime, timezone
+
+import boto3
+import pytest
+from botocore.stub import ANY, Stubber
+from moto import mock_aws
+
+from catalog_helpers import ENV, HUMAN_CLIENT_ID, ISSUER, REGISTRY_ARN, SUPPLEMENT_TABLE
+from registry_portal.app import create_management_handler
+
+
+def event(
+    method="POST",
+    path="/api/records",
+    body=None,
+    groups="registry-publisher team-payments",
+    key="draft-1",
+):
+    return {
+        "requestContext": {
+            "http": {"method": method, "path": path},
+            "authorizer": {
+                "jwt": {
+                    "claims": {
+                        "iss": ISSUER,
+                        "sub": "alice",
+                        "client_id": HUMAN_CLIENT_ID,
+                        "token_use": "access",
+                        "cognito:groups": groups,
+                    }
+                }
+            },
+        },
+        "headers": {"idempotency-key": key} if key else {},
+        "body": json.dumps(body or {}),
+    }
+
+
+def call(handler, request):
+    response = handler(request, None)
+    return response["statusCode"], json.loads(response["body"])
+
+
+def test_viewer_cannot_create_a_draft():
+    status, body = call(create_management_handler(ENV), event(groups=""))
+    assert status == 403
+    assert body["error"]["code"] == "FORBIDDEN"
+
+
+DRAFT = {
+    "name": "payments-agent",
+    "displayName": "決済 Agent",
+    "description": "決済を調べる",
+    "recordVersion": "1.0.0",
+    "ownerTeam": "team-payments",
+    "environment": "dev",
+    "dataClassification": "private",
+    "purpose": "決済状況の照会",
+    "connectionReference": "https://example.com/payments",
+    "authentication": "Cognito JWT",
+    "contact": "payments@example.com",
+    "termsOfUse": "社内利用のみ",
+}
+DEFINITION = {
+    key: DRAFT[key]
+    for key in (
+        "purpose",
+        "connectionReference",
+        "authentication",
+        "contact",
+        "termsOfUse",
+    )
+}
+DESCRIPTORS = {
+    "custom": {
+        "data": json.dumps(DEFINITION, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    }
+}
+METADATA = {
+    "ownerTeam": "team-payments",
+    "environment": "dev",
+    "dataClassification": "private",
+    "isA2A": False,
+}
+RECORD_ID = "agentABC1234"
+RECORD_ARN = f"{REGISTRY_ARN}/record/{RECORD_ID}"
+
+
+def record(**changes):
+    return {
+        "registryArn": REGISTRY_ARN,
+        "recordArn": RECORD_ARN,
+        "recordId": RECORD_ID,
+        "name": DRAFT["name"],
+        "displayName": DRAFT["displayName"],
+        "description": DRAFT["description"],
+        "recordType": "AGENT",
+        "descriptors": DESCRIPTORS,
+        "customMetadata": METADATA,
+        "recordVersion": "1.0.0",
+        "status": "DRAFT",
+        "createdAt": datetime(2026, 11, 1, tzinfo=timezone.utc),
+        "updatedAt": datetime(2026, 11, 1, tzinfo=timezone.utc),
+        **changes,
+    }
+
+
+def clients():
+    opts = {
+        "region_name": "us-east-1",
+        "aws_access_key_id": "test",
+        "aws_secret_access_key": "test",
+    }
+    registry = boto3.client("agent-registry-control", **opts)
+    db = boto3.client("dynamodb", **opts)
+    db.create_table(
+        TableName=SUPPLEMENT_TABLE,
+        KeySchema=[
+            {"AttributeName": "pk", "KeyType": "HASH"},
+            {"AttributeName": "sk", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "pk", "AttributeType": "S"},
+            {"AttributeName": "sk", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    return registry, db
+
+
+def handler_for(registry, db):
+    return create_management_handler(
+        {**ENV, "SUPPLEMENT_TABLE_NAME": SUPPLEMENT_TABLE},
+        registry_client=registry,
+        draft_store_client=db,
+    )
+
+
+def stub_create(stub):
+    stub.add_response(
+        "create_registry_record",
+        {"recordArn": RECORD_ARN, "status": "CREATING"},
+        {
+            "registryId": REGISTRY_ARN,
+            "name": DRAFT["name"],
+            "displayName": DRAFT["displayName"],
+            "description": DRAFT["description"],
+            "recordType": "AGENT",
+            "recordVersion": "1.0.0",
+            "descriptors": DESCRIPTORS,
+            "customMetadata": METADATA,
+            "clientToken": ANY,
+        },
+    )
+    stub.add_response(
+        "get_registry_record",
+        record(),
+        {"registryId": REGISTRY_ARN, "recordId": RECORD_ID},
+    )
+
+
+@mock_aws
+def test_publisher_creates_custom_agent_once_and_replays_the_same_result():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub_create(stub)
+        handler = handler_for(registry, db)
+        status, created = call(handler, event(body=DRAFT))
+        assert status == 201
+        assert created["recordId"] == RECORD_ID
+        assert created["draft"] == DRAFT
+        assert len(created["contentHash"]) == 64
+        assert created["hasDraft"] is True
+        assert created["status"] == "DRAFT"
+        management = db.get_item(
+            TableName=SUPPLEMENT_TABLE,
+            Key={
+                "pk": {"S": f"REGISTRY#{REGISTRY_ARN}#RECORD#{RECORD_ID}"},
+                "sk": {"S": "MANAGEMENT"},
+            },
+        )["Item"]
+        assert management["contact"] == {"S": "payments@example.com"}
+        assert management["termsOfUse"] == {"S": "社内利用のみ"}
+        assert management["connectionReference"] == {"S": "https://example.com/payments"}
+        assert call(handler, event(body=DRAFT)) == (201, created)
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_publisher_edits_with_expected_hash_and_update_optional_wrappers():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub_create(stub)
+        handler = handler_for(registry, db)
+        _, created = call(handler, event(body=DRAFT))
+        stub.add_response(
+            "get_registry_record",
+            record(),
+            {"registryId": REGISTRY_ARN, "recordId": RECORD_ID},
+        )
+        changed = {**DRAFT, "description": "新しい説明"}
+        stub.add_response(
+            "update_registry_record",
+            record(description="新しい説明", status="UPDATING"),
+            {
+                "registryId": REGISTRY_ARN,
+                "recordId": RECORD_ID,
+                "displayName": {"optionalValue": DRAFT["displayName"]},
+                "description": {"optionalValue": "新しい説明"},
+                "recordVersion": "1.0.0",
+                "customMetadata": {"optionalValue": METADATA},
+                "descriptors": {
+                    "optionalValue": {
+                        "custom": {
+                            "optionalValue": {
+                                "data": {"optionalValue": DESCRIPTORS["custom"]["data"]},
+                            }
+                        }
+                    }
+                },
+            },
+        )
+        stub.add_response(
+            "get_registry_record",
+            record(description="新しい説明"),
+            {"registryId": REGISTRY_ARN, "recordId": RECORD_ID},
+        )
+        status, updated = call(
+            handler,
+            event(
+                "PATCH",
+                f"/api/records/{RECORD_ID}",
+                {"draft": changed, "expectedContentHash": created["contentHash"]},
+            ),
+        )
+        assert status == 200
+        assert updated["draft"]["description"] == "新しい説明"
+        assert updated["contentHash"] != created["contentHash"]
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_other_team_cannot_read_or_edit_a_draft_without_fetching_aws_content():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub_create(stub)
+        handler = handler_for(registry, db)
+        call(handler, event(body=DRAFT))
+        for method in ["GET", "PATCH"]:
+            status, body = call(
+                handler,
+                event(
+                    method,
+                    f"/api/records/{RECORD_ID}",
+                    groups="registry-publisher team-cards",
+                ),
+            )
+            assert status == 403
+            assert body["error"]["code"] == "FORBIDDEN"
+        stub.assert_no_pending_responses()
+
+
+@pytest.mark.parametrize(
+    "groups",
+    [
+        "registry-publisher",
+        "registry-curator team-payments",
+        "registry-admin team-payments",
+    ],
+)
+def test_only_a_publisher_with_a_team_can_write(groups):
+    status, body = call(create_management_handler(ENV), event(groups=groups))
+    assert status == 403
+    assert body["error"]["code"] == "FORBIDDEN"
+
+
+@mock_aws
+def test_missing_key_and_invalid_input_do_not_write_to_aws():
+    registry, db = clients()
+    with Stubber(registry):
+        handler = handler_for(registry, db)
+        assert call(handler, event(body=DRAFT, key=""))[0] == 400
+        for change in [
+            {"environment": "prod"},
+            {"recordVersion": "latest"},
+            {"dataClassification": "secret"},
+            {"status": "APPROVED"},
+            {"purpose": ""},
+        ]:
+            assert call(handler, event(body={**DRAFT, **change}))[0] == 400
+        assert call(handler, event(body={**DRAFT, "ownerTeam": "team-cards"}))[0] == 403
+
+
+@mock_aws
+def test_stale_hash_rejects_update_and_releases_lock_for_a_fresh_request():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub_create(stub)
+        handler = handler_for(registry, db)
+        _, created = call(handler, event(body=DRAFT))
+        for _ in range(2):
+            stub.add_response(
+                "get_registry_record",
+                record(),
+                {"registryId": REGISTRY_ARN, "recordId": RECORD_ID},
+            )
+            status, body = call(
+                handler,
+                event(
+                    "PATCH",
+                    f"/api/records/{RECORD_ID}",
+                    {"draft": DRAFT, "expectedContentHash": "0" * 64},
+                ),
+            )
+            assert status == 409
+            assert body["error"]["code"] == "CONTENT_CONFLICT"
+        assert call(handler, event(body={**DRAFT, "description": "異なる入力"}))[0] == 409
+        assert (
+            call(handler, event("PATCH", f"/api/records/{RECORD_ID}", {"draft": DRAFT}))[0] == 400
+        )
+        assert created["draft"] == DRAFT
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_unknown_create_can_retry_with_the_same_aws_client_token():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub.add_client_error(
+            "create_registry_record", "InternalServerException", http_status_code=500
+        )
+        handler = handler_for(registry, db)
+        status, pending = call(handler, event(body=DRAFT))
+        assert status == 202
+        assert pending["operationState"] == "VERIFYING"
+        stub_create(stub)
+        status, created = call(handler, event(body=DRAFT))
+        assert status == 201
+        assert created["operationId"] == pending["operationId"]
+        assert created["recordId"] == RECORD_ID
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_creating_draft_is_visible_and_record_lock_survives_an_old_ttl():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub.add_response("create_registry_record", {"recordArn": RECORD_ARN, "status": "CREATING"})
+        stub.add_response("get_registry_record", record(status="CREATING"))
+        handler = handler_for(registry, db)
+        status, pending = call(handler, event(body=DRAFT))
+        assert status == 202
+        stub.add_response("get_registry_record", record(status="CREATING"))
+        status, detail = call(handler, event("GET", f"/api/records/{RECORD_ID}"))
+        assert status == 200
+        assert detail["status"] == "CREATING"
+        db.update_item(
+            TableName=SUPPLEMENT_TABLE,
+            Key={
+                "pk": {"S": f"REGISTRY#{REGISTRY_ARN}#RECORD#{RECORD_ID}"},
+                "sk": {"S": "LOCK"},
+            },
+            UpdateExpression="SET expiresAt = :ttl",
+            ExpressionAttributeValues={":ttl": {"N": "1"}},
+        )
+        status, _ = call(
+            handler,
+            event(
+                "PATCH",
+                f"/api/records/{RECORD_ID}",
+                {"draft": DRAFT, "expectedContentHash": detail["contentHash"]},
+            ),
+        )
+        assert status == 409
+        stub.add_response("get_registry_record", record())
+        status, finished = call(handler, event("GET", f"/api/operations/{pending['operationId']}"))
+        assert status == 200
+        assert finished["operationState"] == "SUCCEEDED"
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_management_list_keeps_the_published_version_beside_a_new_draft_and_filters_other_teams():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub_create(stub)
+        handler = handler_for(registry, db)
+        _, created = call(handler, event(body=DRAFT))
+        stub.add_response("get_registry_record", record(status="APPROVED"))
+        changed = {**DRAFT, "recordVersion": "2.0.0"}
+        stub.add_response(
+            "update_registry_record", record(recordVersion="2.0.0", status="UPDATING")
+        )
+        stub.add_response("get_registry_record", record(recordVersion="2.0.0"))
+        status, updated = call(
+            handler,
+            event(
+                "PATCH",
+                f"/api/records/{RECORD_ID}",
+                {"draft": changed, "expectedContentHash": created["contentHash"]},
+            ),
+        )
+        assert status == 200
+        assert updated["publishedVersion"] == "1.0.0"
+        summary = {
+            key: value
+            for key, value in record(recordVersion="2.0.0", status="UPDATE_FAILED").items()
+            if key not in ("descriptors", "customMetadata")
+        }
+        foreign = {
+            **summary,
+            "recordId": "otherABC1234",
+            "recordArn": f"{REGISTRY_ARN}/record/otherABC1234",
+            "name": "他チームの機密名",
+        }
+        stub.add_response(
+            "list_registry_records",
+            {"registryRecords": [summary, foreign], "nextToken": "next-page"},
+            {
+                "registryId": REGISTRY_ARN,
+                "maxResults": 20,
+                "filters": [{"name": "recordType", "values": ["AGENT"]}],
+            },
+        )
+        status, page = call(handler, event("GET", "/api/records"))
+        assert status == 200
+        assert page["nextToken"] == "next-page"
+        assert len(page["items"]) == 1
+        assert page["items"][0]["publishedVersion"] == "1.0.0"
+        assert page["items"][0]["hasDraft"] is True
+        assert page["items"][0]["status"] == "UPDATE_FAILED"
+        assert "他チーム" not in json.dumps(page, ensure_ascii=False)
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_aws_success_followed_by_store_failure_keeps_name_locked_and_retries_same_token():
+    from botocore.exceptions import ClientError
+
+    registry, db = clients()
+    fail_once = [True]
+
+    def fail_pending_write(params, **kwargs):
+        if fail_once[0] and any(
+            item.get("Put", {}).get("Item", {}).get("state") == {"S": "VERIFYING"}
+            for item in params["TransactItems"]
+        ):
+            fail_once[0] = False
+            raise ClientError(
+                {"Error": {"Code": "ValidationException", "Message": "補助ストア障害"}},
+                "TransactWriteItems",
+            )
+
+    db.meta.events.register(
+        "before-parameter-build.dynamodb.TransactWriteItems", fail_pending_write
+    )
+    with Stubber(registry) as stub:
+        stub.add_response("create_registry_record", {"recordArn": RECORD_ARN, "status": "CREATING"})
+        handler = handler_for(registry, db)
+        status, pending = call(handler, event(body=DRAFT))
+        assert status == 202
+        assert pending["operationState"] == "VERIFYING"
+        assert call(handler, event(body=DRAFT, key="different-key"))[0] == 409
+        stub_create(stub)
+        status, result = call(handler, event(body=DRAFT))
+        assert status == 201
+        assert result["operationId"] == pending["operationId"]
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_uncertain_update_is_not_reissued_and_can_be_verified_without_releasing_lock_early():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub_create(stub)
+        handler = handler_for(registry, db)
+        _, created = call(handler, event(body=DRAFT))
+        changed = {**DRAFT, "description": "結果確認を待つ説明"}
+        stub.add_response("get_registry_record", record())
+        stub.add_client_error(
+            "update_registry_record", "InternalServerException", http_status_code=500
+        )
+        request = event(
+            "PATCH",
+            f"/api/records/{RECORD_ID}",
+            {"draft": changed, "expectedContentHash": created["contentHash"]},
+        )
+        status, pending = call(handler, request)
+        assert status == 202
+        assert call(handler, request)[0] == 409
+        stub.add_response("get_registry_record", record(description=changed["description"]))
+        status, verified = call(handler, event("GET", f"/api/operations/{pending['operationId']}"))
+        assert status == 200
+        assert verified["operationState"] == "SUCCEEDED"
+        assert verified["draft"]["description"] == changed["description"]
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_same_team_member_can_read_draft_but_unmanaged_record_is_forbidden():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub_create(stub)
+        handler = handler_for(registry, db)
+        call(handler, event(body=DRAFT))
+        request = event("GET", f"/api/records/{RECORD_ID}")
+        request["requestContext"]["authorizer"]["jwt"]["claims"]["sub"] = "bob"
+        stub.add_response("get_registry_record", record())
+        status, detail = call(handler, request)
+        assert status == 200
+        assert detail["draft"]["contact"] == "payments@example.com"
+        assert (
+            call(
+                handler,
+                event(
+                    "PATCH",
+                    "/api/records/unmanaged123",
+                    {"draft": DRAFT, "expectedContentHash": detail["contentHash"]},
+                ),
+            )[0]
+            == 403
+        )
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_list_keeps_published_version_while_update_is_still_processing():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub_create(stub)
+        handler = handler_for(registry, db)
+        _, created = call(handler, event(body=DRAFT))
+        stub.add_response("get_registry_record", record(status="APPROVED"))
+        stub.add_response(
+            "update_registry_record", record(status="UPDATING", recordVersion="2.0.0")
+        )
+        stub.add_response("get_registry_record", record(status="UPDATING", recordVersion="2.0.0"))
+        status, pending = call(
+            handler,
+            event(
+                "PATCH",
+                f"/api/records/{RECORD_ID}",
+                {
+                    "draft": {**DRAFT, "recordVersion": "2.0.0"},
+                    "expectedContentHash": created["contentHash"],
+                },
+            ),
+        )
+        assert status == 202
+        summary = {
+            key: value
+            for key, value in record(recordVersion="2.0.0", status="UPDATING").items()
+            if key not in ("descriptors", "customMetadata")
+        }
+        stub.add_response("list_registry_records", {"registryRecords": [summary]})
+        status, page = call(handler, event("GET", "/api/records"))
+        assert status == 200
+        assert page["items"][0]["publishedVersion"] == "1.0.0"
+        assert page["items"][0]["hasDraft"] is True
+        assert page["items"][0]["operationId"] == pending["operationId"]
+
+
+@mock_aws
+def test_supplement_only_change_invalidates_expected_content_hash():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub_create(stub)
+        handler = handler_for(registry, db)
+        _, created = call(handler, event(body=DRAFT))
+        db.update_item(
+            TableName=SUPPLEMENT_TABLE,
+            Key={
+                "pk": {"S": f"REGISTRY#{REGISTRY_ARN}#RECORD#{RECORD_ID}"},
+                "sk": {"S": "MANAGEMENT"},
+            },
+            UpdateExpression="SET contact = :contact",
+            ExpressionAttributeValues={":contact": {"S": "new@example.com"}},
+        )
+        stub.add_response("get_registry_record", record())
+        status, body = call(
+            handler,
+            event(
+                "PATCH",
+                f"/api/records/{RECORD_ID}",
+                {"draft": DRAFT, "expectedContentHash": created["contentHash"]},
+            ),
+        )
+        assert status == 409
+        assert body["error"]["code"] == "CONTENT_CONFLICT"
+        stub.add_response("get_registry_record", record())
+        status, latest = call(handler, event("GET", f"/api/records/{RECORD_ID}"))
+        assert status == 200
+        assert latest["draft"]["contact"] == "new@example.com"
+        assert latest["contentHash"] != created["contentHash"]
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_overlapping_create_does_not_reopen_a_completed_operation():
+    registry, db = clients()
+    overlapping = [True]
+    nested = []
+    tokens = []
+    handler = handler_for(registry, db)
+
+    def capture_token(params, **kwargs):
+        tokens.append(params["clientToken"])
+
+    def finish_other_request_first(params, **kwargs):
+        if overlapping[0] and any(
+            item.get("Put", {}).get("Item", {}).get("state") == {"S": "VERIFYING"}
+            for item in params["TransactItems"]
+        ):
+            overlapping[0] = False
+            nested.append(call(handler, event(body=DRAFT)))
+
+    registry.meta.events.register(
+        "before-parameter-build.agent-registry-control.CreateRegistryRecord",
+        capture_token,
+    )
+    db.meta.events.register(
+        "before-parameter-build.dynamodb.TransactWriteItems", finish_other_request_first
+    )
+    with Stubber(registry) as stub:
+        stub.add_response("create_registry_record", {"recordArn": RECORD_ARN, "status": "CREATING"})
+        stub_create(stub)
+        assert call(handler, event(body=DRAFT))[0] == 202
+        assert nested[0][0] == 201
+        assert call(handler, event(body=DRAFT)) == nested[0]
+        assert len(tokens) == 2
+        assert tokens[0] == tokens[1]
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_completion_store_failure_keeps_lock_until_operation_can_be_verified():
+    from botocore.exceptions import ClientError
+
+    registry, db = clients()
+    fail_once = [True]
+
+    def fail_completion(params, **kwargs):
+        if fail_once[0] and any(
+            item.get("Put", {}).get("Item", {}).get("state") == {"S": "SUCCEEDED"}
+            for item in params["TransactItems"]
+        ):
+            fail_once[0] = False
+            raise ClientError(
+                {"Error": {"Code": "InternalServerError", "Message": "補助ストア障害"}},
+                "TransactWriteItems",
+            )
+
+    db.meta.events.register("before-parameter-build.dynamodb.TransactWriteItems", fail_completion)
+    with Stubber(registry) as stub:
+        stub_create(stub)
+        handler = handler_for(registry, db)
+        status, pending = call(handler, event(body=DRAFT))
+        assert status == 202
+        assert call(handler, event(body=DRAFT, key="different-key"))[0] == 409
+        assert (
+            call(
+                handler,
+                event(
+                    "PATCH",
+                    f"/api/records/{RECORD_ID}",
+                    {"draft": DRAFT, "expectedContentHash": "0" * 64},
+                ),
+            )[0]
+            == 409
+        )
+        stub.add_response("get_registry_record", record())
+        status, verified = call(handler, event("GET", f"/api/operations/{pending['operationId']}"))
+        assert status == 200
+        assert verified["operationState"] == "SUCCEEDED"
+        stub.assert_no_pending_responses()

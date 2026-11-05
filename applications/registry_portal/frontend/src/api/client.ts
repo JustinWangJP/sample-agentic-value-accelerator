@@ -1,3 +1,5 @@
+import { createDraftApi, type DraftApi } from '../drafts/api'
+
 // Registry ポータル API のクライアント
 //
 // - アクセストークン（ID トークンではない）を Bearer で送る
@@ -202,7 +204,7 @@ export type ApiClientOptions = {
   getAccessToken: () => string | null
 }
 
-export type ApiClient = {
+export type ApiClient = DraftApi & {
   getMe: () => Promise<Me>
   /** nextToken はバックエンドが中継する AWS の値で、SPA では中身を解釈しない */
   listCatalog: (
@@ -215,8 +217,13 @@ export type ApiClient = {
 }
 
 export function createApiClient(options: ApiClientOptions): ApiClient {
-  /** GET は本文なし、POST は JSON の本文を送る */
-  async function request<T>(method: 'GET' | 'POST', path: string, payload?: unknown): Promise<T> {
+  /** GET は本文なし、POST と PATCH は JSON の本文を送る */
+  async function request<T>(
+    method: 'GET' | 'POST' | 'PATCH',
+    path: string,
+    payload?: unknown,
+    extraHeaders: Record<string, string> = {},
+  ): Promise<T> {
     const token = options.getAccessToken()
     if (!token) {
       throw new ApiError(401, 'UNAUTHENTICATED', UNAUTHENTICATED_MESSAGE)
@@ -224,7 +231,11 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     let response: Response
     try {
       // baseUrl の末尾の / は loadConfig で取り除き済み
-      const headers = { authorization: `Bearer ${token}`, accept: 'application/json' }
+      const headers = {
+        authorization: `Bearer ${token}`,
+        accept: 'application/json',
+        ...extraHeaders,
+      }
       response = await options.fetch(
         `${options.baseUrl}${path}`,
         method === 'GET'
@@ -236,7 +247,11 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
             },
       )
     } catch {
-      throw new ApiError(0, 'NETWORK_ERROR', 'API に接続できません。ネットワークを確認してください。')
+      throw new ApiError(
+        0,
+        'NETWORK_ERROR',
+        'API に接続できません。ネットワークを確認してください。',
+      )
     }
 
     const isJson = (response.headers.get('content-type') ?? '').includes('application/json')
@@ -268,6 +283,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
   }
 
   return {
+    ...createDraftApi(request, () => invalidResponse(200)),
     getMe: () => request<Me>('GET', '/api/me'),
     listCatalog: (type, nextToken, a2aOnly) => {
       const query = new URLSearchParams({ type })

@@ -146,3 +146,40 @@ npm run lint && npm test && npm run typecheck && npm run build
 ```
 
 GitHub Actions（`.github/workflows/registry-portal-ci.yml`）では上記の検査だけを実行します。AWS の認証情報は持たせず、AWS への反映は行いません（ADR-0004）。
+
+## custom Agent の下書き（#7）
+
+Publisher は、所属する `team-*` を所有チームに指定して、フォームから custom Agent の下書きを作成・編集できます。同じチームの別メンバーも編集できます。チームのない Publisher、Viewer、未管理レコード、他チームのレコードへの取得・編集は `403 FORBIDDEN` です。Admin・Curator も Publisher グループを持たなければこの操作はできません。
+
+フォームは名前、表示名、説明、semver の版、目的、接続先の参照、認証方式、連絡先、利用条件を受け付けます。所有チームは所属チームから選択し、environment は `dev`、データ分類は `public` / `private` に限定します。秘密情報の値は入力せず、接続先や認証情報の参照を記載してください。custom descriptor の `data` にはフォームの定義を canonical JSON として保存します。metadata は `ownerTeam`・`environment`・`dataClassification` と、定義から導出した真偽値 `isA2A=false` です。連絡先・利用条件・接続先の参照は補助ストアの下書き管理情報にも保存し、`PUBLISHED#版` を上書きしません。
+
+| API | 契約 |
+| --- | --- |
+| `POST /api/records` | フォームの JSON。`Idempotency-Key` 必須（英数字・`_`・`-`、1〜128文字）。同じ主体・キー・本文は同じ結果を返し、異なる本文なら409 |
+| `GET /api/records` | 所属チームの管理レコードを一覧。`nextToken` をそのまま中継。途中のページが0件でも次のページがあり得る |
+| `GET /api/records/{recordId}` | 下書きと `contentHash`、AWS の状態、公開中の版を返す |
+| `PATCH /api/records/{recordId}` | `{ "draft": フォームのJSON, "expectedContentHash": 取得したハッシュ }`。所有チームと名前の変更は不可 |
+| `GET /api/operations/{operationId}` | 所属チームの操作の結果を照合。`SUCCEEDED` / `VERIFYING` / `FAILED` を返す |
+
+作成はレコード ID が決まる前に名前単位の条件付きロックを取り、ID が判明したらレコード単位のロックも取ります。更新はレコード単位のロック内で所有情報と Registry を再取得し、Registry の内容と補助情報のハッシュを照合します。古いハッシュは `409 CONTENT_CONFLICT` とし、画面では入力を保持して再読み込みを促します。再読み込みは入力を最新内容に置き換えます。
+
+書き込み前の操作意図、書き込み後の照合、結果とロック解除は DynamoDB の条件付きトランザクションで管理します。ロックに TTL は設定せず、期限切れを横取りの条件にしません。確定した冪等キーの結果も無期限に保持します。作成時に AWS の応答が不明なら同じ `clientToken` で再試行します。更新 API には `clientToken` がないため、結果不明の更新を再送せず照合します。AWS 成功後の補助ストア障害でも成功扱いにせず、ロックを維持します。
+
+`202` は結果確認中です。「処理結果を確認」で再照合できます。`CREATING` / `UPDATING` や `CREATE_FAILED` / `UPDATE_FAILED` も一覧に表示し、確定するまで書き込みを止めます。作成の通信結果が不明な場合は、同じ画面で同じ入力・キーのまま保存を再試行してください。ページを閉じた場合も、別キーで作り直す前に管理者へ連絡してください。照合が一致しない操作を強制解除する回復手順は後続チケットの対象です。DynamoDB の `LOCK` や操作情報を手作業で消して再実行しないでください。
+
+公開中のレコードを編集するときは、公開中の版より大きい semver を指定します。公開中の版を補助ストアに保持するため、AWS が新しい下書きを返している間も「下書きあり」と「公開中」を併記します。公開承認・申請・A2A Agent Card・MCP・Skill の編集はこのチケットの対象外です。
+
+`SUPPLEMENT_TABLE_NAME` は下書き操作では必須です。既存の `pk` / `sk` 文字列キーの補助テーブルを使います。管理 Lambda には [下書き用 Terraform モジュール](infrastructure/modules/management_drafts/main.tf.json) を接続してください。このモジュールは既存の管理 IAM ロール名、既存 Registry ARN、補助テーブル ARN を受け取り、Registry レコードの作成・更新・取得・一覧と、対象テーブルの GetItem / PutItem / DeleteItem だけを追加します。DynamoDB のトランザクションは含まれる各操作で認可されます。Registry 本体、schema、決裁、物理削除の権限は追加しません。ロール・テーブル・API Gateway の配備全体との接続は #5 の IaC で行います。API Gateway の CORS で `PATCH` と `Idempotency-Key` ヘッダーも許可してください。
+
+```hcl
+module "management_drafts" {
+  source               = "./modules/management_drafts"
+  management_role_name = aws_iam_role.management.name
+  registry_arn         = var.registry_arn
+  supplement_table_arn = aws_dynamodb_table.supplement.arn
+}
+```
+
+作成と更新の AWS payload は別々に変換します。更新では `displayName` / `description` / `customMetadata` / `descriptors` と、custom 内部の `data` に `optionalValue` を使い、`recordVersion` は直接渡します。実サービスモデルの Stubber と moto の handler テストで、payload、排他、冪等性、他チーム拒否、補助情報の変更を含む409、AWS後の補助ストア障害を検証しています。SPA は `fetch` 境界で検証します。
+
+公式資料は [CreateRegistryRecord](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_CreateRegistryRecord.html)、[UpdateRegistryRecord](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_UpdateRegistryRecord.html)、[GetRegistryRecord](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_GetRegistryRecord.html)、[版のライフサイクル](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-record-lifecycle.html)、[Registry IAM](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-iam-permissions.html)、[DynamoDB トランザクションの認可](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html) を参照してください。実 AWS への書き込みはこの実装検証では行っていません。デプロイ後に実環境で非同期状態・公開中の版と下書き・IAM 境界を確認してください。
