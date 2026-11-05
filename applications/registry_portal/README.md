@@ -12,9 +12,10 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 | `backend/src/registry_portal/app.py` | API Gateway HTTP API（payload format 2.0）のイベントを受け取り、route を振り分ける |
 | `backend/src/registry_portal/auth.py` | 認可。検証済みの claims から主体・業務ロール・所属チームを導出する |
 | `backend/src/registry_portal/errors.py` | 共通エラー DTO と日本語メッセージ |
-| `backend/src/registry_portal/catalog.py` | カタログ一覧 API。クエリの検証、DTO への変換、発見アダプターの失敗の API エラーへの変換 |
-| `backend/src/registry_portal/domain/catalog.py` | カタログ項目のモデルと種別（`AGENT`・`MCP`・`SKILL`）。SPA の `CatalogRecordType` と値を揃える |
+| `backend/src/registry_portal/catalog.py` | カタログの一覧・検索・詳細 API。入力の検証、DTO への変換、サービス層の失敗の API エラーへの変換 |
+| `backend/src/registry_portal/domain/catalog.py` | カタログ項目のモデル、種別（`AGENT`・`MCP`・`SKILL`）とデータ分類（`public`・`private`）、A2A を指定できる種別の規則。SPA の `CatalogRecordType`・`DataClassification` と値を揃える |
 | `backend/src/registry_portal/services/discovery.py` | 発見アダプター。発見用 M2M トークンの取得・キャッシュと、JWT 認可の Registry の発見 API 呼び出し |
+| `backend/src/registry_portal/services/catalog_supplement.py` | 補助テーブルから所有チームの正本と公開版のスナップショットを読む |
 | `backend/src/registry_portal/services/http.py` | 標準ライブラリによる HTTP トランスポート。テストではフェイクに差し替える |
 | `frontend/` | React SPA。Authorization Code + PKCE でログインし、アクセストークンはメモリー上だけで保持する |
 
@@ -49,8 +50,8 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 |---|---|
 | `GET /api/me` | 自分の主体、業務ロール、所属チーム |
 | `GET /api/catalog?type=AGENT\|MCP\|SKILL[&a2a=true][&nextToken=...]` | カタログ項目（公開承認済みの Registry レコード）を種別ごとに1ページ（最大50件）返す。a2a は Agent の一覧のみ指定可。ログインした全員（Viewer）が呼び出せる |
-| `POST /api/catalog/search` | 自然言語・キーワードと絞り込み条件で検索し、関連度順に最大20件を返す。Viewer が呼び出せる |
-| `GET /api/catalog/{id}` | 指定したレコード ID の公開中の版、所有チーム、その版の関連参照を返す。Viewer が呼び出せる |
+| `POST /api/catalog/search` | 自然言語・キーワード（必須）と絞り込み条件で検索し、関連度順に最大20件を返す。Viewer が呼び出せる |
+| `GET /api/catalog/{recordId}` | 指定したレコード ID の公開中の版、所有チーム、その版の連絡先・利用条件・接続先の参照・関連参照を返す。Viewer が呼び出せる |
 
 ### カタログの一覧・検索・詳細
 
@@ -64,36 +65,39 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 - **障害と0件の区別**: Registry やトークンエンドポイントの失敗（5xx、429、403、タイムアウト、想定外の応答）は 502 `DISCOVERY_UNAVAILABLE` とし、0件の結果とは区別します。AWS のエラー内容は利用者に返しません。
 - **ログ**: JWT、client secret、セッショントークン、応答の本文は出しません。出すのは HTTP ステータスと処理の種類だけです。
 
-検索は `SearchDiscoverableRegistryRecords` を呼び出します。本文は `query`（256文字以内）と任意の `type`（`AGENT`、`MCP`、`SKILL`）、`a2a`（真偽値）、`dataClassification`（`public`、`private`）を受け付けます。検索語を空にする場合は、少なくとも1つの絞り込み条件が必要です。A2A の指定時は `recordType=AGENT` と `customMetadata.isA2A` を、分類の指定時は `customMetadata.dataClassification` を AWS の検索フィルターに含めます。AWS はこれらの条件を順位付け前に適用するため、対象全体から関連度順の最大20件を返します。返却順はそのまま保ちます。[AWS の検索フィルター仕様](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-search-records.html)
+検索は `SearchDiscoverableRegistryRecords` を呼び出します。本文は `query`（必須、前後の空白を除いて1〜256文字）と任意の `type`（`AGENT`、`MCP`、`SKILL`）、`a2a`（真偽値）、`dataClassification`（`public`、`private`）を受け付けます。AWS の `searchQuery` は必須のため、検索語のない「条件だけの検索」は 400 `VALIDATION_ERROR` とします。条件だけで探す場合は一覧を使います。A2A の指定時は `recordType=AGENT` と `customMetadata.isA2A` を、分類の指定時は `customMetadata.dataClassification` を AWS の検索フィルターに含めます。AWS はこれらの条件を順位付け前に適用するため、対象全体から関連度順の最大20件を返します。返却順はそのまま保ちます。[AWS の検索フィルター仕様](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-search-records.html)
 
-#### A2A 検索用 metadata を準備する
+応答は `items` と `inconsistentA2ACount` です。A2A 検索で、検索用の写し（`isA2A`）と descriptor が食い違うレコードは、descriptor を正として結果から除外し、その件数を `inconsistentA2ACount` で返します。SPA は件数を警告として表示し、ほかの結果は表示します。
 
-このポータルは Registry の schema やレコードを変更しません。導入担当者は A2A 検索を利用する前に、既存 Registry を次の順で準備してください。
+#### A2A 検索を有効にする
 
-1. AWS コンソールで対象 Registry の **Custom metadata schema** から **Manage schema** を開きます。`AGENT` のフィールドに `isA2A` を Boolean 型かつ Required として追加します。既存の共通フィールドと種別ごとのフィールドを残してください。JSON で編集する場合の追加内容は次のとおりです。schema 全体の置き換え例ではありません。[schema の設定手順](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-custom-metadata-schema.html)
+A2A の判定は descriptor（Agent Card の有無）が正本です。ただし AWS の検索フィルターは descriptor の種類を条件にできないため、descriptor から導出した真偽値を custom metadata の `isA2A` に検索用の写しとして持たせ、それで絞り込みます。`isA2A` がないレコードはフィルターで黙って除外され、0件と区別できません。そのため A2A 検索は既定で無効にしています。無効の間は、`a2a` を指定した検索に 503 `A2A_SEARCH_NOT_READY` を返します。SPA はこれを0件とも障害とも別の状態として表示し、一覧の「A2A の Agent のみ」（`descriptorType` で絞る）へ案内します。
 
-   ```json
-   {
-     "type": "object",
-     "properties": {"isA2A": {"type": "boolean"}},
-     "required": ["isA2A"]
-   }
-   ```
+次の準備が終わってから、管理 Lambda の環境変数 `A2A_SEARCH_ENABLED` を `true` にしてください。このポータルは Registry の schema を変更しません。また、Registry への書き込みは ADR-0001 に従います。
 
-2. 公開中の全 `AGENT` レコードを全ページ確認します。各レコードの descriptor に `a2aAgentCard` があれば `customMetadata.isA2A=true`、なければ `false` を設定します。文字列の `"true"` や `"false"` は使用しません。既存の `ownerTeam` や `dataClassification` などを保持してください。CLI の `update-registry-record --custom-metadata` は全 metadata を置き換えるため、既存値も含めて渡します。[metadata の更新手順](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-custom-metadata-values.html)
-3. 更新したレコードを通常の承認手順で公開します。schema を追加するだけでは既存の公開版に値は補完されません。未補完のレコードは検索フィルターから漏れるため、既存レコードの補完と公開が終わるまで A2A 検索を利用しないでください。
-4. 検索インデックスへの反映後、A2A の一覧を全ページ確認した結果と `a2a=true` の検索結果を照合します。検索は最大20件なので、レコード名を検索語にして各公開版を個別に確認します。A2A 以外の Agent も `a2a=false` で確認してください。
-5. 以後の作成・更新・同期でも descriptor から `isA2A` を導出し、公開する版と同時に保存します。この値は利用者の任意入力ではなく、検索用の写しとして維持してください。
+1. **schema**: Admin が IaC で、対象 Registry の custom metadata schema の `AGENT` に `isA2A`（Boolean、Required）を追加します（設計書「共通項目と custom metadata」）。既存の共通フィールドと種別ごとのフィールドは残します。コンソールでの手作業の変更は行いません。[schema の定義](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-custom-metadata-schema.html)
+2. **新しい版**: ポータルで作成・更新する版は、descriptor から `isA2A` を導出して公開する版と同時に保存します（#7・#8）。利用者の任意入力にはしません。
+3. **既存の版**: 公開中の既存 `AGENT` レコードは、未管理レコードの取り込み（#16）で `isA2A` を補完し、通常の申請・公開承認の手順で公開します。ポータル外で補完する必要がある場合は、ADR-0001 の break-glass ロールだけで行います。その変更は「ポータル外の変更」として Admin への通知と監査の対象になります。schema を追加するだけでは、既存の公開版に値は補完されません。
+4. **確認**: 検索インデックスへの反映後、`isA2A` を持たない公開中の `AGENT` が残っていないことを確認します。A2A の一覧（全ページ）と、`a2a=true` / `a2a=false` の検索結果を照合します。
 
-A2A 検索では、返却された `isA2A` が JSON の真偽値であり、指定条件と Agent Card descriptor の有無に一致することを検査します。不一致や欠落は 502 `DISCOVERY_UNAVAILABLE` にします。AWS が schema 未定義などで検索を拒否した場合も同じエラーです。フィルターで除外された未補完レコードは応答から検出できないため、導入時の全件確認が必要です。
+#### 詳細
 
-詳細は `BatchGetDiscoverableRegistryRecord` に ID を1件渡します。公開中の版が見つからなければ 404 `CATALOG_ITEM_NOT_FOUND` を返します。連絡先・利用条件・接続先の参照は、公開中のレコードの `customMetadata` にある文字列（`contact`、`termsOfUse`、`connectionReference`）を表示します。値がなければ「未登録」と表示します。定義と SKILL.md はテキストとして表示します。
+詳細は `BatchGetDiscoverableRegistryRecord` に ID を1件渡します。公開中の版が見つからなければ 404 `CATALOG_ITEM_NOT_FOUND` を返します。定義と SKILL.md はテキストとして表示し、HTML やスクリプトは実行しません。データ分類は公開中のレコードの `customMetadata.dataClassification` を表示し、`public`・`private` 以外の値は表示しません。
 
-Registry が公開中の版を返した後、補助テーブルの管理情報から所有チームを取得します。パーティションキー `pk` は `REGISTRY#{registryArn}#RECORD#{recordId}`、ソートキー `sk` は `MANAGEMENT` です。管理情報の `ownerTeam` は Cognito のチームグループ名を表す文字列です。テーブルが未設定、管理情報の項目が存在しない、または `managed` が `false` の場合は、公開中のレコードの `customMetadata.ownerTeam` を表示用に参照します。管理情報の読み取りに失敗した場合や、管理対象の項目に所有チームがなければ 502 `DISCOVERY_UNAVAILABLE` を返します。
+所有チームは、補助テーブルの管理情報（正本）から取得します。パーティションキー `pk` は `REGISTRY#{registryArn}#RECORD#{recordId}`、ソートキー `sk` は `MANAGEMENT` です。管理情報の `ownerTeam` は Cognito のチームグループ名を表す文字列です。未管理レコード（管理情報がない、または `managed` が `false`）と補助テーブルが未設定の場合は、公開中のレコードの `customMetadata.ownerTeam`（検索用の写し）を表示用に参照します。管理情報の読み取りに失敗した場合や、管理対象の項目に所有チームがない場合は 502 `DISCOVERY_UNAVAILABLE` を返します。
 
-関連参照は補助テーブルの公開版の項目から取得します。パーティションキー `pk` は管理情報と同じで、ソートキー `sk` は `PUBLISHED#{recordVersion}` です。`relatedReferences` は `recordId` と `recordVersion` の文字列を持つマップのリストです。申請・決裁処理で公開版の項目を保存した後に表示できます。補助テーブルの設定または公開版の項目がない Agent は「未取得」、空のリストは「関連参照はありません」と表示します。
+連絡先・利用条件・接続先の参照・関連参照は、補助テーブルに保存した公開中の版のスナップショット（設計書「補助テーブルに保存するもの」の公開内容のスナップショット）から取得します。これらは検索や絞り込みに使わないため、custom metadata には置きません。パーティションキー `pk` は管理情報と同じで、ソートキー `sk` は `PUBLISHED#{recordVersion}` です。申請・決裁処理（#9・#10）が、公開した版について次の属性を保存します。
 
-デプロイ先の HTTP API で `POST /api/catalog/search` と `GET /api/catalog/{id}` を管理 Lambda に割り当て、既存の JWT authorizer を適用してください。SPA と API のオリジンが異なる場合は、CORS で `POST`、`Authorization`、`Content-Type` を許可してください。
+| 属性 | 型 | 内容 |
+|---|---|---|
+| `contact` | S（任意） | 連絡先 |
+| `termsOfUse` | S（任意） | 利用条件 |
+| `connectionReference` | S（任意） | 接続先の参照 |
+| `relatedReferences` | L（Agent は必須） | `recordId` と `recordVersion` の文字列を持つマップのリスト。Agent 以外は読みません |
+
+スナップショットがない場合（補助テーブルが未設定、または未管理レコードなど）、API はこれらの値を `null` で返し、SPA は「未取得」と表示します。スナップショットはあるが属性がない場合は空文字で返し、「未登録」と表示します。関連参照は、空のリストなら「関連参照はありません」と表示します。Agent 以外の関連参照は常に空です。属性の型が契約と異なる場合は 502 `DISCOVERY_UNAVAILABLE` を返します。
+
+デプロイ先の HTTP API で `POST /api/catalog/search` と `GET /api/catalog/{recordId}` を管理 Lambda に割り当て、既存の JWT authorizer を適用してください。SPA と API のオリジンが異なる場合は、CORS で `POST`、`Authorization`、`Content-Type` を許可してください。
 
 エラーは共通 DTO で返します。
 
@@ -114,7 +118,8 @@ Registry が公開中の版を返した後、補助テーブルの管理情報�
 | `DISCOVERY_CLIENT_ID` | 発見用 M2M client の client_id |
 | `DISCOVERY_CLIENT_SECRET_ARN` | 発見用 M2M client の secret を保管した Secrets Manager の ARN。Secrets Manager のリージョンは ARN から導出する |
 | `DISCOVERY_SCOPE` | （任意）トークン取得時に要求する scope。空なら client の既定 |
-| `CATALOG_REFERENCES_TABLE_NAME` | （任意）Registry と同じリージョンにある所有チームと公開版の関連参照を格納する補助 DynamoDB テーブル名。管理 Lambda の実行ロールに対象テーブルへの `dynamodb:GetItem` 権限が必要 |
+| `SUPPLEMENT_TABLE_NAME` | （任意）Registry と同じリージョンにある補助 DynamoDB テーブル名。所有チームの正本と公開版のスナップショットを読む。管理 Lambda の実行ロールに対象テーブルへの `dynamodb:GetItem` 権限が必要 |
+| `A2A_SEARCH_ENABLED` | （任意）`true` で A2A の絞り込み検索を有効にする。既定は無効。`isA2A` の準備が終わるまで有効にしない（「A2A 検索を有効にする」を参照）。`true`・`false` 以外は起動エラー |
 
 必須の変数が未設定、または形式が誤っていれば起動エラーにします。開発用に認証を通す設定はありません。管理 Lambda の実行ロールには、`DISCOVERY_CLIENT_SECRET_ARN` に対する `secretsmanager:GetSecretValue` 権限が必要です（IaC は #5 で用意する）。Boto3・Botocore は Lambda ランタイム付属のものを使わず、`requirements.txt` で固定した版を同梱します（設計書「新しいサービス名前空間を使う」）。
 
