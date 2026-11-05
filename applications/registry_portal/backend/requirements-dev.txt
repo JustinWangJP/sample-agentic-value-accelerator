@@ -1,6 +1,7 @@
 # 開発・CI 用の依存（GitHub Actions でも同じものを使う）
 -r requirements.txt
 pytest==8.3.4
+moto[dynamodb]==5.0.0
 black==24.10.0
 flake8==7.1.1
 mypy==1.13.0
