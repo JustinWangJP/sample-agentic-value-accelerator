@@ -1,5 +1,15 @@
-import { isDataClassification, type DataClassification } from '../api/dataClassification'
+import { isDataClassification } from '../api/dataClassification'
+import { isCatalogRecordType, type CatalogRecordType } from '../api/recordType'
 import type { ApiRequest } from '../api/request'
+import {
+  COMMON_TEXT_FIELDS,
+  DESCRIPTOR_FIELD_SPECS,
+  isAllowedKind,
+  isDescriptorType,
+  type AgentDraft,
+} from './descriptors'
+
+export type { AgentDraft }
 
 /** 下書きを保存できる environment。バックエンドの ENVIRONMENTS（domain/drafts.py）と揃える */
 export const DRAFT_ENVIRONMENTS = ['dev'] as const
@@ -9,33 +19,6 @@ function isDraftEnvironment(value: unknown): value is DraftEnvironment {
   return DRAFT_ENVIRONMENTS.some((environment) => environment === value)
 }
 
-export type AgentDraft = {
-  name: string
-  displayName: string
-  description: string
-  recordVersion: string
-  ownerTeam: string
-  environment: DraftEnvironment
-  dataClassification: DataClassification
-  purpose: string
-  connectionReference: string
-  authentication: string
-  contact: string
-  termsOfUse: string
-}
-
-/** フォームの入力項目と文字数上限。上限はバックエンドの TEXT_LIMITS（domain/drafts.py）と揃える */
-export const DRAFT_TEXT_FIELDS = [
-  ['name', '名前', 255],
-  ['displayName', '表示名', 255],
-  ['description', '説明', 4096],
-  ['recordVersion', '版（semver）', 255],
-  ['purpose', '目的', 4096],
-  ['connectionReference', '接続先の参照', 2048],
-  ['authentication', '認証方式', 1024],
-  ['contact', '連絡先', 1024],
-  ['termsOfUse', '利用条件', 4096],
-] as const satisfies readonly (readonly [keyof AgentDraft, string, number])[]
 
 /** AWS の Registry レコードの状態。バックエンドの RecordStatus（domain/drafts.py）と揃える */
 export const AWS_RECORD_STATUSES = [
@@ -64,6 +47,7 @@ export type DraftDetail = {
   publishedVersion: string | null
 }
 export type DraftSummary = Omit<DraftDetail, 'draft' | 'contentHash'> & {
+  recordType: CatalogRecordType
   name: string
   displayName: string
   recordVersion: string
@@ -125,7 +109,12 @@ function hasStringFields(value: Record<string, unknown>, keys: readonly string[]
 function isDraft(value: unknown): value is AgentDraft {
   return (
     isPlainObject(value) &&
-    DRAFT_TEXT_FIELDS.every(([key]) => typeof value[key] === 'string') &&
+    isDescriptorType(value.descriptorType) &&
+    isAllowedKind(value.recordType, value.descriptorType) &&
+    COMMON_TEXT_FIELDS.every(([key]) => typeof value[key] === 'string') &&
+    DESCRIPTOR_FIELD_SPECS[value.descriptorType].every(
+      (spec) => typeof value[spec.key] === 'string',
+    ) &&
     typeof value.ownerTeam === 'string' &&
     isDraftEnvironment(value.environment) &&
     isDataClassification(value.dataClassification)
@@ -161,6 +150,7 @@ function isSummary(value: unknown): value is DraftSummary {
     isPlainObject(value) &&
     isRecord(value) &&
     hasStringFields(value, ['name', 'displayName', 'recordVersion', 'ownerTeam']) &&
+    isCatalogRecordType(value.recordType) &&
     (value.operationId === null || typeof value.operationId === 'string')
   )
 }
