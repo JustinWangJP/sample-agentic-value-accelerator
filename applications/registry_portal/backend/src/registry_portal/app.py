@@ -20,7 +20,7 @@ from registry_portal.config import (
     load_discovery_settings,
 )
 from registry_portal.errors import ApiError, RequestValidationError, RouteNotFoundError
-from registry_portal.drafts import AgentDrafts, require_publisher
+from registry_portal.drafts import AgentDrafts
 from registry_portal.services.catalog_supplement import CatalogSupplement, SupplementClient
 from registry_portal.services.discovery import DiscoveryDependencies, create_discovery_client
 from registry_portal.services.draft_store import DraftStore
@@ -90,6 +90,10 @@ def _query_of(event: LambdaEvent) -> Mapping[str, str]:
     """クエリ文字列。HTTP API は同じ名前の値をカンマで連結した1つの文字列にして渡す。"""
     query = _mapping_or_empty(event.get("queryStringParameters"))
     return {str(key): str(value) for key, value in query.items()}
+
+
+# 下書きの本文の上限。項目ごとの文字数上限（domain/drafts.py の TEXT_LIMITS）の合計に余裕を持たせる
+DRAFT_BODY_MAX_LENGTH = 131072
 
 
 def _json_body(event: LambdaEvent, max_length: int = 8192) -> Mapping[str, Any]:
@@ -186,26 +190,23 @@ def create_management_handler(
         return get_catalog_detail(discovery_client, _path_parameter(event), supplement)
 
     def post_record(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        require_publisher(caller)
-        if not catalog_settings.supplement_table_name:
-            raise RequestValidationError(
-                "下書きの補助テーブルが未設定です。管理者に連絡してください。"
-            )
         headers = _mapping_or_empty(event.get("headers"))
         key = next(
             (str(value) for name, value in headers.items() if name.lower() == "idempotency-key"),
             "",
         )
-        return drafts.create(caller, _json_body(event, 131072), key)
+        return drafts.create(caller, _json_body(event, DRAFT_BODY_MAX_LENGTH), key)
 
     def get_record(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
         return drafts.get(caller, _path_parameter(event))
 
     def list_records(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        return drafts.list(caller, _query_of(event))
+        return drafts.list_drafts(caller, _query_of(event))
 
     def patch_record(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        return drafts.update(caller, _path_parameter(event), _json_body(event, 131072))
+        return drafts.update(
+            caller, _path_parameter(event), _json_body(event, DRAFT_BODY_MAX_LENGTH)
+        )
 
     def get_operation(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
         return drafts.operation(caller, _path_parameter(event))

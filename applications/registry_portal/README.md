@@ -151,7 +151,7 @@ GitHub Actions（`.github/workflows/registry-portal-ci.yml`）では上記の検
 
 Publisher は、所属する `team-*` を所有チームに指定して、フォームから custom Agent の下書きを作成・編集できます。同じチームの別メンバーも編集できます。チームのない Publisher、Viewer、未管理レコード、他チームのレコードへの取得・編集は `403 FORBIDDEN` です。Admin・Curator も Publisher グループを持たなければこの操作はできません。
 
-フォームは名前、表示名、説明、semver の版、目的、接続先の参照、認証方式、連絡先、利用条件を受け付けます。所有チームは所属チームから選択し、environment は `dev`、データ分類は `public` / `private` に限定します。秘密情報の値は入力せず、接続先や認証情報の参照を記載してください。custom descriptor の `data` にはフォームの定義を canonical JSON として保存します。metadata は `ownerTeam`・`environment`・`dataClassification` と、定義から導出した真偽値 `isA2A=false` です。連絡先・利用条件・接続先の参照は補助ストアの下書き管理情報にも保存し、`PUBLISHED#版` を上書きしません。
+フォームは名前、表示名、説明、semver の版、目的、接続先の参照、認証方式、連絡先、利用条件を受け付けます。所有チームは所属チームから選択し、environment は `dev`、データ分類は `public` / `private` に限定します。秘密情報の値は入力せず、接続先や認証情報の参照を記載してください。custom descriptor の `data` にはフォームの定義を canonical JSON として保存します。metadata は `ownerTeam`・`environment`・`dataClassification` と、定義から導出した真偽値 `isA2A=false` です。下書きの定義（連絡先・利用条件・接続先の参照を含む）は custom descriptor の中身を正本とし、画面にもこの値を表示します。連絡先・利用条件・接続先の参照は、公開版スナップショット（ADR-0007）を作るための写しとして補助ストアの管理情報（`MANAGEMENT`）にも保存し、`PUBLISHED#版` は上書きしません。写しが正本と食い違った場合は内容ハッシュが一致しなくなるため、更新は `409` になり、再読み込みして保存すると写しも正本に揃います。所有チームだけは補助ストアを正本とし、metadata の `ownerTeam` は検索用の写しです（ADR-0002、設計書「共通項目と custom metadata」）。
 
 | API | 契約 |
 | --- | --- |
@@ -159,19 +159,26 @@ Publisher は、所属する `team-*` を所有チームに指定して、フォ
 | `GET /api/records` | 所属チームの管理レコードを一覧。`nextToken` をそのまま中継。途中のページが0件でも次のページがあり得る |
 | `GET /api/records/{recordId}` | 下書きと `contentHash`、AWS の状態、公開中の版を返す |
 | `PATCH /api/records/{recordId}` | `{ "draft": フォームのJSON, "expectedContentHash": 取得したハッシュ }`。所有チームと名前の変更は不可 |
-| `GET /api/operations/{operationId}` | 所属チームの操作の結果を照合。`SUCCEEDED` / `VERIFYING` / `FAILED` を返す |
+| `GET /api/operations/{operationId}` | 所属チームの操作の結果を照合。`SUCCEEDED` / `VERIFYING` / `FAILED` を返す。補助ストアを読めない場合は `VERIFYING` ではなく502 |
 
 作成はレコード ID が決まる前に名前単位の条件付きロックを取り、ID が判明したらレコード単位のロックも取ります。更新はレコード単位のロック内で所有情報と Registry を再取得し、Registry の内容と補助情報のハッシュを照合します。古いハッシュは `409 CONTENT_CONFLICT` とし、画面では入力を保持して再読み込みを促します。再読み込みは入力を最新内容に置き換えます。
 
 書き込み前の操作意図、書き込み後の照合、結果とロック解除は DynamoDB の条件付きトランザクションで管理します。ロックに TTL は設定せず、期限切れを横取りの条件にしません。確定した冪等キーの結果も無期限に保持します。作成時に AWS の応答が不明なら同じ `clientToken` で再試行します。更新 API には `clientToken` がないため、結果不明の更新を再送せず照合します。AWS 成功後の補助ストア障害でも成功扱いにせず、ロックを維持します。
 
-`202` は結果確認中です。「処理結果を確認」で再照合できます。`CREATING` / `UPDATING` の間は書き込みを止めます。AWS が保存を明示的に拒否した場合は400を返し、`CREATE_FAILED` / `UPDATE_FAILED` を確認した場合は操作を `FAILED` として保存し、対応するロックを解除します。補助ストアへ失敗結果を保存できなければ、確認できるまでロックを維持します。管理情報の型が壊れている場合は、所属外や0件として扱わず502を返します。
+`202` は結果確認中です。「処理結果を確認」で再照合できます。`CREATING` / `UPDATING` の間は書き込みを止めます。AWS が保存を明示的に拒否した場合は400を返し、`CREATE_FAILED` / `UPDATE_FAILED` を確認した場合は操作を `FAILED` として保存し、対応するロックを解除します。補助ストアへ失敗結果を保存できなければ、確認できるまでロックを維持します。名前の変更など、AWS へ書き込む前に止めた更新は失敗を確定してロックを解除します。管理情報の型が壊れている場合は、所属外や0件として扱わず502を返します。
 
-作成の通信結果が不明な場合は、同じ画面の「同じ入力とキーで作成を再試行」を使ってください。入力を固定し、同じ `Idempotency-Key`・本文・AWS `clientToken` で再送します。更新ではこの再送を行いません。失敗が確定するとフォームを再開し、次の作成は新しいキーで行います。ページを閉じた場合は、別キーで作り直す前に管理者へ連絡してください。照合が一致しない操作を強制解除する回復手順は後続チケットの対象です。DynamoDB の `LOCK` や操作情報を手作業で消して再実行しないでください。
+作成の通信結果が不明な場合は、同じ画面の「同じ入力とキーで作成を再試行」を使ってください。入力を固定し、同じ `Idempotency-Key`・本文・AWS `clientToken` で再送します。更新ではこの再送を行いません。失敗が確定するとフォームを再開し、次の作成は新しいキーで行います。ページを閉じた場合は、別キーで作り直す前に管理者へ連絡してください。
 
-公開中のレコードを編集するときは、公開中の版より大きい semver を指定します。公開中の版を補助ストアに保持するため、AWS が新しい下書きを返している間も「下書きあり」と「公開中」を併記します。公開承認・申請・A2A Agent Card・MCP・Skill の編集はこのチケットの対象外です。
+結果不明の操作は、次のように確定します。
 
-`SUPPLEMENT_TABLE_NAME` は下書き操作では必須です。既存の `pk` / `sk` 文字列キーの補助テーブルを使います。管理 Lambda には [下書き用 Terraform モジュール](infrastructure/modules/management_drafts/main.tf.json) を接続してください。このモジュールは既存の管理 IAM ロール名、既存 Registry ARN、補助テーブル ARN を受け取り、Registry レコードの作成・更新・取得・一覧と、対象テーブルの GetItem / PutItem / DeleteItem だけを追加します。DynamoDB のトランザクションは含まれる各操作で認可されます。Registry 本体、schema、決裁、物理削除の権限は追加しません。ロール・テーブル・API Gateway の配備全体との接続は #5 の IaC で行います。API Gateway の CORS で `PATCH` と `Idempotency-Key` ヘッダーも許可してください。
+- 更新: 「処理結果を確認」で照合します。AWS のレコードが更新後の内容になっていれば `SUCCEEDED`、`UPDATING` なら確認中のまま、更新前の内容のまま処理中でもなければ、更新が AWS に届かなかったとして `FAILED` を確定し、ロックを解除します。その後、同じ内容で保存し直せます。
+- 作成（レコード ID が決まる前に失敗した場合）: 照合ではレコードを特定できないため確認中のままです。同じ入力とキーで作成を再試行すると、AWS の `clientToken` による冪等性で重複なく確定します。
+
+どちらでも確定できない操作（補助ストア障害が続く場合など）を強制解除する回復手順は、Admin の回復操作として後続チケットで扱います。DynamoDB の `LOCK` や操作情報を手作業で消して再実行しないでください。
+
+公開中の版より大きい semver かどうかは申請（#9）で検査し、下書きの保存では検査しません。公開中の版を補助ストアに保持するため、AWS が新しい下書きを返している間も「下書きあり」と「公開中」を併記します。公開承認・申請・A2A Agent Card・MCP・Skill の編集はこのチケットの対象外です。
+
+`SUPPLEMENT_TABLE_NAME` は下書き操作では必須です。既存の `pk` / `sk` 文字列キーの補助テーブルを使います。管理 Lambda には [下書き用 Terraform モジュール](infrastructure/modules/management_drafts/main.tf) を接続してください。このモジュールは既存の管理 IAM ロール名、既存 Registry ARN、補助テーブル ARN を受け取り、Registry レコードの作成・更新・取得・一覧と、対象テーブルの GetItem / PutItem / DeleteItem だけを追加します。DynamoDB のトランザクションは含まれる各操作で認可されます。Registry 本体、schema、決裁、物理削除の権限は追加しません。このリポジトリにはまだ管理 Lambda のロールを定義するルートモジュールがないため、このモジュールの呼び出し（下の例）は #5 の IaC で追加します。それまで、このモジュールは単体で `terraform validate` と権限の内容のテストだけを行います。Registry とテーブルの ARN はリージョンを限定しません。API Gateway の CORS で `PATCH` と `Idempotency-Key` ヘッダーも許可してください。
 
 ```hcl
 module "management_drafts" {

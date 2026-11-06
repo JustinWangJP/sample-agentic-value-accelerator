@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, cast
 
 import boto3
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
+
+from registry_portal.domain.drafts import DraftOperation, OperationState
 
 
 class StoreConflict(Exception):
@@ -12,6 +15,11 @@ class StoreConflict(Exception):
 
 
 class DraftStore:
+    """補助 DynamoDB テーブルの下書き用の項目（管理情報・ロック・操作・追記記録）を扱う。
+
+    キーの組み立てはこのクラスに閉じ込め、呼び出し側には操作 ID や Registry レコード ID だけを渡させる。
+    """
+
     def __init__(self, table: str, registry: str, region: str, client: Any = None) -> None:
         self.table = table
         self.registry = registry
@@ -26,6 +34,14 @@ class DraftStore:
     def record_pk(self, record_id: str) -> str:
         return f"REGISTRY#{self.registry}#RECORD#{record_id}"
 
+    def name_lock_pk(self, name: str) -> str:
+        """作成中でレコード ID がまだない Registry レコードを、名前で排他するためのキー。"""
+        return f"REGISTRY#{self.registry}#NAME#{name}"
+
+    @staticmethod
+    def _operation_pk(op_id: str) -> str:
+        return f"OP#{op_id}"
+
     def _key(self, pk: str, sk: str) -> dict[str, Any]:
         return {"pk": {"S": pk}, "sk": {"S": sk}}
 
@@ -39,16 +55,51 @@ class DraftStore:
             return None
         return {key: TypeDeserializer().deserialize(value) for key, value in item.items()}
 
+    def get_operation(self, op_id: str) -> DraftOperation | None:
+        return cast("DraftOperation | None", self.get(self._operation_pk(op_id), "CONTROL"))
+
+    def get_management(self, record_id: str) -> dict[str, Any] | None:
+        return self.get(self.record_pk(record_id), "MANAGEMENT")
+
+    def get_lock(self, record_id: str) -> dict[str, Any] | None:
+        return self.get(self.record_pk(record_id), "LOCK")
+
     def _put(
-        self, item: dict[str, Any], condition: str = "attribute_not_exists(pk)"
+        self,
+        item: Mapping[str, Any],
+        condition: str = "attribute_not_exists(pk)",
+        values: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
+        put: dict[str, Any] = {
+            "TableName": self.table,
+            "Item": {key: TypeSerializer().serialize(value) for key, value in item.items()},
+            "ConditionExpression": condition,
+        }
+        if values:
+            put["ExpressionAttributeValues"] = {
+                name: {"S": value} for name, value in values.items()
+            }
+        return {"Put": put}
+
+    def _release_lock(self, pk: str, op_id: str) -> dict[str, Any]:
         return {
-            "Put": {
+            "Delete": {
                 "TableName": self.table,
-                "Item": {key: TypeSerializer().serialize(value) for key, value in item.items()},
-                "ConditionExpression": condition,
+                "Key": self._key(pk, "LOCK"),
+                "ConditionExpression": "operationId = :op",
+                "ExpressionAttributeValues": {":op": {"S": op_id}},
             }
         }
+
+    def _release_locks(
+        self, operation: DraftOperation, record_id: str | None
+    ) -> list[dict[str, Any]]:
+        """操作が持つロックをすべて解除する。作成では名前のロックとレコードのロックの2つを持つ。"""
+        op_id = operation["operationId"]
+        items = [self._release_lock(operation["lockPk"], op_id)]
+        if operation["kind"] == "CREATE" and record_id:
+            items.append(self._release_lock(self.record_pk(record_id), op_id))
+        return items
 
     def _transact(self, items: list[dict[str, Any]]) -> None:
         try:
@@ -61,31 +112,27 @@ class DraftStore:
                 raise StoreConflict() from None
             raise
 
-    def begin(self, operation: dict[str, Any]) -> None:
+    def begin(self, operation: DraftOperation) -> None:
         op_id, lock = operation["operationId"], operation["lockPk"]
         self._transact(
             [
                 self._put({"pk": lock, "sk": "LOCK", "operationId": op_id}),
-                self._put({**operation, "pk": f"OP#{op_id}", "sk": "CONTROL"}),
+                self._put({**operation, "pk": self._operation_pk(op_id), "sk": "CONTROL"}),
                 self._put({**operation, "pk": lock, "sk": f"AUDIT#{op_id}#INTENT"}),
             ]
         )
 
-    def save_pending(self, operation: dict[str, Any]) -> None:
+    def save_pending(self, operation: DraftOperation) -> None:
         op_id = operation["operationId"]
         control = self._put(
-            {**operation, "pk": f"OP#{op_id}", "sk": "CONTROL", "state": "VERIFYING"},
+            {**operation, "pk": self._operation_pk(op_id), "sk": "CONTROL", "state": "VERIFYING"},
             "operationId = :op AND #state IN (:running, :verifying)",
+            {":op": op_id, ":running": "IN_PROGRESS", ":verifying": "VERIFYING"},
         )
         control["Put"]["ExpressionAttributeNames"] = {"#state": "state"}
-        control["Put"]["ExpressionAttributeValues"] = {
-            ":op": {"S": op_id},
-            ":running": {"S": "IN_PROGRESS"},
-            ":verifying": {"S": "VERIFYING"},
-        }
-        items = [control]
+        record_pk = self.record_pk(operation["recordId"])
+        team = {":team": operation["ownerTeam"]}
         if operation["kind"] == "CREATE":
-            record_pk = self.record_pk(operation["recordId"])
             owner = self._put(
                 {
                     "pk": record_pk,
@@ -94,134 +141,64 @@ class DraftStore:
                     "ownerTeam": operation["ownerTeam"],
                 },
                 "attribute_not_exists(pk) OR ownerTeam = :team",
+                team,
             )
-            owner["Put"]["ExpressionAttributeValues"] = {":team": {"S": operation["ownerTeam"]}}
             lock = self._put(
                 {"pk": record_pk, "sk": "LOCK", "operationId": op_id},
                 "attribute_not_exists(pk) OR operationId = :op",
+                {":op": op_id},
             )
-            lock["Put"]["ExpressionAttributeValues"] = {":op": {"S": op_id}}
-            items.extend([owner, lock])
+            items = [control, owner, lock]
         else:
             owner = self._put(
-                {
-                    **operation["management"],
-                    "pk": self.record_pk(operation["recordId"]),
-                    "sk": "MANAGEMENT",
-                },
+                {**operation["management"], "pk": record_pk, "sk": "MANAGEMENT"},
                 "ownerTeam = :team",
+                team,
             )
-            owner["Put"]["ExpressionAttributeValues"] = {":team": {"S": operation["ownerTeam"]}}
-            items.append(owner)
+            items = [control, owner]
         self._transact(items)
 
-    def abort(self, operation: dict[str, Any], code: str) -> None:
+    def _close(
+        self,
+        operation: DraftOperation,
+        state: OperationState,
+        outcome: Mapping[str, Any],
+        record_id: str | None,
+    ) -> list[dict[str, Any]]:
+        """操作を確定し、結果を追記記録に残し、ロックを解除する項目を返す。"""
         op_id = operation["operationId"]
-        control = self._put(
-            {
-                **operation,
-                "pk": f"OP#{op_id}",
-                "sk": "CONTROL",
-                "state": "FAILED",
-                "errorCode": code,
-            },
-            "operationId = :op",
-        )
-        control["Put"]["ExpressionAttributeValues"] = {":op": {"S": op_id}}
-        items = [
-            control,
+        return [
             self._put(
                 {
-                    "pk": operation["lockPk"],
-                    "sk": f"AUDIT#{op_id}#RESULT",
-                    "errorCode": code,
-                }
+                    **operation,
+                    **outcome,
+                    "pk": self._operation_pk(op_id),
+                    "sk": "CONTROL",
+                    "state": state,
+                },
+                "operationId = :op",
+                {":op": op_id},
             ),
-            {
-                "Delete": {
-                    "TableName": self.table,
-                    "Key": self._key(operation["lockPk"], "LOCK"),
-                    "ConditionExpression": "operationId = :op",
-                    "ExpressionAttributeValues": {":op": {"S": op_id}},
-                }
-            },
+            self._put({**outcome, "pk": operation["lockPk"], "sk": f"AUDIT#{op_id}#RESULT"}),
+            *self._release_locks(operation, record_id),
         ]
-        if operation["kind"] == "CREATE" and operation.get("recordId"):
-            items.append(
-                {
-                    "Delete": {
-                        "TableName": self.table,
-                        "Key": self._key(self.record_pk(operation["recordId"]), "LOCK"),
-                        "ConditionExpression": "operationId = :op",
-                        "ExpressionAttributeValues": {":op": {"S": op_id}},
-                    }
-                }
-            )
-        self._transact(items)
+
+    def abort(self, operation: DraftOperation, code: str) -> None:
+        self._transact(
+            self._close(operation, "FAILED", {"errorCode": code}, operation.get("recordId"))
+        )
 
     def finish(
         self,
-        operation: dict[str, Any],
+        operation: DraftOperation,
         result: dict[str, Any],
         management: dict[str, Any],
     ) -> None:
-        self._transact(self._finish_items(operation, result, management))
-
-    def _finish_items(
-        self,
-        operation: dict[str, Any],
-        result: dict[str, Any],
-        management: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        op_id = operation["operationId"]
         owner = self._put(
-            {
-                **management,
-                "pk": self.record_pk(result["recordId"]),
-                "sk": "MANAGEMENT",
-            },
+            {**management, "pk": self.record_pk(result["recordId"]), "sk": "MANAGEMENT"},
             "attribute_not_exists(pk) OR ownerTeam = :team",
+            {":team": operation["ownerTeam"]},
         )
-        owner["Put"]["ExpressionAttributeValues"] = {":team": {"S": operation["ownerTeam"]}}
-        control = self._put(
-            {
-                **operation,
-                "pk": f"OP#{op_id}",
-                "sk": "CONTROL",
-                "state": "SUCCEEDED",
-                "result": result,
-            },
-            "operationId = :op",
+        self._transact(
+            [owner, *self._close(operation, "SUCCEEDED", {"result": result}, result["recordId"])]
         )
-        control["Put"]["ExpressionAttributeValues"] = {":op": {"S": op_id}}
-        items = [
-            owner,
-            control,
-            self._put(
-                {
-                    "pk": operation["lockPk"],
-                    "sk": f"AUDIT#{op_id}#RESULT",
-                    "result": result,
-                }
-            ),
-            {
-                "Delete": {
-                    "TableName": self.table,
-                    "Key": self._key(operation["lockPk"], "LOCK"),
-                    "ConditionExpression": "operationId = :op",
-                    "ExpressionAttributeValues": {":op": {"S": op_id}},
-                }
-            },
-        ]
-        if operation["kind"] == "CREATE":
-            items.append(
-                {
-                    "Delete": {
-                        "TableName": self.table,
-                        "Key": self._key(self.record_pk(result["recordId"]), "LOCK"),
-                        "ConditionExpression": "operationId = :op",
-                        "ExpressionAttributeValues": {":op": {"S": op_id}},
-                    }
-                }
-            )
-        return items

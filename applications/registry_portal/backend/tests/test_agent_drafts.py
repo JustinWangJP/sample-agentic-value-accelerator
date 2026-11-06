@@ -768,7 +768,8 @@ def test_supplement_only_change_invalidates_expected_content_hash():
         stub.add_response("get_registry_record", record())
         status, latest = call(handler, event("GET", f"/api/records/{RECORD_ID}"))
         assert status == 200
-        assert latest["draft"]["contact"] == "new@example.com"
+        # 下書きは custom descriptor の中身を正本として読み、補助ストアの写しでは上書きしない
+        assert latest["draft"]["contact"] == DRAFT["contact"]
         assert latest["contentHash"] != created["contentHash"]
         stub.assert_no_pending_responses()
 
@@ -850,4 +851,188 @@ def test_completion_store_failure_keeps_lock_until_operation_can_be_verified():
         status, verified = call(handler, event("GET", f"/api/operations/{pending['operationId']}"))
         assert status == 200
         assert verified["operationState"] == "SUCCEEDED"
+        stub.assert_no_pending_responses()
+
+
+def fail_dynamodb(db, operation, code="InternalServerError"):
+    """補助ストアの指定した操作を、次の1回だけ失敗させる。"""
+    from botocore.exceptions import ClientError
+
+    remaining = [True]
+
+    def fail(params, **kwargs):
+        if remaining[0]:
+            remaining[0] = False
+            raise ClientError({"Error": {"Code": code, "Message": "補助ストア障害"}}, operation)
+
+    db.meta.events.register(f"before-parameter-build.dynamodb.{operation}", fail)
+
+
+def patch(created, draft):
+    return event(
+        "PATCH",
+        f"/api/records/{RECORD_ID}",
+        {"draft": draft, "expectedContentHash": created["contentHash"]},
+    )
+
+
+@mock_aws
+def test_operation_lookup_reports_store_failure_instead_of_verifying():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub.add_client_error(
+            "create_registry_record", "InternalServerException", http_status_code=500
+        )
+        handler = handler_for(registry, db)
+        _, pending = call(handler, event(body=DRAFT))
+        fail_dynamodb(db, "GetItem")
+        status, body = call(handler, event("GET", f"/api/operations/{pending['operationId']}"))
+        assert status == 502
+        assert body["error"]["code"] == "REGISTRY_UNAVAILABLE"
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_operation_lookup_of_unknown_id_is_forbidden_even_while_registry_fails():
+    registry, db = clients()
+    handler = handler_for(registry, db)
+    status, body = call(handler, event("GET", f"/api/operations/{'a' * 32}"))
+    assert status == 403
+    assert body["error"]["code"] == "FORBIDDEN"
+
+
+@mock_aws
+def test_operation_lookup_keeps_verifying_when_registry_cannot_be_read():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub_create(stub)
+        handler = handler_for(registry, db)
+        _, created = call(handler, event(body=DRAFT))
+        stub.add_response("get_registry_record", record())
+        stub.add_client_error(
+            "update_registry_record", "InternalServerException", http_status_code=500
+        )
+        _, pending = call(handler, patch(created, {**DRAFT, "description": "確認待ち"}))
+        stub.add_client_error(
+            "get_registry_record", "InternalServerException", http_status_code=500
+        )
+        status, body = call(handler, event("GET", f"/api/operations/{pending['operationId']}"))
+        assert status == 202
+        assert body["operationState"] == "VERIFYING"
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_update_that_never_reached_aws_is_failed_and_releases_the_record_lock():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub_create(stub)
+        handler = handler_for(registry, db)
+        _, created = call(handler, event(body=DRAFT))
+        changed = {**DRAFT, "description": "届かなかった説明"}
+        stub.add_response("get_registry_record", record())
+        stub.add_client_error(
+            "update_registry_record", "InternalServerException", http_status_code=500
+        )
+        status, pending = call(handler, patch(created, changed))
+        assert status == 202
+        # 更新前の内容のまま処理中でもなければ、更新は適用されなかったと確定する
+        stub.add_response("get_registry_record", record())
+        status, failed = call(handler, event("GET", f"/api/operations/{pending['operationId']}"))
+        assert status == 200
+        assert failed["operationState"] == "FAILED"
+        stub.add_response("get_registry_record", record())
+        stub.add_response("update_registry_record", record(status="UPDATING"))
+        stub.add_response("get_registry_record", record(description=changed["description"]))
+        status, saved = call(handler, patch(created, changed))
+        assert status == 200
+        assert saved["operationState"] == "SUCCEEDED"
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_update_still_processing_in_aws_is_not_judged_as_unapplied():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub_create(stub)
+        handler = handler_for(registry, db)
+        _, created = call(handler, event(body=DRAFT))
+        stub.add_response("get_registry_record", record())
+        stub.add_client_error(
+            "update_registry_record", "InternalServerException", http_status_code=500
+        )
+        _, pending = call(handler, patch(created, {**DRAFT, "description": "処理中"}))
+        stub.add_response("get_registry_record", record(status="UPDATING"))
+        status, body = call(handler, event("GET", f"/api/operations/{pending['operationId']}"))
+        assert status == 202
+        assert body["operationState"] == "VERIFYING"
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_double_click_that_races_past_the_first_lookup_creates_only_one_record():
+    registry, db = clients()
+    handler = handler_for(registry, db)
+    creates = []
+    racing = [True]
+
+    def count_create(params, **kwargs):
+        creates.append(params["clientToken"])
+
+    def second_click_wins_the_lock(params, **kwargs):
+        # 1回目の begin より先に、2回目のクリックが操作を最後まで終える
+        if racing[0] and any(
+            item.get("Put", {}).get("Item", {}).get("sk") == {"S": "LOCK"}
+            and item["Put"]["Item"]["pk"]["S"].endswith(f"#NAME#{DRAFT['name']}")
+            for item in params["TransactItems"]
+        ):
+            racing[0] = False
+            nested.append(call(handler, event(body=DRAFT)))
+
+    nested = []
+    registry.meta.events.register(
+        "before-parameter-build.agent-registry-control.CreateRegistryRecord", count_create
+    )
+    db.meta.events.register(
+        "before-parameter-build.dynamodb.TransactWriteItems", second_click_wins_the_lock
+    )
+    with Stubber(registry) as stub:
+        stub_create(stub)
+        status, first = call(handler, event(body=DRAFT))
+        assert nested[0][0] == 201
+        assert (status, first) == nested[0]
+        assert len(creates) == 1
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_update_stopped_before_writing_releases_the_record_lock():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub_create(stub)
+        handler = handler_for(registry, db)
+        _, created = call(handler, event(body=DRAFT))
+        for _ in range(2):
+            stub.add_response("get_registry_record", record())
+            status, body = call(handler, patch(created, {**DRAFT, "name": "renamed-agent"}))
+            # 2回目もロック待ち（409）ではなく、同じ入力エラーになる
+            assert status == 400
+            assert body["error"]["code"] == "VALIDATION_ERROR"
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_saving_a_draft_does_not_require_a_version_greater_than_the_published_one():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub_create(stub)
+        handler = handler_for(registry, db)
+        _, created = call(handler, event(body=DRAFT))
+        changed = {**DRAFT, "description": "版は申請時に検査する"}
+        stub.add_response("get_registry_record", record(status="APPROVED"))
+        stub.add_response("update_registry_record", record(status="UPDATING"))
+        stub.add_response("get_registry_record", record(description=changed["description"]))
+        status, saved = call(handler, patch(created, changed))
+        assert status == 200
+        assert saved["publishedVersion"] == "1.0.0"
         stub.assert_no_pending_responses()
