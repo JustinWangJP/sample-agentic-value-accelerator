@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { CatalogView } from './catalog/CatalogView'
+import { AgentDraftsView } from './drafts/AgentDraftsView'
 import type { StartupState } from './startup'
 
 type Props = { startup: Promise<StartupState> }
@@ -56,6 +57,7 @@ export function StartupView({ state }: { state: StartupState | null }) {
             </p>
           </section>
           <CatalogView api={state.api} onRelogin={state.relogin} />
+          <AgentDraftsView api={state.api} roles={state.me.roles} teams={state.me.teams} onRelogin={state.relogin} />
         </>
       )}
     </main>

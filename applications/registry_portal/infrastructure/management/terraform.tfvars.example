@@ -1,0 +1,5 @@
+# terraform.tfvars にコピーして値を設定する。terraform.tfvars はコミットしない
+region               = "us-east-1"
+management_role_name = "registry-portal-management"
+registry_arn         = "arn:aws:agent-registry:us-east-1:123456789012:registry/abcdEFGH1234"
+supplement_table_arn = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-auxiliary"

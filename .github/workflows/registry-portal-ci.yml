@@ -78,3 +78,26 @@ jobs:
         run: npm run typecheck
       - name: build
         run: npm run build
+
+  draft-iam:
+    name: draft IAM（terraform fmt / validate）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: applications/registry_portal/infrastructure
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+      - name: terraform fmt
+        run: terraform fmt -check -recursive
+      # ルートモジュール（management）の validate で、呼び出す下書きモジュールも検査する
+      - name: terraform init
+        working-directory: applications/registry_portal/infrastructure/management
+        run: terraform init -backend=false
+      - name: terraform validate
+        working-directory: applications/registry_portal/infrastructure/management
+        run: terraform validate

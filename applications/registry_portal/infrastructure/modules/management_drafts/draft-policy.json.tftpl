@@ -1,0 +1,22 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RegistryDrafts",
+      "Effect": "Allow",
+      "Action": [
+        "agent-registry:CreateRegistryRecord",
+        "agent-registry:UpdateRegistryRecord",
+        "agent-registry:GetRegistryRecord",
+        "agent-registry:ListRegistryRecords"
+      ],
+      "Resource": ["${registry_arn}", "${registry_arn}/record/*"]
+    },
+    {
+      "Sid": "DraftSupplement",
+      "Effect": "Allow",
+      "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"],
+      "Resource": "${supplement_table_arn}"
+    }
+  ]
+}

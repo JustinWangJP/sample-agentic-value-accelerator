@@ -1,3 +1,7 @@
+import { createDraftApi, type DraftApi } from '../drafts/api'
+import { isDataClassification, type DataClassification } from './dataClassification'
+import type { ApiRequest, HttpMethod } from './request'
+
 // Registry ポータル API のクライアント
 //
 // - アクセストークン（ID トークンではない）を Bearer で送る
@@ -27,13 +31,6 @@ export type Me = {
 export const CATALOG_RECORD_TYPES = ['AGENT', 'MCP', 'SKILL'] as const
 export type CatalogRecordType = (typeof CATALOG_RECORD_TYPES)[number]
 
-/**
- * データ分類（custom metadata の dataClassification）。可視性は制御しない。
- * バックエンドの DataClassification と同じ値に揃える
- */
-export const DATA_CLASSIFICATIONS = ['public', 'private'] as const
-export type DataClassification = (typeof DATA_CLASSIFICATIONS)[number]
-
 /** A2A は Agent の descriptor なので、A2A の絞り込みは Agent（または種別の指定なし）にだけ使える */
 export function supportsA2AFilter(type: CatalogRecordType | null): boolean {
   return type === null || type === 'AGENT'
@@ -41,10 +38,6 @@ export function supportsA2AFilter(type: CatalogRecordType | null): boolean {
 
 function isCatalogRecordType(value: unknown): value is CatalogRecordType {
   return CATALOG_RECORD_TYPES.some((type) => type === value)
-}
-
-function isDataClassification(value: unknown): value is DataClassification {
-  return DATA_CLASSIFICATIONS.some((classification) => classification === value)
 }
 
 /** カタログ項目（公開承認済みの Registry レコードの版）の要約 */
@@ -202,7 +195,7 @@ export type ApiClientOptions = {
   getAccessToken: () => string | null
 }
 
-export type ApiClient = {
+export type ApiClient = DraftApi & {
   getMe: () => Promise<Me>
   /** nextToken はバックエンドが中継する AWS の値で、SPA では中身を解釈しない */
   listCatalog: (
@@ -215,8 +208,12 @@ export type ApiClient = {
 }
 
 export function createApiClient(options: ApiClientOptions): ApiClient {
-  /** GET は本文なし、POST は JSON の本文を送る */
-  async function request<T>(method: 'GET' | 'POST', path: string, payload?: unknown): Promise<T> {
+  const request: ApiRequest = async <T>(
+    method: HttpMethod,
+    path: string,
+    payload?: unknown,
+    extraHeaders: Record<string, string> = {},
+  ): Promise<T> => {
     const token = options.getAccessToken()
     if (!token) {
       throw new ApiError(401, 'UNAUTHENTICATED', UNAUTHENTICATED_MESSAGE)
@@ -224,7 +221,11 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     let response: Response
     try {
       // baseUrl の末尾の / は loadConfig で取り除き済み
-      const headers = { authorization: `Bearer ${token}`, accept: 'application/json' }
+      const headers = {
+        authorization: `Bearer ${token}`,
+        accept: 'application/json',
+        ...extraHeaders,
+      }
       response = await options.fetch(
         `${options.baseUrl}${path}`,
         method === 'GET'
@@ -236,7 +237,11 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
             },
       )
     } catch {
-      throw new ApiError(0, 'NETWORK_ERROR', 'API に接続できません。ネットワークを確認してください。')
+      throw new ApiError(
+        0,
+        'NETWORK_ERROR',
+        'API に接続できません。ネットワークを確認してください。',
+      )
     }
 
     const isJson = (response.headers.get('content-type') ?? '').includes('application/json')
@@ -268,6 +273,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
   }
 
   return {
+    ...createDraftApi(request, () => invalidResponse(200)),
     getMe: () => request<Me>('GET', '/api/me'),
     listCatalog: (type, nextToken, a2aOnly) => {
       const query = new URLSearchParams({ type })

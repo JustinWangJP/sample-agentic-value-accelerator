@@ -16,8 +16,10 @@ CATALOG_RECORD_TYPES: tuple[CatalogRecordType, ...] = get_args(CatalogRecordType
 DataClassification = Literal["public", "private"]
 DATA_CLASSIFICATIONS: tuple[DataClassification, ...] = get_args(DataClassification)
 
+AGENT_RECORD_TYPE: CatalogRecordType = "AGENT"
+
 # A2A は Agent の descriptor（Agent Card）なので、A2A の絞り込みは Agent にだけ意味を持つ
-A2A_RECORD_TYPE: CatalogRecordType = "AGENT"
+A2A_RECORD_TYPE: CatalogRecordType = AGENT_RECORD_TYPE
 A2A_DESCRIPTOR_TYPE = "a2aAgentCard"
 
 

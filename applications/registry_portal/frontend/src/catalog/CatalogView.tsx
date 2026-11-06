@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { supportsA2AFilter, type ApiClient, type CatalogItem, type CatalogRecordType } from '../api/client'
 import { CatalogDetailView } from './CatalogDetailView'
 import { CatalogItems } from './CatalogItems'
-import { CatalogRequestError } from './CatalogRequestError'
+import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { CatalogSearchView } from './CatalogSearchView'
 import { CATALOG_TYPES, catalogTypeLabel } from './recordTypes'
 import { settleWhileActive } from './requests'
@@ -140,14 +140,14 @@ export function CatalogPanel({
         {view.status === 'loading' ? (
           <p role="status">読み込んでいます…</p>
         ) : view.status === 'error' ? (
-          <CatalogRequestError error={view} onRetry={onRetry} onRelogin={onRelogin}>
+          <RequestErrorAlert error={view} onRetry={onRetry} onRelogin={onRelogin}>
             {state.pageNumber > 1 && (
               // nextToken の期限切れなどで同じページを取り直しても解決しない場合の戻り道
               <button type="button" onClick={onFirstPage}>
                 最初のページに戻る
               </button>
             )}
-          </CatalogRequestError>
+          </RequestErrorAlert>
         ) : view.page.items.length === 0 ? (
           <p>
             {view.page.nextToken !== null

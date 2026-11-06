@@ -1,7 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import {
   A2A_SEARCH_NOT_READY,
-  DATA_CLASSIFICATIONS,
   supportsA2AFilter,
   type ApiClient,
   type ApiError,
@@ -10,8 +9,9 @@ import {
   type CatalogSearchRequest,
   type CatalogSearchResult,
 } from '../api/client'
+import { DATA_CLASSIFICATIONS } from '../api/dataClassification'
+import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { CatalogItems } from './CatalogItems'
-import { CatalogRequestError } from './CatalogRequestError'
 import { CATALOG_TYPES } from './recordTypes'
 import { settleWhileActive } from './requests'
 
@@ -128,13 +128,13 @@ export function CatalogSearchView({ api, onRelogin, onOpenDetail, onBrowseA2A, c
             ) : view.status === 'error' ? (
               view.error.code === A2A_SEARCH_NOT_READY ? (
                 // 準備ができるまでは再試行しても解決しないので、一覧への入口だけを示す
-                <CatalogRequestError error={view.error} onRelogin={onRelogin}>
+                <RequestErrorAlert error={view.error} onRelogin={onRelogin}>
                   <button type="button" onClick={browseA2A}>
                     A2A の Agent 一覧を開く
                   </button>
-                </CatalogRequestError>
+                </RequestErrorAlert>
               ) : (
-                <CatalogRequestError
+                <RequestErrorAlert
                   error={view.error}
                   onRelogin={onRelogin}
                   onRetry={() => setView({ status: 'loading', request: view.request })}
