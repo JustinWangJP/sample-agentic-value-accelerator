@@ -1,15 +1,13 @@
 import { useEffect, useState } from 'react'
+import { ApiError, toApiError, type ApiClient, type Role } from '../api/client'
+import { DATA_CLASSIFICATIONS } from '../api/dataClassification'
+import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import {
-  ApiError,
-  DATA_CLASSIFICATIONS,
-  toApiError,
-  type ApiClient,
-  type Role,
-} from '../api/client'
-import { CatalogRequestError } from '../catalog/CatalogRequestError'
-import {
+  DEFAULT_DRAFT_ENVIRONMENT,
   DRAFT_TEXT_FIELDS,
   isEditableStatus,
+  isUncertainSaveError,
+  settlesCreateKey,
   type AgentDraft,
   type DraftDetail,
   type DraftOperation,
@@ -84,7 +82,7 @@ export function AgentDraftsView({ api, roles, teams, onRelogin }: Props) {
     <section className="drafts" aria-labelledby="drafts-heading">
       <h2 id="drafts-heading">Agent 下書きの管理</h2>
       <p>
-        所属チームの custom Agent を登録します。environment は dev
+        所属チームの custom Agent を登録します。environment は {DEFAULT_DRAFT_ENVIRONMENT}{' '}
         固定です。保存しても公開されません。
       </p>
       {screen.kind === 'list' ? (
@@ -95,13 +93,13 @@ export function AgentDraftsView({ api, roles, teams, onRelogin }: Props) {
           >
             Agent 下書きを作成
           </button>
-          {error && <CatalogRequestError error={error} onRelogin={onRelogin} />}
+          {error && <RequestErrorAlert error={error} onRelogin={onRelogin} />}
           {loadingDetail && <p role="status">下書きを取得しています…</p>}
           {page.kind === 'loading' ? (
             <p role="status">一覧を読み込んでいます…</p>
           ) : page.kind === 'error' ? (
             <>
-              <CatalogRequestError error={page.error} onRelogin={onRelogin} />
+              <RequestErrorAlert error={page.error} onRelogin={onRelogin} />
               <button type="button" onClick={back}>
                 一覧を再読み込み
               </button>
@@ -224,7 +222,7 @@ function OperationCheck({
       <button type="button" disabled={busy} onClick={() => void check()}>
         処理結果を確認
       </button>
-      {error && <CatalogRequestError error={error} onRelogin={onRelogin} />}
+      {error && <RequestErrorAlert error={error} onRelogin={onRelogin} />}
     </div>
   )
 }
@@ -270,7 +268,7 @@ function DraftEditor({
           description: '',
           recordVersion: '1.0.0',
           ownerTeam: teams[0] ?? '',
-          environment: 'dev',
+          environment: DEFAULT_DRAFT_ENVIRONMENT,
           dataClassification: 'private',
           purpose: '',
           connectionReference: '',
@@ -285,7 +283,7 @@ function DraftEditor({
   const isNew = initial.kind === 'new'
   const text = EDITOR_TEXT[initial.kind]
   const resultLocked = save.kind === 'result' && save.operation.operationState !== 'FAILED'
-  const uncertain = save.kind === 'error' && (save.error.status === 0 || save.error.status >= 500)
+  const uncertain = save.kind === 'error' && isUncertainSaveError(save.error)
   const saveDisabled =
     save.kind === 'saving' || resultLocked || (!isNew && uncertain)
   const disabled = saveDisabled || uncertain
@@ -302,7 +300,7 @@ function DraftEditor({
       receiveResult(operation)
     } catch (failure) {
       const error = toApiError(failure, '下書きを保存できませんでした。')
-      if (isNew && error.status === 400) setCreateKey(crypto.randomUUID())
+      if (isNew && settlesCreateKey(error)) setCreateKey(crypto.randomUUID())
       setSave({ kind: 'error', error })
     }
   }
@@ -375,7 +373,7 @@ function DraftEditor({
           </label>
           <label>
             environment
-            <input name="environment" value="dev" readOnly />
+            <input name="environment" value={draft.environment} readOnly />
           </label>
           <label>
             データ分類
@@ -407,7 +405,7 @@ function DraftEditor({
       )}
       {save.kind === 'error' && (
         <>
-          <CatalogRequestError error={save.error} onRelogin={onRelogin} />
+          <RequestErrorAlert error={save.error} onRelogin={onRelogin} />
           {save.error.status === 409 && !isNew && (
             <>
               <p>

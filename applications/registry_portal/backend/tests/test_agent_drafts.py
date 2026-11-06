@@ -16,6 +16,7 @@ def event(
     body=None,
     groups="registry-publisher team-payments",
     key="draft-1",
+    sub="alice",
 ):
     return {
         "requestContext": {
@@ -24,7 +25,7 @@ def event(
                 "jwt": {
                     "claims": {
                         "iss": ISSUER,
-                        "sub": "alice",
+                        "sub": sub,
                         "client_id": HUMAN_CLIENT_ID,
                         "token_use": "access",
                         "cognito:groups": groups,
@@ -135,6 +136,27 @@ def handler_for(registry, db):
         registry_client=registry,
         draft_store_client=db,
     )
+
+
+def items_with_sk(db, fragment):
+    """ソートキーに fragment を含む補助テーブルの項目（DynamoDB の型付き表現）。"""
+    return [
+        item for item in db.scan(TableName=SUPPLEMENT_TABLE)["Items"] if fragment in item["sk"]["S"]
+    ]
+
+
+def audit_items(db, suffix):
+    return [item for item in items_with_sk(db, "AUDIT#") if item["sk"]["S"].endswith(suffix)]
+
+
+def management_item(db):
+    return db.get_item(
+        TableName=SUPPLEMENT_TABLE,
+        Key={
+            "pk": {"S": f"REGISTRY#{REGISTRY_ARN}#RECORD#{RECORD_ID}"},
+            "sk": {"S": "MANAGEMENT"},
+        },
+    )["Item"]
 
 
 def stub_create(stub):
@@ -284,6 +306,8 @@ def test_missing_key_and_invalid_input_do_not_write_to_aws():
         for change in [
             {"environment": "prod"},
             {"recordVersion": "latest"},
+            # AWS の RegistryRecordVersion は `+` を受け付けないため、ビルドメタデータは送る前に拒否する
+            {"recordVersion": "1.0.0+build.1"},
             {"dataClassification": "secret"},
             {"status": "APPROVED"},
             {"purpose": ""},
@@ -380,7 +404,6 @@ def test_create_timeout_can_be_retried_with_identical_input_and_client_token():
         "AccessDeniedException",
         "ConflictException",
         "ResourceNotFoundException",
-        "ThrottlingException",
     ],
 )
 @mock_aws
@@ -412,17 +435,57 @@ def test_rejected_update_releases_lock_so_publisher_can_correct_and_save(error_c
         stub.assert_no_pending_responses()
 
 
-@pytest.mark.parametrize("error_code", ["ThrottlingException", "ServiceQuotaExceededException"])
+@pytest.mark.parametrize(
+    ("error_code", "http_status", "status", "code"),
+    [
+        ("ServiceQuotaExceededException", 402, 400, "VALIDATION_ERROR"),
+        # 混雑は入力の誤りではないため、400 ではなく 429 で「時間をおいて再度保存」を促す
+        ("ThrottlingException", 429, 429, "REGISTRY_THROTTLED"),
+    ],
+)
 @mock_aws
-def test_rejected_create_releases_name_for_a_new_operation(error_code):
+def test_rejected_create_releases_name_for_a_new_operation(error_code, http_status, status, code):
     registry, db = clients()
     with Stubber(registry) as stub:
-        stub.add_client_error("create_registry_record", error_code, http_status_code=429)
+        stub.add_client_error(
+            "create_registry_record",
+            error_code,
+            http_status_code=http_status,
+            response_meta={"RequestId": "aws-request-1"},
+        )
         handler = handler_for(registry, db)
-        assert call(handler, event(body=DRAFT))[0] == 400
+        rejected_status, rejected = call(handler, event(body=DRAFT))
+        assert (rejected_status, rejected["error"]["code"]) == (status, code)
         assert call(handler, event(body=DRAFT))[0] == 409
         stub_create(stub)
         assert call(handler, event(body=DRAFT, key="new-operation"))[0] == 201
+        stub.assert_no_pending_responses()
+    results = audit_items(db, "#RESULT")
+    assert results[0]["awsRequestId"] == {"S": "aws-request-1"}
+
+
+@mock_aws
+def test_throttled_update_is_429_and_releases_lock_for_saving_again():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub_create(stub)
+        handler = handler_for(registry, db)
+        _, created = call(handler, event(body=DRAFT))
+        request = event(
+            "PATCH",
+            f"/api/records/{RECORD_ID}",
+            {"draft": DRAFT, "expectedContentHash": created["contentHash"]},
+        )
+        stub.add_response("get_registry_record", record())
+        stub.add_client_error("update_registry_record", "ThrottlingException", http_status_code=429)
+        status, throttled = call(handler, request)
+        assert status == 429
+        assert throttled["error"]["code"] == "REGISTRY_THROTTLED"
+        assert "時間をおいて" in throttled["error"]["message"]
+        stub.add_response("get_registry_record", record())
+        stub.add_response("update_registry_record", record(status="UPDATING"))
+        stub.add_response("get_registry_record", record())
+        assert call(handler, request)[0] == 200
         stub.assert_no_pending_responses()
 
 
@@ -488,6 +551,7 @@ def test_terminal_aws_failure_is_saved_and_releases_all_locks(kind):
         {"managed": {"S": "true"}},
         {"contact": {"N": "123"}},
         {"publishedVersion": {"L": []}},
+        {"lastEditedBy": {"S": "alice"}},
     ],
 )
 @mock_aws
@@ -1036,3 +1100,88 @@ def test_saving_a_draft_does_not_require_a_version_greater_than_the_published_on
         assert status == 200
         assert saved["publishedVersion"] == "1.0.0"
         stub.assert_no_pending_responses()
+
+
+@pytest.mark.parametrize(
+    "request_event",
+    [
+        event(body=DRAFT),
+        event("GET", "/api/records"),
+        event("GET", f"/api/records/{RECORD_ID}"),
+        event(
+            "PATCH", f"/api/records/{RECORD_ID}", {"draft": DRAFT, "expectedContentHash": "a" * 64}
+        ),
+        event("GET", f"/api/operations/{'a' * 64}"),
+    ],
+)
+def test_unconfigured_supplement_table_is_503_on_every_draft_route(request_event):
+    """補助テーブルの未設定は入力誤り（400）や障害（502）ではなく、準備中として揃えて返す。"""
+    status, body = call(create_management_handler(ENV), request_event)
+    assert status == 503
+    assert body["error"]["code"] == "DRAFTS_NOT_CONFIGURED"
+
+
+def test_unconfigured_supplement_table_still_rejects_a_viewer_first():
+    status, body = call(create_management_handler(ENV), event("GET", "/api/records", groups=""))
+    assert (status, body["error"]["code"]) == (403, "FORBIDDEN")
+
+
+@mock_aws
+def test_settled_operation_expires_by_ttl_but_lock_and_pending_operation_do_not():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub.add_response("create_registry_record", {"recordArn": RECORD_ARN, "status": "CREATING"})
+        stub.add_response("get_registry_record", record(status="CREATING"))
+        handler = handler_for(registry, db)
+        _, pending = call(handler, event(body=DRAFT))
+        control = items_with_sk(db, "CONTROL")
+        assert len(control) == 1 and "expiresAt" not in control[0]
+        assert all("expiresAt" not in lock for lock in items_with_sk(db, "LOCK"))
+        stub.add_response("get_registry_record", record())
+        before = int(datetime.now(timezone.utc).timestamp())
+        assert call(handler, event("GET", f"/api/operations/{pending['operationId']}"))[0] == 200
+        stub.assert_no_pending_responses()
+    (settled,) = items_with_sk(db, "CONTROL")
+    expires = int(settled["expiresAt"]["N"])
+    assert before + 7 * 24 * 3600 <= expires <= before + 7 * 24 * 3600 + 60
+    assert items_with_sk(db, "LOCK") == []
+    # 操作記録（追記記録）は無期限に保持する
+    assert all("expiresAt" not in item for item in items_with_sk(db, "AUDIT#"))
+
+
+@mock_aws
+def test_management_keeps_the_last_editor_and_audit_keeps_the_aws_request_id():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub.add_response(
+            "create_registry_record",
+            {
+                "recordArn": RECORD_ARN,
+                "status": "CREATING",
+                "ResponseMetadata": {"RequestId": "aws-create-1"},
+            },
+        )
+        stub.add_response("get_registry_record", record())
+        handler = handler_for(registry, db)
+        _, created = call(handler, event(body=DRAFT))
+        assert management_item(db)["lastEditedBy"] == {
+            "M": {"issuer": {"S": ISSUER}, "subject": {"S": "alice"}}
+        }
+        changed = {**DRAFT, "description": "別のメンバーが編集する"}
+        stub.add_response("get_registry_record", record())
+        stub.add_response(
+            "update_registry_record",
+            {**record(status="UPDATING"), "ResponseMetadata": {"RequestId": "aws-update-1"}},
+        )
+        stub.add_response("get_registry_record", record(description=changed["description"]))
+        request = patch(created, changed)
+        request["requestContext"]["authorizer"]["jwt"]["claims"]["sub"] = "bob"
+        assert call(handler, request)[0] == 200
+        stub.assert_no_pending_responses()
+    saved = management_item(db)
+    assert saved["lastEditedBy"]["M"]["subject"] == {"S": "bob"}
+    assert "lastEditedAt" in saved
+    assert sorted(item["awsRequestId"]["S"] for item in audit_items(db, "#RESULT")) == [
+        "aws-create-1",
+        "aws-update-1",
+    ]

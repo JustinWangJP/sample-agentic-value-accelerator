@@ -17,6 +17,10 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 | `backend/src/registry_portal/services/discovery.py` | 発見アダプター。発見用 M2M トークンの取得・キャッシュと、JWT 認可の Registry の発見 API 呼び出し |
 | `backend/src/registry_portal/services/catalog_supplement.py` | 補助テーブルから所有チームの正本と公開版のスナップショットを読む |
 | `backend/src/registry_portal/services/http.py` | 標準ライブラリによる HTTP トランスポート。テストではフェイクに差し替える |
+| `backend/src/registry_portal/drafts.py` | custom Agent の下書きの作成・編集・一覧・操作の照合 API。排他・冪等性と、AWS の失敗の API エラーへの変換 |
+| `backend/src/registry_portal/domain/drafts.py` | 下書きのフォーム入力・管理情報のモデル、AWS の作成用・更新用 payload への変換、状態と environment の値。SPA の `frontend/src/drafts/api.ts` と値を揃える |
+| `backend/src/registry_portal/services/draft_store.py` | 補助テーブルの下書き用の項目（管理情報・ロック・操作・操作記録）の読み書き |
+| `infrastructure/` | 下書きの IAM モジュール（`modules/management_drafts`）と、既存ロールへ適用するルートモジュール（`management`） |
 | `frontend/` | React SPA。Authorization Code + PKCE でログインし、アクセストークンはメモリー上だけで保持する |
 
 ## 認可
@@ -118,7 +122,7 @@ A2A の判定と検索用の写しの設計理由は [ADR-0006](../../docs/adr/0
 | `DISCOVERY_CLIENT_ID` | 発見用 M2M client の client_id |
 | `DISCOVERY_CLIENT_SECRET_ARN` | 発見用 M2M client の secret を保管した Secrets Manager の ARN。Secrets Manager のリージョンは ARN から導出する |
 | `DISCOVERY_SCOPE` | （任意）トークン取得時に要求する scope。空なら client の既定 |
-| `SUPPLEMENT_TABLE_NAME` | （任意）Registry と同じリージョンにある補助 DynamoDB テーブル名。所有チームの正本と公開版のスナップショットを読む。管理 Lambda の実行ロールに対象テーブルへの `dynamodb:GetItem` 権限が必要 |
+| `SUPPLEMENT_TABLE_NAME` | （任意。下書きの管理には必須）Registry と同じリージョンにある補助 DynamoDB テーブル名。所有チームの正本と公開版のスナップショットを読み、下書きの管理情報・ロック・操作を保存する。カタログだけなら `dynamodb:GetItem`、下書きには「custom Agent の下書き」の IAM が必要。未設定なら下書きの API は 503 |
 | `A2A_SEARCH_ENABLED` | （任意）`true` で A2A の絞り込み検索を有効にする。既定は無効。`isA2A` の準備が終わるまで有効にしない（「A2A 検索を有効にする」を参照）。`true`・`false` 以外は起動エラー |
 
 必須の変数が未設定、または形式が誤っていれば起動エラーにします。開発用に認証を通す設定はありません。管理 Lambda の実行ロールには、`DISCOVERY_CLIENT_SECRET_ARN` に対する `secretsmanager:GetSecretValue` 権限が必要です（IaC は #5 で用意する）。Boto3・Botocore は Lambda ランタイム付属のものを使わず、`requirements.txt` で固定した版を同梱します（設計書「新しいサービス名前空間を使う」）。
@@ -151,7 +155,11 @@ GitHub Actions（`.github/workflows/registry-portal-ci.yml`）では上記の検
 
 Publisher は、所属する `team-*` を所有チームに指定して、フォームから custom Agent の下書きを作成・編集できます。同じチームの別メンバーも編集できます。チームのない Publisher、Viewer、未管理レコード、他チームのレコードへの取得・編集は `403 FORBIDDEN` です。Admin・Curator も Publisher グループを持たなければこの操作はできません。
 
-フォームは名前、表示名、説明、semver の版、目的、接続先の参照、認証方式、連絡先、利用条件を受け付けます。所有チームは所属チームから選択し、environment は `dev`、データ分類は `public` / `private` に限定します。秘密情報の値は入力せず、接続先や認証情報の参照を記載してください。custom descriptor の `data` にはフォームの定義を canonical JSON として保存します。metadata は `ownerTeam`・`environment`・`dataClassification` と、定義から導出した真偽値 `isA2A=false` です。下書きの定義（連絡先・利用条件・接続先の参照を含む）は custom descriptor の中身を正本とし、画面にもこの値を表示します。連絡先・利用条件・接続先の参照は、公開版スナップショット（ADR-0007）を作るための写しとして補助ストアの管理情報（`MANAGEMENT`）にも保存し、`PUBLISHED#版` は上書きしません。写しが正本と食い違った場合は内容ハッシュが一致しなくなるため、更新は `409` になり、再読み込みして保存すると写しも正本に揃います。所有チームだけは補助ストアを正本とし、metadata の `ownerTeam` は検索用の写しです（ADR-0002、設計書「共通項目と custom metadata」）。
+フォームは名前、表示名、説明、semver の版、目的、接続先の参照、認証方式、連絡先、利用条件を受け付けます。所有チームは所属チームから選択し、environment は `dev`、データ分類は `public` / `private` に限定します。秘密情報の値は入力せず、接続先や認証情報の参照を記載してください。custom descriptor の `data` にはフォームの定義を canonical JSON として保存します。metadata は `ownerTeam`・`environment`・`dataClassification` と、定義から導出した真偽値 `isA2A=false` です。下書きの定義（連絡先・利用条件・接続先の参照を含む）は custom descriptor の中身を正本とし、画面にもこの値を表示します。連絡先・利用条件・接続先の参照は、公開版スナップショット（ADR-0007）を作るための写しとして補助ストアの管理情報（`MANAGEMENT`）にも保存し、`PUBLISHED#版` は上書きしません。写しが正本と食い違った場合は内容ハッシュが一致しなくなるため、更新は `409` になり、再読み込みして保存すると写しも正本に揃います（[ADR-0008](../../docs/adr/0008-draft-definition-in-custom-descriptor.md)）。所有チームだけは補助ストアを正本とし、metadata の `ownerTeam` は検索用の写しです（ADR-0002、設計書「共通項目と custom metadata」）。
+
+保存に成功すると、管理情報に最終編集者（`lastEditedBy` = `{issuer, subject}`）と保存日時（`lastEditedAt`）も記録します。申請（#9）と決裁（#10）は、自己承認の禁止にこの値を使います（設計書「ロールと所有」）。
+
+版は semver で指定します。ただし AWS の `recordVersion` は `[a-zA-Z0-9.-]+` に限られ `+` を受け付けないため、ビルドメタデータ（`1.0.0+build`）は AWS に送る前に 400 とします（[CreateRegistryRecord](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_CreateRegistryRecord.html) の `recordVersion`、固定版 Botocore の `RegistryRecordVersion`）。
 
 | API | 契約 |
 | --- | --- |
@@ -161,11 +169,21 @@ Publisher は、所属する `team-*` を所有チームに指定して、フォ
 | `PATCH /api/records/{recordId}` | `{ "draft": フォームのJSON, "expectedContentHash": 取得したハッシュ }`。所有チームと名前の変更は不可 |
 | `GET /api/operations/{operationId}` | 所属チームの操作の結果を照合。`SUCCEEDED` / `VERIFYING` / `FAILED` を返す。補助ストアを読めない場合は `VERIFYING` ではなく502 |
 
+下書きの API が返す主なエラーは次のとおりです。SPA は、AWS に届いたかどうか分からない失敗（通信断と 502 など）だけを「結果が不明」と表示し、それ以外は入力を残して保存し直せるようにします。
+
+| 状態 | コード | 意味と利用者の対応 |
+| --- | --- | --- |
+| 400 | `VALIDATION_ERROR` | 入力の誤り、または AWS が入力や設定を理由に保存を拒否した。入力を直して保存する |
+| 409 | `CONTENT_CONFLICT` | 内容ハッシュの不一致、または別の操作が処理中。再読み込みしてから保存する |
+| 429 | `REGISTRY_THROTTLED` | AWS が混雑で保存を処理しなかった（`ThrottlingException`）。入力は正しいため、時間をおいて同じ内容で保存する |
+| 502 | `REGISTRY_UNAVAILABLE` | Registry や補助ストアを読めない、または保存内容の型が壊れている |
+| 503 | `DRAFTS_NOT_CONFIGURED` | `SUPPLEMENT_TABLE_NAME` が未設定で、下書きの管理を提供していない。どの下書き API でも同じ応答にする。管理者が設定する |
+
 作成はレコード ID が決まる前に名前単位の条件付きロックを取り、ID が判明したらレコード単位のロックも取ります。更新はレコード単位のロック内で所有情報と Registry を再取得し、Registry の内容と補助情報のハッシュを照合します。古いハッシュは `409 CONTENT_CONFLICT` とし、画面では入力を保持して再読み込みを促します。再読み込みは入力を最新内容に置き換えます。
 
-書き込み前の操作意図、書き込み後の照合、結果とロック解除は DynamoDB の条件付きトランザクションで管理します。ロックに TTL は設定せず、期限切れを横取りの条件にしません。確定した冪等キーの結果も無期限に保持します。作成時に AWS の応答が不明なら同じ `clientToken` で再試行します。更新 API には `clientToken` がないため、結果不明の更新を再送せず照合します。AWS 成功後の補助ストア障害でも成功扱いにせず、ロックを維持します。
+書き込み前の操作意図、書き込み後の照合、結果とロック解除は DynamoDB の条件付きトランザクションで管理します。ロックに TTL は設定せず、期限切れを横取りの条件にしません。ロックは操作の結果が確定したときに削除します。確定した操作（実行制御の `OP#…` / `CONTROL`）には TTL 属性 `expiresAt` を付け、7日後に DynamoDB が削除します（設計書「補助テーブルに保存するもの」の「確定後に TTL で削除」）。この間は同じ `Idempotency-Key` に同じ結果を返します。結果確認中の操作には TTL を付けません。操作記録（`AUDIT#…`）は無期限に保持し、AWS の書き込み API が返した request ID（`awsRequestId`）も結果に記録します。作成時に AWS の応答が不明なら同じ `clientToken` で再試行します。更新 API には `clientToken` がないため、結果不明の更新を再送せず照合します。AWS 成功後の補助ストア障害でも成功扱いにせず、ロックを維持します。
 
-`202` は結果確認中です。「処理結果を確認」で再照合できます。`CREATING` / `UPDATING` の間は書き込みを止めます。AWS が保存を明示的に拒否した場合は400を返し、`CREATE_FAILED` / `UPDATE_FAILED` を確認した場合は操作を `FAILED` として保存し、対応するロックを解除します。補助ストアへ失敗結果を保存できなければ、確認できるまでロックを維持します。名前の変更など、AWS へ書き込む前に止めた更新は失敗を確定してロックを解除します。管理情報の型が壊れている場合は、所属外や0件として扱わず502を返します。
+`202` は結果確認中です。「処理結果を確認」で再照合できます。`CREATING` / `UPDATING` の間は書き込みを止めます。AWS が書き込みを処理せずに拒否したと確定できる場合は、操作を `FAILED` として確定し、ロックを解除します。入力や設定を理由とする拒否（`ValidationException`・`AccessDeniedException`・`ConflictException`・`ResourceNotFoundException`・`ServiceQuotaExceededException`）は400、混雑（`ThrottlingException`）は429を返します。作成では、どちらの場合も次の保存に新しい `Idempotency-Key` を使います。`CREATE_FAILED` / `UPDATE_FAILED` を確認した場合は操作を `FAILED` として保存し、対応するロックを解除します。補助ストアへ失敗結果を保存できなければ、確認できるまでロックを維持します。名前の変更など、AWS へ書き込む前に止めた更新は失敗を確定してロックを解除します。管理情報の型が壊れている場合は、所属外や0件として扱わず502を返します。
 
 作成の通信結果が不明な場合は、同じ画面の「同じ入力とキーで作成を再試行」を使ってください。入力を固定し、同じ `Idempotency-Key`・本文・AWS `clientToken` で再送します。更新ではこの再送を行いません。失敗が確定するとフォームを再開し、次の作成は新しいキーで行います。ページを閉じた場合は、別キーで作り直す前に管理者へ連絡してください。
 
@@ -178,16 +196,21 @@ Publisher は、所属する `team-*` を所有チームに指定して、フォ
 
 公開中の版より大きい semver かどうかは申請（#9）で検査し、下書きの保存では検査しません。公開中の版を補助ストアに保持するため、AWS が新しい下書きを返している間も「下書きあり」と「公開中」を併記します。公開承認・申請・A2A Agent Card・MCP・Skill の編集はこのチケットの対象外です。
 
-`SUPPLEMENT_TABLE_NAME` は下書き操作では必須です。既存の `pk` / `sk` 文字列キーの補助テーブルを使います。管理 Lambda には [下書き用 Terraform モジュール](infrastructure/modules/management_drafts/main.tf) を接続してください。このモジュールは既存の管理 IAM ロール名、既存 Registry ARN、補助テーブル ARN を受け取り、Registry レコードの作成・更新・取得・一覧と、対象テーブルの GetItem / PutItem / DeleteItem だけを追加します。DynamoDB のトランザクションは含まれる各操作で認可されます。Registry 本体、schema、決裁、物理削除の権限は追加しません。このリポジトリにはまだ管理 Lambda のロールを定義するルートモジュールがないため、このモジュールの呼び出し（下の例）は #5 の IaC で追加します。それまで、このモジュールは単体で `terraform validate` と権限の内容のテストだけを行います。Registry とテーブルの ARN はリージョンを限定しません。API Gateway の CORS で `PATCH` と `Idempotency-Key` ヘッダーも許可してください。
+`SUPPLEMENT_TABLE_NAME` は下書き操作では必須です。未設定でもカタログは提供し、下書きの API だけを 503 `DRAFTS_NOT_CONFIGURED` にします。既存の `pk` / `sk` 文字列キーの補助テーブルを使い、テーブルの TTL を属性 `expiresAt` で有効にしてください（テーブルの定義は #5 の IaC が持ちます）。TTL が無効でも動作は変わりませんが、確定した操作の項目が削除されずに残ります。
 
-```hcl
-module "management_drafts" {
-  source               = "./modules/management_drafts"
-  management_role_name = aws_iam_role.management.name
-  registry_arn         = var.registry_arn
-  supplement_table_arn = aws_dynamodb_table.supplement.arn
-}
+IAM は [下書き用 Terraform モジュール](infrastructure/modules/management_drafts/main.tf) が定義します。このモジュールは既存の管理 IAM ロール名、既存 Registry ARN、補助テーブル ARN を受け取り、Registry レコードの作成・更新・取得・一覧と、対象テーブルの GetItem / PutItem / DeleteItem だけを追加します。DynamoDB のトランザクションは含まれる各操作で認可されます。Registry 本体、schema、決裁、物理削除の権限は追加しません。Registry とテーブルの ARN はリージョンを限定しません。
+
+既存の管理 Lambda のロールへは、ルートモジュール [`infrastructure/management`](infrastructure/management/main.tf) で適用します。CI は `terraform fmt` と `validate` だけを行い、AWS への反映は Admin が手元で行います（ADR-0004）。#5 の IaC が管理 Lambda のロールを定義したら、同じモジュールをその IaC から呼び出し、このルートモジュールの state から取り除いてください。
+
+```bash
+cd applications/registry_portal/infrastructure/management
+cp terraform.tfvars.example terraform.tfvars   # 値を環境に合わせる。コミットしない
+terraform init -backend-config="bucket=<state バケット>" -backend-config="key=registry-portal/management-drafts.tfstate" -backend-config="region=<リージョン>"
+terraform plan
+terraform apply
 ```
+
+API Gateway の CORS で `PATCH` と `Idempotency-Key` ヘッダーも許可してください。
 
 作成と更新の AWS payload は別々に変換します。更新では `displayName` / `description` / `customMetadata` / `descriptors` と、custom 内部の `data` に `optionalValue` を使い、`recordVersion` は直接渡します。実サービスモデルの Stubber と moto の handler テストで、payload、排他、冪等性、他チーム拒否、補助情報の変更を含む409、AWS後の補助ストア障害を検証しています。SPA は `fetch` 境界で検証します。
 

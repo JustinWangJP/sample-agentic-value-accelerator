@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ApiClient, ApiError, CatalogDetail, CatalogItem } from '../api/client'
-import { CatalogRequestError } from './CatalogRequestError'
+import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { catalogTypeLabel } from './recordTypes'
 import { settleWhileActive } from './requests'
 
@@ -48,7 +48,7 @@ export function CatalogDetailView({ api, item, onRelogin, onClose }: Props) {
       {view.status === 'loading' ? (
         <p role="status">詳細を読み込んでいます…</p>
       ) : view.status === 'error' ? (
-        <CatalogRequestError
+        <RequestErrorAlert
           error={view.error}
           onRelogin={onRelogin}
           onRetry={() => setView({ status: 'loading' })}

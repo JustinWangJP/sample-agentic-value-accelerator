@@ -1,13 +1,32 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
-import boto3
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 
-from registry_portal.domain.drafts import DraftOperation, OperationState
+from registry_portal.domain.drafts import (
+    SETTLED_OPERATION_RETENTION_SECONDS,
+    DraftOperation,
+    DraftResult,
+    Management,
+    OperationState,
+)
+
+# 補助テーブルの TTL 属性名。テーブルの TTL 設定でこの属性を指定する（README「custom Agent の下書き」）
+TTL_ATTRIBUTE = "expiresAt"
+
+
+class DraftStoreClient(Protocol):
+    """下書きの補助ストアが使う DynamoDB クライアントの操作。"""
+
+    def get_item(
+        self, *, TableName: str, Key: dict[str, dict[str, str]], ConsistentRead: bool
+    ) -> Mapping[str, Any]: ...
+
+    def transact_write_items(self, *, TransactItems: list[dict[str, Any]]) -> Mapping[str, Any]: ...
 
 
 class StoreConflict(Exception):
@@ -20,16 +39,10 @@ class DraftStore:
     キーの組み立てはこのクラスに閉じ込め、呼び出し側には操作 ID や Registry レコード ID だけを渡させる。
     """
 
-    def __init__(self, table: str, registry: str, region: str, client: Any = None) -> None:
+    def __init__(self, table: str, registry: str, client: DraftStoreClient) -> None:
         self.table = table
         self.registry = registry
-        self.client = client
-        self.region = region
-
-    def _client(self) -> Any:
-        if self.client is None:
-            self.client = boto3.client("dynamodb", region_name=self.region)
-        return self.client
+        self._client = client
 
     def record_pk(self, record_id: str) -> str:
         return f"REGISTRY#{self.registry}#RECORD#{record_id}"
@@ -46,11 +59,9 @@ class DraftStore:
         return {"pk": {"S": pk}, "sk": {"S": sk}}
 
     def get(self, pk: str, sk: str) -> dict[str, Any] | None:
-        item = (
-            self._client()
-            .get_item(TableName=self.table, Key=self._key(pk, sk), ConsistentRead=True)
-            .get("Item")
-        )
+        item = self._client.get_item(
+            TableName=self.table, Key=self._key(pk, sk), ConsistentRead=True
+        ).get("Item")
         if item is None:
             return None
         return {key: TypeDeserializer().deserialize(value) for key, value in item.items()}
@@ -58,8 +69,10 @@ class DraftStore:
     def get_operation(self, op_id: str) -> DraftOperation | None:
         return cast("DraftOperation | None", self.get(self._operation_pk(op_id), "CONTROL"))
 
-    def get_management(self, record_id: str) -> dict[str, Any] | None:
-        return self.get(self.record_pk(record_id), "MANAGEMENT")
+    def get_management(self, record_id: str) -> Management | None:
+        """管理情報を読む。保存内容の型が契約と異なれば ValueError。"""
+        item = self.get(self.record_pk(record_id), "MANAGEMENT")
+        return None if item is None else Management.parse(item)
 
     def get_lock(self, record_id: str) -> dict[str, Any] | None:
         return self.get(self.record_pk(record_id), "LOCK")
@@ -103,7 +116,7 @@ class DraftStore:
 
     def _transact(self, items: list[dict[str, Any]]) -> None:
         try:
-            self._client().transact_write_items(TransactItems=items)
+            self._client.transact_write_items(TransactItems=items)
         except ClientError as error:
             if error.response["Error"]["Code"] == "TransactionCanceledException" and any(
                 reason.get("Code") == "ConditionalCheckFailed"
@@ -165,8 +178,14 @@ class DraftStore:
         outcome: Mapping[str, Any],
         record_id: str | None,
     ) -> list[dict[str, Any]]:
-        """操作を確定し、結果を追記記録に残し、ロックを解除する項目を返す。"""
+        """操作を確定し、結果を追記記録に残し、ロックを解除する項目を返す。
+
+        確定した操作（実行制御）には TTL を付け、保持期間の後に DynamoDB が削除する。
+        追記記録（操作記録）は無期限に保持する。
+        """
         op_id = operation["operationId"]
+        if "awsRequestId" in operation:
+            outcome = {**outcome, "awsRequestId": operation["awsRequestId"]}
         return [
             self._put(
                 {
@@ -175,6 +194,7 @@ class DraftStore:
                     "pk": self._operation_pk(op_id),
                     "sk": "CONTROL",
                     "state": state,
+                    TTL_ATTRIBUTE: int(time.time()) + SETTLED_OPERATION_RETENTION_SECONDS,
                 },
                 "operationId = :op",
                 {":op": op_id},
@@ -191,11 +211,11 @@ class DraftStore:
     def finish(
         self,
         operation: DraftOperation,
-        result: dict[str, Any],
-        management: dict[str, Any],
+        result: DraftResult,
+        management: Management,
     ) -> None:
         owner = self._put(
-            {**management, "pk": self.record_pk(result["recordId"]), "sk": "MANAGEMENT"},
+            {**management.item, "pk": self.record_pk(result["recordId"]), "sk": "MANAGEMENT"},
             "attribute_not_exists(pk) OR ownerTeam = :team",
             {":team": operation["ownerTeam"]},
         )

@@ -53,3 +53,26 @@ def test_arn_validation_does_not_pin_a_region():
         assert any(
             re.fullmatch(pattern, arn) for pattern in re.findall(r'regex\("([^"]+)"', variables)
         )
+
+
+ROOT = MODULE.parents[1] / "management"
+
+
+def test_root_module_applies_the_draft_policy_to_the_management_role():
+    """下書きモジュールが、ルートモジュールから管理 Lambda のロールへ適用される経路を持つ。"""
+    main = (ROOT / "main.tf").read_text()
+    (block,) = re.findall(r'module "management_drafts" \{(.*?)\n\}', main, re.DOTALL)
+    source = re.search(r'source\s*=\s*"([^"]+)"', block)
+    assert source is not None
+    assert (ROOT / source.group(1)).resolve() == MODULE
+    module_variables = set(
+        re.findall(r'^variable "([^"]+)"', (MODULE / "variables.tf").read_text(), re.MULTILINE)
+    )
+    for name in module_variables:
+        assert re.search(rf"^\s*{name}\s*=\s*var\.{name}$", block, re.MULTILINE)
+    root_variables = set(
+        re.findall(r'^variable "([^"]+)"', (ROOT / "variables.tf").read_text(), re.MULTILINE)
+    )
+    assert root_variables == module_variables | {"region"}
+    # CI では検証だけを行うため、state の保存先は部分設定にして環境ごとに渡す
+    assert 'backend "s3" {}' in (ROOT / "versions.tf").read_text()

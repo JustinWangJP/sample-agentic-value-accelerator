@@ -304,3 +304,62 @@ it.each([
   await click('一覧を再読み込み')
   expect(container.textContent).toContain('所属チームの Agent はありません。')
 })
+
+it('途中のページが0件でも次のページがあれば、0件と区別して次のページへ案内する', async () => {
+  const calls = await mount([
+    jsonResponse(200, { items: [], nextToken: 'page-2' }),
+    jsonResponse(200, { items: [], nextToken: null }),
+  ])
+  expect(container.textContent).toContain(
+    'このページには所属チームの下書きがありません。次のページを確認してください。',
+  )
+  expect(container.textContent).not.toContain('所属チームの Agent はありません。')
+  expect(button('次のページ').disabled).toBe(false)
+  await click('次のページ')
+  expect(calls[1]?.url).toBe('/api/records?nextToken=page-2')
+  expect(container.textContent).toContain('所属チームの Agent はありません。')
+  expect(button('次のページ').disabled).toBe(true)
+})
+
+it('Registry の混雑（429）は結果不明とせず、入力を残して新しいキーで保存し直せる', async () => {
+  const calls = await mount([
+    jsonResponse(200, { items: [], nextToken: null }),
+    jsonResponse(429, {
+      error: {
+        code: 'REGISTRY_THROTTLED',
+        message: 'Registry が混み合っているため保存できませんでした。時間をおいて再度保存してください。',
+      },
+    }),
+    jsonResponse(201, { ...detail, operationId: 'op-after-throttle', operationState: 'SUCCEEDED' }),
+  ])
+  await click('Agent 下書きを作成')
+  await fillDraft()
+  await submit()
+  expect(container.textContent).toContain('Registry が混み合っているため')
+  expect(container.textContent).not.toContain('作成結果が不明です。')
+  expect(container.querySelector('fieldset')?.disabled).toBe(false)
+  await submit()
+  expect(new Headers(calls[2]?.init?.headers).get('idempotency-key')).not.toBe(
+    new Headers(calls[1]?.init?.headers).get('idempotency-key'),
+  )
+  expect(JSON.parse(String(calls[2]?.init?.body))).toEqual(draft)
+  expect(container.textContent).toContain('下書きを保存しました。')
+})
+
+it('下書きの準備中（503）は一覧の0件や作成結果の不明と区別して表示する', async () => {
+  const notConfigured = {
+    error: { code: 'DRAFTS_NOT_CONFIGURED', message: '下書きの管理は準備中です。管理者に連絡してください。' },
+  }
+  await mount([
+    jsonResponse(503, notConfigured),
+    jsonResponse(503, notConfigured),
+  ])
+  expect(container.textContent).toContain('下書きの管理は準備中です。')
+  expect(container.textContent).not.toContain('所属チームの Agent はありません。')
+  await click('Agent 下書きを作成')
+  await fillDraft()
+  await submit()
+  expect(container.textContent).toContain('下書きの管理は準備中です。')
+  expect(container.textContent).not.toContain('作成結果が不明です。')
+  expect(button('一覧に戻る').disabled).toBe(false)
+})

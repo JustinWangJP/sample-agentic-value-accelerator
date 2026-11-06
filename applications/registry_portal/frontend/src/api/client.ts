@@ -1,9 +1,5 @@
 import { createDraftApi, type DraftApi } from '../drafts/api'
-import {
-  DATA_CLASSIFICATIONS,
-  isDataClassification,
-  type DataClassification,
-} from './dataClassification'
+import { isDataClassification, type DataClassification } from './dataClassification'
 import type { ApiRequest, HttpMethod } from './request'
 
 // Registry ポータル API のクライアント
@@ -34,8 +30,6 @@ export type Me = {
  */
 export const CATALOG_RECORD_TYPES = ['AGENT', 'MCP', 'SKILL'] as const
 export type CatalogRecordType = (typeof CATALOG_RECORD_TYPES)[number]
-
-export { DATA_CLASSIFICATIONS, type DataClassification }
 
 /** A2A は Agent の descriptor なので、A2A の絞り込みは Agent（または種別の指定なし）にだけ使える */
 export function supportsA2AFilter(type: CatalogRecordType | null): boolean {

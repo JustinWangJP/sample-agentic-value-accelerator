@@ -1,13 +1,21 @@
 import { isDataClassification, type DataClassification } from '../api/dataClassification'
 import type { ApiRequest } from '../api/request'
 
+/** 下書きを保存できる environment。バックエンドの ENVIRONMENTS（domain/drafts.py）と揃える */
+export const DRAFT_ENVIRONMENTS = ['dev'] as const
+export type DraftEnvironment = (typeof DRAFT_ENVIRONMENTS)[number]
+export const DEFAULT_DRAFT_ENVIRONMENT: DraftEnvironment = DRAFT_ENVIRONMENTS[0]
+function isDraftEnvironment(value: unknown): value is DraftEnvironment {
+  return DRAFT_ENVIRONMENTS.some((environment) => environment === value)
+}
+
 export type AgentDraft = {
   name: string
   displayName: string
   description: string
   recordVersion: string
   ownerTeam: string
-  environment: 'dev'
+  environment: DraftEnvironment
   dataClassification: DataClassification
   purpose: string
   connectionReference: string
@@ -16,6 +24,7 @@ export type AgentDraft = {
   termsOfUse: string
 }
 
+/** フォームの入力項目と文字数上限。上限はバックエンドの TEXT_LIMITS（domain/drafts.py）と揃える */
 export const DRAFT_TEXT_FIELDS = [
   ['name', '名前', 255],
   ['displayName', '表示名', 255],
@@ -62,9 +71,38 @@ export type DraftSummary = Omit<DraftDetail, 'draft' | 'contentHash'> & {
   operationId: string | null
 }
 export type DraftPage = { items: DraftSummary[]; nextToken: string | null }
+
+/**
+ * API が返す書き込み操作の状態。バックエンドの OperationState（domain/drafts.py）のうち、
+ * 内部でだけ使う IN_PROGRESS を除いた値と揃える
+ */
+export const OPERATION_STATES = ['SUCCEEDED', 'VERIFYING', 'FAILED'] as const
+export type OperationState = (typeof OPERATION_STATES)[number]
+type UnsettledOperationState = Exclude<OperationState, 'SUCCEEDED'>
+function isUnsettledOperationState(value: unknown): value is UnsettledOperationState {
+  return OPERATION_STATES.some((state) => state !== 'SUCCEEDED' && state === value)
+}
 export type DraftOperation =
-  | (DraftDetail & { operationId: string; operationState: 'SUCCEEDED' })
-  | { operationId: string; operationState: 'VERIFYING' | 'FAILED'; message: string }
+  | (DraftDetail & { operationId: string; operationState: Extract<OperationState, 'SUCCEEDED'> })
+  | { operationId: string; operationState: UnsettledOperationState; message: string }
+
+/**
+ * AWS への書き込みが行われていないと確定できるエラーのコード（バックエンドの drafts.py）。
+ * 5xx でも「結果が不明」とは扱わない
+ */
+export const DRAFTS_NOT_CONFIGURED = 'DRAFTS_NOT_CONFIGURED'
+/** AWS が混雑で処理しなかった（429）。その Idempotency-Key の操作は失敗として確定している */
+export const REGISTRY_THROTTLED = 'REGISTRY_THROTTLED'
+
+/** 保存の失敗のうち、AWS に届いたかどうかが分からないものか */
+export function isUncertainSaveError(error: { status: number; code: string }): boolean {
+  return (error.status === 0 || error.status >= 500) && error.code !== DRAFTS_NOT_CONFIGURED
+}
+
+/** 作成の失敗のうち、その Idempotency-Key の操作が失敗として確定し、次は新しいキーが必要なものか */
+export function settlesCreateKey(error: { status: number; code: string }): boolean {
+  return error.status === 400 || error.code === REGISTRY_THROTTLED
+}
 
 export type DraftApi = {
   listDrafts: (nextToken?: string) => Promise<DraftPage>
@@ -89,7 +127,7 @@ function isDraft(value: unknown): value is AgentDraft {
     isPlainObject(value) &&
     DRAFT_TEXT_FIELDS.every(([key]) => typeof value[key] === 'string') &&
     typeof value.ownerTeam === 'string' &&
-    value.environment === 'dev' &&
+    isDraftEnvironment(value.environment) &&
     isDataClassification(value.dataClassification)
   )
 }
@@ -139,8 +177,7 @@ function isOperation(value: unknown): value is DraftOperation {
     isPlainObject(value) &&
     typeof value.operationId === 'string' &&
     ((value.operationState === 'SUCCEEDED' && isDetail(value)) ||
-      ((value.operationState === 'VERIFYING' || value.operationState === 'FAILED') &&
-        typeof value.message === 'string'))
+      (isUnsettledOperationState(value.operationState) && typeof value.message === 'string'))
   )
 }
 

@@ -10,7 +10,7 @@ type Props = {
 }
 
 /** API の失敗を、0件とは別の状態として表示する。401 のときは再試行ではなくログインし直しを促す */
-export function CatalogRequestError({ error, onRetry, onRelogin, children }: Props) {
+export function RequestErrorAlert({ error, onRetry, onRelogin, children }: Props) {
   return (
     <div role="alert" className="error">
       <p>{error.message}</p>

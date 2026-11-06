@@ -10,7 +10,9 @@ import base64
 import json
 import logging
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, cast
+
+import boto3
 
 from registry_portal.auth import Caller, authorize
 from registry_portal.catalog import get_catalog_detail, list_catalog, search_catalog
@@ -20,10 +22,15 @@ from registry_portal.config import (
     load_discovery_settings,
 )
 from registry_portal.errors import ApiError, RequestValidationError, RouteNotFoundError
-from registry_portal.drafts import AgentDrafts
+from registry_portal.drafts import (
+    AgentDrafts,
+    DraftsNotConfigured,
+    RegistryControlClient,
+    require_publisher,
+)
 from registry_portal.services.catalog_supplement import CatalogSupplement, SupplementClient
 from registry_portal.services.discovery import DiscoveryDependencies, create_discovery_client
-from registry_portal.services.draft_store import DraftStore
+from registry_portal.services.draft_store import DraftStore, DraftStoreClient
 
 logger = logging.getLogger(__name__)
 
@@ -135,12 +142,12 @@ def create_management_handler(
     *,
     discovery: DiscoveryDependencies | None = None,
     supplement_client: SupplementClient | None = None,
-    registry_client: Any = None,
-    draft_store_client: Any = None,
+    registry_client: RegistryControlClient | None = None,
+    draft_store_client: DraftStoreClient | None = None,
 ) -> Handler:
     """管理 handler を作る。認証・発見の設定が不足していれば、ここで起動エラーにする。
 
-    discovery（発見アダプターの外部部品）はテストでフェイクに差し替える。
+    discovery（発見アダプターの外部部品）と AWS クライアントはテストで差し替える。
     通信は最初のリクエストまで行わない。
     """
     settings = load_auth_settings(environ)
@@ -159,17 +166,33 @@ def create_management_handler(
         if catalog_settings.supplement_table_name
         else None
     )
-    drafts = AgentDrafts(
-        discovery_settings.registry_arn,
-        discovery_settings.registry_region,
-        DraftStore(
-            catalog_settings.supplement_table_name or "",
+    region = discovery_settings.registry_region
+    # 下書きは補助テーブルが必須。未設定でもカタログは提供し、下書きの操作だけを 503 にする
+    drafts = (
+        AgentDrafts(
             discovery_settings.registry_arn,
-            discovery_settings.registry_region,
-            draft_store_client,
-        ),
-        registry_client,
+            DraftStore(
+                catalog_settings.supplement_table_name,
+                discovery_settings.registry_arn,
+                draft_store_client
+                or cast(DraftStoreClient, boto3.client("dynamodb", region_name=region)),
+            ),
+            registry_client
+            or cast(
+                RegistryControlClient,
+                boto3.client("agent-registry-control", region_name=region),
+            ),
+        )
+        if catalog_settings.supplement_table_name
+        else None
     )
+
+    def drafts_for(caller: Caller) -> AgentDrafts:
+        # 権限のない呼び出し元には、設定の状態より先に 403 を返す
+        require_publisher(caller)
+        if drafts is None:
+            raise DraftsNotConfigured()
+        return drafts
 
     # カタログは Viewer（ログインした全員）が閲覧できる。発見用 M2M トークンでポータルが代理で問い合わせる
     def get_catalog(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
@@ -195,21 +218,21 @@ def create_management_handler(
             (str(value) for name, value in headers.items() if name.lower() == "idempotency-key"),
             "",
         )
-        return drafts.create(caller, _json_body(event, DRAFT_BODY_MAX_LENGTH), key)
+        return drafts_for(caller).create(caller, _json_body(event, DRAFT_BODY_MAX_LENGTH), key)
 
     def get_record(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        return drafts.get(caller, _path_parameter(event))
+        return drafts_for(caller).get(caller, _path_parameter(event))
 
     def list_records(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        return drafts.list_drafts(caller, _query_of(event))
+        return drafts_for(caller).list_drafts(caller, _query_of(event))
 
     def patch_record(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        return drafts.update(
+        return drafts_for(caller).update(
             caller, _path_parameter(event), _json_body(event, DRAFT_BODY_MAX_LENGTH)
         )
 
     def get_operation(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        return drafts.operation(caller, _path_parameter(event))
+        return drafts_for(caller).operation(caller, _path_parameter(event))
 
     routes: Mapping[str, Route] = {
         **MANAGEMENT_ROUTES,
