@@ -6,8 +6,10 @@ import {
   type ApiClient,
   type Role,
 } from '../api/client'
+import { CatalogRequestError } from '../catalog/CatalogRequestError'
 import {
   DRAFT_TEXT_FIELDS,
+  isEditableStatus,
   type AgentDraft,
   type DraftDetail,
   type DraftOperation,
@@ -93,13 +95,13 @@ export function AgentDraftsView({ api, roles, teams, onRelogin }: Props) {
           >
             Agent 下書きを作成
           </button>
-          {error && <DraftError error={error} onRelogin={onRelogin} />}
+          {error && <CatalogRequestError error={error} onRelogin={onRelogin} />}
           {loadingDetail && <p role="status">下書きを取得しています…</p>}
           {page.kind === 'loading' ? (
             <p role="status">一覧を読み込んでいます…</p>
           ) : page.kind === 'error' ? (
             <>
-              <DraftError error={page.error} onRelogin={onRelogin} />
+              <CatalogRequestError error={page.error} onRelogin={onRelogin} />
               <button type="button" onClick={back}>
                 一覧を再読み込み
               </button>
@@ -131,7 +133,7 @@ export function AgentDraftsView({ api, roles, teams, onRelogin }: Props) {
                     <button
                       type="button"
                       disabled={
-                        loadingDetail || item.operationId !== null || item.status === 'DEPRECATED'
+                        loadingDetail || item.operationId !== null || !isEditableStatus(item.status)
                       }
                       onClick={() => void open(item.recordId)}
                     >
@@ -189,19 +191,6 @@ export function AgentDraftsView({ api, roles, teams, onRelogin }: Props) {
   )
 }
 
-function DraftError({ error, onRelogin }: { error: ApiError; onRelogin: () => void }) {
-  return (
-    <div role="alert" className="error">
-      <p>{error.message}</p>
-      {error.requiresLogin && (
-        <button type="button" onClick={onRelogin}>
-          もう一度ログインする
-        </button>
-      )}
-    </div>
-  )
-}
-
 function OperationCheck({
   api,
   operationId,
@@ -235,10 +224,24 @@ function OperationCheck({
       <button type="button" disabled={busy} onClick={() => void check()}>
         処理結果を確認
       </button>
-      {error && <DraftError error={error} onRelogin={onRelogin} />}
+      {error && <CatalogRequestError error={error} onRelogin={onRelogin} />}
     </div>
   )
 }
+
+/** 作成と編集で異なる文言 */
+const EDITOR_TEXT = {
+  new: {
+    title: 'Agent 下書きを作成',
+    uncertain:
+      '作成結果が不明です。同じ入力とキーで保存を再試行してください。この画面を閉じて新しく作成すると重複する可能性があります。',
+  },
+  edit: {
+    title: 'Agent 下書きを編集',
+    uncertain:
+      '更新結果が不明です。一覧に戻り、対象の「処理結果を確認」で結果を確認してください。',
+  },
+} as const
 
 type SaveState =
   | { kind: 'idle' }
@@ -279,13 +282,15 @@ function DraftEditor({
   const [hash, setHash] = useState(initial.kind === 'edit' ? initial.detail.contentHash : '')
   const [createKey, setCreateKey] = useState(initial.kind === 'new' ? initial.key : '')
   const [save, setSave] = useState<SaveState>({ kind: 'idle' })
+  const isNew = initial.kind === 'new'
+  const text = EDITOR_TEXT[initial.kind]
   const resultLocked = save.kind === 'result' && save.operation.operationState !== 'FAILED'
   const uncertain = save.kind === 'error' && (save.error.status === 0 || save.error.status >= 500)
   const saveDisabled =
-    save.kind === 'saving' || resultLocked || (initial.kind === 'edit' && uncertain)
+    save.kind === 'saving' || resultLocked || (!isNew && uncertain)
   const disabled = saveDisabled || uncertain
   const canRetryCreate =
-    initial.kind === 'new' && save.kind === 'result' && save.operation.operationState === 'VERIFYING'
+    isNew && save.kind === 'result' && save.operation.operationState === 'VERIFYING'
   async function submit(retryCreate = false) {
     if (saveDisabled && !(retryCreate && canRetryCreate)) return
     setSave({ kind: 'saving' })
@@ -297,12 +302,12 @@ function DraftEditor({
       receiveResult(operation)
     } catch (failure) {
       const error = toApiError(failure, '下書きを保存できませんでした。')
-      if (initial.kind === 'new' && error.status === 400) setCreateKey(crypto.randomUUID())
+      if (isNew && error.status === 400) setCreateKey(crypto.randomUUID())
       setSave({ kind: 'error', error })
     }
   }
   function receiveResult(operation: DraftOperation) {
-    if (initial.kind === 'new' && operation.operationState === 'FAILED') {
+    if (isNew && operation.operationState === 'FAILED') {
       setCreateKey(crypto.randomUUID())
     }
     setSave({ kind: 'result', operation })
@@ -321,9 +326,9 @@ function DraftEditor({
   }
   return (
     <>
-      <h3>{initial.kind === 'new' ? 'Agent 下書きを作成' : 'Agent 下書きを編集'}</h3>
+      <h3>{text.title}</h3>
       <p>
-        秘密情報を入力せず、接続先や認証情報の参照を記載してください。公開中の版がある場合は、それより大きい版を指定してください。
+        秘密情報を入力せず、接続先や認証情報の参照を記載してください。申請するときは、公開中の版より大きい版が必要です。
       </p>
       <form
         onSubmit={(event) => {
@@ -349,7 +354,7 @@ function DraftEditor({
                   required
                   maxLength={maxLength}
                   value={draft[key]}
-                  readOnly={key === 'name' && initial.kind === 'edit'}
+                  readOnly={key === 'name' && !isNew}
                   onChange={(event) => setDraft({ ...draft, [key]: event.target.value })}
                 />
               )}
@@ -360,7 +365,7 @@ function DraftEditor({
             <select
               name="ownerTeam"
               value={draft.ownerTeam}
-              disabled={initial.kind === 'edit'}
+              disabled={!isNew}
               onChange={(event) => setDraft({ ...draft, ownerTeam: event.target.value })}
             >
               {teams.map((team) => (
@@ -402,8 +407,8 @@ function DraftEditor({
       )}
       {save.kind === 'error' && (
         <>
-          <DraftError error={save.error} onRelogin={onRelogin} />
-          {save.error.status === 409 && initial.kind === 'edit' && (
+          <CatalogRequestError error={save.error} onRelogin={onRelogin} />
+          {save.error.status === 409 && !isNew && (
             <>
               <p>
                 他の人が変更した可能性があります。再読み込みすると入力中の内容を最新の内容に置き換えます。
@@ -413,13 +418,7 @@ function DraftEditor({
               </button>
             </>
           )}
-          {uncertain && (
-            <p>
-              {initial.kind === 'new'
-                ? '作成結果が不明です。同じ入力とキーで保存を再試行してください。この画面を閉じて新しく作成すると重複する可能性があります。'
-                : '更新結果が不明です。一覧に戻り、対象の「処理結果を確認」で結果を確認してください。'}
-            </p>
-          )}
+          {uncertain && <p>{text.uncertain}</p>}
         </>
       )}
       {save.kind === 'result' &&
@@ -442,7 +441,7 @@ function DraftEditor({
         type="button"
         onClick={onBack}
         disabled={
-          save.kind === 'saving' || (initial.kind === 'new' && disabled && save.kind === 'error')
+          save.kind === 'saving' || (isNew && disabled && save.kind === 'error')
         }
       >
         一覧に戻る

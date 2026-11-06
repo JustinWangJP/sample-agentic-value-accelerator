@@ -110,6 +110,19 @@ it('一覧に下書き・公開中の版・AWS 失敗状態を併記する', asy
   expect(container.textContent).toContain('UPDATE_FAILED')
 })
 
+it.each(['CREATING', 'UPDATING', 'DEPRECATED'])(
+  'AWS の状態が %s の間は編集を始められない',
+  async (status) => {
+    await mount([jsonResponse(200, { items: [{ ...item, status }], nextToken: null })])
+    expect(button('編集').disabled).toBe(true)
+  },
+)
+
+it('AWS の失敗状態からは編集し直せる', async () => {
+  await mount([jsonResponse(200, { items: [item], nextToken: null })])
+  expect(button('編集').disabled).toBe(false)
+})
+
 it('AWS 作成タイムアウトの202から同じ本文とキーを再送して保存を完了する', async () => {
   const calls = await mount([
     jsonResponse(200, { items: [], nextToken: null }),

@@ -1,4 +1,10 @@
 import { createDraftApi, type DraftApi } from '../drafts/api'
+import {
+  DATA_CLASSIFICATIONS,
+  isDataClassification,
+  type DataClassification,
+} from './dataClassification'
+import type { ApiRequest, HttpMethod } from './request'
 
 // Registry ポータル API のクライアント
 //
@@ -29,12 +35,7 @@ export type Me = {
 export const CATALOG_RECORD_TYPES = ['AGENT', 'MCP', 'SKILL'] as const
 export type CatalogRecordType = (typeof CATALOG_RECORD_TYPES)[number]
 
-/**
- * データ分類（custom metadata の dataClassification）。可視性は制御しない。
- * バックエンドの DataClassification と同じ値に揃える
- */
-export const DATA_CLASSIFICATIONS = ['public', 'private'] as const
-export type DataClassification = (typeof DATA_CLASSIFICATIONS)[number]
+export { DATA_CLASSIFICATIONS, type DataClassification }
 
 /** A2A は Agent の descriptor なので、A2A の絞り込みは Agent（または種別の指定なし）にだけ使える */
 export function supportsA2AFilter(type: CatalogRecordType | null): boolean {
@@ -43,10 +44,6 @@ export function supportsA2AFilter(type: CatalogRecordType | null): boolean {
 
 function isCatalogRecordType(value: unknown): value is CatalogRecordType {
   return CATALOG_RECORD_TYPES.some((type) => type === value)
-}
-
-function isDataClassification(value: unknown): value is DataClassification {
-  return DATA_CLASSIFICATIONS.some((classification) => classification === value)
 }
 
 /** カタログ項目（公開承認済みの Registry レコードの版）の要約 */
@@ -217,12 +214,12 @@ export type ApiClient = DraftApi & {
 }
 
 export function createApiClient(options: ApiClientOptions): ApiClient {
-  async function request<T>(
-    method: 'GET' | 'POST' | 'PATCH',
+  const request: ApiRequest = async <T>(
+    method: HttpMethod,
     path: string,
     payload?: unknown,
     extraHeaders: Record<string, string> = {},
-  ): Promise<T> {
+  ): Promise<T> => {
     const token = options.getAccessToken()
     if (!token) {
       throw new ApiError(401, 'UNAUTHENTICATED', UNAUTHENTICATED_MESSAGE)

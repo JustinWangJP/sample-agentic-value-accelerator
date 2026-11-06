@@ -1,4 +1,5 @@
-import { DATA_CLASSIFICATIONS, type DataClassification } from '../api/client'
+import { isDataClassification, type DataClassification } from '../api/dataClassification'
+import type { ApiRequest } from '../api/request'
 
 export type AgentDraft = {
   name: string
@@ -27,6 +28,7 @@ export const DRAFT_TEXT_FIELDS = [
   ['termsOfUse', '利用条件', 4096],
 ] as const satisfies readonly (readonly [keyof AgentDraft, string, number])[]
 
+/** AWS の Registry レコードの状態。バックエンドの RecordStatus（domain/drafts.py）と揃える */
 export const AWS_RECORD_STATUSES = [
   'DRAFT',
   'PENDING_APPROVAL',
@@ -39,6 +41,11 @@ export const AWS_RECORD_STATUSES = [
   'UPDATE_FAILED',
 ] as const
 export type RecordStatus = (typeof AWS_RECORD_STATUSES)[number]
+/** 編集を受け付けない状態。バックエンドの NOT_EDITABLE_STATUSES と揃える */
+const NOT_EDITABLE_STATUSES: readonly RecordStatus[] = ['CREATING', 'UPDATING', 'DEPRECATED']
+export function isEditableStatus(status: RecordStatus): boolean {
+  return !NOT_EDITABLE_STATUSES.includes(status)
+}
 export type DraftDetail = {
   recordId: string
   draft: AgentDraft
@@ -71,19 +78,19 @@ export type DraftApi = {
   getDraftOperation: (operationId: string) => Promise<DraftOperation>
 }
 
-function object(value: unknown): value is Record<string, unknown> {
+function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
-function strings(value: Record<string, unknown>, keys: readonly string[]): boolean {
+function hasStringFields(value: Record<string, unknown>, keys: readonly string[]): boolean {
   return keys.every((key) => typeof value[key] === 'string')
 }
 function isDraft(value: unknown): value is AgentDraft {
   return (
-    object(value) &&
+    isPlainObject(value) &&
     DRAFT_TEXT_FIELDS.every(([key]) => typeof value[key] === 'string') &&
     typeof value.ownerTeam === 'string' &&
     value.environment === 'dev' &&
-    DATA_CLASSIFICATIONS.some((classification) => classification === value.dataClassification)
+    isDataClassification(value.dataClassification)
   )
 }
 function isRecord(
@@ -95,7 +102,7 @@ function isRecord(
   publishedVersion: string | null
 } {
   return (
-    object(value) &&
+    isPlainObject(value) &&
     typeof value.recordId === 'string' &&
     AWS_RECORD_STATUSES.some((status) => status === value.status) &&
     typeof value.hasDraft === 'boolean' &&
@@ -104,7 +111,7 @@ function isRecord(
 }
 function isDetail(value: unknown): value is DraftDetail {
   return (
-    object(value) &&
+    isPlainObject(value) &&
     isRecord(value) &&
     isDraft(value.draft) &&
     typeof value.contentHash === 'string' &&
@@ -113,15 +120,15 @@ function isDetail(value: unknown): value is DraftDetail {
 }
 function isSummary(value: unknown): value is DraftSummary {
   return (
-    object(value) &&
+    isPlainObject(value) &&
     isRecord(value) &&
-    strings(value, ['name', 'displayName', 'recordVersion', 'ownerTeam']) &&
+    hasStringFields(value, ['name', 'displayName', 'recordVersion', 'ownerTeam']) &&
     (value.operationId === null || typeof value.operationId === 'string')
   )
 }
 function isPage(value: unknown): value is DraftPage {
   return (
-    object(value) &&
+    isPlainObject(value) &&
     Array.isArray(value.items) &&
     value.items.every(isSummary) &&
     (value.nextToken === null || typeof value.nextToken === 'string')
@@ -129,7 +136,7 @@ function isPage(value: unknown): value is DraftPage {
 }
 function isOperation(value: unknown): value is DraftOperation {
   return (
-    object(value) &&
+    isPlainObject(value) &&
     typeof value.operationId === 'string' &&
     ((value.operationState === 'SUCCEEDED' && isDetail(value)) ||
       ((value.operationState === 'VERIFYING' || value.operationState === 'FAILED') &&
@@ -137,13 +144,7 @@ function isOperation(value: unknown): value is DraftOperation {
   )
 }
 
-type Request = (
-  method: 'GET' | 'POST' | 'PATCH',
-  path: string,
-  payload?: unknown,
-  headers?: Record<string, string>,
-) => Promise<unknown>
-export function createDraftApi(request: Request, invalidResponse: () => Error): DraftApi {
+export function createDraftApi(request: ApiRequest, invalidResponse: () => Error): DraftApi {
   async function checked<T>(
     response: Promise<unknown>,
     guard: (value: unknown) => value is T,
