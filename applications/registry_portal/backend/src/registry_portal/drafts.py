@@ -9,7 +9,7 @@ from uuid import uuid4
 from botocore.exceptions import BotoCoreError, ClientError
 
 from registry_portal.auth import Caller, Role
-from registry_portal.domain.catalog import AGENT_RECORD_TYPE
+from registry_portal.domain.catalog import CATALOG_RECORD_TYPES
 from registry_portal.domain.drafts import (
     AWS_FAILED_STATUSES,
     DRAFT_STATUS,
@@ -260,10 +260,10 @@ class AgentDrafts:
     @staticmethod
     def _read_draft(record: Mapping[str, Any], management: Management) -> AgentDraft:
         try:
-            return AgentDraft.from_record(record, management.owner_team)
+            return AgentDraft.from_record(record, management.owner_team, management.item)
         except ValueError:
             raise DraftUnavailable(
-                "この下書きは custom Agent フォームで読み取れません。管理者に連絡してください。"
+                "この下書きはフォームで読み取れません。管理者に連絡してください。"
             ) from None
 
     def get(self, caller: Caller, record_id: str) -> DraftResponse:
@@ -290,7 +290,7 @@ class AgentDrafts:
         params: dict[str, Any] = {
             "registryId": self.registry,
             "maxResults": 20,
-            "filters": [{"name": "recordType", "values": [AGENT_RECORD_TYPE]}],
+            "filters": [{"name": "recordType", "values": list(CATALOG_RECORD_TYPES)}],
         }
         if token is not None:
             params["nextToken"] = token
@@ -306,6 +306,7 @@ class AgentDrafts:
                     {
                         "recordId": record["recordId"],
                         "name": record["name"],
+                        "recordType": record["recordType"],
                         "displayName": record.get("displayName", record["name"]),
                         "recordVersion": record.get("recordVersion", ""),
                         "ownerTeam": management.owner_team,
@@ -392,7 +393,9 @@ class AgentDrafts:
             self.store.save_pending(operation)
             try:
                 response = self._registry.update_registry_record(
-                    registryId=self.registry, recordId=record_id, **draft.update_payload()
+                    registryId=self.registry,
+                    recordId=record_id,
+                    **draft.update_payload(record["descriptors"]),
                 )
             except ClientError as error:
                 return self._registry_error(operation, error)
@@ -415,6 +418,8 @@ class AgentDrafts:
             raise DraftConflict()
         if draft.fields["name"] != record["name"]:
             raise RequestValidationError("name は作成後に変更できません。")
+        if draft.record_type != record["recordType"]:
+            raise RequestValidationError("種別は作成後に変更できません。")
         # フォームで読めないレコードは、フォームの内容で上書きしない
         self._read_draft(record, management)
 
@@ -439,7 +444,7 @@ class AgentDrafts:
             self.store.abort(operation, status)
             return self._failed(operation)
         draft = AgentDraft.parse(operation["draft"])
-        if status == DRAFT_STATUS and content_hash(record) == content_hash(draft.create_payload()):
+        if status == DRAFT_STATUS and draft.is_applied_to(record):
             return success_status, self._finish(operation, record, draft)
         if (
             operation["kind"] == "UPDATE"

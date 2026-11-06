@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, TypeGuard, get_args
+from typing import Any, Final, Literal, TypeGuard, get_args
 
 # 画面の入口に対応する AWS の recordType。A2A は Agent の descriptor として扱う。
 # SPA の `CatalogRecordType`（frontend/src/api/client.ts）と同じ値に揃える
@@ -20,7 +20,7 @@ AGENT_RECORD_TYPE: CatalogRecordType = "AGENT"
 
 # A2A は Agent の descriptor（Agent Card）なので、A2A の絞り込みは Agent にだけ意味を持つ
 A2A_RECORD_TYPE: CatalogRecordType = AGENT_RECORD_TYPE
-A2A_DESCRIPTOR_TYPE = "a2aAgentCard"
+A2A_DESCRIPTOR_TYPE: Final = "a2aAgentCard"
 
 
 def is_catalog_record_type(value: object) -> TypeGuard[CatalogRecordType]:

@@ -51,6 +51,8 @@ def test_viewer_cannot_create_a_draft():
 
 DRAFT = {
     "name": "payments-agent",
+    "recordType": "AGENT",
+    "descriptorType": "custom",
     "displayName": "決済 Agent",
     "description": "決済を調べる",
     "recordVersion": "1.0.0",
@@ -661,7 +663,7 @@ def test_management_list_keeps_the_published_version_beside_a_new_draft_and_filt
             {
                 "registryId": REGISTRY_ARN,
                 "maxResults": 20,
-                "filters": [{"name": "recordType", "values": ["AGENT"]}],
+                "filters": [{"name": "recordType", "values": ["AGENT", "MCP", "SKILL"]}],
             },
         )
         status, page = call(handler, event("GET", "/api/records"))
