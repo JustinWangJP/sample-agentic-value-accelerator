@@ -8,6 +8,8 @@ import { fakeFetch, jsonResponse } from './helpers'
 
 const draft = {
   name: 'payments-agent',
+  recordType: 'AGENT',
+  descriptorType: 'custom',
   displayName: '決済 Agent',
   description: '決済の説明',
   recordVersion: '2.0.0',
@@ -30,6 +32,7 @@ const detail = {
 }
 const item = {
   recordId: detail.recordId,
+  recordType: 'AGENT',
   displayName: draft.displayName,
   name: draft.name,
   recordVersion: '2.0.0',
@@ -131,7 +134,7 @@ it('AWS 作成タイムアウトの202から同じ本文とキーを再送して
     }),
     jsonResponse(201, { ...detail, operationId: 'op-timeout', operationState: 'SUCCEEDED' }),
   ])
-  await click('Agent 下書きを作成')
+  await click('下書きを作成')
   await fillDraft()
   await submit()
   expect(container.querySelector('fieldset')?.disabled).toBe(true)
@@ -154,7 +157,7 @@ it.each(['CREATE', 'UPDATE'])('不明な%sは入力を止め、失敗確定後�
     jsonResponse(200, { operationId: 'op-pending', operationState: 'FAILED', message: '操作は失敗しました。内容を確認して再実行してください。' }),
     jsonResponse(200, { ...detail, operationId: 'op-retry', operationState: 'SUCCEEDED' }),
   ])
-  await click(kind === 'CREATE' ? 'Agent 下書きを作成' : '編集')
+  await click(kind === 'CREATE' ? '下書きを作成' : '編集')
   if (kind === 'CREATE') await fillDraft()
   await submit()
   const before = calls.length
@@ -230,7 +233,7 @@ it('409 の後は入力を残し、明示的な再読込で最新内容とハッ
 
 it('Viewer とチームなし Publisher には作成フォームを出さない', async () => {
   const calls = await mount([], ['Viewer'])
-  expect(container.textContent).not.toContain('Agent 下書きの管理')
+  expect(container.textContent).not.toContain('下書きの管理')
   expect(calls).toHaveLength(0)
   await mount([], ['Viewer', 'Publisher'], [])
   expect(container.textContent).toContain('所属チームが必要')
@@ -264,7 +267,7 @@ it('作成の通信結果が不明でも同じ Idempotency-Key と入力で再�
       }),
     ),
   )
-  await click('Agent 下書きを作成')
+  await click('下書きを作成')
   await fillDraft()
   await act(() =>
     container
@@ -300,9 +303,9 @@ it.each([
     jsonResponse(200, { items: [], nextToken: null }),
   ])
   expect(container.textContent).toContain(message)
-  expect(container.textContent).not.toContain('所属チームの Agent はありません。')
+  expect(container.textContent).not.toContain('所属チームの下書き対象はありません。')
   await click('一覧を再読み込み')
-  expect(container.textContent).toContain('所属チームの Agent はありません。')
+  expect(container.textContent).toContain('所属チームの下書き対象はありません。')
 })
 
 it('途中のページが0件でも次のページがあれば、0件と区別して次のページへ案内する', async () => {
@@ -313,11 +316,11 @@ it('途中のページが0件でも次のページがあれば、0件と区別�
   expect(container.textContent).toContain(
     'このページには所属チームの下書きがありません。次のページを確認してください。',
   )
-  expect(container.textContent).not.toContain('所属チームの Agent はありません。')
+  expect(container.textContent).not.toContain('所属チームの下書き対象はありません。')
   expect(button('次のページ').disabled).toBe(false)
   await click('次のページ')
   expect(calls[1]?.url).toBe('/api/records?nextToken=page-2')
-  expect(container.textContent).toContain('所属チームの Agent はありません。')
+  expect(container.textContent).toContain('所属チームの下書き対象はありません。')
   expect(button('次のページ').disabled).toBe(true)
 })
 
@@ -332,7 +335,7 @@ it('Registry の混雑（429）は結果不明とせず、入力を残して新�
     }),
     jsonResponse(201, { ...detail, operationId: 'op-after-throttle', operationState: 'SUCCEEDED' }),
   ])
-  await click('Agent 下書きを作成')
+  await click('下書きを作成')
   await fillDraft()
   await submit()
   expect(container.textContent).toContain('Registry が混み合っているため')
@@ -355,8 +358,8 @@ it('下書きの準備中（503）は一覧の0件や作成結果の不明と区
     jsonResponse(503, notConfigured),
   ])
   expect(container.textContent).toContain('下書きの管理は準備中です。')
-  expect(container.textContent).not.toContain('所属チームの Agent はありません。')
-  await click('Agent 下書きを作成')
+  expect(container.textContent).not.toContain('所属チームの下書き対象はありません。')
+  await click('下書きを作成')
   await fillDraft()
   await submit()
   expect(container.textContent).toContain('下書きの管理は準備中です。')

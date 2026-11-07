@@ -7,12 +7,12 @@ from dataclasses import dataclass
 from typing import Any, Literal, TypeGuard, get_args
 
 # 画面の入口に対応する AWS の recordType。A2A は Agent の descriptor として扱う。
-# SPA の `CatalogRecordType`（frontend/src/api/client.ts）と同じ値に揃える
+# SPA の `CatalogRecordType`（frontend/src/api/recordType.ts）と同じ値に揃える
 CatalogRecordType = Literal["AGENT", "MCP", "SKILL"]
 CATALOG_RECORD_TYPES: tuple[CatalogRecordType, ...] = get_args(CatalogRecordType)
 
 # データ分類（custom metadata の dataClassification）。可視性は制御しない。
-# SPA の `DataClassification`（frontend/src/api/client.ts）と同じ値に揃える
+# SPA の `DataClassification`（frontend/src/api/dataClassification.ts）と同じ値に揃える
 DataClassification = Literal["public", "private"]
 DATA_CLASSIFICATIONS: tuple[DataClassification, ...] = get_args(DataClassification)
 
@@ -20,7 +20,15 @@ AGENT_RECORD_TYPE: CatalogRecordType = "AGENT"
 
 # A2A は Agent の descriptor（Agent Card）なので、A2A の絞り込みは Agent にだけ意味を持つ
 A2A_RECORD_TYPE: CatalogRecordType = AGENT_RECORD_TYPE
-A2A_DESCRIPTOR_TYPE = "a2aAgentCard"
+
+# primary descriptor の種類（AWS の descriptors のキー）。値はここを唯一の定義とし、
+# SPA の `DESCRIPTOR_TYPES`（frontend/src/drafts/descriptors.ts）と同じ値に揃える
+DescriptorType = Literal["custom", "a2aAgentCard", "mcpServer", "agentSkillsDefinition"]
+DESCRIPTOR_TYPES: tuple[DescriptorType, ...] = get_args(DescriptorType)
+CUSTOM_DESCRIPTOR_TYPE: DescriptorType = "custom"
+A2A_DESCRIPTOR_TYPE: DescriptorType = "a2aAgentCard"
+MCP_DESCRIPTOR_TYPE: DescriptorType = "mcpServer"
+SKILL_DESCRIPTOR_TYPE: DescriptorType = "agentSkillsDefinition"
 
 
 def is_catalog_record_type(value: object) -> TypeGuard[CatalogRecordType]:

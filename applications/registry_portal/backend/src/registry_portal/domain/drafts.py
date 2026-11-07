@@ -7,10 +7,35 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, TypedDict, get_args
 
-from registry_portal.domain.catalog import AGENT_RECORD_TYPE, DATA_CLASSIFICATIONS
+from registry_portal.domain.catalog import (
+    AGENT_RECORD_TYPE,
+    CATALOG_RECORD_TYPES,
+    CUSTOM_DESCRIPTOR_TYPE,
+    DATA_CLASSIFICATIONS,
+    SKILL_DESCRIPTOR_TYPE,
+    DescriptorType,
+)
+from registry_portal.domain.descriptors import (
+    DEFINITION_LIMITS,
+    DESCRIPTOR_FIELDS,
+    OPTIONAL_FIELDS,
+    SKILL_SUPPLEMENT_FIELDS,
+    STRUCTURED_FIELDS,
+    check_kind,
+    create_descriptors,
+    custom_metadata_extra,
+    default_descriptor_type,
+    descriptors_applied,
+    normalize_and_check,
+    read_descriptor_fields,
+    update_descriptors,
+)
+from registry_portal.domain.secrets import scan_text
 
 # Registry レコードの共通項目のうち、フォームから入力する項目
 RECORD_FIELDS = ("name", "displayName", "description", "recordVersion")
+# 種別（recordType）と primary descriptor の種類。省略すると custom Agent
+KIND_FIELDS = ("recordType", "descriptorType")
 # custom metadata に保存する項目（isA2A は定義から導出するため含めない）
 METADATA_FIELDS = ("ownerTeam", "environment", "dataClassification")
 # custom descriptor の data に canonical JSON として保存する定義
@@ -21,29 +46,43 @@ DEFINITION_FIELDS = (
     "contact",
     "termsOfUse",
 )
-# custom descriptor の中身を正本とし、補助ストアの管理情報（MANAGEMENT）にも写しを置く項目。
-# 写しは公開版スナップショットを作るために使い、下書きの読み取りには使わない（ADR-0008）
+# すべての種別で入力する、連絡先・利用条件・接続先の参照。補助ストアの管理情報（MANAGEMENT）に保存する。
+# custom descriptor では descriptor の中身を正本とし、管理情報は写しとして公開版スナップショットを作るために
+# 使い、下書きの読み取りには使わない（ADR-0008）。AWS が検証する他の descriptor は、これらを入れる項目が
+# ないため、管理情報を正本とする（ADR-0009）
 SUPPLEMENT_FIELDS = ("contact", "termsOfUse", "connectionReference")
+# 管理情報に保存し得るすべての項目（Skill の配布物の固定情報を含む）
+ALL_SUPPLEMENT_FIELDS = (*SUPPLEMENT_FIELDS, *SKILL_SUPPLEMENT_FIELDS)
+COMMON_FIELDS = (*RECORD_FIELDS, *KIND_FIELDS, *METADATA_FIELDS, *SUPPLEMENT_FIELDS)
 
 # 下書きを保存できる environment。SPA の `DRAFT_ENVIRONMENTS`（frontend/src/drafts/api.ts）と揃える
 Environment = Literal["dev"]
 ENVIRONMENTS: tuple[Environment, ...] = get_args(Environment)
 DEFAULT_ENVIRONMENT: Environment = ENVIRONMENTS[0]
 
-# 項目ごとの文字数上限。SPA の `DRAFT_TEXT_FIELDS`（frontend/src/drafts/api.ts）と揃える
+# 許可値から選ぶ項目。文字数ではなく許可値で検査する（許可値の定義は catalog.py と上の Environment）
+CHOICE_FIELDS = (*KIND_FIELDS, "environment", "dataClassification")
+# 自由入力の項目ごとの文字数上限。SPA の `COMMON_TEXT_FIELDS` と `DESCRIPTOR_FIELD_SPECS`
+# （frontend/src/drafts/descriptors.ts）と揃える
 TEXT_LIMITS = {
     "name": 255,
     "displayName": 255,
     "description": 4096,
     "recordVersion": 255,
     "ownerTeam": 128,
-    "environment": 3,
-    "dataClassification": 7,
     "purpose": 4096,
     "connectionReference": 2048,
     "authentication": 1024,
     "contact": 1024,
     "termsOfUse": 4096,
+    "schemaVersion": 32,
+    "toolsSchemaVersion": 32,
+    "skillRepositoryUrl": 2048,
+    "skillRepositorySource": 64,
+    "skillCommit": 64,
+    "skillVersion": 128,
+    "skillDigest": 71,
+    **DEFINITION_LIMITS,
 }
 # semver 2.0.0 の版。ただし AWS の RegistryRecordVersion は `[a-zA-Z0-9.-]+` で `+` を受け付けないため、
 # ビルドメタデータ（`+build`）は許可しない
@@ -187,7 +226,7 @@ class Management:
             not isinstance(item.get("managed"), bool)
             or not isinstance(owner_team, str)
             or not owner_team
-            or any(key in item and not isinstance(item[key], str) for key in SUPPLEMENT_FIELDS)
+            or any(key in item and not isinstance(item[key], str) for key in ALL_SUPPLEMENT_FIELDS)
             or (
                 item.get("publishedVersion") is not None
                 and not isinstance(item["publishedVersion"], str)
@@ -235,7 +274,7 @@ class Management:
 
     def hashed_fields(self) -> dict[str, Any]:
         """内容ハッシュに含める補助情報。"""
-        return {key: self.item.get(key) for key in ("ownerTeam", *SUPPLEMENT_FIELDS)}
+        return {key: self.item.get(key) for key in ("ownerTeam", *ALL_SUPPLEMENT_FIELDS)}
 
 
 def content_hash(record: Mapping[str, Any], management: Management | None = None) -> str:
@@ -250,16 +289,49 @@ def content_hash(record: Mapping[str, Any], management: Management | None = None
 
 @dataclass(frozen=True)
 class AgentDraft:
+    """Registry レコードの下書き。custom / A2A の Agent、MCP サーバー、Skill を同じ形で扱う。
+
+    fields は文字列だけの平らな辞書で、種別（recordType）と primary descriptor（descriptorType）に応じて
+    入力項目が異なる（domain/descriptors.py の DESCRIPTOR_FIELDS）。
+    """
+
     fields: Mapping[str, str]
+
+    @property
+    def record_type(self) -> str:
+        return self.fields["recordType"]
+
+    @property
+    def descriptor_type(self) -> DescriptorType:
+        return check_kind(self.record_type, self.fields["descriptorType"])[1]
 
     @classmethod
     def parse(cls, value: Mapping[str, Any]) -> AgentDraft:
-        if set(value) - TEXT_LIMITS.keys():
+        record_type = value.get("recordType", AGENT_RECORD_TYPE)
+        descriptor_type = value.get("descriptorType")
+        if descriptor_type is None and record_type in CATALOG_RECORD_TYPES:
+            descriptor_type = default_descriptor_type(record_type)
+        kind, descriptor = check_kind(str(record_type), str(descriptor_type))
+        allowed = (*COMMON_FIELDS, *DESCRIPTOR_FIELDS[descriptor])
+        if set(value) - set(allowed):
             raise ValueError("下書きに指定できない項目が含まれています。")
-        fields = {"environment": DEFAULT_ENVIRONMENT, **value}
-        for key, limit in TEXT_LIMITS.items():
+        fields = {
+            "environment": DEFAULT_ENVIRONMENT,
+            **{key: "" for key in OPTIONAL_FIELDS if key in allowed},
+            **value,
+            "recordType": kind,
+            "descriptorType": descriptor,
+        }
+        for key in allowed:
+            if key in CHOICE_FIELDS:
+                continue
+            limit = TEXT_LIMITS[key]
             text = fields.get(key)
-            if not isinstance(text, str) or not text.strip() or len(text) > limit:
+            if (
+                not isinstance(text, str)
+                or len(text) > limit
+                or (not text.strip() and key not in OPTIONAL_FIELDS)
+            ):
                 raise ValueError(f"{key} は1〜{limit}文字で指定してください。")
         if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_./-]*", fields["name"]):
             raise ValueError("name は英数字で始め、英数字と _ . / - で指定してください。")
@@ -270,73 +342,130 @@ class AgentDraft:
             )
         if fields["environment"] not in ENVIRONMENTS:
             raise ValueError(f"environment は {' または '.join(ENVIRONMENTS)} のみ指定できます。")
-        if fields["dataClassification"] not in DATA_CLASSIFICATIONS:
+        if fields.get("dataClassification") not in DATA_CLASSIFICATIONS:
             raise ValueError(
                 f"データ分類は {' または '.join(DATA_CLASSIFICATIONS)} を指定してください。"
+            )
+        findings = normalize_and_check(descriptor, fields) + [
+            finding
+            for key in allowed
+            if key not in STRUCTURED_FIELDS
+            for finding in scan_text(key, fields[key])
+        ]
+        if findings:
+            shown = "、".join(dict.fromkeys(str(finding) for finding in findings[:5]))
+            raise ValueError(
+                f"秘密情報らしき値が含まれているため保存できません: {shown}。"
+                "値は入力せず、Secrets Manager などの保管先への参照を記載してください。"
             )
         return cls(fields)
 
     @classmethod
-    def from_record(cls, record: Mapping[str, Any], owner_team: str) -> AgentDraft:
-        """Registry レコードを custom Agent フォームの下書きとして読む。読めなければ ValueError。
+    def from_record(
+        cls, record: Mapping[str, Any], owner_team: str, supplement: Mapping[str, Any]
+    ) -> AgentDraft:
+        """Registry レコードをフォームの下書きとして読む。読めなければ ValueError。
 
-        定義は custom descriptor の中身を正本とし、所有チームだけは補助ストアの値を使う（ADR-0002）。
+        定義は primary descriptor の中身を正本とし、所有チームは補助ストアの値を使う（ADR-0002）。
+        descriptor に置けない連絡先などは補助ストアの管理情報（supplement）を正本として読む（ADR-0009）。
         """
         try:
-            if record["recordType"] != AGENT_RECORD_TYPE or set(record["descriptors"]) != {
-                "custom"
-            }:
-                raise ValueError("custom Agent ではありません。")
-            definition = json.loads(record["descriptors"]["custom"]["data"])
-            if not isinstance(definition, Mapping) or set(definition) != set(DEFINITION_FIELDS):
-                raise ValueError("custom descriptor の定義がフォームの項目と一致しません。")
+            descriptors = record["descriptors"]
+            if len(descriptors) != 1:
+                raise ValueError("primary descriptor が1個ではありません。")
+            kind, descriptor = check_kind(record["recordType"], next(iter(descriptors)))
             metadata = record["customMetadata"]
+            specific: Mapping[str, Any]
+            if descriptor == CUSTOM_DESCRIPTOR_TYPE:
+                specific = json.loads(descriptors[descriptor]["data"])
+                if not isinstance(specific, Mapping) or set(specific) != set(DEFINITION_FIELDS):
+                    raise ValueError("custom descriptor の定義がフォームの項目と一致しません。")
+            else:
+                specific = {
+                    **read_descriptor_fields(descriptor, descriptors, supplement),
+                    **{key: supplement[key] for key in SUPPLEMENT_FIELDS},
+                }
             return cls.parse(
                 {
                     **{key: record[key] for key in RECORD_FIELDS},
+                    "recordType": kind,
+                    "descriptorType": descriptor,
                     "ownerTeam": owner_team,
                     "environment": metadata["environment"],
                     "dataClassification": metadata["dataClassification"],
-                    **definition,
+                    **specific,
                 }
             )
         except (KeyError, TypeError) as error:
             raise ValueError("Registry レコードに必要な項目がありません。") from error
 
     def supplement(self) -> dict[str, str]:
-        """補助ストアの管理情報に置く写し。"""
-        return {key: self.fields[key] for key in SUPPLEMENT_FIELDS}
+        """補助ストアの管理情報に置く項目。"""
+        keys = (
+            (*SUPPLEMENT_FIELDS, *SKILL_SUPPLEMENT_FIELDS)
+            if self.descriptor_type == SKILL_DESCRIPTOR_TYPE
+            else SUPPLEMENT_FIELDS
+        )
+        return {key: self.fields[key] for key in keys}
 
     def _definition_data(self) -> str:
         """custom descriptor の data に保存する canonical JSON。"""
         return canonical({key: self.fields[key] for key in DEFINITION_FIELDS})
 
     def create_payload(self) -> dict[str, Any]:
+        descriptor = self.descriptor_type
+        descriptors = (
+            {"custom": {"data": self._definition_data()}}
+            if descriptor == CUSTOM_DESCRIPTOR_TYPE
+            else create_descriptors(descriptor, self.fields)
+        )
         return {
             **{key: self.fields[key] for key in RECORD_FIELDS},
-            "recordType": AGENT_RECORD_TYPE,
-            "descriptors": {"custom": {"data": self._definition_data()}},
+            "recordType": self.record_type,
+            "descriptors": descriptors,
             "customMetadata": self._custom_metadata(),
         }
 
-    def update_payload(self) -> dict[str, Any]:
+    def update_payload(self, existing_descriptors: Collection[str] = ()) -> dict[str, Any]:
+        """UpdateRegistryRecord の payload。
+
+        primary descriptor を切り替えるときは、古い descriptor を空のオブジェクトで削除して1個に保つ。
+        """
+        descriptor = self.descriptor_type
+        patches = update_descriptors(
+            descriptor,
+            self.fields,
+            self._definition_data() if descriptor == CUSTOM_DESCRIPTOR_TYPE else "",
+        )
+        removed: dict[str, Any] = {name: {} for name in existing_descriptors if name != descriptor}
         return {
             "displayName": {"optionalValue": self.fields["displayName"]},
             "description": {"optionalValue": self.fields["description"]},
             "recordVersion": self.fields["recordVersion"],
             "customMetadata": {"optionalValue": self._custom_metadata()},
-            "descriptors": {
-                "optionalValue": {
-                    "custom": {
-                        "optionalValue": {"data": {"optionalValue": self._definition_data()}}
-                    }
-                }
-            },
+            "descriptors": {"optionalValue": {**removed, **patches}},
         }
 
+    def is_applied_to(self, record: Mapping[str, Any]) -> bool:
+        """AWS のレコードが、この下書きの内容を適用済みか。
+
+        AWS が受理後に補う項目（descriptor の source など）や、JSON の空白・並びの違いは無視する。
+        """
+        payload = self.create_payload()
+        metadata = record.get("customMetadata", {})
+        return (
+            all(record.get(key) == payload[key] for key in (*RECORD_FIELDS, "recordType"))
+            and all(metadata.get(key) == value for key, value in payload["customMetadata"].items())
+            and isinstance(record.get("descriptors"), Mapping)
+            and descriptors_applied(payload["descriptors"], record["descriptors"])
+        )
+
     def _custom_metadata(self) -> dict[str, Any]:
-        # isA2A は利用者の入力ではなく descriptor から導出する。custom descriptor の Agent は常に false
-        return {**{key: self.fields[key] for key in METADATA_FIELDS}, "isA2A": False}
+        # isA2A は利用者の入力ではなく descriptor から導出する（ADR-0006）
+        return {
+            **{key: self.fields[key] for key in METADATA_FIELDS},
+            **custom_metadata_extra(self.record_type, self.fields["descriptorType"]),
+        }
 
 
 def draft_view(record: Mapping[str, Any], management: Management, draft: AgentDraft) -> DraftView:

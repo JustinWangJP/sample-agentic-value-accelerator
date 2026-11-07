@@ -1,15 +1,9 @@
-import { CATALOG_RECORD_TYPES, type CatalogRecordType } from '../api/client'
-
-const LABELS: Record<CatalogRecordType, string> = {
-  AGENT: 'Agent',
-  MCP: 'MCP サーバー',
-  SKILL: 'Skill',
-}
+import { CATALOG_RECORD_TYPES, RECORD_TYPE_LABELS, type CatalogRecordType } from '../api/recordType'
 
 export const CATALOG_TYPES: { type: CatalogRecordType; label: string }[] = CATALOG_RECORD_TYPES.map(
-  (type) => ({ type, label: LABELS[type] }),
+  (type) => ({ type, label: RECORD_TYPE_LABELS[type] }),
 )
 
 export function catalogTypeLabel(type: CatalogRecordType): string {
-  return LABELS[type]
+  return RECORD_TYPE_LABELS[type]
 }

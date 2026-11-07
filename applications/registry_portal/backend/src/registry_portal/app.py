@@ -100,7 +100,7 @@ def _query_of(event: LambdaEvent) -> Mapping[str, str]:
 
 
 # 下書きの本文の上限。項目ごとの文字数上限（domain/drafts.py の TEXT_LIMITS）の合計に余裕を持たせる
-DRAFT_BODY_MAX_LENGTH = 131072
+DRAFT_BODY_MAX_LENGTH = 262144
 
 
 def _json_body(event: LambdaEvent, max_length: int = 8192) -> Mapping[str, Any]:
