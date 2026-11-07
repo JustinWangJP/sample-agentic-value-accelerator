@@ -282,6 +282,9 @@ SECRETS = [
     ("description", "password=hunter2hunter2 を使う", "資格情報の代入"),
     ("description", "password=hunter2 を使う", "資格情報の代入"),
     ("termsOfUse", "api_key: 1234", "資格情報の代入"),
+    # 閉じていない < や {{ で始まる値はプレースホルダーではない
+    ("description", "password=<hunter2 を使う", "資格情報の代入"),
+    ("description", "secret: {{hunter2 を使う", "資格情報の代入"),
 ]
 
 
@@ -323,6 +326,8 @@ def test_secret_in_custom_agent_specific_fields_is_rejected():
         {"securityToken": "abcdef0123456789abcdef"},
         {"headers": {"Authorization": "Bearer abcdefghijklmnop1234567890"}},
         {"auth": {"password": "hunter2hunter2"}},
+        {"auth": {"password": "<hunter2hunter2"}},
+        {"auth": {"apiKey": "{{hunter2hunter2"}},
         {"skills": [{"id": "a", "name": "a", "description": "api_key: AKIAIOSFODNN7EXAMPLE"}]},
     ],
 )

@@ -23,10 +23,11 @@ _VALUE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"://[^/\s:@]+:[^/\s@]+@"), "URL に埋め込まれた資格情報"),
 )
 # `password=...` のように、名前付きで値を代入している文字列。値が参照（プレースホルダー）なら許す。
-# 短いパスワード（例 `password=hunter2`）も拒否できるよう、URL のクエリと同じく 4 文字から検出する
+# 短いパスワード（例 `password=hunter2`）も拒否できるよう、URL のクエリと同じく 4 文字から検出する。
+# `<your password>` や `{{ name }}` のように空白を含むプレースホルダーは、閉じ括弧まで含めて1つの値として切り出す
 _ASSIGNMENT = re.compile(
     r"\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret)\b"
-    r"""["']?\s*[:=]\s*["']?([^\s"',;&]{4,})""",
+    r"""["']?\s*[:=]\s*["']?(<[^<>\n]+>|\{\{[^{}\n]+\}\}|[^\s"',;&]{4,})""",
     re.IGNORECASE,
 )
 _QUERY_SECRET = re.compile(
@@ -39,10 +40,10 @@ _SECRET_KEY = re.compile(
     r"|(?:access|auth|refresh|id|bearer|session)[_-]?token|token|authorization)$",
     re.IGNORECASE,
 )
-# 値ではなく、保管先や環境変数への参照・空・状態・型名・伏せ字を表す語。
-# `<your password>` のように空白を含むプレースホルダーは、代入の検出では空白の手前で切れるため先頭で判定する
+# 値ではなく、保管先や環境変数への参照・空・状態・型名・伏せ字を表す語。値全体が一致したときだけ参照とみなす
+# （`<hunter2` のように閉じていない値はプレースホルダーではない）
 _REFERENCE = re.compile(
-    r"^\s*$|^\$\{.+\}$|^\$[A-Za-z_][A-Za-z0-9_]*$|^\{\{|^<"
+    r"^\s*$|^\$\{[^{}]+\}$|^\$[A-Za-z_][A-Za-z0-9_]*$|^\{\{[^{}]+\}\}$|^<[^<>]+>$"
     r"|^(?:arn:|ssm:|secretsmanager:|env:|vault:)|^(?:true|false|null|none|required|optional)$"
     r"|^(?:string|str|number|integer|int|boolean|bool|object)$|^(?:\*+|x+|\.{3,}|…+)$",
     re.IGNORECASE,
