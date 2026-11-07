@@ -23,7 +23,7 @@ from registry_portal.config import (
 )
 from registry_portal.errors import ApiError, RequestValidationError, RouteNotFoundError
 from registry_portal.drafts import (
-    AgentDrafts,
+    RecordDrafts,
     DraftsNotConfigured,
     RegistryControlClient,
     require_publisher,
@@ -100,7 +100,7 @@ def _query_of(event: LambdaEvent) -> Mapping[str, str]:
 
 
 # 下書きの本文の上限。項目ごとの文字数上限（domain/drafts.py の TEXT_LIMITS）の合計に余裕を持たせる
-DRAFT_BODY_MAX_LENGTH = 131072
+DRAFT_BODY_MAX_LENGTH = 262144
 
 
 def _json_body(event: LambdaEvent, max_length: int = 8192) -> Mapping[str, Any]:
@@ -169,7 +169,7 @@ def create_management_handler(
     region = discovery_settings.registry_region
     # 下書きは補助テーブルが必須。未設定でもカタログは提供し、下書きの操作だけを 503 にする
     drafts = (
-        AgentDrafts(
+        RecordDrafts(
             discovery_settings.registry_arn,
             DraftStore(
                 catalog_settings.supplement_table_name,
@@ -187,7 +187,7 @@ def create_management_handler(
         else None
     )
 
-    def drafts_for(caller: Caller) -> AgentDrafts:
+    def drafts_for(caller: Caller) -> RecordDrafts:
         # 権限のない呼び出し元には、設定の状態より先に 403 を返す
         require_publisher(caller)
         if drafts is None:

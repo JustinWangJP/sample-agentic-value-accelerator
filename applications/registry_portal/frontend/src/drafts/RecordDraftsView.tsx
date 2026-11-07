@@ -2,17 +2,25 @@ import { useEffect, useState } from 'react'
 import { ApiError, toApiError, type ApiClient, type Role } from '../api/client'
 import { DATA_CLASSIFICATIONS } from '../api/dataClassification'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
+import { CATALOG_RECORD_TYPES, RECORD_TYPE_LABELS } from '../api/recordType'
 import {
   DEFAULT_DRAFT_ENVIRONMENT,
-  DRAFT_TEXT_FIELDS,
   isEditableStatus,
   isUncertainSaveError,
   settlesCreateKey,
-  type AgentDraft,
+  type RecordDraft,
   type DraftDetail,
   type DraftOperation,
   type DraftPage,
 } from './api'
+import {
+  COMMON_TEXT_FIELDS,
+  DESCRIPTOR_FIELD_SPECS,
+  DESCRIPTOR_LABELS,
+  RECORD_TYPE_DESCRIPTORS,
+  type FieldInput,
+} from './descriptors'
+import { draftPayload, emptyDraft, parseDraftJson, switchKind } from './draftForm'
 
 type Props = { api: ApiClient; roles: Role[]; teams: string[]; onRelogin: () => void }
 type Screen =
@@ -24,7 +32,7 @@ type PageState =
   | { kind: 'ready'; page: DraftPage }
   | { kind: 'error'; error: ApiError }
 
-export function AgentDraftsView({ api, roles, teams, onRelogin }: Props) {
+export function RecordDraftsView({ api, roles, teams, onRelogin }: Props) {
   const [screen, setScreen] = useState<Screen>({ kind: 'list' })
   const [page, setPage] = useState<PageState>({ kind: 'loading' })
   const [token, setToken] = useState<string | undefined>()
@@ -56,7 +64,7 @@ export function AgentDraftsView({ api, roles, teams, onRelogin }: Props) {
   if (!allowed)
     return (
       <section>
-        <h2>Agent 下書きの管理</h2>
+        <h2>下書きの管理</h2>
         <p>作成・編集には所属チームが必要です。管理者に連絡してください。</p>
       </section>
     )
@@ -80,10 +88,10 @@ export function AgentDraftsView({ api, roles, teams, onRelogin }: Props) {
   }
   return (
     <section className="drafts" aria-labelledby="drafts-heading">
-      <h2 id="drafts-heading">Agent 下書きの管理</h2>
+      <h2 id="drafts-heading">下書きの管理</h2>
       <p>
-        所属チームの custom Agent を登録します。environment は {DEFAULT_DRAFT_ENVIRONMENT}{' '}
-        固定です。保存しても公開されません。
+        所属チームの Agent（custom・A2A）・MCP サーバー・Skill を登録します。environment は{' '}
+        {DEFAULT_DRAFT_ENVIRONMENT} 固定です。保存しても公開されません。
       </p>
       {screen.kind === 'list' ? (
         <>
@@ -91,7 +99,7 @@ export function AgentDraftsView({ api, roles, teams, onRelogin }: Props) {
             type="button"
             onClick={() => setScreen({ kind: 'new', key: crypto.randomUUID() })}
           >
-            Agent 下書きを作成
+            下書きを作成
           </button>
           {error && <RequestErrorAlert error={error} onRelogin={onRelogin} />}
           {loadingDetail && <p role="status">下書きを取得しています…</p>}
@@ -110,7 +118,7 @@ export function AgentDraftsView({ api, roles, teams, onRelogin }: Props) {
                 <p>
                   {page.page.nextToken
                     ? 'このページには所属チームの下書きがありません。次のページを確認してください。'
-                    : '所属チームの Agent はありません。'}
+                    : '所属チームの下書き対象はありません。'}
                 </p>
               )}
               <ul className="catalog-items">
@@ -118,7 +126,8 @@ export function AgentDraftsView({ api, roles, teams, onRelogin }: Props) {
                   <li key={item.recordId}>
                     <h3>{item.displayName}</h3>
                     <p>
-                      {item.name}・{item.ownerTeam}・版 {item.recordVersion}
+                      {RECORD_TYPE_LABELS[item.recordType]}・{item.name}・{item.ownerTeam}・版{' '}
+                      {item.recordVersion}
                     </p>
                     <p>
                       {item.hasDraft ? '下書きあり' : '下書きなし'} /{' '}
@@ -230,12 +239,12 @@ function OperationCheck({
 /** 作成と編集で異なる文言 */
 const EDITOR_TEXT = {
   new: {
-    title: 'Agent 下書きを作成',
+    title: '下書きを作成',
     uncertain:
       '作成結果が不明です。同じ入力とキーで保存を再試行してください。この画面を閉じて新しく作成すると重複する可能性があります。',
   },
   edit: {
-    title: 'Agent 下書きを編集',
+    title: '下書きを編集',
     uncertain:
       '更新結果が不明です。一覧に戻り、対象の「処理結果を確認」で結果を確認してください。',
   },
@@ -246,6 +255,194 @@ type SaveState =
   | { kind: 'saving' }
   | { kind: 'error'; error: ApiError }
   | { kind: 'result'; operation: DraftOperation }
+/** 1つの入力項目。共通項目と descriptor ごとの項目で、入力欄の種類（FieldInput）に応じて描き分ける */
+function FieldControl({
+  name,
+  label,
+  input,
+  maxLength,
+  value,
+  options = [],
+  optional = false,
+  readOnly = false,
+  onChange,
+}: {
+  name: string
+  label: string
+  input: FieldInput
+  maxLength: number
+  value: string
+  options?: readonly string[]
+  optional?: boolean
+  readOnly?: boolean
+  onChange: (value: string) => void
+}) {
+  return (
+    <label>
+      {label}
+      {input === 'select' ? (
+        <select name={name} value={value} onChange={(event) => onChange(event.target.value)}>
+          {options.map((option) => (
+            <option key={option}>{option}</option>
+          ))}
+        </select>
+      ) : input === 'textarea' ? (
+        <textarea
+          name={name}
+          required={!optional}
+          maxLength={maxLength}
+          rows={maxLength > 4096 ? 10 : 4}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      ) : (
+        <input
+          name={name}
+          required={!optional}
+          maxLength={maxLength}
+          value={value}
+          readOnly={readOnly}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      )}
+    </label>
+  )
+}
+
+/** 種別・descriptor の選択と、共通項目・descriptor ごとの入力項目 */
+function KindFields({
+  draft,
+  isNew,
+  onChange,
+}: {
+  draft: RecordDraft
+  isNew: boolean
+  onChange: (draft: RecordDraft) => void
+}) {
+  // 種別は作成後に変えられない。descriptor を選べるのは複数の descriptor を持つ種別（Agent）だけ
+  const descriptors = RECORD_TYPE_DESCRIPTORS[draft.recordType]
+  function setText(key: string, value: string) {
+    onChange({ ...draft, [key]: value })
+  }
+  return (
+    <>
+      <label>
+        種別
+        <select
+          name="recordType"
+          value={draft.recordType}
+          disabled={!isNew}
+          onChange={(event) => {
+            const type = CATALOG_RECORD_TYPES.find((value) => value === event.target.value)
+            if (type) onChange(switchKind(draft, type))
+          }}
+        >
+          {CATALOG_RECORD_TYPES.map((type) => (
+            <option key={type} value={type}>
+              {RECORD_TYPE_LABELS[type]}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        登録の形式（descriptor）
+        <select
+          name="descriptorType"
+          value={draft.descriptorType}
+          disabled={descriptors.length === 1}
+          onChange={(event) => {
+            const descriptor = descriptors.find((value) => value === event.target.value)
+            if (descriptor) onChange(switchKind(draft, draft.recordType, descriptor))
+          }}
+        >
+          {descriptors.map((descriptor) => (
+            <option key={descriptor} value={descriptor}>
+              {DESCRIPTOR_LABELS[descriptor]}
+            </option>
+          ))}
+        </select>
+      </label>
+      {COMMON_TEXT_FIELDS.map((spec) => (
+        <FieldControl
+          key={spec.key}
+          name={spec.key}
+          label={spec.label}
+          input={spec.input}
+          maxLength={spec.maxLength}
+          value={draft[spec.key]}
+          readOnly={spec.key === 'name' && !isNew}
+          onChange={(value) => setText(spec.key, value)}
+        />
+      ))}
+      {DESCRIPTOR_FIELD_SPECS[draft.descriptorType].map((spec) => (
+        <FieldControl
+          key={spec.key}
+          name={spec.key}
+          label={spec.label}
+          input={spec.input}
+          maxLength={spec.maxLength}
+          value={draft[spec.key] ?? ''}
+          options={spec.options}
+          optional={spec.optional}
+          onChange={(value) => setText(spec.key, value)}
+        />
+      ))}
+    </>
+  )
+}
+
+/** 所有チーム・environment（dev 固定）・データ分類（public / private） */
+function MetadataFields({
+  draft,
+  teams,
+  isNew,
+  onChange,
+}: {
+  draft: RecordDraft
+  teams: string[]
+  isNew: boolean
+  onChange: (draft: RecordDraft) => void
+}) {
+  return (
+    <>
+      <label>
+        所有チーム
+        <select
+          name="ownerTeam"
+          value={draft.ownerTeam}
+          disabled={!isNew}
+          onChange={(event) => onChange({ ...draft, ownerTeam: event.target.value })}
+        >
+          {teams.map((team) => (
+            <option key={team}>{team}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        environment
+        <input name="environment" value={draft.environment} readOnly />
+      </label>
+      <label>
+        データ分類
+        <select
+          name="dataClassification"
+          value={draft.dataClassification}
+          onChange={(event) => {
+            const classification = DATA_CLASSIFICATIONS.find(
+              (value) => value === event.target.value,
+            )
+            if (classification) onChange({ ...draft, dataClassification: classification })
+          }}
+        >
+          {DATA_CLASSIFICATIONS.map((value) => (
+            <option key={value}>{value}</option>
+          ))}
+        </select>
+      </label>
+    </>
+  )
+}
+
 function DraftEditor({
   api,
   initial,
@@ -259,24 +456,12 @@ function DraftEditor({
   onBack: () => void
   onRelogin: () => void
 }) {
-  const [draft, setDraft] = useState<AgentDraft>(() =>
-    initial.kind === 'edit'
-      ? initial.detail.draft
-      : {
-          name: '',
-          displayName: '',
-          description: '',
-          recordVersion: '1.0.0',
-          ownerTeam: teams[0] ?? '',
-          environment: DEFAULT_DRAFT_ENVIRONMENT,
-          dataClassification: 'private',
-          purpose: '',
-          connectionReference: '',
-          authentication: '',
-          contact: '',
-          termsOfUse: '',
-        },
+  const [draft, setDraft] = useState<RecordDraft>(() =>
+    initial.kind === 'edit' ? initial.detail.draft : emptyDraft(teams[0] ?? ''),
   )
+  const [inputMode, setInputMode] = useState<'form' | 'json'>('form')
+  const [jsonText, setJsonText] = useState('')
+  const [jsonError, setJsonError] = useState<string | null>(null)
   const [hash, setHash] = useState(initial.kind === 'edit' ? initial.detail.contentHash : '')
   const [createKey, setCreateKey] = useState(initial.kind === 'new' ? initial.key : '')
   const [save, setSave] = useState<SaveState>({ kind: 'idle' })
@@ -285,7 +470,10 @@ function DraftEditor({
   const resultLocked = save.kind === 'result' && save.operation.operationState !== 'FAILED'
   const uncertain = save.kind === 'error' && isUncertainSaveError(save.error)
   const saveDisabled =
-    save.kind === 'saving' || resultLocked || (!isNew && uncertain)
+    save.kind === 'saving' ||
+    resultLocked ||
+    (!isNew && uncertain) ||
+    (inputMode === 'json' && jsonError !== null)
   const disabled = saveDisabled || uncertain
   const canRetryCreate =
     isNew && save.kind === 'result' && save.operation.operationState === 'VERIFYING'
@@ -295,8 +483,8 @@ function DraftEditor({
     try {
       const operation =
         initial.kind === 'new'
-          ? await api.createDraft(draft, createKey)
-          : await api.updateDraft(initial.detail.recordId, draft, hash)
+          ? await api.createDraft(draftPayload(draft), createKey)
+          : await api.updateDraft(initial.detail.recordId, draftPayload(draft), hash)
       receiveResult(operation)
     } catch (failure) {
       const error = toApiError(failure, '下書きを保存できませんでした。')
@@ -310,12 +498,24 @@ function DraftEditor({
     }
     setSave({ kind: 'result', operation })
   }
+  function startJson() {
+    setJsonText(JSON.stringify(draftPayload(draft), null, 2))
+    setJsonError(null)
+    setInputMode('json')
+  }
+  function changeJson(text: string) {
+    setJsonText(text)
+    const result = parseDraftJson(text, draft)
+    if ('draft' in result) setDraft(result.draft)
+    setJsonError('error' in result ? result.error : null)
+  }
   async function reload() {
     if (initial.kind !== 'edit') return
     setSave({ kind: 'saving' })
     try {
       const latest = await api.getDraft(initial.detail.recordId)
       setDraft(latest.draft)
+      setJsonError(null)
       setHash(latest.contentHash)
       setSave({ kind: 'idle' })
     } catch (failure) {
@@ -335,64 +535,30 @@ function DraftEditor({
         }}
       >
         <fieldset disabled={disabled}>
-          {DRAFT_TEXT_FIELDS.map(([key, label, maxLength]) => (
-            <label key={key}>
-              {label}
-              {key === 'description' || key === 'purpose' || key === 'termsOfUse' ? (
-                <textarea
-                  name={key}
-                  required
-                  maxLength={maxLength}
-                  value={draft[key]}
-                  onChange={(event) => setDraft({ ...draft, [key]: event.target.value })}
-                />
-              ) : (
-                <input
-                  name={key}
-                  required
-                  maxLength={maxLength}
-                  value={draft[key]}
-                  readOnly={key === 'name' && !isNew}
-                  onChange={(event) => setDraft({ ...draft, [key]: event.target.value })}
-                />
-              )}
+          <button
+            type="button"
+            onClick={() => (inputMode === 'form' ? startJson() : setInputMode('form'))}
+          >
+            {inputMode === 'form' ? 'JSON で入力' : 'フォームで入力'}
+          </button>
+          {inputMode === 'json' ? (
+            <label>
+              下書きの JSON
+              <textarea
+                name="draftJson"
+                rows={16}
+                value={jsonText}
+                onChange={(event) => changeJson(event.target.value)}
+              />
             </label>
-          ))}
-          <label>
-            所有チーム
-            <select
-              name="ownerTeam"
-              value={draft.ownerTeam}
-              disabled={!isNew}
-              onChange={(event) => setDraft({ ...draft, ownerTeam: event.target.value })}
-            >
-              {teams.map((team) => (
-                <option key={team}>{team}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            environment
-            <input name="environment" value={draft.environment} readOnly />
-          </label>
-          <label>
-            データ分類
-            <select
-              name="dataClassification"
-              value={draft.dataClassification}
-              onChange={(event) => {
-                const classification = DATA_CLASSIFICATIONS.find(
-                  (value) => value === event.target.value,
-                )
-                if (classification) setDraft({ ...draft, dataClassification: classification })
-              }}
-            >
-              {DATA_CLASSIFICATIONS.map((value) => (
-                <option key={value}>{value}</option>
-              ))}
-            </select>
-          </label>
+          ) : (
+            <KindFields draft={draft} isNew={isNew} onChange={setDraft} />
+          )}
+          {inputMode === 'form' && (
+            <MetadataFields draft={draft} teams={teams} isNew={isNew} onChange={setDraft} />
+          )}
         </fieldset>
+        {inputMode === 'json' && jsonError && <p role="alert">{jsonError}</p>}
         <button type="submit" disabled={saveDisabled}>
           下書きを保存
         </button>

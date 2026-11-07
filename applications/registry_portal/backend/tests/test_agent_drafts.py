@@ -1,46 +1,22 @@
 import json
 from datetime import datetime, timezone
 
-import boto3
 import pytest
 from botocore.stub import ANY, Stubber
 from moto import mock_aws
 
-from catalog_helpers import ENV, HUMAN_CLIENT_ID, ISSUER, REGISTRY_ARN, SUPPLEMENT_TABLE
+from catalog_helpers import ENV, ISSUER, REGISTRY_ARN, SUPPLEMENT_TABLE
+from draft_helpers import (
+    RECORD_ARN,
+    RECORD_ID,
+    aws_record,
+    call,
+    clients,
+    event,
+    handler_for,
+    management_item,
+)
 from registry_portal.app import create_management_handler
-
-
-def event(
-    method="POST",
-    path="/api/records",
-    body=None,
-    groups="registry-publisher team-payments",
-    key="draft-1",
-    sub="alice",
-):
-    return {
-        "requestContext": {
-            "http": {"method": method, "path": path},
-            "authorizer": {
-                "jwt": {
-                    "claims": {
-                        "iss": ISSUER,
-                        "sub": sub,
-                        "client_id": HUMAN_CLIENT_ID,
-                        "token_use": "access",
-                        "cognito:groups": groups,
-                    }
-                }
-            },
-        },
-        "headers": {"idempotency-key": key} if key else {},
-        "body": json.dumps(body or {}),
-    }
-
-
-def call(handler, request):
-    response = handler(request, None)
-    return response["statusCode"], json.loads(response["body"])
 
 
 def test_viewer_cannot_create_a_draft():
@@ -51,6 +27,8 @@ def test_viewer_cannot_create_a_draft():
 
 DRAFT = {
     "name": "payments-agent",
+    "recordType": "AGENT",
+    "descriptorType": "custom",
     "displayName": "決済 Agent",
     "description": "決済を調べる",
     "recordVersion": "1.0.0",
@@ -84,58 +62,11 @@ METADATA = {
     "dataClassification": "private",
     "isA2A": False,
 }
-RECORD_ID = "agentABC1234"
-RECORD_ARN = f"{REGISTRY_ARN}/record/{RECORD_ID}"
 
 
 def record(**changes):
-    return {
-        "registryArn": REGISTRY_ARN,
-        "recordArn": RECORD_ARN,
-        "recordId": RECORD_ID,
-        "name": DRAFT["name"],
-        "displayName": DRAFT["displayName"],
-        "description": DRAFT["description"],
-        "recordType": "AGENT",
-        "descriptors": DESCRIPTORS,
-        "customMetadata": METADATA,
-        "recordVersion": "1.0.0",
-        "status": "DRAFT",
-        "createdAt": datetime(2026, 11, 1, tzinfo=timezone.utc),
-        "updatedAt": datetime(2026, 11, 1, tzinfo=timezone.utc),
-        **changes,
-    }
-
-
-def clients():
-    opts = {
-        "region_name": "us-east-1",
-        "aws_access_key_id": "test",
-        "aws_secret_access_key": "test",
-    }
-    registry = boto3.client("agent-registry-control", **opts)
-    db = boto3.client("dynamodb", **opts)
-    db.create_table(
-        TableName=SUPPLEMENT_TABLE,
-        KeySchema=[
-            {"AttributeName": "pk", "KeyType": "HASH"},
-            {"AttributeName": "sk", "KeyType": "RANGE"},
-        ],
-        AttributeDefinitions=[
-            {"AttributeName": "pk", "AttributeType": "S"},
-            {"AttributeName": "sk", "AttributeType": "S"},
-        ],
-        BillingMode="PAY_PER_REQUEST",
-    )
-    return registry, db
-
-
-def handler_for(registry, db):
-    return create_management_handler(
-        {**ENV, "SUPPLEMENT_TABLE_NAME": SUPPLEMENT_TABLE},
-        registry_client=registry,
-        draft_store_client=db,
-    )
+    """custom Agent の GetRegistryRecord の応答。"""
+    return aws_record(DRAFT, **{"descriptors": DESCRIPTORS, "customMetadata": METADATA, **changes})
 
 
 def items_with_sk(db, fragment):
@@ -147,16 +78,6 @@ def items_with_sk(db, fragment):
 
 def audit_items(db, suffix):
     return [item for item in items_with_sk(db, "AUDIT#") if item["sk"]["S"].endswith(suffix)]
-
-
-def management_item(db):
-    return db.get_item(
-        TableName=SUPPLEMENT_TABLE,
-        Key={
-            "pk": {"S": f"REGISTRY#{REGISTRY_ARN}#RECORD#{RECORD_ID}"},
-            "sk": {"S": "MANAGEMENT"},
-        },
-    )["Item"]
 
 
 def stub_create(stub):
@@ -661,7 +582,7 @@ def test_management_list_keeps_the_published_version_beside_a_new_draft_and_filt
             {
                 "registryId": REGISTRY_ARN,
                 "maxResults": 20,
-                "filters": [{"name": "recordType", "values": ["AGENT"]}],
+                "filters": [{"name": "recordType", "values": ["AGENT", "MCP", "SKILL"]}],
             },
         )
         status, page = call(handler, event("GET", "/api/records"))

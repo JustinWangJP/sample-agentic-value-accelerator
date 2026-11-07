@@ -1,5 +1,11 @@
 import { createDraftApi, type DraftApi } from '../drafts/api'
 import { isDataClassification, type DataClassification } from './dataClassification'
+import {
+  AGENT_RECORD_TYPE,
+  CATALOG_RECORD_TYPES,
+  isCatalogRecordType,
+  type CatalogRecordType,
+} from './recordType'
 import type { ApiRequest, HttpMethod } from './request'
 
 // Registry ポータル API のクライアント
@@ -24,20 +30,11 @@ export type Me = {
   teams: string[]
 }
 
-/**
- * カタログの種別（AWS の recordType）。A2A は Agent の descriptor として扱う。
- * バックエンドの CatalogRecordType（backend/src/registry_portal/domain/catalog.py）と同じ値に揃える
- */
-export const CATALOG_RECORD_TYPES = ['AGENT', 'MCP', 'SKILL'] as const
-export type CatalogRecordType = (typeof CATALOG_RECORD_TYPES)[number]
+export { CATALOG_RECORD_TYPES, type CatalogRecordType }
 
 /** A2A は Agent の descriptor なので、A2A の絞り込みは Agent（または種別の指定なし）にだけ使える */
 export function supportsA2AFilter(type: CatalogRecordType | null): boolean {
-  return type === null || type === 'AGENT'
-}
-
-function isCatalogRecordType(value: unknown): value is CatalogRecordType {
-  return CATALOG_RECORD_TYPES.some((type) => type === value)
+  return type === null || type === AGENT_RECORD_TYPE
 }
 
 /** カタログ項目（公開承認済みの Registry レコードの版）の要約 */
