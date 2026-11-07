@@ -129,18 +129,71 @@ def test_skill_digest_is_optional_and_kept_empty_when_unknown():
 
 @pytest.mark.parametrize("base", [A2A_DRAFT, MCP_DRAFT, SKILL_DRAFT])
 @pytest.mark.parametrize(
-    "change",
+    ("change", "expected"),
     [
-        {"dataClassification": "confidential"},
-        {"dataClassification": "secret"},
-        {"environment": "prod"},
-        {"environment": "stg"},
-        {"isA2A": "true"},
+        ({"dataClassification": "confidential"}, ["public", "private"]),
+        ({"dataClassification": "secret"}, ["public", "private"]),
+        ({"environment": "prod"}, ["dev"]),
+        ({"environment": "stg"}, ["dev"]),
+        ({"isA2A": "true"}, ["指定できない項目"]),
     ],
 )
 @mock_aws
-def test_common_metadata_rules_apply_to_every_kind(base, change):
-    rejected({**base, **change})
+def test_common_metadata_rules_apply_to_every_kind(base, change, expected):
+    message = rejected({**base, **change})
+    # 許可値を案内する。文字数の誤った案内（「1〜7文字」など）にしない
+    assert all(value in message for value in expected)
+    assert "文字" not in message
+
+
+@pytest.mark.parametrize("base", [A2A_DRAFT, MCP_DRAFT, SKILL_DRAFT])
+@pytest.mark.parametrize("field", ["environment", "dataClassification"])
+@mock_aws
+def test_empty_choice_value_lists_the_allowed_values(base, field):
+    assert "文字" not in rejected({**base, field: ""})
+
+
+@mock_aws
+def test_over_long_text_still_reports_the_character_limit():
+    assert "1〜255文字" in rejected({**A2A_DRAFT, "displayName": "あ" * 256})
+
+
+@pytest.mark.parametrize(
+    "skill_md",
+    [
+        "---\nname: payments\ndescription:\n  決済の照会を行う Skill\n---\n# 本文\n",
+        "---\nname: payments\ndescription: >\n  決済の照会\n  を行う\n---\n# 本文\n",
+        "---\nname:\n  payments\ndescription: 照会\n---\n# 本文\n",
+    ],
+)
+@mock_aws
+def test_skill_md_accepts_values_written_on_the_next_indented_line(skill_md):
+    draft = {**SKILL_DRAFT, "skillMd": skill_md}
+    descriptors = {
+        "agentSkillsDefinition": {
+            **SKILL_DESCRIPTORS["agentSkillsDefinition"],
+            "additionalData": {"skillMd": {"data": skill_md}},
+        }
+    }
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub_create(stub, draft, descriptors, METADATA)
+        status, _ = call(handler_for(registry, db), event(body=draft))
+        assert status == 201
+        stub.assert_no_pending_responses()
+
+
+@pytest.mark.parametrize(
+    "skill_md",
+    [
+        "---\nname: payments\ndescription:\n---\n# 本文\n",
+        "---\nname: payments\ndescription:\nlicense: MIT\n---\n# 本文\n",
+        "---\nname: payments\ndescription:   \n  \n---\n# 本文\n",
+    ],
+)
+@mock_aws
+def test_skill_md_still_rejects_a_key_without_any_value(skill_md):
+    assert "frontmatter" in rejected({**SKILL_DRAFT, "skillMd": skill_md})
 
 
 @pytest.mark.parametrize("kind", CASES)

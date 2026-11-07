@@ -10,21 +10,20 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
-from typing import Any, Literal, get_args
+from typing import Any
 
 from registry_portal.domain.catalog import (
     A2A_DESCRIPTOR_TYPE,
     AGENT_RECORD_TYPE,
     CATALOG_RECORD_TYPES,
+    CUSTOM_DESCRIPTOR_TYPE,
+    DESCRIPTOR_TYPES,
+    MCP_DESCRIPTOR_TYPE,
+    SKILL_DESCRIPTOR_TYPE,
     CatalogRecordType,
+    DescriptorType,
 )
 from registry_portal.domain.secrets import SecretFinding, scan_json, scan_text
-
-DescriptorType = Literal["custom", "a2aAgentCard", "mcpServer", "agentSkillsDefinition"]
-DESCRIPTOR_TYPES: tuple[DescriptorType, ...] = get_args(DescriptorType)
-CUSTOM_DESCRIPTOR_TYPE: DescriptorType = "custom"
-MCP_DESCRIPTOR_TYPE: DescriptorType = "mcpServer"
-SKILL_DESCRIPTOR_TYPE: DescriptorType = "agentSkillsDefinition"
 
 # 種別ごとに受け付ける primary descriptor。先頭を既定とする。
 # Agent → custom / a2aAgentCard、MCP → mcpServer、Skill → agentSkillsDefinition
@@ -47,9 +46,9 @@ MCP_SERVER_SCHEMA_VERSIONS = (
 MCP_TOOLS_SCHEMA_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 SKILL_SCHEMA_VERSIONS = ("0.1.0",)
 SCHEMA_VERSIONS: Mapping[DescriptorType, tuple[str, ...]] = {
-    "a2aAgentCard": A2A_SCHEMA_VERSIONS,
-    "mcpServer": MCP_SERVER_SCHEMA_VERSIONS,
-    "agentSkillsDefinition": SKILL_SCHEMA_VERSIONS,
+    A2A_DESCRIPTOR_TYPE: A2A_SCHEMA_VERSIONS,
+    MCP_DESCRIPTOR_TYPE: MCP_SERVER_SCHEMA_VERSIONS,
+    SKILL_DESCRIPTOR_TYPE: SKILL_SCHEMA_VERSIONS,
 }
 
 # descriptor の種類ごとの入力項目（共通項目を除く）
@@ -66,10 +65,10 @@ SKILL_FIELDS = (
     "skillMd",
 )
 DESCRIPTOR_FIELDS: Mapping[DescriptorType, tuple[str, ...]] = {
-    "custom": CUSTOM_FIELDS,
-    "a2aAgentCard": A2A_FIELDS,
-    "mcpServer": MCP_FIELDS,
-    "agentSkillsDefinition": SKILL_FIELDS,
+    CUSTOM_DESCRIPTOR_TYPE: CUSTOM_FIELDS,
+    A2A_DESCRIPTOR_TYPE: A2A_FIELDS,
+    MCP_DESCRIPTOR_TYPE: MCP_FIELDS,
+    SKILL_DESCRIPTOR_TYPE: SKILL_FIELDS,
 }
 # 取得できなければ空でよい項目（設計書「秘密情報と外部配布物」: digest は取得できれば記録する）
 OPTIONAL_FIELDS = frozenset({"skillDigest"})
@@ -184,14 +183,23 @@ def _check_tools(value: Mapping[str, Any]) -> None:
             raise ValueError(f"tools[{index}] には name と inputSchema（オブジェクト）が必要です。")
 
 
-def _check_skill_md(text: str) -> None:
+def _frontmatter_keys(text: str) -> set[str]:
+    """frontmatter の最上位で値を持つ項目名。値は同じ行か、YAML のブロック形式で次のインデントした行に書く。"""
     match = _FRONT_MATTER.match(text)
-    names = {
-        line.split(":", 1)[0].strip()
-        for line in (match.group(1).splitlines() if match else [])
-        if ":" in line and line.split(":", 1)[1].strip()
-    }
-    if not {"name", "description"} <= names:
+    lines = match.group(1).splitlines() if match else []
+    keys: set[str] = set()
+    for index, line in enumerate(lines):
+        key, separator, value = line.partition(":")
+        if not separator or line[0] in " \t" or not key.strip():
+            continue
+        following = next((later for later in lines[index + 1 :] if later.strip()), "")
+        if value.strip() or following[:1] in (" ", "\t"):
+            keys.add(key.strip())
+    return keys
+
+
+def _check_skill_md(text: str) -> None:
+    if not {"name", "description"} <= _frontmatter_keys(text):
         raise ValueError("SKILL.md の先頭に name と description を持つ frontmatter が必要です。")
 
 
@@ -270,14 +278,14 @@ def create_descriptors(
     """CreateRegistryRecord の descriptors（custom は呼び出し側が組み立てる定義の JSON を渡す）。"""
     if descriptor_type == A2A_DESCRIPTOR_TYPE:
         return {
-            "a2aAgentCard": {
+            A2A_DESCRIPTOR_TYPE: {
                 "data": fields["definition"],
                 "dataSchemaVersion": fields["schemaVersion"],
             }
         }
     if descriptor_type == MCP_DESCRIPTOR_TYPE:
         return {
-            "mcpServer": {
+            MCP_DESCRIPTOR_TYPE: {
                 "data": fields["definition"],
                 "dataSchemaVersion": fields["schemaVersion"],
                 "additionalData": {
@@ -289,7 +297,7 @@ def create_descriptors(
             }
         }
     return {
-        "agentSkillsDefinition": {
+        SKILL_DESCRIPTOR_TYPE: {
             "data": _skill_definition(fields),
             "dataSchemaVersion": fields["schemaVersion"],
             "additionalData": {"skillMd": {"data": fields["skillMd"]}},
@@ -306,7 +314,7 @@ def update_descriptors(
 ) -> dict[str, Any]:
     """UpdateRegistryRecord の descriptors に入れる、descriptor 種類ごとの patch。"""
     if descriptor_type == CUSTOM_DESCRIPTOR_TYPE:
-        return {"custom": {"optionalValue": {"data": _patch(custom_data)}}}
+        return {CUSTOM_DESCRIPTOR_TYPE: {"optionalValue": {"data": _patch(custom_data)}}}
     created = create_descriptors(descriptor_type, fields)[descriptor_type]
     patch: dict[str, Any] = {
         "data": _patch(created["data"]),

@@ -10,17 +10,17 @@ from typing import Any, Literal, TypedDict, get_args
 from registry_portal.domain.catalog import (
     AGENT_RECORD_TYPE,
     CATALOG_RECORD_TYPES,
+    CUSTOM_DESCRIPTOR_TYPE,
     DATA_CLASSIFICATIONS,
+    SKILL_DESCRIPTOR_TYPE,
+    DescriptorType,
 )
 from registry_portal.domain.descriptors import (
-    CUSTOM_DESCRIPTOR_TYPE,
     DEFINITION_LIMITS,
     DESCRIPTOR_FIELDS,
     OPTIONAL_FIELDS,
-    SKILL_DESCRIPTOR_TYPE,
     SKILL_SUPPLEMENT_FIELDS,
     STRUCTURED_FIELDS,
-    DescriptorType,
     check_kind,
     create_descriptors,
     custom_metadata_extra,
@@ -60,17 +60,16 @@ Environment = Literal["dev"]
 ENVIRONMENTS: tuple[Environment, ...] = get_args(Environment)
 DEFAULT_ENVIRONMENT: Environment = ENVIRONMENTS[0]
 
-# 項目ごとの文字数上限。SPA の `DRAFT_TEXT_FIELDS`（frontend/src/drafts/api.ts）と揃える
+# 許可値から選ぶ項目。文字数ではなく許可値で検査する（許可値の定義は catalog.py と上の Environment）
+CHOICE_FIELDS = (*KIND_FIELDS, "environment", "dataClassification")
+# 自由入力の項目ごとの文字数上限。SPA の `COMMON_TEXT_FIELDS` と `DESCRIPTOR_FIELD_SPECS`
+# （frontend/src/drafts/descriptors.ts）と揃える
 TEXT_LIMITS = {
     "name": 255,
     "displayName": 255,
     "description": 4096,
     "recordVersion": 255,
     "ownerTeam": 128,
-    "environment": 3,
-    "dataClassification": 7,
-    "recordType": 5,
-    "descriptorType": 21,
     "purpose": 4096,
     "connectionReference": 2048,
     "authentication": 1024,
@@ -324,6 +323,8 @@ class AgentDraft:
             "descriptorType": descriptor,
         }
         for key in allowed:
+            if key in CHOICE_FIELDS:
+                continue
             limit = TEXT_LIMITS[key]
             text = fields.get(key)
             if (
@@ -341,7 +342,7 @@ class AgentDraft:
             )
         if fields["environment"] not in ENVIRONMENTS:
             raise ValueError(f"environment は {' または '.join(ENVIRONMENTS)} のみ指定できます。")
-        if fields["dataClassification"] not in DATA_CLASSIFICATIONS:
+        if fields.get("dataClassification") not in DATA_CLASSIFICATIONS:
             raise ValueError(
                 f"データ分類は {' または '.join(DATA_CLASSIFICATIONS)} を指定してください。"
             )
