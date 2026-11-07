@@ -200,14 +200,14 @@ Publisher は、所属する `team-*` を所有チームに指定して、フォ
 
 下書きの `POST /api/records` と `PATCH /api/records/{recordId}` は、本文の `recordType`（`AGENT` / `MCP` / `SKILL`）と `descriptorType` で種別を切り替えます。どちらも省略すると custom Agent（#7）です。`recordType` だけを指定すると、その種別の既定の descriptor になります。SPA は「下書きを作成」の画面で種別と descriptor を選びます。A2A は独立した種別ではなく、Agent の descriptor の切り替えです。入力は、フォームの各項目、または「JSON で入力」に下書きの JSON を貼り付けて行います。
 
-ポータルは、種別ごとに AWS が受理する primary descriptor を1個だけ組み立てます（[対応する descriptor](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-supported-record-types.html)）。これ以外の組合せ（例: MCP に `a2aAgentCard`）は、AWS へ送る前に日本語のエラー（400）にします。descriptor の種類の値は `backend/src/registry_portal/domain/catalog.py` と `frontend/src/drafts/descriptors.ts` の1か所ずつに定義し、種別との対応や入力項目は `domain/descriptors.py` と `frontend/src/drafts/descriptors.ts` に置きます。変更時は両側を揃えます。
+ポータルは、種別ごとに AWS が受理する primary descriptor を1個だけ組み立てます（[対応する descriptor](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-supported-record-types.html)）。これ以外の組合せ（例: MCP に `a2aAgentCard`）は、AWS へ送る前に日本語のエラー（400）にします。descriptor の種類の値は `backend/src/registry_portal/domain/catalog.py` と `frontend/src/drafts/descriptors.ts` の1か所ずつに定義し、種別との対応や入力項目は `domain/descriptors.py` と `frontend/src/drafts/descriptors.ts` に置きます。descriptor の種類ごとの検査・AWS に送る内容・読み取り・管理情報に置く項目は、`domain/descriptors.py` の `_HANDLERS` の1か所にまとめます。変更時は両側を揃えます。
 
 | 種別 | descriptor | 入力項目（共通項目を除く） | AWS に送る内容 |
 | --- | --- | --- | --- |
 | `AGENT` | `custom` | 目的、認証方式 | `descriptors.custom.data`（#7 と同じ） |
 | `AGENT` | `a2aAgentCard` | `schemaVersion`（`0.3`）、`definition`（Agent Card の JSON） | `a2aAgentCard.data` と `dataSchemaVersion` |
 | `MCP` | `mcpServer` | `schemaVersion`（server 定義の版）、`definition`（server.json）、`toolsSchemaVersion`（tools 定義の版）、`toolsDefinition` | `mcpServer.data` / `dataSchemaVersion` と `mcpServer.additionalData.tools.data` / `dataSchemaVersion` |
-| `SKILL` | `agentSkillsDefinition` | `schemaVersion`（`0.1.0`）、リポジトリの URL と種類、固定した commit と version、digest（任意）、`skillMd`（SKILL.md） | `agentSkillsDefinition.data`（`repository`）、`dataSchemaVersion`、`additionalData.skillMd.data` |
+| `SKILL` | `agentSkillsDefinition` | `schemaVersion`（`0.1.0`）、リポジトリの URL と種類、固定した commit と version（少なくとも一方）、digest（任意）、`skillMd`（SKILL.md） | `agentSkillsDefinition.data`（`repository`）、`dataSchemaVersion`、`additionalData.skillMd.data` |
 
 共通項目は、名前、表示名、説明、semver の版、所有チーム、environment、データ分類、連絡先、利用条件、接続先の参照です。
 
@@ -218,15 +218,25 @@ Publisher は、所属する `team-*` を所有チームに指定して、フォ
   - `mcpServer`（server 定義）: `2025-12-11`、`2025-10-17`、`2025-10-11`、`2025-09-29`、`2025-09-16`、`2025-07-09`
   - `mcpServer`（tools 定義）: `2025-11-25`、`2025-06-18`、`2025-03-26`、`2024-11-05`
   - `agentSkillsDefinition`: `0.1.0`
+  - 許可値は MCP や A2A の最新版ではなく、AWS が受け付ける版に合わせます。たとえば MCP の現行プロトコル版 2026-07-28 は、AWS が tools 定義の版としてまだ受け付けていないため許可しません（2026-11-07 時点で確認）。
   - AWS が新しい版を追加したら、`domain/descriptors.py` と `frontend/src/drafts/descriptors.ts` の許可値を同時に更新します。
-- JSON の定義は JSON として読めること、必須項目があることを確認します。Agent Card は A2A の必須項目、server 定義は `name`・`description`・`version`、tools 定義は1個以上の `name` と `inputSchema` を持つツールが必要です。SKILL.md は先頭の frontmatter に `name` と `description` が必要です（値は同じ行か、YAML のブロック形式で次の行以降のインデントした行に書けます）。JSON は空白を取り除いた形で保存します。定義の文字数は、補助ストアの1項目の上限（400 KB）に収めるため、Agent Card と server 定義と tools 定義を 24,000 文字、SKILL.md を 32,000 文字までとします（AWS の上限は 102,400 文字。descriptor の `data` は 1〜102,400 文字で、[A2aAgentCardDescriptor](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-properties-agentregistry-registryrecord-a2aagentcarddescriptor.html) や [CustomDescriptor](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-properties-agentregistry-registryrecord-customdescriptor.html) の `Data` に記載されています。補助ストアの操作の入力と結果の2か所に保存するため、それより小さい上限にしています）。
-- `environment` は `dev` のみ許可し、省略すると `dev` です。`dataClassification` は `public` / `private` のみで、`confidential` 相当は 400 です。値の一覧は #7 と同じ定義（`DATA_CLASSIFICATIONS`）を使い、別に持ちません。
+  - 各仕様の最新版は、AWS の許可値より新しいことがあります（2026-11-07 に確認）。ポータルは AWS が受理する版だけを許可します。
+    - A2A: 最新は [1.0](https://a2a-protocol.org/latest/specification/)（リリース v1.0.1）。1.0 の Agent Card では `url` と `protocolVersion` が `supportedInterfaces` の中に移ったため、AWS が検証する 0.3 の `AgentCard` には適合しません。1.0 の Agent Card は 0.3 の形に直して登録してください。AWS の資料は仕様のリンク先を `latest` にしていますが、検証に使う JSON Schema は v0.3.0 です。
+    - MCP: 最新の仕様は [2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28/) です。AWS の tools 定義は 2025-11-25 までなので、ツールの必須項目は 2025-11-25 の Tool に従います。server.json の最新 schema は、AWS の許可値と同じ 2025-12-11 です（2025-08-26 の schema は AWS の許可値にありません）。
+- JSON の定義は JSON として読めること、必須項目があることを確認します。必須項目は各仕様の JSON Schema の `required` に従います。
+  - Agent Card: [A2A 0.3 の AgentCard](https://a2a-protocol.org/v0.3.0/specification/)（[JSON Schema](https://raw.githubusercontent.com/a2aproject/A2A/v0.3.0/specification/json/a2a.json) の `AgentCard`）の `name`・`description`・`version`・`protocolVersion`・`url`・`capabilities`・`defaultInputModes`・`defaultOutputModes`・`skills`。AWS は `#/definitions/AgentCard` で検証します。
+  - server 定義: [server.json の JSON Schema](https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json) の `name`・`description`・`version`。
+  - tools 定義: [MCP の Tool](https://modelcontextprotocol.io/specification/2025-11-25/server/tools) の `name` と `inputSchema`。`inputSchema` のルートには `type: "object"` が必要です（許可する tools の schema version のすべてで必須）。ツールを1個以上必須とするのはポータルの規則です。
+  - Skill の `repository`: AWS の skill definition（[対応する descriptor](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-supported-record-types.html) の `Repository`）の `url` と `source`。
+  - SKILL.md は先頭の frontmatter に `name` と `description` が必要です（値は同じ行か、YAML のブロック形式で次の行以降のインデントした行に書けます）。
+- JSON は空白を取り除いた形で保存します。定義の文字数は、補助ストアの1項目の上限（400 KB）に収めるため、Agent Card と server 定義と tools 定義を 24,000 文字、SKILL.md を 32,000 文字までとします（AWS の上限は 102,400 文字。descriptor の `data` は 1〜102,400 文字で、[A2aAgentCardDescriptor](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-properties-agentregistry-registryrecord-a2aagentcarddescriptor.html) や [CustomDescriptor](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-properties-agentregistry-registryrecord-customdescriptor.html) の `Data` に記載されています。補助ストアの操作の入力と結果の2か所に保存するため、それより小さい上限にしています）。
+- `environment` は `dev` のみ許可し、省略すると `dev` です。`dataClassification` は `public` / `private` のみで、`confidential` 相当は 400 です。値の一覧は #7 と同じ定義（`DATA_CLASSIFICATIONS`）を使い、別に持ちません。SPA の「JSON で入力」でも、送る前に同じ一覧（`DATA_CLASSIFICATIONS`・`DRAFT_ENVIRONMENTS`）で検証し、サーバーと同じ日本語で示します。
 - `isA2A` は入力できません（指定すると未知の項目として 400）。descriptor が `a2aAgentCard` の Agent は `true`、他の Agent は `false` を保存し、descriptor を切り替えて更新すると `isA2A` も更新します。MCP と Skill には `isA2A` を付けません（schema の `AGENT` にだけ追加するため。ADR-0006）。
-- Skill は、リポジトリ URL（`https://`、資格情報とクエリを含まない）、リポジトリの種類、固定した commit（40 または 64 文字の小文字 16 進数）、固定した version（`latest`・ブランチ名・`^1.2`・`1.x` などの範囲指定は不可）を必須とし、digest は取得できれば `sha256:` + 64 文字の小文字 16 進数で記録します。これらの形式は仕様に明記がないため、設計書「秘密情報と外部配布物」の趣旨に沿ってポータルが決めた規則です。AWS は外部配布物が実在することも安全であることも検査しません。ポータルも実ファイルは取得せず、digest の一致は確認しません。
+- Skill は、リポジトリ URL（`https://`、資格情報とクエリを含まない）とリポジトリの種類を必須とします。配布物は、固定した commit（40 または 64 文字の小文字 16 進数）と固定した version の少なくとも一方で固定します（PRD のストーリー 19「固定した commit / version」）。version は数字、または `v` と数字で始まる特定の版（例 `1.2.0`、`v1.2.0`）だけを受け付け、`latest`・`main`・`release-2025` のような名前や、`^1.2`・`1.x` などの範囲指定は受け付けません。digest は取得できれば `sha256:` + 64 文字の小文字 16 進数で記録します。これらの形式は仕様に明記がないため、設計書「秘密情報と外部配布物」の趣旨に沿ってポータルが決めた規則です。AWS は外部配布物が実在することも安全であることも検査しません。ポータルも実ファイルは取得せず、digest の一致は確認しません。
 
 ### 秘密情報
 
-定義、metadata、SKILL.md、フォームの文字列に、API キー・JWT・パスワードなどの値らしき文字列があれば、保存せずに 400 で**拒否**します（警告にとどめません）。検出するのは、JWT、AWS アクセスキー、秘密鍵、`Bearer` の値、GitHub・Slack 等のトークン、URL に埋め込んだ資格情報とクエリの資格情報、`password=値` のような代入、JSON のキーが `password`・`secret`・`apiKey`・`token`・`authorization` などで値が参照でない文字列です。`${NAME}`・`<…>`・`arn:`・`ssm:`・`secretsmanager:` で始まる値など、保管先への参照は許します。MCP の `isSecret: true` のように値を持たない宣言も許します。エラーには場所と種類だけを含め、値は応答にもログにも出しません。検出は正規表現による推定で、漏れと誤検出があり得ます。誤検出された場合は値を参照に置き換えてください。
+定義、metadata、SKILL.md、フォームの文字列に、API キー・JWT・パスワードなどの値らしき文字列があれば、保存せずに 400 で**拒否**します（警告にとどめません）。検出するのは、JWT、AWS アクセスキー、秘密鍵、`Bearer` の値、GitHub・Slack 等のトークン、URL に埋め込んだ資格情報とクエリの資格情報、`password=値` のような代入（値が4文字以上。`password=hunter2` のような短い値も対象）、JSON のキーが `password`・`secret`・`apiKey`・`token`・`authorization` などで値が参照でない文字列です。`${NAME}`・`<…>`・`arn:`・`ssm:`・`secretsmanager:` で始まる値など、保管先への参照は許します。`string` などの型名、`****` のような伏せ字、`required` のような状態を表す語も値とみなしません。MCP の `isSecret: true` のように値を持たない宣言も許します。エラーには場所と種類だけを含め、値は応答にもログにも出しません。検出は正規表現による推定で、漏れと誤検出があり得ます。誤検出された場合は値を参照に置き換えてください。
 
 ### 保存先
 
@@ -253,7 +263,7 @@ Stubber は実サービスモデルの形だけを検証します。次の項目
 ### テスト
 
 - Seam 1: `backend/tests/test_record_descriptors.py`（種別ごとの payload・補助ストア）、`test_record_validation.py`（schema version・組合せ・Skill の固定情報・環境とデータ分類・秘密情報）、`test_record_updates.py`（descriptor 切替と `isA2A`、結果確認、読み取り、一覧）。Stubber で AWS の入力モデルを検証します。
-- Seam 2: `frontend/src/tests/recordDrafts.test.ts`（種別の選択、descriptor ごとの入力項目、JSON 入力、送信する本文、サーバーの日本語エラーの表示）。
+- Seam 2: `frontend/src/tests/recordDrafts.test.ts`（種別の選択、descriptor ごとの入力項目、Skill の commit と version の任意入力、JSON 入力と environment・データ分類の検証、送信する本文、サーバーの日本語エラーの表示）。
 
 `SUPPLEMENT_TABLE_NAME` は下書き操作では必須です。未設定でもカタログは提供し、下書きの API だけを 503 `DRAFTS_NOT_CONFIGURED` にします。既存の `pk` / `sk` 文字列キーの補助テーブルを使い、テーブルの TTL を属性 `expiresAt` で有効にしてください（テーブルの定義は #5 の IaC が持ちます）。TTL が無効でも動作は変わりませんが、確定した操作の項目が削除されずに残ります。
 

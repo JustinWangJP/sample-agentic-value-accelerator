@@ -11,8 +11,6 @@ from moto import mock_aws
 
 from draft_helpers import RECORD_ID, call, clients, event, handler_for, management_item
 from record_fixtures import (
-    A2A_DRAFT,
-    A2A_DESCRIPTORS,
     CASES,
     MCP_DESCRIPTORS,
     MCP_DRAFT,
@@ -63,12 +61,14 @@ def test_record_type_alone_defaults_to_the_descriptor_aws_accepts_for_it():
         stub.assert_no_pending_responses()
 
 
+@pytest.mark.parametrize("kind", ["a2a", "mcp"])
 @mock_aws
-def test_supplement_keeps_contact_terms_and_connection_reference():
+def test_supplement_keeps_contact_terms_and_connection_reference(kind):
+    draft, descriptors, metadata = CASES[kind]
     registry, db = clients()
     with Stubber(registry) as stub:
-        stub_create(stub, A2A_DRAFT, A2A_DESCRIPTORS, {**METADATA, "isA2A": True})
-        call(handler_for(registry, db), event(body=A2A_DRAFT))
+        stub_create(stub, draft, descriptors, metadata)
+        call(handler_for(registry, db), event(body=draft))
         item = management_item(db)
         assert item["contact"] == {"S": "payments@example.com"}
         assert item["termsOfUse"] == {"S": "社内利用のみ"}

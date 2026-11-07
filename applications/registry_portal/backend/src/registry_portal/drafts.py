@@ -15,7 +15,7 @@ from registry_portal.domain.drafts import (
     DRAFT_STATUS,
     IN_FLIGHT_STATUSES,
     NOT_EDITABLE_STATUSES,
-    AgentDraft,
+    RecordDraft,
     DraftOperation,
     DraftResult,
     DraftView,
@@ -100,10 +100,10 @@ def principal_of(caller: Caller) -> PrincipalRecord:
     return {"issuer": caller.principal.issuer, "subject": caller.principal.subject}
 
 
-def parse_draft(value: Mapping[str, Any]) -> AgentDraft:
+def parse_draft(value: Mapping[str, Any]) -> RecordDraft:
     """リクエストのフォーム入力を下書きとして検査する。"""
     try:
-        return AgentDraft.parse(value)
+        return RecordDraft.parse(value)
     except ValueError as error:
         raise RequestValidationError(str(error)) from None
 
@@ -117,7 +117,7 @@ def _aws_request_id(response: Mapping[str, Any]) -> str | None:
     return request_id if isinstance(request_id, str) and request_id else None
 
 
-class AgentDrafts:
+class RecordDrafts:
     def __init__(self, registry: str, store: DraftStore, client: RegistryControlClient) -> None:
         self.registry = registry
         self.store = store
@@ -258,9 +258,9 @@ class AgentDrafts:
         return management
 
     @staticmethod
-    def _read_draft(record: Mapping[str, Any], management: Management) -> AgentDraft:
+    def _read_draft(record: Mapping[str, Any], management: Management) -> RecordDraft:
         try:
-            return AgentDraft.from_record(record, management.owner_team, management.item)
+            return RecordDraft.from_record(record, management.owner_team, management.item)
         except ValueError:
             raise DraftUnavailable(
                 "この下書きはフォームで読み取れません。管理者に連絡してください。"
@@ -408,7 +408,7 @@ class AgentDrafts:
         self,
         record: Mapping[str, Any],
         management: Management,
-        draft: AgentDraft,
+        draft: RecordDraft,
         expected: str,
     ) -> None:
         if (
@@ -443,7 +443,7 @@ class AgentDrafts:
         if status in AWS_FAILED_STATUSES:
             self.store.abort(operation, status)
             return self._failed(operation)
-        draft = AgentDraft.parse(operation["draft"])
+        draft = RecordDraft.parse(operation["draft"])
         if status == DRAFT_STATUS and draft.is_applied_to(record):
             return success_status, self._finish(operation, record, draft)
         if (
@@ -458,7 +458,7 @@ class AgentDrafts:
         return self._pending(operation)
 
     def _finish(
-        self, operation: DraftOperation, record: Mapping[str, Any], draft: AgentDraft
+        self, operation: DraftOperation, record: Mapping[str, Any], draft: RecordDraft
     ) -> DraftResult:
         management = Management.after_edit(
             operation.get("management", {}),

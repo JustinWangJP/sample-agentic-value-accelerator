@@ -23,7 +23,7 @@ from registry_portal.config import (
 )
 from registry_portal.errors import ApiError, RequestValidationError, RouteNotFoundError
 from registry_portal.drafts import (
-    AgentDrafts,
+    RecordDrafts,
     DraftsNotConfigured,
     RegistryControlClient,
     require_publisher,
@@ -169,7 +169,7 @@ def create_management_handler(
     region = discovery_settings.registry_region
     # 下書きは補助テーブルが必須。未設定でもカタログは提供し、下書きの操作だけを 503 にする
     drafts = (
-        AgentDrafts(
+        RecordDrafts(
             discovery_settings.registry_arn,
             DraftStore(
                 catalog_settings.supplement_table_name,
@@ -187,7 +187,7 @@ def create_management_handler(
         else None
     )
 
-    def drafts_for(caller: Caller) -> AgentDrafts:
+    def drafts_for(caller: Caller) -> RecordDrafts:
         # 権限のない呼び出し元には、設定の状態より先に 403 を返す
         require_publisher(caller)
         if drafts is None:

@@ -53,16 +53,19 @@ export const MCP_TOOLS_SCHEMA_VERSIONS = [
 ] as const
 export const SKILL_SCHEMA_VERSIONS = ['0.1.0'] as const
 
-/** 全種別で入力する共通の文字列項目と文字数上限。バックエンドの TEXT_LIMITS と揃える */
+/** 入力欄の種類。input: 1行、textarea: 複数行、select: options から選ぶ */
+export type FieldInput = 'input' | 'textarea' | 'select'
+
+/** 全種別で入力する共通の文字列項目・文字数上限・入力欄の種類。バックエンドの TEXT_LIMITS と揃える */
 export const COMMON_TEXT_FIELDS = [
-  ['name', '名前', 255],
-  ['displayName', '表示名', 255],
-  ['description', '説明', 4096],
-  ['recordVersion', '版（semver）', 255],
-  ['connectionReference', '接続先の参照', 2048],
-  ['contact', '連絡先', 1024],
-  ['termsOfUse', '利用条件', 4096],
-] as const
+  { key: 'name', label: '名前', maxLength: 255, input: 'input' },
+  { key: 'displayName', label: '表示名', maxLength: 255, input: 'input' },
+  { key: 'description', label: '説明', maxLength: 4096, input: 'textarea' },
+  { key: 'recordVersion', label: '版（semver）', maxLength: 255, input: 'input' },
+  { key: 'connectionReference', label: '接続先の参照', maxLength: 2048, input: 'input' },
+  { key: 'contact', label: '連絡先', maxLength: 1024, input: 'input' },
+  { key: 'termsOfUse', label: '利用条件', maxLength: 4096, input: 'textarea' },
+] as const satisfies readonly { key: string; label: string; maxLength: number; input: FieldInput }[]
 
 export type SpecificFieldKey =
   | 'purpose'
@@ -82,10 +85,9 @@ export type FieldSpec = {
   key: SpecificFieldKey
   label: string
   maxLength: number
-  /** input: 1行、textarea: 複数行、select: options から選ぶ */
-  input: 'input' | 'textarea' | 'select'
+  input: FieldInput
   options?: readonly string[]
-  /** 取得できなければ空でよい項目 */
+  /** 空でよい項目（ほかの項目との組合せはサーバーが検査する） */
   optional?: boolean
   /** 新規作成時の初期値。省略すると空 */
   initial?: string
@@ -145,8 +147,21 @@ export const DESCRIPTOR_FIELD_SPECS: Record<DescriptorType, readonly FieldSpec[]
       input: 'input',
       initial: 'github',
     },
-    { key: 'skillCommit', label: '固定した commit', maxLength: 64, input: 'input' },
-    { key: 'skillVersion', label: '固定した version', maxLength: 128, input: 'input' },
+    // commit と version は少なくとも一方を入力する（バックエンドの OPTIONAL_FIELDS と _check_skill_pin）
+    {
+      key: 'skillCommit',
+      label: '固定した commit（version と少なくとも一方）',
+      maxLength: 64,
+      input: 'input',
+      optional: true,
+    },
+    {
+      key: 'skillVersion',
+      label: '固定した version（例 1.2.0。commit と少なくとも一方）',
+      maxLength: 128,
+      input: 'input',
+      optional: true,
+    },
     {
       key: 'skillDigest',
       label: 'digest（取得できれば）',
@@ -172,7 +187,7 @@ export type CommonDraftFields = {
   contact: string
   termsOfUse: string
 }
-export type AgentDraft = CommonDraftFields & Partial<Record<SpecificFieldKey, string>>
+export type RecordDraft = CommonDraftFields & Partial<Record<SpecificFieldKey, string>>
 
 /** descriptor ごとの入力項目の初期値 */
 export function initialSpecificFields(

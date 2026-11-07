@@ -4,6 +4,8 @@
  */
 export const CATALOG_RECORD_TYPES = ['AGENT', 'MCP', 'SKILL'] as const
 export type CatalogRecordType = (typeof CATALOG_RECORD_TYPES)[number]
+/** 種別を省略したときの既定。バックエンドの AGENT_RECORD_TYPE と揃える */
+export const AGENT_RECORD_TYPE: CatalogRecordType = 'AGENT'
 
 /** 画面に表示する種別名。カタログと下書きで共通 */
 export const RECORD_TYPE_LABELS: Record<CatalogRecordType, string> = {

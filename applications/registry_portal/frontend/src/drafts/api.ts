@@ -6,16 +6,16 @@ import {
   DESCRIPTOR_FIELD_SPECS,
   isAllowedKind,
   isDescriptorType,
-  type AgentDraft,
+  type RecordDraft,
 } from './descriptors'
 
-export type { AgentDraft }
+export type { RecordDraft }
 
 /** 下書きを保存できる environment。バックエンドの ENVIRONMENTS（domain/drafts.py）と揃える */
 export const DRAFT_ENVIRONMENTS = ['dev'] as const
 export type DraftEnvironment = (typeof DRAFT_ENVIRONMENTS)[number]
 export const DEFAULT_DRAFT_ENVIRONMENT: DraftEnvironment = DRAFT_ENVIRONMENTS[0]
-function isDraftEnvironment(value: unknown): value is DraftEnvironment {
+export function isDraftEnvironment(value: unknown): value is DraftEnvironment {
   return DRAFT_ENVIRONMENTS.some((environment) => environment === value)
 }
 
@@ -40,7 +40,7 @@ export function isEditableStatus(status: RecordStatus): boolean {
 }
 export type DraftDetail = {
   recordId: string
-  draft: AgentDraft
+  draft: RecordDraft
   contentHash: string
   status: RecordStatus
   hasDraft: boolean
@@ -91,10 +91,10 @@ export function settlesCreateKey(error: { status: number; code: string }): boole
 export type DraftApi = {
   listDrafts: (nextToken?: string) => Promise<DraftPage>
   getDraft: (recordId: string) => Promise<DraftDetail>
-  createDraft: (draft: AgentDraft, idempotencyKey: string) => Promise<DraftOperation>
+  createDraft: (draft: RecordDraft, idempotencyKey: string) => Promise<DraftOperation>
   updateDraft: (
     recordId: string,
-    draft: AgentDraft,
+    draft: RecordDraft,
     expectedContentHash: string,
   ) => Promise<DraftOperation>
   getDraftOperation: (operationId: string) => Promise<DraftOperation>
@@ -106,12 +106,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function hasStringFields(value: Record<string, unknown>, keys: readonly string[]): boolean {
   return keys.every((key) => typeof value[key] === 'string')
 }
-function isDraft(value: unknown): value is AgentDraft {
+function isDraft(value: unknown): value is RecordDraft {
   return (
     isPlainObject(value) &&
     isDescriptorType(value.descriptorType) &&
     isAllowedKind(value.recordType, value.descriptorType) &&
-    COMMON_TEXT_FIELDS.every(([key]) => typeof value[key] === 'string') &&
+    COMMON_TEXT_FIELDS.every(({ key }) => typeof value[key] === 'string') &&
     DESCRIPTOR_FIELD_SPECS[value.descriptorType].every(
       (spec) => typeof value[spec.key] === 'string',
     ) &&

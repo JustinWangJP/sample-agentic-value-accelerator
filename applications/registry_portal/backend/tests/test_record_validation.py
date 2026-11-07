@@ -13,6 +13,7 @@ from moto import mock_aws
 
 from draft_helpers import call, clients, event, handler_for, management_item
 from record_fixtures import (
+    A2A_DESCRIPTORS,
     A2A_DRAFT,
     CASES,
     MCP_DESCRIPTORS,
@@ -25,6 +26,11 @@ from record_fixtures import (
 )
 
 JAPANESE = re.compile("[぀-ヿ一-鿿]")
+
+
+def tools_with(input_schema):
+    """inputSchema だけを差し替えた tools 定義（MCP の Tool の inputSchema はルートが object）。"""
+    return compact({"tools": [{"name": "t", "inputSchema": input_schema}]})
 
 
 def rejected(draft):
@@ -82,6 +88,8 @@ def test_unsupported_schema_version_is_rejected_before_aws(base, change):
         (MCP_DRAFT, {"definition": compact({"name": "x"})}),
         (MCP_DRAFT, {"toolsDefinition": compact({"tools": []})}),
         (MCP_DRAFT, {"toolsDefinition": compact({"tools": [{"name": "t"}]})}),
+        (MCP_DRAFT, {"toolsDefinition": tools_with({})}),
+        (MCP_DRAFT, {"toolsDefinition": tools_with({"type": "string"})}),
         (SKILL_DRAFT, {"skillMd": "# frontmatter なし"}),
         (SKILL_DRAFT, {"skillMd": "---\nname: x\n---\n"}),
     ],
@@ -102,6 +110,8 @@ def test_malformed_definition_is_rejected_before_aws(base, change):
         {"skillCommit": "G" * 40},
         {"skillVersion": "latest"},
         {"skillVersion": "main"},
+        {"skillVersion": "release-2025"},
+        {"skillVersion": "feature/1.2.0"},
         {"skillVersion": "^1.2.0"},
         {"skillVersion": "1.x"},
         {"skillDigest": "md5:abcd"},
@@ -112,6 +122,35 @@ def test_malformed_definition_is_rejected_before_aws(base, change):
 @mock_aws
 def test_skill_must_pin_repository_commit_and_version_and_digest_if_given(change):
     rejected({**SKILL_DRAFT, **change})
+
+
+@mock_aws
+def test_skill_needs_at_least_one_of_commit_and_version():
+    message = rejected({**SKILL_DRAFT, "skillCommit": "", "skillVersion": ""})
+    assert "commit または version" in message
+
+
+@pytest.mark.parametrize(
+    "pin",
+    [
+        {"skillCommit": "", "skillVersion": "1.2.0"},
+        {"skillCommit": "", "skillVersion": "v1.2.0"},
+        {"skillCommit": "0123456789abcdef0123456789abcdef01234567", "skillVersion": ""},
+    ],
+)
+@mock_aws
+def test_skill_can_be_pinned_by_commit_or_version_alone(pin):
+    draft = {**SKILL_DRAFT, **pin}
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub_create(stub, draft, SKILL_DESCRIPTORS, METADATA)
+        status, created = call(handler_for(registry, db), event(body=draft))
+        assert status == 201
+        assert created["draft"] == draft
+        item = management_item(db)
+        assert item["skillCommit"] == {"S": draft["skillCommit"]}
+        assert item["skillVersion"] == {"S": draft["skillVersion"]}
+        stub.assert_no_pending_responses()
 
 
 @mock_aws
@@ -241,6 +280,8 @@ SECRETS = [
     ("connectionReference", "https://alice:s3cretpw@example.com/x", "URL に埋め込まれた資格情報"),
     ("connectionReference", "https://example.com/x?api_key=abcd1234efgh", "URL のクエリの資格情報"),
     ("description", "password=hunter2hunter2 を使う", "資格情報の代入"),
+    ("description", "password=hunter2 を使う", "資格情報の代入"),
+    ("termsOfUse", "api_key: 1234", "資格情報の代入"),
 ]
 
 
@@ -314,6 +355,26 @@ def test_secret_in_mcp_tools_definition_is_rejected():
 def test_secret_in_skill_md_is_rejected():
     md = SKILL_DRAFT["skillMd"] + "\nexport TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789\n"
     assert "skillMd" in rejected({**SKILL_DRAFT, "skillMd": md})
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "password: <your password> を入力する",
+        "api_key: string 型で渡す",
+        "password: ******** と表示される",
+        "password: required",
+    ],
+)
+@mock_aws
+def test_placeholders_and_type_names_after_a_secret_name_are_not_secrets(description):
+    draft = {**A2A_DRAFT, "description": description}
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        stub_create(stub, draft, A2A_DESCRIPTORS, {**METADATA, "isA2A": True})
+        status, _ = call(handler_for(registry, db), event(body=draft))
+        assert status == 201
+        stub.assert_no_pending_responses()
 
 
 @mock_aws

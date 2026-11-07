@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
@@ -10,17 +9,17 @@ from typing import Any, Literal, TypedDict, get_args
 from registry_portal.domain.catalog import (
     AGENT_RECORD_TYPE,
     CATALOG_RECORD_TYPES,
-    CUSTOM_DESCRIPTOR_TYPE,
     DATA_CLASSIFICATIONS,
-    SKILL_DESCRIPTOR_TYPE,
     DescriptorType,
 )
 from registry_portal.domain.descriptors import (
+    ALL_SUPPLEMENT_FIELDS,
     DEFINITION_LIMITS,
     DESCRIPTOR_FIELDS,
     OPTIONAL_FIELDS,
-    SKILL_SUPPLEMENT_FIELDS,
     STRUCTURED_FIELDS,
+    SUPPLEMENT_FIELDS,
+    canonical,
     check_kind,
     create_descriptors,
     custom_metadata_extra,
@@ -28,6 +27,7 @@ from registry_portal.domain.descriptors import (
     descriptors_applied,
     normalize_and_check,
     read_descriptor_fields,
+    supplement_fields,
     update_descriptors,
 )
 from registry_portal.domain.secrets import scan_text
@@ -38,21 +38,7 @@ RECORD_FIELDS = ("name", "displayName", "description", "recordVersion")
 KIND_FIELDS = ("recordType", "descriptorType")
 # custom metadata に保存する項目（isA2A は定義から導出するため含めない）
 METADATA_FIELDS = ("ownerTeam", "environment", "dataClassification")
-# custom descriptor の data に canonical JSON として保存する定義
-DEFINITION_FIELDS = (
-    "purpose",
-    "connectionReference",
-    "authentication",
-    "contact",
-    "termsOfUse",
-)
-# すべての種別で入力する、連絡先・利用条件・接続先の参照。補助ストアの管理情報（MANAGEMENT）に保存する。
-# custom descriptor では descriptor の中身を正本とし、管理情報は写しとして公開版スナップショットを作るために
-# 使い、下書きの読み取りには使わない（ADR-0008）。AWS が検証する他の descriptor は、これらを入れる項目が
-# ないため、管理情報を正本とする（ADR-0009）
-SUPPLEMENT_FIELDS = ("contact", "termsOfUse", "connectionReference")
-# 管理情報に保存し得るすべての項目（Skill の配布物の固定情報を含む）
-ALL_SUPPLEMENT_FIELDS = (*SUPPLEMENT_FIELDS, *SKILL_SUPPLEMENT_FIELDS)
+# 連絡先・利用条件・接続先の参照（SUPPLEMENT_FIELDS）は domain/descriptors.py に定義する
 COMMON_FIELDS = (*RECORD_FIELDS, *KIND_FIELDS, *METADATA_FIELDS, *SUPPLEMENT_FIELDS)
 
 # 下書きを保存できる environment。SPA の `DRAFT_ENVIRONMENTS`（frontend/src/drafts/api.ts）と揃える
@@ -190,16 +176,6 @@ def has_draft(status: str) -> bool:
     return status not in NO_DRAFT_STATUSES
 
 
-def canonical(value: object) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-
-
 def digest(value: object) -> str:
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 
@@ -241,7 +217,7 @@ class Management:
         cls,
         base: Mapping[str, Any],
         owner_team: str,
-        draft: AgentDraft,
+        draft: RecordDraft,
         editor: PrincipalRecord,
         edited_at: str,
     ) -> Management:
@@ -288,7 +264,7 @@ def content_hash(record: Mapping[str, Any], management: Management | None = None
 
 
 @dataclass(frozen=True)
-class AgentDraft:
+class RecordDraft:
     """Registry レコードの下書き。custom / A2A の Agent、MCP サーバー、Skill を同じ形で扱う。
 
     fields は文字列だけの平らな辞書で、種別（recordType）と primary descriptor（descriptorType）に応じて
@@ -306,7 +282,7 @@ class AgentDraft:
         return check_kind(self.record_type, self.fields["descriptorType"])[1]
 
     @classmethod
-    def parse(cls, value: Mapping[str, Any]) -> AgentDraft:
+    def parse(cls, value: Mapping[str, Any]) -> RecordDraft:
         record_type = value.get("recordType", AGENT_RECORD_TYPE)
         descriptor_type = value.get("descriptorType")
         if descriptor_type is None and record_type in CATALOG_RECORD_TYPES:
@@ -363,7 +339,7 @@ class AgentDraft:
     @classmethod
     def from_record(
         cls, record: Mapping[str, Any], owner_team: str, supplement: Mapping[str, Any]
-    ) -> AgentDraft:
+    ) -> RecordDraft:
         """Registry レコードをフォームの下書きとして読む。読めなければ ValueError。
 
         定義は primary descriptor の中身を正本とし、所有チームは補助ストアの値を使う（ADR-0002）。
@@ -375,16 +351,7 @@ class AgentDraft:
                 raise ValueError("primary descriptor が1個ではありません。")
             kind, descriptor = check_kind(record["recordType"], next(iter(descriptors)))
             metadata = record["customMetadata"]
-            specific: Mapping[str, Any]
-            if descriptor == CUSTOM_DESCRIPTOR_TYPE:
-                specific = json.loads(descriptors[descriptor]["data"])
-                if not isinstance(specific, Mapping) or set(specific) != set(DEFINITION_FIELDS):
-                    raise ValueError("custom descriptor の定義がフォームの項目と一致しません。")
-            else:
-                specific = {
-                    **read_descriptor_fields(descriptor, descriptors, supplement),
-                    **{key: supplement[key] for key in SUPPLEMENT_FIELDS},
-                }
+            specific = read_descriptor_fields(descriptor, descriptors[descriptor], supplement)
             return cls.parse(
                 {
                     **{key: record[key] for key in RECORD_FIELDS},
@@ -401,28 +368,13 @@ class AgentDraft:
 
     def supplement(self) -> dict[str, str]:
         """補助ストアの管理情報に置く項目。"""
-        keys = (
-            (*SUPPLEMENT_FIELDS, *SKILL_SUPPLEMENT_FIELDS)
-            if self.descriptor_type == SKILL_DESCRIPTOR_TYPE
-            else SUPPLEMENT_FIELDS
-        )
-        return {key: self.fields[key] for key in keys}
-
-    def _definition_data(self) -> str:
-        """custom descriptor の data に保存する canonical JSON。"""
-        return canonical({key: self.fields[key] for key in DEFINITION_FIELDS})
+        return {key: self.fields[key] for key in supplement_fields(self.descriptor_type)}
 
     def create_payload(self) -> dict[str, Any]:
-        descriptor = self.descriptor_type
-        descriptors = (
-            {"custom": {"data": self._definition_data()}}
-            if descriptor == CUSTOM_DESCRIPTOR_TYPE
-            else create_descriptors(descriptor, self.fields)
-        )
         return {
             **{key: self.fields[key] for key in RECORD_FIELDS},
             "recordType": self.record_type,
-            "descriptors": descriptors,
+            "descriptors": create_descriptors(self.descriptor_type, self.fields),
             "customMetadata": self._custom_metadata(),
         }
 
@@ -432,11 +384,7 @@ class AgentDraft:
         primary descriptor を切り替えるときは、古い descriptor を空のオブジェクトで削除して1個に保つ。
         """
         descriptor = self.descriptor_type
-        patches = update_descriptors(
-            descriptor,
-            self.fields,
-            self._definition_data() if descriptor == CUSTOM_DESCRIPTOR_TYPE else "",
-        )
+        patches = update_descriptors(descriptor, self.fields)
         removed: dict[str, Any] = {name: {} for name in existing_descriptors if name != descriptor}
         return {
             "displayName": {"optionalValue": self.fields["displayName"]},
@@ -468,7 +416,7 @@ class AgentDraft:
         }
 
 
-def draft_view(record: Mapping[str, Any], management: Management, draft: AgentDraft) -> DraftView:
+def draft_view(record: Mapping[str, Any], management: Management, draft: RecordDraft) -> DraftView:
     return {
         "recordId": record["recordId"],
         "draft": dict(draft.fields),

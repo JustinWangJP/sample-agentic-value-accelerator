@@ -5,7 +5,7 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createApiClient } from '../api/client'
-import { AgentDraftsView } from '../drafts/AgentDraftsView'
+import { RecordDraftsView } from '../drafts/RecordDraftsView'
 import { fakeFetch, jsonResponse } from './helpers'
 
 const common = {
@@ -36,7 +36,7 @@ const mcpDraft = {
   schemaVersion: '2025-12-11',
   definition: '{"name":"io.example/payments","description":"d","version":"1.0.0"}',
   toolsSchemaVersion: '2025-11-25',
-  toolsDefinition: '{"tools":[{"name":"t","inputSchema":{}}]}',
+  toolsDefinition: '{"tools":[{"name":"t","inputSchema":{"type":"object"}}]}',
 }
 const skillDraft = {
   ...common,
@@ -129,7 +129,7 @@ async function mount(responses: Response[]) {
   const api = createApiClient({ baseUrl: '', fetch: fetchImpl, getAccessToken: () => 'token' })
   await act(() =>
     root.render(
-      createElement(AgentDraftsView, {
+      createElement(RecordDraftsView, {
         api,
         roles: ['Publisher'],
         teams: ['team-payments'],
@@ -187,10 +187,34 @@ it('Skill はリポジトリ・固定した commit と version・digest・SKILL.
   await click('下書きを作成')
   await setValue('recordType', 'SKILL')
   expect(field('skillDigest')?.hasAttribute('required')).toBe(false)
-  expect(field('skillCommit')?.hasAttribute('required')).toBe(true)
+  expect(field('skillRepositoryUrl')?.hasAttribute('required')).toBe(true)
   await fill(skillDraft)
   await submit()
   expect(sentBody(calls)).toEqual(skillDraft)
+})
+
+it('Skill の固定情報は commit と version の一方だけでも送れ、両方が空ならサーバーの日本語エラーを表示する', async () => {
+  const versionOnly = { ...skillDraft, skillCommit: '' }
+  const message = '固定した commit または version の少なくとも一方を指定してください。'
+  const calls = await mount([
+    empty,
+    jsonResponse(201, succeeded(versionOnly)),
+    empty,
+    jsonResponse(400, { error: { code: 'VALIDATION_ERROR', message } }),
+  ])
+  await click('下書きを作成')
+  await setValue('recordType', 'SKILL')
+  expect(field('skillCommit')?.hasAttribute('required')).toBe(false)
+  expect(field('skillVersion')?.hasAttribute('required')).toBe(false)
+  await fill(versionOnly)
+  await submit()
+  expect(sentBody(calls)).toEqual(versionOnly)
+  await click('一覧に戻る')
+  await click('下書きを作成')
+  await setValue('recordType', 'SKILL')
+  await fill({ ...skillDraft, skillCommit: '', skillVersion: '' })
+  await submit()
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain(message)
 })
 
 it('environment は dev 固定で、データ分類の選択肢は public と private だけ', async () => {
@@ -253,19 +277,21 @@ it('JSON が読めない・種別と descriptor の組合せが不正なとき�
   expect(calls).toHaveLength(1)
 })
 
-it('JSON の environment・データ分類の値はサーバーが検証し、その日本語エラーを表示する', async () => {
-  const message = 'データ分類は public または private を指定してください。'
-  const calls = await mount([
-    empty,
-    jsonResponse(400, { error: { code: 'VALIDATION_ERROR', message } }),
-  ])
+it('JSON の environment・データ分類は許可値の一覧で検証して日本語で示し、送信しない', async () => {
+  const calls = await mount([empty])
   await click('下書きを作成')
   await click('JSON で入力')
   await setValue('draftJson', JSON.stringify({ ...mcpDraft, dataClassification: 'confidential' }))
-  expect(container.querySelector('[role="alert"]')).toBeNull()
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+    'データ分類は public または private を指定してください。',
+  )
+  expect(button('下書きを保存').disabled).toBe(true)
+  await setValue('draftJson', JSON.stringify({ ...mcpDraft, environment: 'prod' }))
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+    'environment は dev のみ指定できます。',
+  )
   await submit()
-  expect(sentBody(calls).dataClassification).toBe('confidential')
-  expect(container.querySelector('[role="alert"]')?.textContent).toContain(message)
+  expect(calls).toHaveLength(1)
 })
 
 it('編集では種別を変えられず、Agent だけ descriptor を切り替えられる', async () => {

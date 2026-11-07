@@ -1,5 +1,6 @@
-import type { CatalogRecordType } from '../api/recordType'
-import { DEFAULT_DRAFT_ENVIRONMENT } from './api'
+import { DATA_CLASSIFICATIONS, isDataClassification } from '../api/dataClassification'
+import { AGENT_RECORD_TYPE, type CatalogRecordType } from '../api/recordType'
+import { DEFAULT_DRAFT_ENVIRONMENT, DRAFT_ENVIRONMENTS, isDraftEnvironment } from './api'
 import {
   COMMON_TEXT_FIELDS,
   DESCRIPTOR_FIELD_SPECS,
@@ -7,7 +8,7 @@ import {
   initialSpecificFields,
   isAllowedKind,
   isDescriptorType,
-  type AgentDraft,
+  type RecordDraft,
   type DescriptorType,
 } from './descriptors'
 
@@ -15,7 +16,7 @@ import {
 
 /** 全種別で共通の項目名 */
 const COMMON_KEYS = new Set<string>([
-  ...COMMON_TEXT_FIELDS.map(([key]) => key),
+  ...COMMON_TEXT_FIELDS.map(({ key }) => key),
   'ownerTeam',
   'environment',
   'dataClassification',
@@ -23,8 +24,17 @@ const COMMON_KEYS = new Set<string>([
   'descriptorType',
 ])
 
-/** 新規作成の初期値。種別は Agent、descriptor は custom */
-export function emptyDraft(ownerTeam: string): AgentDraft {
+/** descriptor ごとに、下書きに指定できる項目名（共通項目と descriptor ごとの項目） */
+function draftKeys(descriptorType: DescriptorType): Set<string> {
+  return new Set<string>([
+    ...COMMON_KEYS,
+    ...DESCRIPTOR_FIELD_SPECS[descriptorType].map((spec) => spec.key),
+  ])
+}
+
+/** 新規作成の初期値。種別は Agent、descriptor はその既定（custom） */
+export function emptyDraft(ownerTeam: string): RecordDraft {
+  const descriptorType = RECORD_TYPE_DESCRIPTORS[AGENT_RECORD_TYPE][0]
   return {
     name: '',
     displayName: '',
@@ -33,48 +43,46 @@ export function emptyDraft(ownerTeam: string): AgentDraft {
     ownerTeam,
     environment: DEFAULT_DRAFT_ENVIRONMENT,
     dataClassification: 'private',
-    recordType: 'AGENT',
-    descriptorType: 'custom',
+    recordType: AGENT_RECORD_TYPE,
+    descriptorType,
     connectionReference: '',
     contact: '',
     termsOfUse: '',
-    ...initialSpecificFields('custom'),
+    ...initialSpecificFields(descriptorType),
   }
 }
 
 /** 種別または descriptor を切り替える。共通項目は残し、descriptor ごとの項目は初期値に戻す */
 export function switchKind(
-  draft: AgentDraft,
+  draft: RecordDraft,
   recordType: CatalogRecordType,
   descriptorType: DescriptorType = RECORD_TYPE_DESCRIPTORS[recordType][0],
-): AgentDraft {
+): RecordDraft {
   const common = Object.fromEntries(
     Object.entries(draft).filter(
       ([key]) =>
         COMMON_KEYS.has(key) && key !== 'recordType' && key !== 'descriptorType',
     ),
-  ) as Omit<AgentDraft, 'recordType' | 'descriptorType'>
+  ) as Omit<RecordDraft, 'recordType' | 'descriptorType'>
   return { ...common, recordType, descriptorType, ...initialSpecificFields(descriptorType) }
 }
 
 /** サーバーへ送る本文。現在の descriptor に属さない項目は含めない */
-export function draftPayload(draft: AgentDraft): AgentDraft {
-  const keys = new Set<string>([
-    ...COMMON_KEYS,
-    ...DESCRIPTOR_FIELD_SPECS[draft.descriptorType].map((spec) => spec.key),
-  ])
+export function draftPayload(draft: RecordDraft): RecordDraft {
+  const keys = draftKeys(draft.descriptorType)
   return Object.fromEntries(
     Object.entries(draft).filter(([key]) => keys.has(key)),
-  ) as AgentDraft
+  ) as RecordDraft
 }
 
-export type JsonDraftResult = { draft: AgentDraft } | { error: string }
+export type JsonDraftResult = { draft: RecordDraft } | { error: string }
 
 /**
- * JSON 入力を下書きとして読む。種別と descriptor の組合せ・項目名・値の型は、送る前に日本語で示す。
- * 値そのものの検証（environment、データ分類、schema version、定義の形式、秘密情報など）はサーバーが行う。
+ * JSON 入力を下書きとして読む。種別と descriptor の組合せ・項目名・値の型と、許可値から選ぶ項目
+ * （environment は DRAFT_ENVIRONMENTS、データ分類は DATA_CLASSIFICATIONS）は、送る前に日本語で示す。
+ * 文言はバックエンドの RecordDraft.parse と揃える。schema version、定義の形式、秘密情報などはサーバーが検証する。
  */
-export function parseDraftJson(text: string, current: AgentDraft): JsonDraftResult {
+export function parseDraftJson(text: string, current: RecordDraft): JsonDraftResult {
   let value: unknown
   try {
     value = JSON.parse(text)
@@ -90,14 +98,17 @@ export function parseDraftJson(text: string, current: AgentDraft): JsonDraftResu
   if (!isDescriptorType(descriptorType) || !isAllowedKind(recordType, descriptorType)) {
     return { error: '種別と descriptor の組合せが正しくありません。' }
   }
-  const allowed = new Set<string>([
-    ...COMMON_KEYS,
-    ...DESCRIPTOR_FIELD_SPECS[descriptorType].map((spec) => spec.key),
-  ])
+  const allowed = draftKeys(descriptorType)
   for (const [key, item] of Object.entries(input)) {
     if (!allowed.has(key)) return { error: `${key} は指定できない項目です。` }
     if (typeof item !== 'string') return { error: `${key} は文字列で指定してください。` }
   }
+  if (input.environment !== undefined && !isDraftEnvironment(input.environment)) {
+    return { error: `environment は ${DRAFT_ENVIRONMENTS.join(' または ')} のみ指定できます。` }
+  }
+  if (input.dataClassification !== undefined && !isDataClassification(input.dataClassification)) {
+    return { error: `データ分類は ${DATA_CLASSIFICATIONS.join(' または ')} を指定してください。` }
+  }
   const base = switchKind(current, recordType as CatalogRecordType, descriptorType)
-  return { draft: { ...base, ...input } as AgentDraft }
+  return { draft: { ...base, ...input } as RecordDraft }
 }

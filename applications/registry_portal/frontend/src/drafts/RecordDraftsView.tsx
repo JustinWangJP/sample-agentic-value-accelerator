@@ -8,7 +8,7 @@ import {
   isEditableStatus,
   isUncertainSaveError,
   settlesCreateKey,
-  type AgentDraft,
+  type RecordDraft,
   type DraftDetail,
   type DraftOperation,
   type DraftPage,
@@ -18,6 +18,7 @@ import {
   DESCRIPTOR_FIELD_SPECS,
   DESCRIPTOR_LABELS,
   RECORD_TYPE_DESCRIPTORS,
+  type FieldInput,
 } from './descriptors'
 import { draftPayload, emptyDraft, parseDraftJson, switchKind } from './draftForm'
 
@@ -31,7 +32,7 @@ type PageState =
   | { kind: 'ready'; page: DraftPage }
   | { kind: 'error'; error: ApiError }
 
-export function AgentDraftsView({ api, roles, teams, onRelogin }: Props) {
+export function RecordDraftsView({ api, roles, teams, onRelogin }: Props) {
   const [screen, setScreen] = useState<Screen>({ kind: 'list' })
   const [page, setPage] = useState<PageState>({ kind: 'loading' })
   const [token, setToken] = useState<string | undefined>()
@@ -254,16 +255,71 @@ type SaveState =
   | { kind: 'saving' }
   | { kind: 'error'; error: ApiError }
   | { kind: 'result'; operation: DraftOperation }
+/** 1つの入力項目。共通項目と descriptor ごとの項目で、入力欄の種類（FieldInput）に応じて描き分ける */
+function FieldControl({
+  name,
+  label,
+  input,
+  maxLength,
+  value,
+  options = [],
+  optional = false,
+  readOnly = false,
+  onChange,
+}: {
+  name: string
+  label: string
+  input: FieldInput
+  maxLength: number
+  value: string
+  options?: readonly string[]
+  optional?: boolean
+  readOnly?: boolean
+  onChange: (value: string) => void
+}) {
+  return (
+    <label>
+      {label}
+      {input === 'select' ? (
+        <select name={name} value={value} onChange={(event) => onChange(event.target.value)}>
+          {options.map((option) => (
+            <option key={option}>{option}</option>
+          ))}
+        </select>
+      ) : input === 'textarea' ? (
+        <textarea
+          name={name}
+          required={!optional}
+          maxLength={maxLength}
+          rows={maxLength > 4096 ? 10 : 4}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      ) : (
+        <input
+          name={name}
+          required={!optional}
+          maxLength={maxLength}
+          value={value}
+          readOnly={readOnly}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      )}
+    </label>
+  )
+}
+
 /** 種別・descriptor の選択と、共通項目・descriptor ごとの入力項目 */
 function KindFields({
   draft,
   isNew,
   onChange,
 }: {
-  draft: AgentDraft
+  draft: RecordDraft
   isNew: boolean
-  onChange: (draft: AgentDraft) => void
+  onChange: (draft: RecordDraft) => void
 }) {
+  // 種別は作成後に変えられない。descriptor を選べるのは複数の descriptor を持つ種別（Agent）だけ
   const descriptors = RECORD_TYPE_DESCRIPTORS[draft.recordType]
   function setText(key: string, value: string) {
     onChange({ ...draft, [key]: value })
@@ -293,7 +349,7 @@ function KindFields({
         <select
           name="descriptorType"
           value={draft.descriptorType}
-          disabled={descriptors.length === 1 || (!isNew && draft.recordType !== 'AGENT')}
+          disabled={descriptors.length === 1}
           onChange={(event) => {
             const descriptor = descriptors.find((value) => value === event.target.value)
             if (descriptor) onChange(switchKind(draft, draft.recordType, descriptor))
@@ -306,61 +362,30 @@ function KindFields({
           ))}
         </select>
       </label>
-      {COMMON_TEXT_FIELDS.map(([key, label, maxLength]) => (
-        <label key={key}>
-          {label}
-          {key === 'description' || key === 'termsOfUse' ? (
-            <textarea
-              name={key}
-              required
-              maxLength={maxLength}
-              value={draft[key]}
-              onChange={(event) => setText(key, event.target.value)}
-            />
-          ) : (
-            <input
-              name={key}
-              required
-              maxLength={maxLength}
-              value={draft[key]}
-              readOnly={key === 'name' && !isNew}
-              onChange={(event) => setText(key, event.target.value)}
-            />
-          )}
-        </label>
+      {COMMON_TEXT_FIELDS.map((spec) => (
+        <FieldControl
+          key={spec.key}
+          name={spec.key}
+          label={spec.label}
+          input={spec.input}
+          maxLength={spec.maxLength}
+          value={draft[spec.key]}
+          readOnly={spec.key === 'name' && !isNew}
+          onChange={(value) => setText(spec.key, value)}
+        />
       ))}
       {DESCRIPTOR_FIELD_SPECS[draft.descriptorType].map((spec) => (
-        <label key={spec.key}>
-          {spec.label}
-          {spec.input === 'select' ? (
-            <select
-              name={spec.key}
-              value={draft[spec.key] ?? ''}
-              onChange={(event) => setText(spec.key, event.target.value)}
-            >
-              {(spec.options ?? []).map((option) => (
-                <option key={option}>{option}</option>
-              ))}
-            </select>
-          ) : spec.input === 'textarea' ? (
-            <textarea
-              name={spec.key}
-              required={!spec.optional}
-              maxLength={spec.maxLength}
-              rows={spec.maxLength > 4096 ? 10 : 4}
-              value={draft[spec.key] ?? ''}
-              onChange={(event) => setText(spec.key, event.target.value)}
-            />
-          ) : (
-            <input
-              name={spec.key}
-              required={!spec.optional}
-              maxLength={spec.maxLength}
-              value={draft[spec.key] ?? ''}
-              onChange={(event) => setText(spec.key, event.target.value)}
-            />
-          )}
-        </label>
+        <FieldControl
+          key={spec.key}
+          name={spec.key}
+          label={spec.label}
+          input={spec.input}
+          maxLength={spec.maxLength}
+          value={draft[spec.key] ?? ''}
+          options={spec.options}
+          optional={spec.optional}
+          onChange={(value) => setText(spec.key, value)}
+        />
       ))}
     </>
   )
@@ -373,10 +398,10 @@ function MetadataFields({
   isNew,
   onChange,
 }: {
-  draft: AgentDraft
+  draft: RecordDraft
   teams: string[]
   isNew: boolean
-  onChange: (draft: AgentDraft) => void
+  onChange: (draft: RecordDraft) => void
 }) {
   return (
     <>
@@ -431,7 +456,7 @@ function DraftEditor({
   onBack: () => void
   onRelogin: () => void
 }) {
-  const [draft, setDraft] = useState<AgentDraft>(() =>
+  const [draft, setDraft] = useState<RecordDraft>(() =>
     initial.kind === 'edit' ? initial.detail.draft : emptyDraft(teams[0] ?? ''),
   )
   const [inputMode, setInputMode] = useState<'form' | 'json'>('form')
