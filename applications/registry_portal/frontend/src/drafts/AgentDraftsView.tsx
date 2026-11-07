@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { ApiError, toApiError, type ApiClient, type Role } from '../api/client'
 import { DATA_CLASSIFICATIONS } from '../api/dataClassification'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
-import { CATALOG_RECORD_TYPES } from '../api/recordType'
+import { CATALOG_RECORD_TYPES, RECORD_TYPE_LABELS } from '../api/recordType'
 import {
   DEFAULT_DRAFT_ENVIRONMENT,
   isEditableStatus,
@@ -18,7 +18,6 @@ import {
   DESCRIPTOR_FIELD_SPECS,
   DESCRIPTOR_LABELS,
   RECORD_TYPE_DESCRIPTORS,
-  RECORD_TYPE_LABELS,
 } from './descriptors'
 import { draftPayload, emptyDraft, parseDraftJson, switchKind } from './draftForm'
 

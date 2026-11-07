@@ -1,6 +1,5 @@
-import { DATA_CLASSIFICATIONS, isDataClassification } from '../api/dataClassification'
 import type { CatalogRecordType } from '../api/recordType'
-import { DEFAULT_DRAFT_ENVIRONMENT, DRAFT_ENVIRONMENTS } from './api'
+import { DEFAULT_DRAFT_ENVIRONMENT } from './api'
 import {
   COMMON_TEXT_FIELDS,
   DESCRIPTOR_FIELD_SPECS,
@@ -73,7 +72,7 @@ export type JsonDraftResult = { draft: AgentDraft } | { error: string }
 
 /**
  * JSON 入力を下書きとして読む。種別と descriptor の組合せ・項目名・値の型は、送る前に日本語で示す。
- * 値そのものの検証（schema version、定義の形式、秘密情報など）はサーバーが行う。
+ * 値そのものの検証（environment、データ分類、schema version、定義の形式、秘密情報など）はサーバーが行う。
  */
 export function parseDraftJson(text: string, current: AgentDraft): JsonDraftResult {
   let value: unknown
@@ -98,12 +97,6 @@ export function parseDraftJson(text: string, current: AgentDraft): JsonDraftResu
   for (const [key, item] of Object.entries(input)) {
     if (!allowed.has(key)) return { error: `${key} は指定できない項目です。` }
     if (typeof item !== 'string') return { error: `${key} は文字列で指定してください。` }
-  }
-  if (input.environment !== undefined && !DRAFT_ENVIRONMENTS.some((e) => e === input.environment)) {
-    return { error: `environment は ${DRAFT_ENVIRONMENTS.join(' または ')} のみ指定できます。` }
-  }
-  if (input.dataClassification !== undefined && !isDataClassification(input.dataClassification)) {
-    return { error: `データ分類は ${DATA_CLASSIFICATIONS.join(' または ')} を指定してください。` }
   }
   const base = switchKind(current, recordType as CatalogRecordType, descriptorType)
   return { draft: { ...base, ...input } as AgentDraft }

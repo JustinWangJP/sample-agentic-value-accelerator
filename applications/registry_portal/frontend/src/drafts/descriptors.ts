@@ -28,11 +28,6 @@ export function isAllowedKind(recordType: unknown, descriptorType: unknown): boo
   )
 }
 
-export const RECORD_TYPE_LABELS: Record<CatalogRecordType, string> = {
-  AGENT: 'Agent',
-  MCP: 'MCP サーバー',
-  SKILL: 'Skill',
-}
 export const DESCRIPTOR_LABELS: Record<DescriptorType, string> = {
   custom: 'custom（フォームで入力）',
   a2aAgentCard: 'A2A（Agent Card）',

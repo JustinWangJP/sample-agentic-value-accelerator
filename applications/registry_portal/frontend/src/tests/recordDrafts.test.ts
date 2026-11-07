@@ -253,6 +253,21 @@ it('JSON が読めない・種別と descriptor の組合せが不正なとき�
   expect(calls).toHaveLength(1)
 })
 
+it('JSON の environment・データ分類の値はサーバーが検証し、その日本語エラーを表示する', async () => {
+  const message = 'データ分類は public または private を指定してください。'
+  const calls = await mount([
+    empty,
+    jsonResponse(400, { error: { code: 'VALIDATION_ERROR', message } }),
+  ])
+  await click('下書きを作成')
+  await click('JSON で入力')
+  await setValue('draftJson', JSON.stringify({ ...mcpDraft, dataClassification: 'confidential' }))
+  expect(container.querySelector('[role="alert"]')).toBeNull()
+  await submit()
+  expect(sentBody(calls).dataClassification).toBe('confidential')
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain(message)
+})
+
 it('編集では種別を変えられず、Agent だけ descriptor を切り替えられる', async () => {
   const item = (draft: { name: string; recordType: string }) => ({
     recordId: 'agentABC1234',
