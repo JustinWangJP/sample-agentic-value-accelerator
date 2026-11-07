@@ -107,7 +107,7 @@ NOT_EDITABLE_STATUSES: frozenset[RecordStatus] = IN_FLIGHT_STATUSES | {"DEPRECAT
 # ポータルの書き込み操作の状態。API が返すのは IN_PROGRESS 以外の3つで、
 # SPA の `OPERATION_STATES`（frontend/src/drafts/api.ts）と揃える
 OperationState = Literal["IN_PROGRESS", "VERIFYING", "FAILED", "SUCCEEDED"]
-OperationKind = Literal["CREATE", "UPDATE"]
+OperationKind = Literal["CREATE", "UPDATE", "SUBMIT"]
 
 # 確定した操作（実行制御の項目）を補助テーブルの TTL で削除するまでの秒数（設計書「補助テーブルに保存するもの」）。
 # この間は同じ Idempotency-Key に同じ結果を返す。未確定の操作とロックには TTL を付けない
@@ -144,6 +144,7 @@ class DraftOperation(_DraftOperationRequired, total=False):
     errorCode: str
     # AWS の書き込み API が返した request ID（設計書「操作記録」）
     awsRequestId: str
+    snapshotHash: str
 
 
 class DraftView(TypedDict):
@@ -162,6 +163,11 @@ class DraftResult(DraftView):
 
     operationId: str
     operationState: OperationState
+
+
+class SubmissionResult(DraftResult):
+    submissionId: str
+    snapshotHash: str
 
 
 class OperationStatus(TypedDict):
@@ -230,6 +236,7 @@ class Management:
                 **draft.supplement(),
                 "lastEditedBy": editor,
                 "lastEditedAt": edited_at,
+                "activeSubmissionId": None,
             }
         )
 

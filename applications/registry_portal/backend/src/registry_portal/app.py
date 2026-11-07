@@ -82,6 +82,10 @@ _PARAMETERIZED_ROUTES = (
 
 def _route_template(key: str) -> tuple[str, str]:
     """ルート表のキーと、path パラメーター（なければ空文字）を返す。"""
+    if key.startswith("POST /api/records/") and key.endswith("/submit"):
+        parameter = key[len("POST /api/records/") : -len("/submit")]
+        if parameter and "/" not in parameter:
+            return "POST /api/records/{recordId}/submit", parameter
     for prefix, template in _PARAMETERIZED_ROUTES:
         parameter = key.removeprefix(prefix)
         if key.startswith(prefix) and parameter and "/" not in parameter:
@@ -231,6 +235,15 @@ def create_management_handler(
             caller, _path_parameter(event), _json_body(event, DRAFT_BODY_MAX_LENGTH)
         )
 
+    def submit_record(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        headers = _mapping_or_empty(event.get("headers"))
+        key = next(
+            (str(value) for name, value in headers.items() if name.lower() == "idempotency-key"), ""
+        )
+        return drafts_for(caller).submit(
+            caller, _path_parameter(event), _json_body(event, 16384), discovery_client, key
+        )
+
     def get_operation(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
         return drafts_for(caller).operation(caller, _path_parameter(event))
 
@@ -244,6 +257,7 @@ def create_management_handler(
         "GET /api/records/{recordId}": get_record,
         "PATCH /api/records/{recordId}": patch_record,
         "GET /api/operations/{operationId}": get_operation,
+        "POST /api/records/{recordId}/submit": submit_record,
     }
 
     def handler(event: LambdaEvent, context: Any) -> LambdaResponse:
