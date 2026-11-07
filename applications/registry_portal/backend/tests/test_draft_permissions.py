@@ -27,6 +27,8 @@ def test_draft_policy_only_grants_record_writes_and_supplement_transactions():
                 "agent-registry:UpdateRegistryRecord",
                 "agent-registry:GetRegistryRecord",
                 "agent-registry:ListRegistryRecords",
+                "agent-registry:GetRegistry",
+                "agent-registry:SubmitRegistryRecordForApproval",
             ],
             "Resource": [REGISTRY_ARN, f"{REGISTRY_ARN}/record/*"],
         },

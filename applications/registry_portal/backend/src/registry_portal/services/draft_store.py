@@ -171,6 +171,31 @@ class DraftStore:
             items = [control, owner]
         self._transact(items)
 
+    def save_submission(self, operation: DraftOperation, snapshot: Mapping[str, Any]) -> None:
+        control = self._put(
+            {
+                **operation,
+                "pk": self._operation_pk(operation["operationId"]),
+                "sk": "CONTROL",
+                "state": "VERIFYING",
+            },
+            "operationId = :op AND #state = :running",
+            {":op": operation["operationId"], ":running": "IN_PROGRESS"},
+        )
+        control["Put"]["ExpressionAttributeNames"] = {"#state": "state"}
+        self._transact(
+            [
+                control,
+                self._put(
+                    {
+                        **snapshot,
+                        "pk": operation["lockPk"],
+                        "sk": f"SUBMISSION#{operation['operationId']}",
+                    }
+                ),
+            ]
+        )
+
     def _close(
         self,
         operation: DraftOperation,
@@ -219,6 +244,20 @@ class DraftStore:
             "attribute_not_exists(pk) OR ownerTeam = :team",
             {":team": operation["ownerTeam"]},
         )
-        self._transact(
-            [owner, *self._close(operation, "SUCCEEDED", {"result": result}, result["recordId"])]
-        )
+        items = [
+            owner,
+            *self._close(operation, "SUCCEEDED", {"result": result}, result["recordId"]),
+        ]
+        previous = operation.get("management", {}).get("activeSubmissionId")
+        if operation["kind"] == "UPDATE" and previous:
+            items.append(
+                self._put(
+                    {
+                        "pk": operation["lockPk"],
+                        "sk": f"SUBMISSION#{previous}#INVALIDATED",
+                        "operationId": operation["operationId"],
+                        "invalidatedAt": operation["startedAt"],
+                    }
+                )
+            )
+        self._transact(items)
