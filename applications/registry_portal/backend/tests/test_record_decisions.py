@@ -802,6 +802,32 @@ def test_operations_endpoint_serves_decision_ops_to_curators_only():
 
 
 @mock_aws
+def test_decision_settled_by_another_decision_fails_without_showing_approved():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        state = setup_pending(stub, registry, db)
+        stub.add_response("get_registry_record", {**RECORD, "status": "PENDING_APPROVAL"}, GET)
+        stub_status_update(stub, approved=True, error="InternalServerException")
+        _, pending = decide(state["decision"], snapshot_hash=state["snapshot"]["snapshotHash"])
+        assert pending["operationState"] == "VERIFYING"
+        # 再送の照合で、別の決裁（break-glass など）で却下済みであることが分かった
+        stub.add_response("get_registry_record", {**RECORD, "status": "REJECTED"}, GET)
+        status, failed = decide(state["decision"], snapshot_hash=state["snapshot"]["snapshotHash"])
+        assert status == 200
+        assert failed["operationState"] == "FAILED"
+        operation_id = pending["operationId"]
+        control = db.get_item(
+            TableName=SUPPLEMENT_TABLE,
+            Key={"pk": {"S": f"OP#{operation_id}"}, "sk": {"S": "CONTROL"}},
+        )["Item"]
+        assert control["state"] == {"S": "FAILED"}
+        assert control["errorCode"] == {"S": "REJECTED"}
+        assert stored(db, "LOCK") is None
+        assert stored(db, f"PUBLISHED#{CUSTOM_DRAFT['recordVersion']}") is None
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
 def test_store_failure_after_aws_success_keeps_the_decision_verifying():
     from botocore.exceptions import ClientError
 

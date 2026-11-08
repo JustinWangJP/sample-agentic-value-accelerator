@@ -277,7 +277,12 @@ class RecordCuration:
         published_version = management.published_version(record)
         if published_version is None:
             return None
-        stored = self.store.get(self.store.record_pk(record_id), f"PUBLISHED#{published_version}")
+        try:
+            stored = self.store.get(
+                self.store.record_pk(record_id), f"PUBLISHED#{published_version}"
+            )
+        except (BotoCoreError, ClientError):
+            raise DecisionUnavailable() from None
         if stored is None:
             return None
         return {
@@ -523,8 +528,8 @@ class RecordCuration:
             or str(record.get("recordVersion")) != operation["recordVersion"]
             or content_hash(record, management) != operation["expectedContentHash"]
         ):
-            # 決裁が反映されなかったか、別の内容が確定している
-            self.store.abort(operation, status if status == target else "CONTENT_CHANGED")
+            # 決裁が反映されなかったか、別の内容が確定している。反映先の状態を失敗のコードに残す
+            self.store.abort(operation, "CONTENT_CHANGED" if status == target else status)
             return _failed(operation)
         return self._finish(operation, record, management)
 

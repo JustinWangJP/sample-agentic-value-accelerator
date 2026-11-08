@@ -367,7 +367,7 @@ Curator は審査待ちの一覧を見て、申請のスナップショットと
 
 ### 決裁の手順と守る規則
 
-決裁は設計書「内容を確認してから決裁する」の手順で行います。
+決裁は設計書「内容を確認してから決裁する」の手順で行います。AWS の `ListRegistryRecords` は `status` フィルターを受け付けるため、審査待ちの一覧は AWS に問い合わせます（[ListRegistryRecords](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_ListRegistryRecords.html)）。
 
 1. レコード単位のロック（下書きと共通の `LOCK`）を取り、決裁の意図（対象・理由・種別）を `AUDIT#…#INTENT` に記録します。
 2. 現物と申請スナップショットを照合し、対象を操作に固定（pin）して保存します。次のすべてが揃わなければ、AWS を呼ばずに409 `CONTENT_CONFLICT` で拒否します。
@@ -376,7 +376,7 @@ Curator は審査待ちの一覧を見て、申請のスナップショットと
    - Curator が送った `snapshotHash` が、保存済みスナップショットの `snapshotHash` と一致すること
    - 現物から計算し直した内容ハッシュ（`contentHash`）が、スナップショットの `contentHash` と一致すること
    - 決裁する Curator が申請者でも最終編集者でもないこと（自己承認の禁止。Admin が Curator を兼ねていても同じで、403 `FORBIDDEN`）
-3. AWS の `UpdateRegistryRecordStatus` を `statusReason` = 決裁理由で呼びます。理由は承認・却下の両方で記録します。却下は必須、承認は任意です（記録した理由をそのまま AWS に送れるよう、どちらも255文字以内に制限します。AWS の `statusReason` の上限に合わせています）。
+3. AWS の [UpdateRegistryRecordStatus](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_UpdateRegistryRecordStatus.html) を `statusReason` = 決裁理由で呼びます。理由は承認・却下の両方で記録します。却下は必須、承認は任意です（記録した理由をそのまま AWS に送れるよう、どちらも255文字以内に制限します。AWS の `statusReason` が 0〜255 文字であるためです。[サービスモデルの `UpdateRegistryRecordStatusRequestStatusReasonString`](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_UpdateRegistryRecordStatus.html) を参照してください）。
 4. 再取得して、期待した状態・版・内容ハッシュが確認できてから成功を記録します。確認できなければ202 `VERIFYING`（結果確認中）とし、ロックを保持してそのレコードへの書き込みを止めます。AWS が処理せず拒否したと確定できる場合（`ValidationException` など）は失敗として確定し、ロックを解除します。混雑（`ThrottlingException`）は429、レコードの状態が変わっていた（`ConflictException`）は409です。AWS が失敗したものを承認済みとは表示しません。
 
 公開承認が確定すると、Curator が確認した内容を公開版スナップショット（ADR-0007）として保存します（キー: `pk` = `REGISTRY#{arn}#RECORD#{recordId}`、`sk` = `PUBLISHED#{recordVersion}`）。`contact`・`termsOfUse`・`connectionReference`・`relatedReferences` は申請スナップショットの値をそのまま写し、カタログ詳細が読み取ります。同時に管理情報の `publishedVersion` を更新し、`activeSubmissionId` を消します。却下は公開版スナップショットを書き換えず、`activeSubmissionId` だけを消します。

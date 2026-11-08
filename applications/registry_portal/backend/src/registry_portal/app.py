@@ -17,6 +17,7 @@ import boto3
 from registry_portal.auth import Caller, authorize
 from registry_portal.catalog import get_catalog_detail, list_catalog, search_catalog
 from registry_portal.config import (
+    AuthSettings,
     ConfigurationError,
     load_auth_settings,
     load_catalog_settings,
@@ -160,6 +161,29 @@ MANAGEMENT_ROUTES: Mapping[str, Route] = {
 }
 
 
+def _serve(routes: Mapping[str, Route], settings: AuthSettings) -> Handler:
+    """ルート表を Lambda handler にする。認可・エラー応答はすべての handler で共通。"""
+
+    def handler(event: LambdaEvent, context: Any) -> LambdaResponse:
+        request_id = _request_context(event).get("requestId")
+        try:
+            caller = authorize(_claims_of(event), settings)
+            route = routes.get(_route_template(_route_key(event))[0])
+            if route is None:
+                raise RouteNotFoundError()
+            status, body = route(caller, event)
+            return _json_response(status, body)
+        except ApiError as error:
+            # ログにはトークンや claims の全文を出さない
+            logger.info("API エラー: code=%s request_id=%s", error.code, request_id)
+            return _json_response(error.status, error.to_dto(request_id))
+        except Exception:
+            logger.exception("想定外のエラー: request_id=%s", request_id)
+            return _json_response(500, ApiError().to_dto(request_id))
+
+    return handler
+
+
 def create_management_handler(
     environ: Mapping[str, str],
     *,
@@ -285,24 +309,7 @@ def create_management_handler(
         "POST /api/records/{recordId}/submit": submit_record,
     }
 
-    def handler(event: LambdaEvent, context: Any) -> LambdaResponse:
-        request_id = _request_context(event).get("requestId")
-        try:
-            caller = authorize(_claims_of(event), settings)
-            route = routes.get(_route_template(_route_key(event))[0])
-            if route is None:
-                raise RouteNotFoundError()
-            status, body = route(caller, event)
-            return _json_response(status, body)
-        except ApiError as error:
-            # ログにはトークンや claims の全文を出さない
-            logger.info("API エラー: code=%s request_id=%s", error.code, request_id)
-            return _json_response(error.status, error.to_dto(request_id))
-        except Exception:
-            logger.exception("想定外のエラー: request_id=%s", request_id)
-            return _json_response(500, ApiError().to_dto(request_id))
-
-    return handler
+    return _serve(routes, settings)
 
 
 def create_curation_handler(
@@ -371,21 +378,4 @@ def create_curation_handler(
         "POST /api/reviews/{recordId}/reject": reject,
     }
 
-    def handler(event: LambdaEvent, context: Any) -> LambdaResponse:
-        request_id = _request_context(event).get("requestId")
-        try:
-            caller = authorize(_claims_of(event), settings)
-            route = routes.get(_route_template(_route_key(event))[0])
-            if route is None:
-                raise RouteNotFoundError()
-            status, body = route(caller, event)
-            return _json_response(status, body)
-        except ApiError as error:
-            # ログにはトークンや claims の全文を出さない
-            logger.info("API エラー: code=%s request_id=%s", error.code, request_id)
-            return _json_response(error.status, error.to_dto(request_id))
-        except Exception:
-            logger.exception("想定外のエラー: request_id=%s", request_id)
-            return _json_response(500, ApiError().to_dto(request_id))
-
-    return handler
+    return _serve(routes, settings)

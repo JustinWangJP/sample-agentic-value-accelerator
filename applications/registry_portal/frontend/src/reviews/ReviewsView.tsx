@@ -8,6 +8,7 @@ import {
   type DecisionOperation,
   type ReviewDetail,
   type ReviewPage,
+  type ReviewReference,
 } from './api'
 
 type Props = { api: ApiClient; roles: string[]; onRelogin: () => void }
@@ -360,14 +361,17 @@ function ReviewDetailView({
   )
 }
 
+/** 差分で比べる項目。公開中の版（スナップショットがない項目は null）と申請された版 */
+type DiffFields = {
+  recordVersion: string
+  contact: string | null
+  termsOfUse: string | null
+  connectionReference: string | null
+  relatedReferences: ReviewReference[]
+}
+
 /** 公開中の版と申請のスナップショットを比べる。ハッシュで対象を固定するため、差分は参考情報 */
-function DiffTable({
-  next,
-  published,
-}: {
-  next: { recordVersion: string; contact: string; termsOfUse: string; connectionReference: string; relatedReferences: { recordId: string; recordVersion: string }[] }
-  published: { recordVersion: string; contact: string | null; termsOfUse: string | null; connectionReference: string | null; relatedReferences: { recordId: string; recordVersion: string }[] }
-}) {
+function DiffTable({ next, published }: { next: DiffFields; published: DiffFields }) {
   const rows: [string, string, string][] = [
     ['版', published.recordVersion, next.recordVersion],
     ['連絡先', published.contact ?? '未登録', next.contact || '未登録'],
