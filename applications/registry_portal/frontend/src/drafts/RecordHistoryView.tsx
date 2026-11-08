@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { ApiError, toApiError, type ApiClient } from '../api/client'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
-import type { HistoryEntry } from './api'
+import type { HistoryEntry, HistoryKind, HistoryState } from './api'
 
 /** 操作と審査の種別の表示。バックエンドの OperationKind（domain/drafts.py）と揃える */
-const KIND_LABELS: Record<HistoryEntry['kind'], string> = {
+const KIND_LABELS: Record<HistoryKind, string> = {
   CREATE: '作成',
   UPDATE: '編集',
   SUBMIT: '申請',
@@ -12,35 +12,51 @@ const KIND_LABELS: Record<HistoryEntry['kind'], string> = {
   REJECT: '却下',
 }
 
-/** 操作の結果の表示 */
-function stateLabel(entry: HistoryEntry): string {
-  if (entry.state === 'UNKNOWN') return '不明'
-  if (entry.state === 'SUCCEEDED') return '成功'
-  if (entry.state === 'FAILED') return `失敗（${entry.errorCode ?? ''}）`
-  return '進行中'
+/** 操作の結果の表示。結果の追記記録がない操作は「結果確認中」（GLOSSARY「結果確認中」） */
+const STATE_LABELS: Record<HistoryState, string> = {
+  SUCCEEDED: '成功',
+  FAILED: '失敗',
+  IN_PROGRESS: '結果確認中',
+  UNKNOWN: '不明',
 }
 
-/** 操作者。取り込み前から公開されていた項目は、承認者が操作記録に残っていないため「不明」 */
+function stateLabel(entry: HistoryEntry): string {
+  const label = STATE_LABELS[entry.state]
+  return entry.errorCode ? `${label}（${entry.errorCode}）` : label
+}
+
+/** 操作した主体。取り込み前から公開されていた版は、公開承認した主体が操作記録に残っていないため「不明」 */
 function operatorLabel(entry: HistoryEntry): string {
   return entry.operator ? entry.operator.subject : '不明'
 }
 
-type HistoryState =
+type LoadState =
   | { kind: 'loading' }
   | { kind: 'ready'; entries: HistoryEntry[] }
   | { kind: 'error'; error: ApiError }
 
-/** Registry レコードごとの操作と審査の履歴（GET /api/records/{recordId}/history） */
-export function RecordHistoryView({
-  api,
-  recordId,
-  onRelogin,
-}: {
+type Props = {
   api: ApiClient
   recordId: string
   onRelogin: () => void
-}) {
-  const [state, setState] = useState<HistoryState>({ kind: 'loading' })
+}
+
+/** 履歴の表示を開閉するボタンと、開いたときの履歴。下書き編集・審査・カタログ詳細の各画面で使う */
+export function RecordHistoryToggle(props: Props) {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <button type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+        {open ? '履歴を閉じる' : '操作と審査の履歴を表示'}
+      </button>
+      {open && <RecordHistoryView {...props} />}
+    </>
+  )
+}
+
+/** Registry レコードごとの操作と審査の履歴（GET /api/records/{recordId}/history） */
+export function RecordHistoryView({ api, recordId, onRelogin }: Props) {
+  const [state, setState] = useState<LoadState>({ kind: 'loading' })
 
   useEffect(() => {
     let active = true

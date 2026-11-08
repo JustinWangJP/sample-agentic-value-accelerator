@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ApiClient, ApiError, CatalogDetail, CatalogItem } from '../api/client'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
+import { RecordHistoryToggle } from '../drafts/RecordHistoryView'
 import { catalogTypeLabel } from './recordTypes'
 import { settleWhileActive } from './requests'
 
@@ -12,11 +13,13 @@ type DetailView =
 type Props = {
   api: ApiClient
   item: CatalogItem
+  /** 所有チームによらず操作履歴を読める業務ロール（Curator・Admin）か */
+  canViewHistory: boolean
   onRelogin: () => void
   onClose: () => void
 }
 
-export function CatalogDetailView({ api, item, onRelogin, onClose }: Props) {
+export function CatalogDetailView({ api, item, canViewHistory, onRelogin, onClose }: Props) {
   const [view, setView] = useState<DetailView>({ status: 'loading' })
   const heading = useRef<HTMLHeadingElement>(null)
   const { recordId } = item
@@ -56,6 +59,7 @@ export function CatalogDetailView({ api, item, onRelogin, onClose }: Props) {
       ) : (
         <DetailContents detail={view.detail} />
       )}
+      {canViewHistory && <RecordHistoryToggle api={api} recordId={recordId} onRelogin={onRelogin} />}
     </section>
   )
 }

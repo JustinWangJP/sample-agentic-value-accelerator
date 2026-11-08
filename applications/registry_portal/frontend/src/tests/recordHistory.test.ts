@@ -1,12 +1,13 @@
 // @vitest-environment happy-dom
 // 操作履歴の表示（Seam 2: SPA の fetch 境界）。
 // API の応答の検査、操作 ID・操作者・対象ハッシュ・時刻・結果・AWS request ID の表示、
-// 取り込み前から公開されていた項目の承認者「不明」を確認する。
+// 取り込み前から公開されていた項目の「不明」、Curator・Admin の画面からの導線を確認する。
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createApiClient } from '../api/client'
-import { RecordHistoryView } from '../drafts/RecordHistoryView'
+import { CatalogDetailView } from '../catalog/CatalogDetailView'
+import { RecordHistoryToggle, RecordHistoryView } from '../drafts/RecordHistoryView'
 import { fakeFetch, jsonResponse, TEST_CONFIG } from './helpers'
 
 let container: HTMLDivElement
@@ -40,6 +41,7 @@ const entries = [
     startedAt: null,
     targetHash: null,
     state: 'UNKNOWN',
+    recordVersion: '0.9.0',
   },
   {
     operationId: 'approve-op',
@@ -93,8 +95,9 @@ it('操作と審査の履歴を、項目ごとの操作 ID・操作者・対象�
   expect(text(0)).toContain('成功')
   expect(text(0)).toContain('alice')
   expect(text(0)).toContain('aws-create-1')
-  // 承認者がわからない項目は「不明」と表示する
+  // 公開承認した主体がわからない項目は「不明」と表示する
   expect(text(1)).toContain('不明')
+  expect(text(1)).toContain('版 0.9.0')
   // 決裁の理由も審査の履歴として表示する
   expect(text(2)).toContain('利用申請の内容を確認した')
 })
@@ -113,4 +116,54 @@ it('履歴の取得に失敗したときは日本語のエラーを表示する'
     )
   })
   expect(container.textContent).toContain('操作履歴を取得できませんでした。')
+})
+
+it('失敗はエラーコード付き、結果の確定していない操作は「結果確認中」と表示する', async () => {
+  const unsettled = [
+    { ...entries[0], operationId: 'failed-op', state: 'FAILED', errorCode: 'AWS_REJECTED' },
+    { ...entries[2], operationId: 'open-op', state: 'IN_PROGRESS', awsRequestId: undefined },
+  ]
+  const { api } = client([jsonResponse(200, { ...historyBody, entries: unsettled })])
+  await act(async () => {
+    root.render(createElement(RecordHistoryView, { api, recordId: 'agentABC1234', onRelogin: () => {} }))
+  })
+  const items = [...container.querySelectorAll('ul.history-entries li')]
+  expect(items[0].textContent).toContain('失敗（AWS_REJECTED）')
+  expect(items[1].textContent).toContain('結果確認中')
+})
+
+it('履歴の開閉ボタンを押すまで履歴 API を呼ばない', async () => {
+  const { api, calls } = client([jsonResponse(200, historyBody)])
+  await act(async () => {
+    root.render(createElement(RecordHistoryToggle, { api, recordId: 'agentABC1234', onRelogin: () => {} }))
+  })
+  expect(calls).toHaveLength(0)
+  const button = container.querySelector('button')
+  await act(async () => button?.click())
+  expect(calls[0].url).toBe(`${TEST_CONFIG.apiBaseUrl}/api/records/agentABC1234/history`)
+  expect(container.querySelectorAll('ul.history-entries li')).toHaveLength(3)
+  expect(button?.textContent).toBe('履歴を閉じる')
+})
+
+it('カタログ詳細の履歴の導線は、Curator・Admin にだけ表示する', async () => {
+  const item = {
+    recordId: 'agentABC1234',
+    name: 'payments-agent',
+    displayName: '決済エージェント',
+  } as Parameters<typeof CatalogDetailView>[0]['item']
+  const detailError = () =>
+    jsonResponse(502, { error: { code: 'DISCOVERY_UNAVAILABLE', message: '取得できません。' } })
+  const props = { item, onRelogin: () => {}, onClose: () => {} }
+  const hidden = client([detailError()])
+  await act(async () => {
+    root.render(createElement(CatalogDetailView, { ...props, api: hidden.api, canViewHistory: false }))
+  })
+  expect(container.textContent).not.toContain('操作と審査の履歴を表示')
+  const shown = client([detailError()])
+  await act(async () => {
+    root.render(
+      createElement(CatalogDetailView, { ...props, key: 'curator', api: shown.api, canViewHistory: true }),
+    )
+  })
+  expect(container.textContent).toContain('操作と審査の履歴を表示')
 })

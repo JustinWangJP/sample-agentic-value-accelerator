@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { toApiError, type ApiClient, type ApiError } from '../api/client'
 import { RECORD_TYPE_LABELS } from '../api/recordType'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
+import { RecordHistoryToggle } from '../drafts/RecordHistoryView'
 import {
   PENDING_APPROVAL_STATUS,
   PUBLISHED_STATUS,
@@ -400,6 +401,7 @@ function ReviewDetailView({
       {state.kind === 'result' && state.operation.operationState === 'FAILED' && (
         <p role="alert">{state.operation.message}</p>
       )}
+      <RecordHistoryToggle api={api} recordId={detail.recordId} onRelogin={onRelogin} />
       <button type="button" disabled={deciding} onClick={onBack}>
         一覧に戻る
       </button>

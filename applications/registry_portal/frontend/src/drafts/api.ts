@@ -90,20 +90,27 @@ export type DraftOperation =
   | (DraftDetail & { operationId: string; operationState: Extract<OperationState, 'SUCCEEDED'> })
   | { operationId: string; operationState: UnsettledOperationState; message: string }
 
-/**
- * 操作と審査の履歴の1項目。バックエンドの history.py と揃える。
- * operator と state が null / UNKNOWN の項目は、取り込み前から公開されていた版の承認（承認者不明）
- */
+/** 操作の種別。バックエンドの OperationKind（domain/drafts.py）と揃える */
 export const HISTORY_KINDS = ['CREATE', 'UPDATE', 'SUBMIT', 'APPROVE', 'REJECT'] as const
 export type HistoryKind = (typeof HISTORY_KINDS)[number]
+/**
+ * 履歴 API が返す操作記録の結果。バックエンドの HistoryState（domain/drafts.py）と揃える。
+ * 書き込み操作の応答の状態（OPERATION_STATES）とは別の値の集まりで、
+ * 結果の追記記録がない操作は IN_PROGRESS（結果確認中）、取り込み前の公開承認は UNKNOWN（不明）
+ */
 export const HISTORY_STATES = ['SUCCEEDED', 'FAILED', 'IN_PROGRESS', 'UNKNOWN'] as const
+export type HistoryState = (typeof HISTORY_STATES)[number]
+/**
+ * 操作と審査の履歴の1項目。バックエンドの history.py と揃える。
+ * operator と state が null / UNKNOWN の項目は、取り込み前から公開されていた版の公開承認（決裁した主体が不明）
+ */
 export type HistoryEntry = {
   operationId: string | null
   kind: HistoryKind
   operator: { issuer: string; subject: string } | null
   startedAt: string | null
   targetHash: string | null
-  state: (typeof HISTORY_STATES)[number]
+  state: HistoryState
   awsRequestId?: string
   errorCode?: string
   reason?: string
