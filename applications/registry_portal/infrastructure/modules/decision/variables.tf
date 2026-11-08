@@ -47,3 +47,23 @@ variable "supplement_table_arn" {
     error_message = "補助 DynamoDB テーブルの ARN を指定してください。"
   }
 }
+
+variable "http_api_id" {
+  type        = string
+  description = "決裁の route を割り当てる既存 API Gateway HTTP API の ID（#5 の IaC が作成し、ここでは借用する）"
+
+  validation {
+    condition     = can(regex("^[a-z0-9]{10}$", var.http_api_id))
+    error_message = "API Gateway HTTP API の ID（英小文字と数字の10文字）を指定してください。"
+  }
+}
+
+variable "jwt_authorizer_id" {
+  type        = string
+  description = "決裁の route に適用する既存 JWT authorizer の ID。人間用 SPA client のトークンを検証する authorizer を指定する"
+
+  validation {
+    condition     = can(regex("^[a-z0-9]+$", var.jwt_authorizer_id))
+    error_message = "HTTP API の JWT authorizer の ID を指定してください。"
+  }
+}

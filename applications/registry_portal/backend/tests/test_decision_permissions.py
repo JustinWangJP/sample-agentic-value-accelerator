@@ -70,6 +70,9 @@ def test_module_creates_the_decision_lambda_with_its_own_role_and_log_group():
         "aws_iam_role",
         "aws_iam_role_policy",
         "aws_lambda_function",
+        "aws_apigatewayv2_integration",
+        "aws_apigatewayv2_route",
+        "aws_lambda_permission",
     ]
     # 実行ロールは決裁 Lambda 専用に新しく作る（管理 Lambda のロールを流用しない）
     assert 'Principal = { Service = "lambda.amazonaws.com" }' in main
@@ -79,6 +82,27 @@ def test_module_creates_the_decision_lambda_with_its_own_role_and_log_group():
         assert env in main
     # 補助テーブルがないと決裁 handler は起動しない（アプリ側の ConfigurationError と同じ前提）
     assert "DISCOVERY_TOKEN_URL" not in main
+
+
+def test_module_routes_only_the_review_api_to_the_decision_lambda_with_the_jwt_authorizer():
+    """決裁の4つの route だけを決裁 Lambda に割り当て、既存 JWT authorizer を適用する（Issue #10）。"""
+    main = (MODULE / "main.tf").read_text()
+    (routes,) = re.findall(r"routes = \[(.*?)\]", main, re.DOTALL)
+    assert re.findall(r'"([^"]+)"', routes) == [
+        "GET /api/reviews",
+        "GET /api/reviews/{recordId}",
+        "POST /api/reviews/{recordId}/approve",
+        "POST /api/reviews/{recordId}/reject",
+    ]
+    assert 'authorization_type = "JWT"' in main
+    assert "authorizer_id      = var.jwt_authorizer_id" in main
+    assert 'payload_format_version = "2.0"' in main
+    # HTTP API と authorizer は借用し、作成しない
+    assert 'resource "aws_apigatewayv2_api"' not in main
+    assert 'resource "aws_apigatewayv2_authorizer"' not in main
+    # 呼び出し許可は審査と決裁の path だけに限る
+    (source_arn,) = re.findall(r"source_arn\s*=\s*\"([^\"]+)\"", main)
+    assert source_arn.endswith("/*/*/api/reviews*")
 
 
 def test_arn_validation_does_not_pin_a_region():

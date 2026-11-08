@@ -38,3 +38,13 @@ variable "supplement_table_arn" {
   type        = string
   description = "補助 DynamoDB テーブルの ARN"
 }
+
+variable "http_api_id" {
+  type        = string
+  description = "決裁の route を割り当てる既存 API Gateway HTTP API の ID"
+}
+
+variable "jwt_authorizer_id" {
+  type        = string
+  description = "決裁の route に適用する既存 JWT authorizer の ID"
+}
