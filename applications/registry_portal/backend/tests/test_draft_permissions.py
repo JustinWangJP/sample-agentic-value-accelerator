@@ -35,7 +35,12 @@ def test_draft_policy_only_grants_record_writes_and_supplement_transactions():
         {
             "Sid": "DraftSupplement",
             "Effect": "Allow",
-            "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"],
+            "Action": [
+                "dynamodb:GetItem",
+                "dynamodb:PutItem",
+                "dynamodb:DeleteItem",
+                "dynamodb:Query",
+            ],
             "Resource": TABLE_ARN,
         },
     ]
