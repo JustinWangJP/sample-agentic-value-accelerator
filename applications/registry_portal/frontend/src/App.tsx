@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { CatalogView } from './catalog/CatalogView'
 import { RecordDraftsView } from './drafts/RecordDraftsView'
-import { ReviewsView } from './reviews/ReviewsView'
 import type { StartupState } from './startup'
 
 type Props = { startup: Promise<StartupState> }
@@ -58,7 +57,6 @@ export function StartupView({ state }: { state: StartupState | null }) {
             </p>
           </section>
           <CatalogView api={state.api} onRelogin={state.relogin} />
-          <ReviewsView api={state.api} roles={state.me.roles} onRelogin={state.relogin} />
           <RecordDraftsView api={state.api} roles={state.me.roles} teams={state.me.teams} onRelogin={state.relogin} />
         </>
       )}

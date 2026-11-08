@@ -17,17 +17,9 @@ import boto3
 from registry_portal.auth import Caller, authorize
 from registry_portal.catalog import get_catalog_detail, list_catalog, search_catalog
 from registry_portal.config import (
-    AuthSettings,
-    ConfigurationError,
     load_auth_settings,
     load_catalog_settings,
     load_discovery_settings,
-    load_registry_settings,
-)
-from registry_portal.curation import (
-    DECISION_BODY_MAX_LENGTH,
-    RecordCuration,
-    RegistryStatusClient,
 )
 from registry_portal.errors import ApiError, RequestValidationError, RouteNotFoundError
 from registry_portal.drafts import (
@@ -86,9 +78,6 @@ _PARAMETERIZED_ROUTES = (
     ("PATCH /api/records/", "", "PATCH /api/records/{recordId}"),
     ("POST /api/records/", "/submit", "POST /api/records/{recordId}/submit"),
     ("GET /api/operations/", "", "GET /api/operations/{operationId}"),
-    ("GET /api/reviews/", "", "GET /api/reviews/{recordId}"),
-    ("POST /api/reviews/", "/approve", "POST /api/reviews/{recordId}/approve"),
-    ("POST /api/reviews/", "/reject", "POST /api/reviews/{recordId}/reject"),
 )
 
 
@@ -161,29 +150,6 @@ MANAGEMENT_ROUTES: Mapping[str, Route] = {
 }
 
 
-def _serve(routes: Mapping[str, Route], settings: AuthSettings) -> Handler:
-    """ルート表を Lambda handler にする。認可・エラー応答はすべての handler で共通。"""
-
-    def handler(event: LambdaEvent, context: Any) -> LambdaResponse:
-        request_id = _request_context(event).get("requestId")
-        try:
-            caller = authorize(_claims_of(event), settings)
-            route = routes.get(_route_template(_route_key(event))[0])
-            if route is None:
-                raise RouteNotFoundError()
-            status, body = route(caller, event)
-            return _json_response(status, body)
-        except ApiError as error:
-            # ログにはトークンや claims の全文を出さない
-            logger.info("API エラー: code=%s request_id=%s", error.code, request_id)
-            return _json_response(error.status, error.to_dto(request_id))
-        except Exception:
-            logger.exception("想定外のエラー: request_id=%s", request_id)
-            return _json_response(500, ApiError().to_dto(request_id))
-
-    return handler
-
-
 def create_management_handler(
     environ: Mapping[str, str],
     *,
@@ -214,31 +180,26 @@ def create_management_handler(
         else None
     )
     region = discovery_settings.registry_region
-    # 決裁操作の照会（GET /api/operations）は管理 handler が担う。決裁自体は決裁 handler が行うため、
-    # このインスタンスは AWS の状態更新 API を呼び出さない（IAM でも拒否される）
-    drafts = None
-    if catalog_settings.supplement_table_name:
-        control_client = registry_client or cast(
-            RegistryControlClient,
-            boto3.client("agent-registry-control", region_name=region),
-        )
-        store = DraftStore(
-            catalog_settings.supplement_table_name,
+    # 下書きは補助テーブルが必須。未設定でもカタログは提供し、下書きの操作だけを 503 にする
+    drafts = (
+        RecordDrafts(
             discovery_settings.registry_arn,
-            draft_store_client
-            or cast(DraftStoreClient, boto3.client("dynamodb", region_name=region)),
-        )
-        drafts = RecordDrafts(
-            discovery_settings.registry_arn,
-            store,
-            control_client,
-            discovery_client,
-            RecordCuration(
+            DraftStore(
+                catalog_settings.supplement_table_name,
                 discovery_settings.registry_arn,
-                store,
-                cast(RegistryStatusClient, control_client),
+                draft_store_client
+                or cast(DraftStoreClient, boto3.client("dynamodb", region_name=region)),
             ),
+            registry_client
+            or cast(
+                RegistryControlClient,
+                boto3.client("agent-registry-control", region_name=region),
+            ),
+            discovery_client,
         )
+        if catalog_settings.supplement_table_name
+        else None
+    )
 
     def drafts_for(caller: Caller) -> RecordDrafts:
         # 権限のない呼び出し元には、設定の状態より先に 403 を返す
@@ -290,11 +251,7 @@ def create_management_handler(
         )
 
     def get_operation(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        # 操作の種別で参照できる主体が変わる（決裁は Curator、下書きは Publisher）ため、
-        # 認可は operation の内側で行う
-        if drafts is None:
-            raise DraftsNotConfigured()
-        return drafts.operation(caller, _path_parameter(event))
+        return drafts_for(caller).operation(caller, _path_parameter(event))
 
     routes: Mapping[str, Route] = {
         **MANAGEMENT_ROUTES,
@@ -309,73 +266,21 @@ def create_management_handler(
         "POST /api/records/{recordId}/submit": submit_record,
     }
 
-    return _serve(routes, settings)
+    def handler(event: LambdaEvent, context: Any) -> LambdaResponse:
+        request_id = _request_context(event).get("requestId")
+        try:
+            caller = authorize(_claims_of(event), settings)
+            route = routes.get(_route_template(_route_key(event))[0])
+            if route is None:
+                raise RouteNotFoundError()
+            status, body = route(caller, event)
+            return _json_response(status, body)
+        except ApiError as error:
+            # ログにはトークンや claims の全文を出さない
+            logger.info("API エラー: code=%s request_id=%s", error.code, request_id)
+            return _json_response(error.status, error.to_dto(request_id))
+        except Exception:
+            logger.exception("想定外のエラー: request_id=%s", request_id)
+            return _json_response(500, ApiError().to_dto(request_id))
 
-
-def create_curation_handler(
-    environ: Mapping[str, str],
-    *,
-    registry_client: RegistryStatusClient | None = None,
-    store_client: DraftStoreClient | None = None,
-) -> Handler:
-    """決裁 handler を作る。認証設定と補助テーブルが不足していれば、ここで起動エラーにする。
-
-    決裁 handler は審査待ちの一覧・詳細と、公開承認・却下だけを受け持つ。
-    発見（JWT）の設定は使わないため、Registry の ARN とリージョンだけを読む。
-    AWS クライアントはテストで差し替える。通信は最初のリクエストまで行わない。
-    """
-    settings = load_auth_settings(environ)
-    registry_settings = load_registry_settings(environ)
-    catalog_settings = load_catalog_settings(environ)
-    if not catalog_settings.supplement_table_name:
-        # 決裁 handler は補助テーブルなしではどの API も提供できないため、起動を止める
-        raise ConfigurationError("決裁 handler の設定が不足しています: SUPPLEMENT_TABLE_NAME")
-    region = registry_settings.region
-    curation = RecordCuration(
-        registry_settings.arn,
-        DraftStore(
-            catalog_settings.supplement_table_name,
-            registry_settings.arn,
-            store_client or cast(DraftStoreClient, boto3.client("dynamodb", region_name=region)),
-        ),
-        registry_client
-        or cast(
-            RegistryStatusClient,
-            boto3.client("agent-registry-control", region_name=region),
-        ),
-    )
-
-    def list_reviews(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        return curation.list_reviews(caller, _query_of(event))
-
-    def get_review(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        if _query_of(event):
-            raise RequestValidationError("審査詳細にクエリパラメーターは指定できません。")
-        return curation.review(caller, _path_parameter(event))
-
-    def approve(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        return curation.decide(
-            caller,
-            _path_parameter(event),
-            _json_body(event, DECISION_BODY_MAX_LENGTH),
-            _idempotency_key(event),
-            approved=True,
-        )
-
-    def reject(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        return curation.decide(
-            caller,
-            _path_parameter(event),
-            _json_body(event, DECISION_BODY_MAX_LENGTH),
-            _idempotency_key(event),
-            approved=False,
-        )
-
-    routes: Mapping[str, Route] = {
-        "GET /api/reviews": list_reviews,
-        "GET /api/reviews/{recordId}": get_review,
-        "POST /api/reviews/{recordId}/approve": approve,
-        "POST /api/reviews/{recordId}/reject": reject,
-    }
-
-    return _serve(routes, settings)
+    return handler
