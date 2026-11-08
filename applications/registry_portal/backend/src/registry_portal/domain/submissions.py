@@ -6,6 +6,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from registry_portal.domain.catalog import (
@@ -188,3 +189,36 @@ def submission_snapshot(
         "contentHash": content_hash(record, management),
     }
     return {**snapshot, "snapshotHash": digest(snapshot)}
+
+
+# 保存した申請スナップショットのうち、ハッシュの対象でない項目（キー、ハッシュ自身、読み取り時に付ける無効化の有無）
+_SNAPSHOT_UNHASHED_KEYS = frozenset({"pk", "sk", "snapshotHash", "invalidated"})
+
+
+def _from_store(value: Any) -> Any:
+    """補助ストアの数値（Decimal）を、申請時と同じ JSON の数値に戻す。"""
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, Mapping):
+        return {key: _from_store(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_from_store(item) for item in value]
+    return value
+
+
+def snapshot_fields(stored: Mapping[str, Any]) -> dict[str, Any]:
+    """保存した申請スナップショットから、ハッシュの対象の項目だけを取り出す。"""
+    return {
+        key: _from_store(value)
+        for key, value in stored.items()
+        if key not in _SNAPSHOT_UNHASHED_KEYS
+    }
+
+
+def recompute_snapshot_hash(stored: Mapping[str, Any]) -> str:
+    """保存した申請スナップショットの内容から、申請時と同じ方法でハッシュを計算し直す。
+
+    保存後にスナップショットの項目（連絡先や関連参照など）が書き換えられていれば、
+    申請時に記録した snapshotHash と一致しなくなる（設計書「内容を確認してから決裁する」）。
+    """
+    return digest(snapshot_fields(stored))

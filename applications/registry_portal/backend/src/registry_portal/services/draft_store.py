@@ -7,14 +7,19 @@ from typing import Any, Protocol, cast
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 
+from registry_portal.domain.catalog import published_snapshot_sk
 from registry_portal.domain.drafts import (
     CREATE_KIND,
     SETTLED_OPERATION_RETENTION_SECONDS,
     UPDATE_KIND,
+    DecisionOperation,
     DraftOperation,
     DraftResult,
     Management,
+    OperationRecord,
     OperationState,
+    StoredOperation,
+    is_decision_operation,
 )
 
 # 補助テーブルの TTL 属性名。テーブルの TTL 設定でこの属性を指定する（README「custom Agent の下書き」）
@@ -78,8 +83,27 @@ class DraftStore:
             return None
         return {key: TypeDeserializer().deserialize(value) for key, value in item.items()}
 
-    def get_operation(self, op_id: str) -> DraftOperation | None:
-        return cast("DraftOperation | None", self.get(self._operation_pk(op_id), "CONTROL"))
+    def get_operation(self, op_id: str) -> StoredOperation | None:
+        """操作を種別を問わず読む。種別ごとの項目は is_decision_operation で見分ける。"""
+        return cast("StoredOperation | None", self.get(self._operation_pk(op_id), "CONTROL"))
+
+    def get_draft_operation(self, op_id: str) -> DraftOperation | None:
+        """下書きの操作を読む。決裁の操作は下書きの操作として扱わず None にする。"""
+        operation = self.get_operation(op_id)
+        if operation is None or is_decision_operation(operation):
+            return None
+        return operation
+
+    def get_decision_operation(self, op_id: str) -> DecisionOperation | None:
+        """決裁の操作を読む。下書きの操作は決裁の操作として扱わず None にする。"""
+        operation = self.get_operation(op_id)
+        if operation is None or not is_decision_operation(operation):
+            return None
+        return operation
+
+    def get_published(self, record_id: str, record_version: str) -> dict[str, Any] | None:
+        """公開版スナップショット（ADR-0007）を読む。"""
+        return self.get(self.record_pk(record_id), published_snapshot_sk(record_version))
 
     def get_management(self, record_id: str) -> Management | None:
         """管理情報を読む。保存内容の型が契約と異なれば ValueError。"""
@@ -122,7 +146,7 @@ class DraftStore:
 
     def _put_control(
         self,
-        operation: DraftOperation,
+        operation: OperationRecord,
         state: OperationState,
         allowed_states: Mapping[str, OperationState],
     ) -> dict[str, Any]:
@@ -152,7 +176,7 @@ class DraftStore:
         }
 
     def _release_locks(
-        self, operation: DraftOperation, record_id: str | None
+        self, operation: OperationRecord, record_id: str | None
     ) -> list[dict[str, Any]]:
         """操作が持つロックをすべて解除する。作成では名前のロックとレコードのロックの2つを持つ。"""
         op_id = operation["operationId"]
@@ -172,7 +196,7 @@ class DraftStore:
                 raise StoreConflict() from None
             raise
 
-    def begin(self, operation: DraftOperation) -> None:
+    def begin(self, operation: OperationRecord) -> None:
         op_id, lock = operation["operationId"], operation["lockPk"]
         self._transact(
             [
@@ -182,7 +206,7 @@ class DraftStore:
             ]
         )
 
-    def save_pending(self, operation: DraftOperation) -> None:
+    def save_pending(self, operation: OperationRecord) -> None:
         op_id = operation["operationId"]
         control = self._put_control(
             operation, "VERIFYING", {":running": "IN_PROGRESS", ":verifying": "VERIFYING"}
@@ -232,7 +256,7 @@ class DraftStore:
 
     def _close(
         self,
-        operation: DraftOperation,
+        operation: OperationRecord,
         state: OperationState,
         outcome: Mapping[str, Any],
         record_id: str | None,
@@ -262,7 +286,7 @@ class DraftStore:
             *self._release_locks(operation, record_id),
         ]
 
-    def abort(self, operation: DraftOperation, code: str) -> None:
+    def abort(self, operation: OperationRecord, code: str) -> None:
         self._transact(
             self._close(operation, "FAILED", {"errorCode": code}, operation.get("recordId"))
         )
@@ -291,6 +315,41 @@ class DraftStore:
                         "sk": self._invalidated_sk(previous),
                         "operationId": operation["operationId"],
                         "invalidatedAt": operation["startedAt"],
+                    }
+                )
+            )
+        self._transact(items)
+
+    def finish_decision(
+        self,
+        operation: DecisionOperation,
+        result: Mapping[str, Any],
+        management: Management,
+        published: Mapping[str, Any] | None,
+    ) -> None:
+        """決裁の成功を確定する。公開承認では Curator が確認した内容を公開版スナップショットに保存する。
+
+        published は公開承認のときだけ指定し、決裁の対象とした版（operation の recordVersion）の
+        公開版スナップショットとして保存する。項目は申請スナップショットの値を写し、
+        決裁のたびに新しく作る（版は公開中の版より大きいため、上書きされない）。
+        """
+        record_pk = self.record_pk(operation["recordId"])
+        owner = self._put(
+            {**management.item, "pk": record_pk, "sk": "MANAGEMENT"},
+            "attribute_not_exists(pk) OR ownerTeam = :team",
+            {":team": operation["ownerTeam"]},
+        )
+        items = [
+            owner,
+            *self._close(operation, "SUCCEEDED", {"result": result}, operation["recordId"]),
+        ]
+        if published is not None:
+            items.append(
+                self._put(
+                    {
+                        **published,
+                        "pk": record_pk,
+                        "sk": published_snapshot_sk(operation["recordVersion"]),
                     }
                 )
             )

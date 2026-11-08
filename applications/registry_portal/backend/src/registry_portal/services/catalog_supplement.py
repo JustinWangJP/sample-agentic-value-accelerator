@@ -18,6 +18,7 @@ from registry_portal.domain.catalog import (
     CatalogItem,
     CatalogReference,
     PublishedSnapshot,
+    published_snapshot_sk,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,7 @@ class CatalogSupplement:
 
     def published_snapshot(self, item: CatalogItem) -> PublishedSnapshot | None:
         """公開中の版のスナップショットを返す。保存されていなければ None。"""
-        stored = self._get_item(item.record_id, f"PUBLISHED#{item.record_version}")
+        stored = self._get_item(item.record_id, published_snapshot_sk(item.record_version))
         if stored is None:
             return None
         related = (

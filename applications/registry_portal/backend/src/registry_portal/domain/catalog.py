@@ -116,6 +116,11 @@ class CatalogReference:
     record_version: str
 
 
+def published_snapshot_sk(record_version: str) -> str:
+    """公開版スナップショットのソートキー（ADR-0007）。決裁が書き、カタログ詳細と審査の差分が読む。"""
+    return f"PUBLISHED#{record_version}"
+
+
 @dataclass(frozen=True)
 class PublishedSnapshot:
     """補助テーブルに保存した、公開中の版の公開内容のスナップショット。

@@ -180,3 +180,22 @@ dd {
 .drafts button {
   margin: 0.4rem 0.6rem 0.4rem 0;
 }
+
+/* 審査の差分表。定義や metadata の JSON が長くても、ページの幅を超えずにセル内で折り返す */
+.review-diff {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+.review-diff th:first-child {
+  width: 9rem;
+}
+
+.review-diff th,
+.review-diff td {
+  padding: 0.25rem 0.5rem;
+  vertical-align: top;
+  text-align: left;
+  overflow-wrap: anywhere;
+}

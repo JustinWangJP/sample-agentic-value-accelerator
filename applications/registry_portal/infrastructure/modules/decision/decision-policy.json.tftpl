@@ -1,0 +1,28 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DecisionLogs",
+      "Effect": "Allow",
+      "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+      "Resource": "${log_group_arn}:*"
+    },
+    {
+      "Sid": "RegistryDecisions",
+      "Effect": "Allow",
+      "Action": [
+        "agent-registry:GetRegistryRecord",
+        "agent-registry:ListRegistryRecords",
+        "agent-registry:GetRegistry",
+        "agent-registry:UpdateRegistryRecordStatus"
+      ],
+      "Resource": ["${registry_arn}", "${registry_arn}/record/*"]
+    },
+    {
+      "Sid": "DecisionSupplement",
+      "Effect": "Allow",
+      "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"],
+      "Resource": "${supplement_table_arn}"
+    }
+  ]
+}

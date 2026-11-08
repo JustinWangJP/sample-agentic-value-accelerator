@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from datetime import datetime, timezone
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -26,9 +25,8 @@ from registry_portal.domain.drafts import (
     SubmissionResult,
     DraftView,
     Management,
-    OperationState,
     OperationStatus,
-    PrincipalRecord,
+    StoredOperation,
     content_hash,
     digest,
     draft_view,
@@ -44,21 +42,20 @@ from registry_portal.domain.submissions import (
 )
 from registry_portal.services.discovery import DiscoveryClient, DiscoveryUnavailable
 from registry_portal.errors import ApiError, ForbiddenError, RequestValidationError
+from registry_portal.operations import (
+    AWS_REJECTED_ERRORS as _AWS_REJECTED_ERRORS,
+    AWS_THROTTLED_ERRORS,
+    check_idempotency_key,
+    now,
+    operation_status,
+    principal_of,
+    record_request_id,
+)
 from registry_portal.services.draft_store import DraftStore, StoreConflict
 
-# AWS が入力や設定を理由に保存を拒否したと確定できるエラー。利用者が入力や設定を直して再実行する。
+# AWS が入力や設定を理由に保存を拒否したと確定できるエラー。作成・更新では ConflictException も含める。
 # 申請 API の ConflictException だけは、状態の変化による競合として 409 にする（_call_submit_api）
-AWS_REJECTED_ERRORS = frozenset(
-    {
-        "ValidationException",
-        "AccessDeniedException",
-        "ConflictException",
-        "ResourceNotFoundException",
-        "ServiceQuotaExceededException",
-    }
-)
-# AWS が混雑を理由に処理せず拒否したエラー。入力は正しいため、時間をおいて同じ内容で再実行する
-AWS_THROTTLED_ERRORS = frozenset({"ThrottlingException"})
+AWS_REJECTED_ERRORS = _AWS_REJECTED_ERRORS | {"ConflictException"}
 
 DraftResponse = tuple[int, DraftView | DraftResult | OperationStatus]
 
@@ -122,32 +119,12 @@ def require_publisher(caller: Caller) -> None:
         raise ForbiddenError()
 
 
-def principal_of(caller: Caller) -> PrincipalRecord:
-    return {"issuer": caller.principal.issuer, "subject": caller.principal.subject}
-
-
 def parse_draft(value: Mapping[str, Any]) -> RecordDraft:
     """リクエストのフォーム入力を下書きとして検査する。"""
     try:
         return RecordDraft.parse(value)
     except ValueError as error:
         raise RequestValidationError(str(error)) from None
-
-
-def check_idempotency_key(key: str) -> None:
-    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", key):
-        raise RequestValidationError(
-            "Idempotency-Key は1〜128文字の英数字・_・- で指定してください。"
-        )
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _aws_request_id(response: Mapping[str, Any]) -> str | None:
-    request_id = response.get("ResponseMetadata", {}).get("RequestId")
-    return request_id if isinstance(request_id, str) and request_id else None
 
 
 class RecordDrafts:
@@ -180,10 +157,10 @@ class RecordDrafts:
             "kind": CREATE_KIND,
             "state": "IN_PROGRESS",
             "lockPk": self.store.name_lock_pk(draft.fields["name"]),
-            "startedAt": _now(),
+            "startedAt": now(),
         }
         try:
-            existing = self.store.get_operation(op_id)
+            existing = self.store.get_draft_operation(op_id)
         except (BotoCoreError, ClientError):
             raise DraftUnavailable() from None
         try:
@@ -199,7 +176,7 @@ class RecordDrafts:
                     self.store.begin(operation)
                 except StoreConflict:
                     # 二重クリックなどで同じキーの操作が先に始まっていれば、その操作の結果を返す
-                    concurrent = self.store.get_operation(op_id)
+                    concurrent = self.store.get_draft_operation(op_id)
                     if concurrent is None:
                         raise DraftConflict() from None
                     return self._replay_create(
@@ -214,7 +191,7 @@ class RecordDrafts:
             except ClientError as error:
                 return self._registry_error(operation, error)
             operation["recordId"] = str(response["recordArn"]).rsplit("/", 1)[1]
-            self._record_request_id(operation, response)
+            record_request_id(operation, response)
             self.store.save_pending(operation)
             return self._verify(operation, 201)
         except (BotoCoreError, ClientError, StoreConflict):
@@ -232,16 +209,10 @@ class RecordDrafts:
             )
         return None
 
-    @staticmethod
-    def _record_request_id(operation: DraftOperation, response: Mapping[str, Any]) -> None:
-        request_id = _aws_request_id(response)
-        if request_id:
-            operation["awsRequestId"] = request_id
-
     def _registry_error(self, operation: DraftOperation, error: ClientError) -> DraftResponse:
         """AWS が処理せず拒否したと確定できる失敗は操作を失敗にし、それ以外は結果確認中にする。"""
         code = error.response["Error"]["Code"]
-        self._record_request_id(operation, error.response)
+        record_request_id(operation, error.response)
         if code in AWS_THROTTLED_ERRORS:
             self.store.abort(operation, "AWS_THROTTLED")
             raise RegistryThrottled() from None
@@ -252,25 +223,15 @@ class RecordDrafts:
             ) from None
         return self._pending(operation)
 
-    @staticmethod
-    def _status(
-        operation: Mapping[str, Any], state: OperationState, message: str
-    ) -> OperationStatus:
-        return {
-            "operationId": operation["operationId"],
-            "operationState": state,
-            "message": message,
-        }
-
     def _pending(self, operation: Mapping[str, Any]) -> DraftResponse:
-        return 202, self._status(
+        return 202, operation_status(
             operation,
             "VERIFYING",
             "結果確認中です。確認が終わるまで、この下書きへの書き込みを停止しています。",
         )
 
     def _failed(self, operation: Mapping[str, Any]) -> DraftResponse:
-        return 200, self._status(
+        return 200, operation_status(
             operation, "FAILED", "操作は失敗しました。内容を確認して再実行してください。"
         )
 
@@ -357,16 +318,23 @@ class RecordDrafts:
         except (BotoCoreError, ClientError):
             raise DraftUnavailable() from None
 
-    def operation(self, caller: Caller, op_id: str) -> DraftResponse:
-        require_publisher(caller)
+    def find_operation(self, op_id: str) -> StoredOperation:
+        """操作照会の対象を種別を問わず読む。参照できる主体は種別ごとに呼び出し側が判定する。"""
         if not re.fullmatch(r"[a-f0-9]{32,64}", op_id):
             raise RequestValidationError("操作 ID の形式が正しくありません。")
         try:
             operation = self.store.get_operation(op_id)
         except (BotoCoreError, ClientError):
-            # 補助ストアを読めないときは、所有チームを確かめられないので「確認中」とは返さない
+            # 補助ストアを読めないときは、権限を確かめられないので「確認中」とは返さない
             raise DraftUnavailable() from None
-        if not operation or operation["ownerTeam"] not in caller.teams:
+        if not operation:
+            raise ForbiddenError()
+        return operation
+
+    def operation_status(self, caller: Caller, operation: DraftOperation) -> DraftResponse:
+        """下書きの操作（作成・更新・申請）の結果。所有チームの Publisher だけが参照できる。"""
+        require_publisher(caller)
+        if operation["ownerTeam"] not in caller.teams:
             raise ForbiddenError()
         if operation["state"] == "SUCCEEDED":
             return 200, operation["result"]
@@ -407,17 +375,17 @@ class RecordDrafts:
             "state": "IN_PROGRESS",
             "recordId": record_id,
             "lockPk": self.store.record_pk(record_id),
-            "startedAt": _now(),
+            "startedAt": now(),
             "management": dict(management.item),
             "expectedContentHash": request.expected_hash,
             "requestHash": request_hash,
         }
         try:
-            existing = self.store.get_operation(op_id)
+            existing = self.store.get_draft_operation(op_id)
             if existing:
                 if existing.get("requestHash") != request_hash:
                     raise DraftConflict("同じ Idempotency-Key に異なる内容は指定できません。")
-                return self.operation(caller, op_id)
+                return self.operation_status(caller, existing)
             self.store.begin(operation)
         except StoreConflict:
             raise DraftConflict() from None
@@ -510,15 +478,15 @@ class RecordDrafts:
             )
         except ClientError as error:
             if resume:
-                self._record_request_id(operation, error.response)
+                record_request_id(operation, error.response)
                 return self._pending(operation)
             if error.response["Error"]["Code"] == "ConflictException":
                 # 申請の前に検査した後で、レコードの状態が変わった
-                self._record_request_id(operation, error.response)
+                record_request_id(operation, error.response)
                 self.store.abort(operation, "AWS_CONFLICT")
                 raise DraftConflict() from None
             return self._registry_error(operation, error)
-        self._record_request_id(operation, response)
+        record_request_id(operation, response)
         operation["submissionAccepted"] = True
         self.store.save_pending(operation)
         return self._verify_submission(operation)
@@ -586,7 +554,7 @@ class RecordDrafts:
             "state": "IN_PROGRESS",
             "recordId": record_id,
             "lockPk": self.store.record_pk(record_id),
-            "startedAt": _now(),
+            "startedAt": now(),
             "management": dict(management.item),
         }
         try:
@@ -619,7 +587,7 @@ class RecordDrafts:
                 )
             except ClientError as error:
                 return self._registry_error(operation, error)
-            self._record_request_id(operation, response)
+            record_request_id(operation, response)
             return self._verify(operation, 200, update_accepted=True)
         except (BotoCoreError, ClientError, StoreConflict):
             return self._pending(operation)
@@ -685,7 +653,7 @@ class RecordDrafts:
             operation["ownerTeam"],
             draft,
             operation["principal"],
-            _now(),
+            now(),
         )
         result: DraftResult = {
             **draft_view(record, management, draft),

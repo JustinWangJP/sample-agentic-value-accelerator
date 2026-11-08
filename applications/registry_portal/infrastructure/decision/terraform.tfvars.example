@@ -1,0 +1,10 @@
+# terraform.tfvars にコピーして値を設定する。terraform.tfvars はコミットしない
+region                = "us-east-1"
+lambda_zip_path       = "../../backend/build/lambda.zip"
+cognito_user_pool_id  = "us-east-1_EXAMPLE"
+human_client_id       = "human-spa-client"
+registry_arn          = "arn:aws:agent-registry:us-east-1:123456789012:registry/abcdEFGH1234"
+supplement_table_name = "registry-auxiliary"
+supplement_table_arn  = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-auxiliary"
+http_api_id           = "a1b2c3d4e5"
+jwt_authorizer_id     = "abc123"

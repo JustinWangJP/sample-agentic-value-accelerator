@@ -4,7 +4,7 @@ import hashlib
 import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, TypedDict, get_args
+from typing import Any, Literal, TypedDict, TypeIs, get_args
 
 from registry_portal.domain.catalog import (
     AGENT_RECORD_TYPE,
@@ -114,10 +114,14 @@ NOT_EDITABLE_STATUSES: frozenset[RecordStatus] = IN_FLIGHT_STATUSES | {"DEPRECAT
 # ポータルの書き込み操作の状態。API が返すのは IN_PROGRESS 以外の3つで、
 # SPA の `OPERATION_STATES`（frontend/src/drafts/api.ts）と揃える
 OperationState = Literal["IN_PROGRESS", "VERIFYING", "FAILED", "SUCCEEDED"]
-OperationKind = Literal["CREATE", "UPDATE", "SUBMIT"]
+OperationKind = Literal["CREATE", "UPDATE", "SUBMIT", "APPROVE", "REJECT"]
 CREATE_KIND: OperationKind = "CREATE"
 UPDATE_KIND: OperationKind = "UPDATE"
 SUBMIT_KIND: OperationKind = "SUBMIT"
+APPROVE_KIND: OperationKind = "APPROVE"
+REJECT_KIND: OperationKind = "REJECT"
+# 決裁 handler が行う操作（公開承認・却下）。操作照会は種別ごとに参照できる主体を変える
+DECISION_KINDS: frozenset[OperationKind] = frozenset({APPROVE_KIND, REJECT_KIND})
 
 # Registry レコード ID の形式。SPA の `RECORD_ID_PATTERN` と `RECORD_ID_LENGTH`
 # （frontend/src/drafts/api.ts）と揃える
@@ -134,35 +138,71 @@ class PrincipalRecord(TypedDict):
     subject: str
 
 
-class _DraftOperationRequired(TypedDict):
+class _OperationRequired(TypedDict):
     operationId: str
     ownerTeam: str
     principal: PrincipalRecord
     kind: OperationKind
     state: OperationState
-    draft: dict[str, str]
     lockPk: str
     startedAt: str
 
 
-class DraftOperation(_DraftOperationRequired, total=False):
-    """補助ストアに保存する、下書きの書き込み操作。"""
+class OperationRecord(_OperationRequired, total=False):
+    """補助ストアに保存する書き込み操作のうち、下書きの操作と決裁の操作に共通する項目。
 
-    # 作成・申請: 同じ Idempotency-Key に異なる内容が来たことを検出する
+    補助ストア（DraftStore）のロック・確定・追記記録は、この項目だけを使う。
+    """
+
+    # 同じ Idempotency-Key に異なる内容が来たことを検出する
     requestHash: str
-    # 更新: 取得時の内容ハッシュ。AWS に適用されなかったことの判定にも使う
+    # 更新: 取得時の内容ハッシュ。決裁: 申請時の内容ハッシュ。AWS に適用されたかの判定に使う
     expectedContentHash: str
     recordId: str
     # 確定時に保存する管理情報（MANAGEMENT の項目）
     management: dict[str, Any]
-    result: DraftResult
     errorCode: str
     # AWS の書き込み API が返した request ID（設計書「操作記録」）
     awsRequestId: str
-    # 申請: 保存した申請スナップショットのハッシュ
+    # 申請: 保存した申請スナップショットのハッシュ。決裁: Curator が審査したスナップショットのハッシュ
     snapshotHash: str
+
+
+class _DraftOperationRequired(OperationRecord):
+    draft: dict[str, str]
+
+
+class DraftOperation(_DraftOperationRequired, total=False):
+    """補助ストアに保存する、下書きの書き込み操作（作成・更新・申請）。"""
+
+    result: DraftResult
     # 申請: 標準の申請 API が受け付けを返した。未設定なら、照合時に申請 API を呼び直す
     submissionAccepted: bool
+
+
+class _DecisionOperationRequired(OperationRecord):
+    # 承認・却下の両方で必須の理由。AWS の statusReason にそのまま送る
+    reason: str
+
+
+class DecisionOperation(_DecisionOperationRequired, total=False):
+    """補助ストアに保存する、決裁の操作（公開承認・却下）。"""
+
+    result: dict[str, Any]
+    # 対象とした申請スナップショットの ID と、その時点のレコードの版
+    submissionId: str
+    recordVersion: str
+    # AWS の状態更新 API が受け付けを返した。未設定なら、決裁 handler の再送で呼び直す
+    decisionAccepted: bool
+
+
+# 補助ストアに保存された操作。種別（kind）で下書きの操作か決裁の操作かが決まる
+StoredOperation = DraftOperation | DecisionOperation
+
+
+def is_decision_operation(operation: StoredOperation) -> TypeIs[DecisionOperation]:
+    """決裁の操作か。操作照会は、種別ごとに参照できる主体を変える。"""
+    return operation["kind"] in DECISION_KINDS
 
 
 class DraftView(TypedDict):
