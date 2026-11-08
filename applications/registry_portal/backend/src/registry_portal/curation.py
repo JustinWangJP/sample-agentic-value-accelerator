@@ -11,53 +11,56 @@ API ごと（approve / reject）に遷移先を決める。手順は設計書「
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
-from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeGuard
 
 from botocore.exceptions import BotoCoreError, ClientError
 
 from registry_portal.auth import Caller, Role
 from registry_portal.domain.curation import (
+    ATTACHMENT_AVAILABLE,
+    ATTACHMENT_MISSING,
+    ATTACHMENT_NONE,
+    DECISION_TARGETS,
+    AttachmentState,
     DecisionInput,
     SelfApprovalError,
     check_decidable,
     check_not_self_approval,
+    published_base,
     published_item,
 )
 from registry_portal.domain.drafts import (
     APPROVE_KIND,
     IN_FLIGHT_STATUSES,
-    OperationState,
-    OperationStatus,
     PENDING_APPROVAL_STATUS,
-    PUBLISHED_STATUS,
     RECORD_ID_PATTERN,
-    REJECTED_STATUS,
-    REJECT_KIND,
-    DraftOperation,
-    PrincipalRecord,
+    DecisionOperation,
     Management,
+    OperationKind,
     content_hash,
     digest,
 )
+from registry_portal.domain.submissions import recompute_snapshot_hash, snapshot_fields
 from registry_portal.errors import ApiError, ForbiddenError, RequestValidationError
+from registry_portal.operations import (
+    AWS_REJECTED_ERRORS,
+    AWS_THROTTLED_ERRORS,
+    check_idempotency_key,
+    now,
+    operation_status,
+    principal_of,
+    record_request_id,
+)
 from registry_portal.services.draft_store import DraftStore, StoreConflict
 
-# AWS が入力や設定を理由に処理しなかったと確定できるエラー（drafts.py と同じ分類）
-AWS_REJECTED_ERRORS = frozenset(
-    {
-        "ValidationException",
-        "AccessDeniedException",
-        "ResourceNotFoundException",
-        "ServiceQuotaExceededException",
-    }
-)
-AWS_THROTTLED_ERRORS = frozenset({"ThrottlingException"})
 # 決裁の本文の上限。スナップショットのハッシュ（64文字）と決裁理由（255文字）に余裕を持たせる
 DECISION_BODY_MAX_LENGTH = 2048
 DecisionResponse = tuple[int, Any]
+
+_SUBMISSION_UNCONFIRMED = (
+    "ポータルの申請が確認できないため決裁できません。Publisher に再申請を依頼してください。"
+)
 
 
 class RegistryStatusClient(Protocol):
@@ -96,10 +99,12 @@ class DecisionThrottled(ApiError):
     )
 
 
-class ReviewNotFound(ApiError):
+class PendingApprovalNotFound(ApiError):
+    """審査待ち（AWS の PENDING_APPROVAL）の Registry レコードが見つからない。"""
+
     status = 404
-    code = "REVIEW_NOT_FOUND"
-    default_message = "審査対象が見つかりません。一覧から確認してください。"
+    code = "PENDING_APPROVAL_NOT_FOUND"
+    default_message = "審査待ちの申請が見つかりません。一覧から確認してください。"
 
 
 def require_curator(caller: Caller) -> None:
@@ -108,33 +113,8 @@ def require_curator(caller: Caller) -> None:
         raise ForbiddenError("審査と決裁は Curator のみ行えます。")
 
 
-def check_idempotency_key(key: str) -> None:
-    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", key):
-        raise RequestValidationError(
-            "Idempotency-Key は1〜128文字の英数字・_・- で指定してください。"
-        )
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _record_request_id(operation: DraftOperation, response: Mapping[str, Any]) -> None:
-    request_id = response.get("ResponseMetadata", {}).get("RequestId")
-    if isinstance(request_id, str) and request_id:
-        operation["awsRequestId"] = request_id
-
-
-def _status(operation: Mapping[str, Any], state: OperationState, message: str) -> OperationStatus:
-    return {
-        "operationId": operation["operationId"],
-        "operationState": state,
-        "message": message,
-    }
-
-
 def _pending(operation: Mapping[str, Any]) -> DecisionResponse:
-    return 202, _status(
+    return 202, operation_status(
         operation,
         "VERIFYING",
         "結果確認中です。確認が終わるまで、このレコードへの書き込みを停止しています。",
@@ -142,14 +122,24 @@ def _pending(operation: Mapping[str, Any]) -> DecisionResponse:
 
 
 def _failed(operation: Mapping[str, Any]) -> DecisionResponse:
-    return 200, _status(
+    return 200, operation_status(
         operation, "FAILED", "決裁は失敗しました。最新の状態を確認して再度実行してください。"
     )
 
 
-def _snapshot_fields(snapshot: Mapping[str, Any]) -> dict[str, Any]:
-    """保存した申請スナップショットから、保存用のキーを除いた項目を返す。"""
-    return {key: value for key, value in snapshot.items() if key not in ("pk", "sk")}
+def _display_name(record: Mapping[str, Any]) -> str:
+    """表示名。AWS が displayName を返さないレコードは名前で代用する。"""
+    return str(record.get("displayName", record["name"]))
+
+
+def _is_managed(management: Management | None) -> TypeGuard[Management]:
+    """ポータルの管理下にあるか。未管理（取り込み前）のレコードは決裁できない。"""
+    return management is not None and management.item.get("managed") is True
+
+
+def _snapshot_view(submission: Mapping[str, Any]) -> dict[str, Any]:
+    """画面に返す申請スナップショット。保存用のキーを除き、ハッシュを添える。"""
+    return {**snapshot_fields(submission), "snapshotHash": submission.get("snapshotHash")}
 
 
 class RecordCuration:
@@ -158,7 +148,7 @@ class RecordCuration:
     def __init__(self, registry: str, store: DraftStore, client: RegistryStatusClient) -> None:
         self.registry = registry
         self.store = store
-        self._registry = client
+        self._registry_client = client
 
     def list_reviews(self, caller: Caller, query: Mapping[str, str]) -> tuple[int, dict[str, Any]]:
         """審査待ちの一覧。AWS の承認待ちを正本とし、そこに補助情報を結合する。"""
@@ -180,7 +170,7 @@ class RecordCuration:
         if token is not None:
             params["nextToken"] = token
         try:
-            response = self._registry.list_registry_records(**params)
+            response = self._registry_client.list_registry_records(**params)
             items = [self._summary(record) for record in response["registryRecords"]]
             return 200, {"items": items, "nextToken": response.get("nextToken")}
         except (BotoCoreError, ClientError):
@@ -191,40 +181,39 @@ class RecordCuration:
         record_id = str(record["recordId"])
         management = self._load_management(record_id)
         lock = self._get_lock(record_id)
-        item: dict[str, Any] = {
+        state, submission_id, submission = self._active_submission(record_id, management)
+        return {
             "recordId": record_id,
             "name": record["name"],
-            "displayName": record.get("displayName", record["name"]),
+            "displayName": _display_name(record),
             "recordType": record["recordType"],
             "recordVersion": record.get("recordVersion", ""),
             "status": record["status"],
-            "managed": management is not None and management.item.get("managed") is True,
+            "managed": _is_managed(management),
             "ownerTeam": management.owner_team if management is not None else None,
-            "submissionId": None,
-            "snapshotHash": None,
-            "reason": None,
-            "submittedAt": None,
-            "submittedBy": None,
-            "invalidated": False,
+            "submissionState": state,
+            "submissionId": submission_id,
+            "snapshotHash": submission.get("snapshotHash") if submission else None,
+            "reason": submission.get("reason") if submission else None,
+            "submittedAt": submission.get("submittedAt") if submission else None,
+            "submittedBy": submission.get("submittedBy") if submission else None,
+            "invalidated": bool(submission.get("invalidated")) if submission else False,
             "operationId": lock["operationId"] if lock else None,
         }
-        if management is None or not item["managed"]:
-            return item
+
+    def _active_submission(
+        self, record_id: str, management: Management | None
+    ) -> tuple[AttachmentState, str | None, dict[str, Any] | None]:
+        """管理情報が指す現在の申請。指しているのに読めなければ MISSING とし、「申請なし」と区別する。"""
+        if not _is_managed(management):
+            return ATTACHMENT_NONE, None, None
         submission_id = management.item.get("activeSubmissionId")
         if not isinstance(submission_id, str) or not submission_id:
-            return item
+            return ATTACHMENT_NONE, None, None
         submission = self._get_submission(record_id, submission_id)
         if submission is None:
-            return item
-        item.update(
-            submissionId=submission_id,
-            snapshotHash=submission.get("snapshotHash"),
-            reason=submission.get("reason"),
-            submittedAt=submission.get("submittedAt"),
-            submittedBy=submission.get("submittedBy"),
-            invalidated=bool(submission.get("invalidated")),
-        )
-        return item
+            return ATTACHMENT_MISSING, submission_id, None
+        return ATTACHMENT_AVAILABLE, submission_id, submission
 
     def review(self, caller: Caller, record_id: str) -> tuple[int, dict[str, Any]]:
         """審査対象の詳細。申請のスナップショットと、差分の比較対象（公開中の版）を返す。"""
@@ -232,66 +221,57 @@ class RecordCuration:
         if not RECORD_ID_PATTERN.fullmatch(record_id):
             raise RequestValidationError("Registry レコード ID の形式が正しくありません。")
         try:
-            record = self._registry.get_registry_record(
-                registryId=self.registry, recordId=record_id
-            )
-        except ClientError as error:
-            if error.response["Error"]["Code"] == "ResourceNotFoundException":
-                raise ReviewNotFound() from None
-            raise DecisionUnavailable() from None
-        except BotoCoreError:
+            record = self._get_record(record_id)
+        except (BotoCoreError, ClientError):
             raise DecisionUnavailable() from None
         if record["status"] != PENDING_APPROVAL_STATUS:
-            raise ReviewNotFound()
+            raise PendingApprovalNotFound()
         management = self._load_management(record_id)
-        submission_id = management.item.get("activeSubmissionId") if management else None
-        submission = (
-            self._get_submission(record_id, str(submission_id))
-            if isinstance(submission_id, str) and submission_id
-            else None
-        )
+        state, submission_id, submission = self._active_submission(record_id, management)
+        published_state, published = self._published_snapshot(record_id, management, record)
         return 200, {
             "recordId": record_id,
             "name": record["name"],
-            "displayName": record.get("displayName", record["name"]),
+            "displayName": _display_name(record),
             "description": record.get("description", ""),
             "recordType": record["recordType"],
             "recordVersion": record.get("recordVersion", ""),
             "ownerTeam": management.owner_team if management else None,
             "status": record["status"],
-            "managed": management is not None and management.item.get("managed") is True,
+            "managed": _is_managed(management),
             "publishedVersion": management.published_version(record) if management else None,
-            "submissionId": submission_id if submission is not None else None,
+            "submissionState": state,
+            "submissionId": submission_id,
             "snapshotHash": submission.get("snapshotHash") if submission else None,
+            # 保存後にスナップショットが書き換えられていれば偽。決裁は 409 で拒否される
+            "snapshotIntact": (
+                recompute_snapshot_hash(submission) == submission.get("snapshotHash")
+                if submission
+                else False
+            ),
             "invalidated": bool(submission.get("invalidated")) if submission else False,
-            "snapshot": _snapshot_fields(submission) if submission else None,
-            "published": self._published_snapshot(record_id, management, record),
+            "snapshot": _snapshot_view(submission) if submission else None,
+            "publishedState": published_state,
+            "published": published,
         }
 
     def _published_snapshot(
         self, record_id: str, management: Management | None, record: Mapping[str, Any]
-    ) -> dict[str, Any] | None:
-        """差分の比較対象として、公開中の版のスナップショットを返す。"""
-        if management is None:
-            return None
-        published_version = management.published_version(record)
+    ) -> tuple[AttachmentState, dict[str, Any] | None]:
+        """差分の比較対象として、公開中の版のスナップショットを返す。
+
+        公開中の版があるのにスナップショットが読めなければ MISSING とし、「初回公開」と区別する（ADR-0007）。
+        """
+        published_version = management.published_version(record) if management else None
         if published_version is None:
-            return None
+            return ATTACHMENT_NONE, None
         try:
-            stored = self.store.get(
-                self.store.record_pk(record_id), f"PUBLISHED#{published_version}"
-            )
+            stored = self.store.get_published(record_id, published_version)
         except (BotoCoreError, ClientError):
             raise DecisionUnavailable() from None
         if stored is None:
-            return None
-        return {
-            "recordVersion": published_version,
-            "contact": stored.get("contact"),
-            "termsOfUse": stored.get("termsOfUse"),
-            "connectionReference": stored.get("connectionReference"),
-            "relatedReferences": stored.get("relatedReferences", []),
-        }
+            return ATTACHMENT_MISSING, None
+        return ATTACHMENT_AVAILABLE, published_base(snapshot_fields(stored), published_version)
 
     def decide(
         self,
@@ -300,44 +280,39 @@ class RecordCuration:
         body: Mapping[str, Any],
         key: str,
         *,
-        approved: bool,
+        kind: OperationKind,
     ) -> DecisionResponse:
-        """公開承認（approved=True）または却下。AWS の status はクライアントから受け取らない。"""
+        """公開承認（APPROVE）または却下（REJECT）。AWS の status はクライアントから受け取らない。"""
         require_curator(caller)
         check_idempotency_key(key)
-        kind = APPROVE_KIND if approved else REJECT_KIND
         try:
-            request = DecisionInput.parse(body, reason_required=not approved)
+            request = DecisionInput.parse(body, kind)
         except ValueError as error:
             raise RequestValidationError(str(error)) from None
         if not RECORD_ID_PATTERN.fullmatch(record_id):
             raise RequestValidationError("Registry レコード ID の形式が正しくありません。")
         management = self._load_management(record_id)
-        if management is None or management.item.get("managed") is not True:
+        if not _is_managed(management):
             raise DecisionConflict(
                 "ポータルで管理されていないレコードは決裁できません。管理者に連絡してください。"
             )
-        principal: PrincipalRecord = {
-            "issuer": caller.principal.issuer,
-            "subject": caller.principal.subject,
-        }
-        operation: DraftOperation = {
+        principal = principal_of(caller)
+        operation: DecisionOperation = {
             "operationId": digest([kind, self.registry, record_id, principal, key]),
             "ownerTeam": management.owner_team,
             "principal": principal,
             "kind": kind,
-            "draft": {},
             "state": "IN_PROGRESS",
             "recordId": record_id,
             "lockPk": self.store.record_pk(record_id),
-            "startedAt": _now(),
+            "startedAt": now(),
             "management": dict(management.item),
             "reason": request.reason,
             "snapshotHash": request.snapshot_hash,
             "requestHash": digest(body),
         }
         try:
-            existing = self.store.get_operation(operation["operationId"])
+            existing = self.store.get_decision_operation(operation["operationId"])
         except (BotoCoreError, ClientError):
             raise DecisionUnavailable() from None
         if existing:
@@ -364,7 +339,7 @@ class RecordCuration:
         except (BotoCoreError, ClientError, StoreConflict):
             return _pending(operation)
 
-    def _replay(self, existing: DraftOperation, request_hash: str) -> DecisionResponse:
+    def _replay(self, existing: DecisionOperation, request_hash: str) -> DecisionResponse:
         """同じ Idempotency-Key の決裁を再送したとき、その操作の結果を返す。"""
         if existing.get("requestHash") != request_hash:
             raise DecisionConflict("同じ Idempotency-Key に異なる内容は指定できません。")
@@ -379,39 +354,42 @@ class RecordCuration:
                 return _pending(existing)
         return self.settle(existing, allow_reissue=True)
 
-    def _check_and_pin(self, operation: DraftOperation) -> Mapping[str, Any]:
-        """現物と申請スナップショットを照合し、決裁の対象を操作に固定する。
-
-        Curator が見たスナップショットのハッシュと、現物から計算し直した内容ハッシュの
-        両方が申請時と一致しなければ、決裁しない（設計書「内容を確認してから決裁する」）。
-        """
-        record_id = operation["recordId"]
+    def _get_record(self, record_id: str) -> Mapping[str, Any]:
+        """AWS のレコードを読む。存在しなければ 404、それ以外の AWS のエラーは呼び出し側に任せる。"""
         try:
-            record = self._registry.get_registry_record(
+            return self._registry_client.get_registry_record(
                 registryId=self.registry, recordId=record_id
             )
         except ClientError as error:
             if error.response["Error"]["Code"] == "ResourceNotFoundException":
-                raise ReviewNotFound() from None
+                raise PendingApprovalNotFound() from None
             raise
+
+    def _check_and_pin(self, operation: DecisionOperation) -> Mapping[str, Any]:
+        """現物と申請スナップショットを照合し、決裁の対象を操作に固定する。
+
+        Curator が見たスナップショットのハッシュが、保存済みスナップショットから計算し直したハッシュと
+        一致し、現物から計算し直した内容ハッシュも申請時と一致しなければ、決裁しない
+        （設計書「内容を確認してから決裁する」）。
+        """
+        record_id = operation["recordId"]
+        record = self._get_record(record_id)
         try:
             check_decidable(str(record["status"]))
         except ValueError as error:
             raise DecisionConflict(str(error)) from None
         management = Management(operation["management"])
-        submission_id = management.item.get("activeSubmissionId")
-        if not isinstance(submission_id, str) or not submission_id:
-            raise DecisionConflict(
-                "ポータルの申請が確認できないため決裁できません。Publisher に再申請を依頼してください。"
-            )
-        submission = self._get_submission(record_id, submission_id)
-        if submission is None:
-            raise DecisionConflict(
-                "ポータルの申請が確認できないため決裁できません。Publisher に再申請を依頼してください。"
-            )
+        state, submission_id, submission = self._active_submission(record_id, management)
+        if state != ATTACHMENT_AVAILABLE or submission is None or submission_id is None:
+            raise DecisionConflict(_SUBMISSION_UNCONFIRMED)
         if submission.get("invalidated"):
             raise DecisionConflict(
                 "この申請は審査中の編集で無効になっています。最新の申請を確認してください。"
+            )
+        if recompute_snapshot_hash(submission) != submission.get("snapshotHash"):
+            raise DecisionConflict(
+                "保存された申請スナップショットが申請時の内容と一致しません。"
+                "Publisher に再申請を依頼し、管理者に連絡してください。"
             )
         if submission.get("snapshotHash") != operation["snapshotHash"]:
             raise DecisionConflict(
@@ -437,26 +415,32 @@ class RecordCuration:
         operation["recordVersion"] = str(submission["record"]["recordVersion"])
         return record
 
-    def _call_status_api(self, operation: DraftOperation) -> DecisionResponse:
-        """AWS の状態更新 API を呼び、結果を照合する。"""
-        target = PUBLISHED_STATUS if operation["kind"] == APPROVE_KIND else REJECTED_STATUS
+    def _send_decision(self, operation: DecisionOperation) -> None:
+        """意図に記録した決裁（種別・理由）を AWS の状態更新 API に送る。受け付けられたら記録する。"""
         try:
-            response = self._registry.update_registry_record_status(
+            response = self._registry_client.update_registry_record_status(
                 registryId=self.registry,
                 recordId=operation["recordId"],
-                status=target,
+                status=DECISION_TARGETS[operation["kind"]],
                 statusReason=operation["reason"],
             )
         except ClientError as error:
-            return self._aws_error(operation, error)
-        _record_request_id(operation, response)
+            record_request_id(operation, error.response)
+            raise
+        record_request_id(operation, response)
         operation["decisionAccepted"] = True
+
+    def _call_status_api(self, operation: DecisionOperation) -> DecisionResponse:
+        """AWS の状態更新 API を呼び、結果を照合する。"""
+        try:
+            self._send_decision(operation)
+        except ClientError as error:
+            return self._aws_error(operation, error)
         return self.settle(operation, allow_reissue=True)
 
-    def _aws_error(self, operation: DraftOperation, error: ClientError) -> DecisionResponse:
+    def _aws_error(self, operation: DecisionOperation, error: ClientError) -> DecisionResponse:
         """AWS が処理せず拒否したと確定できる失敗は操作を失敗にし、それ以外は結果確認中にする。"""
         code = error.response["Error"]["Code"]
-        _record_request_id(operation, error.response)
         if code in AWS_THROTTLED_ERRORS:
             self.store.abort(operation, "AWS_THROTTLED")
             raise DecisionThrottled() from None
@@ -472,7 +456,7 @@ class RecordCuration:
             ) from None
         return _pending(operation)
 
-    def settle(self, operation: DraftOperation, *, allow_reissue: bool) -> DecisionResponse:
+    def settle(self, operation: DecisionOperation, *, allow_reissue: bool) -> DecisionResponse:
         """操作の結果を確定する。確定できなければ結果確認中を返す。"""
         if operation["state"] == "SUCCEEDED":
             return 200, operation["result"]
@@ -483,7 +467,19 @@ class RecordCuration:
         except (BotoCoreError, ClientError, StoreConflict):
             return _pending(operation)
 
-    def _settle(self, operation: DraftOperation, *, allow_reissue: bool) -> DecisionResponse:
+    def operation_status(self, caller: Caller, operation: DecisionOperation) -> DecisionResponse:
+        """操作照会（GET /api/operations）から決裁操作を確定する。
+
+        決裁操作は、その決裁を行った Curator 本人だけが参照できる（下書きの操作が所有チームに限られるのと同じく、
+        操作の主体に限る）。管理 handler から呼ぶため AWS を呼び直さない
+        （管理 handler の実行ロールには決裁の権限がないため）。同じキーでの再送は決裁 handler が担う。
+        """
+        require_curator(caller)
+        if operation["principal"] != principal_of(caller):
+            raise ForbiddenError("決裁の操作は、決裁した Curator だけが参照できます。")
+        return self.settle(operation, allow_reissue=False)
+
+    def _settle(self, operation: DecisionOperation, *, allow_reissue: bool) -> DecisionResponse:
         """AWS のレコードを読んで決裁の結果を確定する。
 
         allow_reissue は、意図の記録後に AWS の呼び出し（または受け付けの確認）まで至らなかった
@@ -492,36 +488,26 @@ class RecordCuration:
         """
         if "expectedContentHash" not in operation:
             return _pending(operation)
-        record = self._registry.get_registry_record(
-            registryId=self.registry, recordId=operation["recordId"]
-        )
+        record = self._get_record(operation["recordId"])
         status = str(record["status"])
-        target = PUBLISHED_STATUS if operation["kind"] == APPROVE_KIND else REJECTED_STATUS
         if status == PENDING_APPROVAL_STATUS and not operation.get("decisionAccepted"):
             if not allow_reissue:
                 # 管理 handler の操作照会は決裁の権限を持たないため、AWS を呼び直さない
                 return _pending(operation)
             try:
-                response = self._registry.update_registry_record_status(
-                    registryId=self.registry,
-                    recordId=operation["recordId"],
-                    status=target,
-                    statusReason=operation["reason"],
-                )
-                _record_request_id(operation, response)
-                operation["decisionAccepted"] = True
-            except ClientError as error:
-                _record_request_id(operation, error.response)
+                self._send_decision(operation)
+            except ClientError:
+                # 先の呼び出しが届いていた可能性があるため、失敗とは確定しない
+                pass
             self.store.save_pending(operation)
-            record = self._registry.get_registry_record(
-                registryId=self.registry, recordId=operation["recordId"]
-            )
+            record = self._get_record(operation["recordId"])
             status = str(record["status"])
         if status in IN_FLIGHT_STATUSES:
             return _pending(operation)
         if status == PENDING_APPROVAL_STATUS:
             # AWS の受け付けを確認した後も承認待ちが見えるときは、反映を待っている
             return _pending(operation)
+        target = DECISION_TARGETS[operation["kind"]]
         management = Management(operation["management"])
         if (
             status != target
@@ -534,39 +520,36 @@ class RecordCuration:
         return self._finish(operation, record, management)
 
     def _finish(
-        self, operation: DraftOperation, record: Mapping[str, Any], management: Management
+        self, operation: DecisionOperation, record: Mapping[str, Any], management: Management
     ) -> DecisionResponse:
         """決裁の成功を確定する。公開承認では、Curator が確認した内容を公開版として保存する。"""
-        approved = operation["kind"] == APPROVE_KIND
         published: Mapping[str, Any] | None = None
         management_item = {**management.item, "activeSubmissionId": None}
-        if approved:
+        if operation["kind"] == APPROVE_KIND:
             submission = self._get_submission(operation["recordId"], str(operation["submissionId"]))
             if submission is None:
                 raise DecisionUnavailable("申請スナップショットを読み取れません。")
-            published = published_item(submission)
+            published = published_item(submission, operation["principal"], now())
             management_item["publishedVersion"] = operation["recordVersion"]
         after = Management(management_item)
         result: dict[str, Any] = {
             "recordId": operation["recordId"],
             "name": record["name"],
-            "displayName": record.get("displayName", record["name"]),
+            "displayName": _display_name(record),
             "recordType": record["recordType"],
             "recordVersion": record["recordVersion"],
             "status": record["status"],
             "ownerTeam": operation["ownerTeam"],
-            "publishedVersion": (
-                operation["recordVersion"] if approved else after.published_version(record)
-            ),
+            "publishedVersion": after.published_version(record),
             "operationId": operation["operationId"],
             "operationState": "SUCCEEDED",
             "submissionId": operation["submissionId"],
             "snapshotHash": operation["snapshotHash"],
         }
-        self.store.finish_decision(operation, result, after, published, operation["recordVersion"])
+        self.store.finish_decision(operation, result, after, published)
         return 200, result
 
-    def _abort_quietly(self, operation: DraftOperation, code: str) -> None:
+    def _abort_quietly(self, operation: DecisionOperation, code: str) -> None:
         try:
             self.store.abort(operation, code)
         except (BotoCoreError, ClientError, StoreConflict):
@@ -594,18 +577,3 @@ class RecordCuration:
             return self.store.get_lock(record_id)
         except (BotoCoreError, ClientError):
             raise DecisionUnavailable() from None
-
-
-def settle_decision(
-    curation: RecordCuration,
-    operation: DraftOperation,
-    *,
-    caller: Caller,
-) -> DecisionResponse:
-    """操作照会（GET /api/operations）から決裁操作を確定する。
-
-    決裁操作は Curator だけが参照できる。管理 handler から呼ぶため、AWS を呼び直さない
-    （管理 handler の実行ロールには決裁の権限がないため）。同じキーでの再送は決裁 handler が担う。
-    """
-    require_curator(caller)
-    return curation.settle(operation, allow_reissue=False)

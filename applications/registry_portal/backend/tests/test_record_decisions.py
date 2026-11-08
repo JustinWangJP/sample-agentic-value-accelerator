@@ -284,6 +284,7 @@ def test_review_list_shows_pending_records_without_a_portal_submission():
         assert unmanaged["managed"] is False
         assert unmanaged["ownerTeam"] is None
         assert unmanaged["submissionId"] is None
+        assert unmanaged["submissionState"] == "NONE"
         assert unmanaged["reason"] is None
         stub.assert_no_pending_responses()
 
@@ -304,7 +305,10 @@ def test_review_detail_returns_the_snapshot_and_the_published_diff_base():
         assert body["snapshot"]["reason"] == "利用者向けに公開する"
         assert body["snapshot"]["record"]["descriptors"] == CUSTOM_DESCRIPTORS
         assert body["snapshot"]["contact"] == CUSTOM_DRAFT["contact"]
+        assert body["submissionState"] == "AVAILABLE"
+        assert body["snapshotIntact"] is True
         assert body["published"] is None
+        assert body["publishedState"] == "NONE"
         stub.assert_no_pending_responses()
 
 
@@ -336,6 +340,91 @@ def test_review_detail_includes_the_published_snapshot_for_the_diff():
         assert body["published"]["contact"] == "old@example.com"
         assert body["published"]["termsOfUse"] == "旧利用条件"
         assert body["published"]["relatedReferences"] == []
+        assert body["publishedState"] == "AVAILABLE"
+        # 定義と承認者を記録する前の公開版スナップショットでは、それらを未取得（null）として返す
+        assert body["published"]["record"] is None
+        assert body["published"]["approvedBy"] is None
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_review_detail_marks_a_missing_published_snapshot_instead_of_a_first_publication():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        state = setup_pending(stub, registry, db)
+        # 公開中の版はあるのに、公開版スナップショットが保存されていない（ADR-0007「未取得」）
+        management = stored(db, "MANAGEMENT")
+        put(db, "MANAGEMENT", {**management, "publishedVersion": "0.9.0"})
+        stub.add_response("get_registry_record", {**RECORD, "status": "PENDING_APPROVAL"}, GET)
+        status, body = call(
+            state["decision"],
+            event("GET", f"/api/reviews/{RECORD_ID}", groups=CURATOR, key=""),
+        )
+        assert status == 200
+        assert body["publishedVersion"] == "0.9.0"
+        assert body["publishedState"] == "MISSING"
+        assert body["published"] is None
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_review_list_and_detail_mark_a_missing_submission_instead_of_no_submission():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        state = setup_pending(stub, registry, db)
+        submission_id = state["submitted"]["submissionId"]
+        # 管理情報は申請を指しているのに、申請スナップショットが読めない（保存内容の異常）
+        db.delete_item(
+            TableName=SUPPLEMENT_TABLE,
+            Key={
+                "pk": {"S": f"REGISTRY#{REGISTRY_ARN}#RECORD#{RECORD_ID}"},
+                "sk": {"S": f"SUBMISSION#{submission_id}"},
+            },
+        )
+        stub.add_response("list_registry_records", list_response(aws_summary()), LIST_PARAMS)
+        _, page = call(state["decision"], event("GET", "/api/reviews", groups=CURATOR, key=""))
+        (item,) = page["items"]
+        assert item["submissionState"] == "MISSING"
+        assert item["submissionId"] == submission_id
+        assert item["snapshotHash"] is None
+        stub.add_response("get_registry_record", {**RECORD, "status": "PENDING_APPROVAL"}, GET)
+        _, detail = call(
+            state["decision"],
+            event("GET", f"/api/reviews/{RECORD_ID}", groups=CURATOR, key=""),
+        )
+        assert detail["submissionState"] == "MISSING"
+        assert detail["snapshot"] is None
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_approve_refuses_a_snapshot_rewritten_after_the_submission():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        state = setup_pending(stub, registry, db)
+        snapshot = state["snapshot"]
+        sk = f'SUBMISSION#{state["submitted"]["submissionId"]}'
+        # 保存済みの申請スナップショットの連絡先だけを書き換える（snapshotHash はそのまま）
+        put(
+            db,
+            sk,
+            {
+                **{k: v for k, v in snapshot.items() if k not in ("pk", "sk")},
+                "contact": "attacker@example.com",
+            },
+        )
+        stub.add_response("get_registry_record", {**RECORD, "status": "PENDING_APPROVAL"}, GET)
+        _, detail = call(
+            state["decision"],
+            event("GET", f"/api/reviews/{RECORD_ID}", groups=CURATOR, key=""),
+        )
+        assert detail["snapshotIntact"] is False
+        stub.add_response("get_registry_record", {**RECORD, "status": "PENDING_APPROVAL"}, GET)
+        status, body = decide(state["decision"], snapshot_hash=snapshot["snapshotHash"])
+        assert status == 409
+        assert "申請時の内容と一致しません" in body["error"]["message"]
+        assert stored(db, f"PUBLISHED#{CUSTOM_DRAFT['recordVersion']}") is None
+        assert stored(db, "LOCK") is None
         stub.assert_no_pending_responses()
 
 
@@ -350,7 +439,7 @@ def test_review_detail_hides_decided_records():
             event("GET", f"/api/reviews/{RECORD_ID}", groups=CURATOR, key=""),
         )
         assert status == 404
-        assert body["error"]["code"] == "REVIEW_NOT_FOUND"
+        assert body["error"]["code"] == "PENDING_APPROVAL_NOT_FOUND"
         stub.assert_no_pending_responses()
 
 
@@ -387,6 +476,10 @@ def test_approve_records_intent_then_calls_aws_and_writes_the_published_snapshot
         assert published["termsOfUse"] == CUSTOM_DRAFT["termsOfUse"]
         assert published["connectionReference"] == CUSTOM_DRAFT["connectionReference"]
         assert published["relatedReferences"] == []
+        # 次回審査の差分に使う定義と metadata、公開承認した Curator も残す
+        assert published["record"] == state["snapshot"]["record"]
+        assert published["approvedBy"] == {"issuer": ISSUER, "subject": "carol"}
+        assert published["approvedAt"]
         management = stored(db, "MANAGEMENT")
         assert management["publishedVersion"] == CUSTOM_DRAFT["recordVersion"]
         assert management["activeSubmissionId"] is None
@@ -536,9 +629,18 @@ def test_decisions_refuse_records_not_awaiting_review(status, approved):
         stub.assert_no_pending_responses()
 
 
-@pytest.mark.parametrize("status", ["CREATING", "UPDATING", "CREATE_FAILED", "UPDATE_FAILED"])
+@pytest.mark.parametrize(
+    ("status", "message_part"),
+    [
+        ("CREATING", "処理中"),
+        ("UPDATING", "処理中"),
+        # 失敗が確定した状態は「処理中」と案内しない
+        ("CREATE_FAILED", "失敗した状態"),
+        ("UPDATE_FAILED", "失敗した状態"),
+    ],
+)
 @mock_aws
-def test_decisions_refuse_records_aws_is_still_processing(status):
+def test_decisions_refuse_records_aws_is_still_processing(status, message_part):
     registry, db = clients()
     with Stubber(registry) as stub:
         state = setup_pending(stub, registry, db)
@@ -547,7 +649,7 @@ def test_decisions_refuse_records_aws_is_still_processing(status):
             state["decision"], snapshot_hash=state["snapshot"]["snapshotHash"]
         )
         assert status_code == 409
-        assert "処理中" in body["error"]["message"]
+        assert message_part in body["error"]["message"]
         assert stored(db, "LOCK") is None
         stub.assert_no_pending_responses()
 
@@ -587,6 +689,9 @@ def test_decisions_refuse_invalidated_submissions_and_records_without_one():
     [
         (False, "", "却下理由"),
         (False, " ", "却下理由"),
+        # 公開承認にも理由を記録する（Issue #10、設計書「API」）
+        (True, "", "公開承認の理由"),
+        (True, " ", "公開承認の理由"),
         (True, "x" * 256, "255"),
         (False, "x" * 256, "255"),
     ],
@@ -790,10 +895,13 @@ def test_operations_endpoint_serves_decision_ops_to_curators_only():
                 "GET", f"/api/operations/{operation_id}", groups=groups, key="", sub="carol"
             )
             assert call(state["management"], request)[0] == 403
+        # 決裁した Curator 本人以外の Curator は参照できない
+        other = event("GET", f"/api/operations/{operation_id}", groups=CURATOR, key="", sub="dave")
+        assert call(state["management"], other)[0] == 403
         stub.add_response("get_registry_record", {**RECORD, "status": "UPDATING"}, GET)
         status, verifying = call(
             state["management"],
-            event("GET", f"/api/operations/{operation_id}", groups=CURATOR, key="", sub="dave"),
+            event("GET", f"/api/operations/{operation_id}", groups=CURATOR, key="", sub="carol"),
         )
         assert status == 202
         assert verifying["operationState"] == "VERIFYING"
@@ -871,3 +979,23 @@ def test_curation_handler_requires_the_supplement_table_configuration():
     registry, db = clients()
     with pytest.raises(Exception, match="SUPPLEMENT_TABLE_NAME"):
         create_curation_handler(dict(ENV), registry_client=registry, store_client=db)
+
+
+def test_recomputed_snapshot_hash_matches_numbers_read_back_from_the_store():
+    from decimal import Decimal
+
+    from registry_portal.domain.drafts import digest
+    from registry_portal.domain.submissions import recompute_snapshot_hash
+
+    snapshot = {"reason": "公開する", "record": {"customMetadata": {"count": 3, "ratio": 0.5}}}
+    # DynamoDB から読み戻すと数値は Decimal になり、無効化の有無とキーが加わる
+    read_back = {
+        "pk": "REGISTRY#…",
+        "sk": "SUBMISSION#…",
+        "invalidated": False,
+        "snapshotHash": digest(snapshot),
+        "reason": "公開する",
+        "record": {"customMetadata": {"count": Decimal("3"), "ratio": Decimal("0.5")}},
+    }
+    assert recompute_snapshot_hash(read_back) == digest(snapshot)
+    assert recompute_snapshot_hash({**read_back, "reason": "書き換え"}) != digest(snapshot)

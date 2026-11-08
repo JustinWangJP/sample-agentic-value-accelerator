@@ -29,6 +29,12 @@ from registry_portal.curation import (
     RecordCuration,
     RegistryStatusClient,
 )
+from registry_portal.domain.drafts import (
+    APPROVE_KIND,
+    REJECT_KIND,
+    OperationKind,
+    is_decision_operation,
+)
 from registry_portal.errors import ApiError, RequestValidationError, RouteNotFoundError
 from registry_portal.drafts import (
     RecordDrafts,
@@ -214,9 +220,10 @@ def create_management_handler(
         else None
     )
     region = discovery_settings.registry_region
+    drafts = None
     # 決裁操作の照会（GET /api/operations）は管理 handler が担う。決裁自体は決裁 handler が行うため、
     # このインスタンスは AWS の状態更新 API を呼び出さない（IAM でも拒否される）
-    drafts = None
+    curation = None
     if catalog_settings.supplement_table_name:
         control_client = registry_client or cast(
             RegistryControlClient,
@@ -229,15 +236,10 @@ def create_management_handler(
             or cast(DraftStoreClient, boto3.client("dynamodb", region_name=region)),
         )
         drafts = RecordDrafts(
-            discovery_settings.registry_arn,
-            store,
-            control_client,
-            discovery_client,
-            RecordCuration(
-                discovery_settings.registry_arn,
-                store,
-                cast(RegistryStatusClient, control_client),
-            ),
+            discovery_settings.registry_arn, store, control_client, discovery_client
+        )
+        curation = RecordCuration(
+            discovery_settings.registry_arn, store, cast(RegistryStatusClient, control_client)
         )
 
     def drafts_for(caller: Caller) -> RecordDrafts:
@@ -290,11 +292,14 @@ def create_management_handler(
         )
 
     def get_operation(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        # 操作の種別で参照できる主体が変わる（決裁は Curator、下書きは Publisher）ため、
-        # 認可は operation の内側で行う
-        if drafts is None:
+        # 操作の種別で参照できる主体が変わる（決裁は決裁した Curator、下書きは所有チームの Publisher）。
+        # 認可は種別ごとの照会の内側で行う
+        if drafts is None or curation is None:
             raise DraftsNotConfigured()
-        return drafts.operation(caller, _path_parameter(event))
+        operation = drafts.find_operation(_path_parameter(event))
+        if is_decision_operation(operation):
+            return curation.operation_status(caller, operation)
+        return drafts.operation_status(caller, operation)
 
     routes: Mapping[str, Route] = {
         **MANAGEMENT_ROUTES,
@@ -353,29 +358,25 @@ def create_curation_handler(
             raise RequestValidationError("審査詳細にクエリパラメーターは指定できません。")
         return curation.review(caller, _path_parameter(event))
 
-    def approve(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        return curation.decide(
-            caller,
-            _path_parameter(event),
-            _json_body(event, DECISION_BODY_MAX_LENGTH),
-            _idempotency_key(event),
-            approved=True,
-        )
+    def decision_route(kind: OperationKind) -> Route:
+        """決裁の種別ごとの route。AWS の遷移先は種別だけで決まり、本文からは受け取らない。"""
 
-    def reject(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        return curation.decide(
-            caller,
-            _path_parameter(event),
-            _json_body(event, DECISION_BODY_MAX_LENGTH),
-            _idempotency_key(event),
-            approved=False,
-        )
+        def decide(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+            return curation.decide(
+                caller,
+                _path_parameter(event),
+                _json_body(event, DECISION_BODY_MAX_LENGTH),
+                _idempotency_key(event),
+                kind=kind,
+            )
+
+        return decide
 
     routes: Mapping[str, Route] = {
         "GET /api/reviews": list_reviews,
         "GET /api/reviews/{recordId}": get_review,
-        "POST /api/reviews/{recordId}/approve": approve,
-        "POST /api/reviews/{recordId}/reject": reject,
+        "POST /api/reviews/{recordId}/approve": decision_route(APPROVE_KIND),
+        "POST /api/reviews/{recordId}/reject": decision_route(REJECT_KIND),
     }
 
     return _serve(routes, settings)
