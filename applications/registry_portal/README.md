@@ -309,7 +309,7 @@ API Gateway の CORS で `PATCH` と `Idempotency-Key` ヘッダーも許可し�
 
 公開中の版と参照先は、発見用 JWT の `BatchGetDiscoverableRegistryRecord` で確認します。`recordVersion` は semver の順序で公開中の版より大きい必要があります。数値の prerelease 識別子も数値として比較します。補助ストアに記録済みの公開版も下限とし、発見 API の反映遅延で版を戻しません。却下された番号が公開されていなければ、編集後の再申請で同じ番号を使えます。AWS がビルドメタデータの `+` を受け付けないため、既存の下書き入力と同様に `+build` は許可しません。関連参照は指定した ID と版が公開承認済みの場合だけ受け付けます。AWS や補助ストアを読めない場合は502にし、未公開や0件とは区別します。[公開版と管理上の最新版](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-record-lifecycle.html)
 
-毎回 `GetRegistry` で自動承認設定も確認します。`approvalConfiguration.autoApprovalRules` が省略または空なら手動承認です。ルールがあれば503 `APPROVAL_CONFIGURATION_CHANGED` とし、申請を止めて管理者への連絡を表示します。アプリが設定を変更することはありません。[GetRegistry](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_GetRegistry.html)、[自動承認設定](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_ApprovalConfiguration.html)
+毎回 `GetRegistry` で自動承認設定も確認します。`approvalConfiguration.autoApprovalRules` が省略または空なら手動承認です。ルールがあれば503 `APPROVAL_CONFIGURATION_CHANGED` とし、申請を止めて管理者への連絡を表示します。AWS へは書き込んでいないため、SPA はこの503を結果不明として扱わず、フォームを再開して次の申請を新しいキーで行います。アプリが設定を変更することはありません。[GetRegistry](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_GetRegistry.html)、[自動承認設定](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_ApprovalConfiguration.html)
 
 ### 固定する申請内容
 
@@ -323,7 +323,7 @@ API Gateway の CORS で `PATCH` と `Idempotency-Key` ヘッダーも許可し�
 | `record` | AWS 現物の ID・名前・表示名・説明・種別・版・descriptor・metadata・申請前の更新日時 |
 | `relatedReferences` | 申請時に確認した ID と版の配列 |
 | `supplement` | 所有チーム、連絡先など、Skill の commit・version・digest を含む補助情報 |
-| `contact`・`termsOfUse`・`connectionReference` | #10 が公開版スナップショットへ写す値。custom Agent は現物の descriptor、その他の種別は管理情報から取得 |
+| `contact`・`termsOfUse`・`connectionReference` | #10 が公開版スナップショットへ写す値。custom Agent は現物の descriptor、その他の種別は管理情報から取得。欠けていれば空文字で補わず400 |
 | `contentHash` | 既存の下書きと同じ、AWS の内容と補助情報の SHA-256 |
 | `snapshotHash` | この属性自身と DynamoDB の `pk`・`sk` を除く全属性を canonical JSON にした SHA-256 |
 
@@ -333,8 +333,8 @@ canonical JSON はキーを並べ、区切りを `,` と `:` に固定し、Unic
 
 AWS の申請 API は202を返します。ポータルは続けて現物を再取得し、内容が一致する `PENDING_APPROVAL` を確認した場合だけ200 `SUCCEEDED` とします。応答は既存の下書き操作と同じ形に `submissionId` と `snapshotHash` を加えます。`MANAGEMENT.activeSubmissionId` はこの確定時にだけ設定します。公開承認と `PUBLISHED#{recordVersion}` の保存は #10 が担当します。[SubmitRegistryRecordForApproval](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_SubmitRegistryRecordForApproval.html)
 
-タイムアウト、AWS の5xx、AWS 成功後の補助ストア障害、再取得でまだ `DRAFT` が見える場合は202 `VERIFYING` を返します。ロックは期限で解除せず、別の書き込みを409で止めます。`GET /api/operations/{operationId}` は再送せず現物を再取得して結果を確定します。AWS が入力不備や混雑で処理せず拒否したと確定した場合は失敗を記録し、ロックを解除します。申請前の確認に失敗した場合も AWS へ申請せずロックを解除します。
+タイムアウト、AWS の5xx、AWS 成功後の補助ストア障害、再取得でまだ `DRAFT` が見える場合は202 `VERIFYING` を返します。ロックは期限で解除せず、別の書き込みを409で止めます。`GET /api/operations/{operationId}` は現物を再取得して結果を確定します。スナップショットの保存後に申請 API の受け付けを確認できていない操作（`approvalRequested` がない）で、現物が内容の一致する `DRAFT` のままなら、申請 API を呼び直します。先の呼び出しが届いていた可能性があるため、呼び直しのエラーは失敗と確定せず202のまま次の照合に委ねます。受け付けを確認済みの操作は呼び直しません。AWS が入力不備や混雑で処理せず拒否したと確定した場合は失敗を記録し、ロックを解除します。申請前の確認に失敗した場合も AWS へ申請せずロックを解除します。
 
-承認待ちや却下後の編集が AWS で `DRAFT` に戻ったことを確認すると、`activeSubmissionId` を消し、`SUBMISSION#{元の申請ID}#INVALIDATED` を追記します。元のスナップショットは残します。#10 はレコード共通ロックに加え、申請が現在の `activeSubmissionId` と一致し、無効化記録がないことを確認する必要があります。
+承認待ちや却下後の編集が AWS で `DRAFT` に戻ったことを確認すると、`activeSubmissionId` を消し、`SUBMISSION#{元の申請ID}#INVALIDATED` を追記します。元のスナップショットは残します。#10 はレコード共通ロックに加え、申請が現在の `activeSubmissionId` と一致し、無効化記録がないことを確認する必要があります。`DraftStore.get_submission` はスナップショットに無効化の有無（`invalidated`）を付けて返すので、#10 はこの入口から読みます。
 
-Seam 1 の Stubber と moto で、保存の順序、認可、公開版との semver 比較、関連参照、`isA2A`、自動承認、固定内容とハッシュ、編集時の無効化、同じ未公開番号の再申請、AWS の結果不明、AWS 成功後の補助ストア障害を検証します。実 AWS への書き込みは行っていません。デプロイ後は実環境で申請時の非同期状態、公開中の版との併存、IAM 境界を確認してください。
+Seam 1 の Stubber と moto で、保存の順序、認可、公開版との semver 比較、関連参照、`isA2A`、自動承認、固定内容とハッシュ、補助情報が欠けた下書きの拒否、編集時の無効化と `get_submission` の `invalidated`、同じ未公開番号の再申請、AWS の結果不明、スナップショット保存後に止まった申請の再開、AWS 成功後の補助ストア障害を検証します。Seam 2 の Vitest で、申請の `Idempotency-Key`、409の再取得案内、503 `APPROVAL_CONFIGURATION_CHANGED` の表示を確認します。実 AWS への書き込みは行っていません。デプロイ後は実環境で申請時の非同期状態、公開中の版との併存、IAM 境界を確認してください。

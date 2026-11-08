@@ -8,15 +8,35 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from registry_portal.domain.secrets import scan_json, scan_text
-
+from registry_portal.domain.descriptors import SUPPLEMENT_FIELDS
 from registry_portal.domain.drafts import (
+    RECORD_ID_PATTERN,
     SEMVER,
     Management,
     PrincipalRecord,
     RecordDraft,
     content_hash,
     digest,
+)
+from registry_portal.domain.secrets import scan_json, scan_text
+
+# 申請入力の上限。SPA の申請フォーム（frontend/src/drafts/api.ts）と揃える
+REASON_MAX_LENGTH = 4096
+RELATED_REFERENCES_MAX = 20
+# 関連参照の recordVersion の上限。下書きの recordVersion（TEXT_LIMITS）と同じ
+REFERENCE_VERSION_MAX_LENGTH = 255
+
+# スナップショットに残す AWS 上のレコードの項目
+SNAPSHOT_RECORD_FIELDS = (
+    "recordId",
+    "name",
+    "displayName",
+    "description",
+    "recordType",
+    "recordVersion",
+    "descriptors",
+    "customMetadata",
+    "updatedAt",
 )
 
 
@@ -46,22 +66,24 @@ class SubmissionInput:
         )
         if not isinstance(expected, str) or not re.fullmatch(r"[a-f0-9]{64}", expected):
             raise ValueError("取得した内容ハッシュを指定してください。")
-        if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 4096:
-            raise ValueError("申請理由は1〜4096文字で指定してください。")
+        if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= REASON_MAX_LENGTH:
+            raise ValueError(f"申請理由は1〜{REASON_MAX_LENGTH}文字で指定してください。")
         if scan_text("reason", reason):
             raise ValueError(
                 "申請理由に秘密情報らしき値が含まれています。保管先への参照を記載してください。"
             )
-        if not isinstance(references, list) or len(references) > 20:
-            raise ValueError("関連参照は20件以内のリストで指定してください。")
+        if not isinstance(references, list) or len(references) > RELATED_REFERENCES_MAX:
+            raise ValueError(
+                f"関連参照は{RELATED_REFERENCES_MAX}件以内のリストで指定してください。"
+            )
         normalized = []
         for reference in references:
             if not isinstance(reference, dict) or set(reference) != {"recordId", "recordVersion"}:
                 raise ValueError("関連参照には recordId と recordVersion を指定してください。")
             record_id, version = reference["recordId"], reference["recordVersion"]
-            if not isinstance(record_id, str) or not re.fullmatch(r"[A-Za-z0-9]{12}", record_id):
+            if not isinstance(record_id, str) or not RECORD_ID_PATTERN.fullmatch(record_id):
                 raise ValueError("関連参照の recordId の形式が正しくありません。")
-            if not isinstance(version, str) or len(version) > 255:
+            if not isinstance(version, str) or len(version) > REFERENCE_VERSION_MAX_LENGTH:
                 raise ValueError("関連参照の recordVersion の形式が正しくありません。")
             version_key(version)
             if reference in normalized:
@@ -70,49 +92,48 @@ class SubmissionInput:
         return cls(expected, reason.strip(), normalized)
 
 
+@dataclass(frozen=True)
+class Submission:
+    """1回の申請。申請 ID は申請操作の操作 ID と同じ。"""
+
+    submission_id: str
+    submitted_by: PrincipalRecord
+    submitted_at: str
+    request: SubmissionInput
+
+
 def submission_snapshot(
-    submission_id: str,
+    submission: Submission,
     record: Mapping[str, Any],
     management: Management,
-    principal: PrincipalRecord,
-    request: SubmissionInput,
     draft: RecordDraft,
-    submitted_at: str,
 ) -> dict[str, Any]:
-    actual = {
-        k: record.get(k)
-        for k in (
-            "recordId",
-            "name",
-            "displayName",
-            "description",
-            "recordType",
-            "recordVersion",
-            "descriptors",
-            "customMetadata",
-            "updatedAt",
-        )
-    }
-    if scan_json("record", actual):
+    """申請時点の内容を固定したスナップショット。canonical JSON のハッシュを付ける。"""
+    aws_record = {key: record.get(key) for key in SNAPSHOT_RECORD_FIELDS}
+    if scan_json("record", aws_record):
         raise ValueError(
             "AWS の定義や metadata に秘密情報らしき値が含まれています。管理者に連絡してください。"
         )
-    if isinstance(actual["updatedAt"], datetime):
-        actual["updatedAt"] = actual["updatedAt"].isoformat()
-    supplement = {**management.hashed_fields(), **draft.supplement()}
+    if isinstance(aws_record["updatedAt"], datetime):
+        aws_record["updatedAt"] = aws_record["updatedAt"].isoformat()
+    pinned = draft.supplement()
+    if any(not isinstance(pinned.get(key), str) for key in SUPPLEMENT_FIELDS):
+        # 欠けた値を空文字で補うと、公開版へ写すときに「未入力」と区別できなくなる
+        raise ValueError(
+            "下書きに連絡先・利用条件・接続先の参照がありません。下書きを保存し直してください。"
+        )
+    supplement = {**management.hashed_fields(), **pinned}
     snapshot = {
-        "submissionId": submission_id,
-        "submittedBy": principal,
+        "submissionId": submission.submission_id,
+        "submittedBy": submission.submitted_by,
         "lastEditedBy": management.item["lastEditedBy"],
-        "submittedAt": submitted_at,
-        "reason": request.reason,
-        "record": actual,
+        "submittedAt": submission.submitted_at,
+        "reason": submission.request.reason,
+        "record": aws_record,
         "ownerTeam": management.owner_team,
         "supplement": supplement,
-        "relatedReferences": request.references,
-        **{
-            key: supplement.get(key, "") for key in ("contact", "termsOfUse", "connectionReference")
-        },
+        "relatedReferences": submission.request.references,
+        **{key: pinned[key] for key in SUPPLEMENT_FIELDS},
         "contentHash": content_hash(record, management),
     }
     return {**snapshot, "snapshotHash": digest(snapshot)}

@@ -71,24 +71,23 @@ def _route_key(event: LambdaEvent) -> str:
     return f"{http.get('method', '')} {http.get('path', '')}"
 
 
-# path に1つの要素を含むルート。(実際の path の接頭辞, ルート表のキー)
+# path に1つの要素を含むルート。(実際の path の接頭辞, 接尾辞, ルート表のキー)
 _PARAMETERIZED_ROUTES = (
-    ("GET /api/catalog/", "GET /api/catalog/{recordId}"),
-    ("GET /api/records/", "GET /api/records/{recordId}"),
-    ("PATCH /api/records/", "PATCH /api/records/{recordId}"),
-    ("GET /api/operations/", "GET /api/operations/{operationId}"),
+    ("GET /api/catalog/", "", "GET /api/catalog/{recordId}"),
+    ("GET /api/records/", "", "GET /api/records/{recordId}"),
+    ("PATCH /api/records/", "", "PATCH /api/records/{recordId}"),
+    ("POST /api/records/", "/submit", "POST /api/records/{recordId}/submit"),
+    ("GET /api/operations/", "", "GET /api/operations/{operationId}"),
 )
 
 
 def _route_template(key: str) -> tuple[str, str]:
     """ルート表のキーと、path パラメーター（なければ空文字）を返す。"""
-    if key.startswith("POST /api/records/") and key.endswith("/submit"):
-        parameter = key[len("POST /api/records/") : -len("/submit")]
+    for prefix, suffix, template in _PARAMETERIZED_ROUTES:
+        if not key.startswith(prefix) or not key.endswith(suffix):
+            continue
+        parameter = key[len(prefix) : len(key) - len(suffix)]
         if parameter and "/" not in parameter:
-            return "POST /api/records/{recordId}/submit", parameter
-    for prefix, template in _PARAMETERIZED_ROUTES:
-        parameter = key.removeprefix(prefix)
-        if key.startswith(prefix) and parameter and "/" not in parameter:
             return template, parameter
     return key, ""
 
@@ -105,6 +104,8 @@ def _query_of(event: LambdaEvent) -> Mapping[str, str]:
 
 # 下書きの本文の上限。項目ごとの文字数上限（domain/drafts.py の TEXT_LIMITS）の合計に余裕を持たせる
 DRAFT_BODY_MAX_LENGTH = 262144
+# 申請の本文の上限。申請理由（4096文字）と関連参照（20件）の上限に余裕を持たせる
+SUBMISSION_BODY_MAX_LENGTH = 16384
 
 
 def _json_body(event: LambdaEvent, max_length: int = 8192) -> Mapping[str, Any]:
@@ -121,6 +122,14 @@ def _json_body(event: LambdaEvent, max_length: int = 8192) -> Mapping[str, Any]:
     if not isinstance(body, Mapping):
         raise error
     return body
+
+
+def _idempotency_key(event: LambdaEvent) -> str:
+    """Idempotency-Key ヘッダーの値。ヘッダー名の大文字・小文字は区別しない。なければ空文字。"""
+    headers = _mapping_or_empty(event.get("headers"))
+    return next(
+        (str(value) for name, value in headers.items() if name.lower() == "idempotency-key"), ""
+    )
 
 
 def get_me(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
@@ -217,12 +226,9 @@ def create_management_handler(
         return get_catalog_detail(discovery_client, _path_parameter(event), supplement)
 
     def post_record(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        headers = _mapping_or_empty(event.get("headers"))
-        key = next(
-            (str(value) for name, value in headers.items() if name.lower() == "idempotency-key"),
-            "",
+        return drafts_for(caller).create(
+            caller, _json_body(event, DRAFT_BODY_MAX_LENGTH), _idempotency_key(event)
         )
-        return drafts_for(caller).create(caller, _json_body(event, DRAFT_BODY_MAX_LENGTH), key)
 
     def get_record(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
         return drafts_for(caller).get(caller, _path_parameter(event))
@@ -236,12 +242,12 @@ def create_management_handler(
         )
 
     def submit_record(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        headers = _mapping_or_empty(event.get("headers"))
-        key = next(
-            (str(value) for name, value in headers.items() if name.lower() == "idempotency-key"), ""
-        )
         return drafts_for(caller).submit(
-            caller, _path_parameter(event), _json_body(event, 16384), discovery_client, key
+            caller,
+            _path_parameter(event),
+            _json_body(event, SUBMISSION_BODY_MAX_LENGTH),
+            discovery_client,
+            _idempotency_key(event),
         )
 
     def get_operation(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:

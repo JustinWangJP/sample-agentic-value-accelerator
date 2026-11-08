@@ -22,6 +22,8 @@ from catalog_helpers import (
 from draft_helpers import RECORD_ARN, RECORD_ID, aws_record, call, clients, event
 from record_fixtures import CUSTOM_DRAFT, CUSTOM_DESCRIPTORS, METADATA, stub_create
 from registry_portal.app import create_management_handler
+from registry_portal.domain.drafts import RecordDraft
+from registry_portal.services.draft_store import DraftStore
 from registry_portal.services.discovery import DiscoveryDependencies
 
 GET = {"registryId": REGISTRY_ARN, "recordId": RECORD_ID}
@@ -399,9 +401,14 @@ def test_unknown_aws_submission_keeps_the_snapshot_and_lock_until_readback():
         operation_id = pending["operationId"]
         assert stored(db, f"SUBMISSION#{operation_id}") is not None
         assert stored(db, "LOCK")["operationId"] == operation_id
-        # 申請結果がまだ DRAFT と見えても、書き込みを再送したりロックを解除したりしない。
+        # 申請結果がまだ DRAFT と見えたら申請 API を呼び直す。先の呼び出しが届いていた可能性が
+        # あるため、再試行のエラーは失敗と確定せず、ロックも解除しない。
         stub.add_response("get_registry_record", record, GET)
+        stub.add_client_error(
+            "submit_registry_record_for_approval", "ConflictException", expected_params=GET
+        )
         assert call(handler, event("GET", f"/api/operations/{operation_id}"))[0] == 202
+        assert stored(db, "LOCK")["operationId"] == operation_id
         status, _ = call(
             handler,
             event(
@@ -426,6 +433,70 @@ def test_unknown_aws_submission_keeps_the_snapshot_and_lock_until_readback():
         stub.assert_no_pending_responses()
 
 
+@mock_aws
+def test_submission_stopped_after_the_snapshot_resumes_on_readback():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        handler, created, _ = setup_draft(stub, registry, db)
+        record = aws_record(CUSTOM_DRAFT, descriptors=CUSTOM_DESCRIPTORS, customMetadata=META)
+        # スナップショットの保存後、申請 API の受け付けを確認できずに止まった
+        stub_submission(stub, record, error="InternalServerException")
+        status, pending = submit(handler, created)
+        assert status == 202
+        operation_id = pending["operationId"]
+        snapshot = stored(db, f"SUBMISSION#{operation_id}")
+        # 照合で DRAFT のままなら申請 API を呼び直し、承認待ちを確認して確定する
+        stub.add_response("get_registry_record", record, GET)
+        stub.add_response(
+            "submit_registry_record_for_approval",
+            {
+                "registryArn": REGISTRY_ARN,
+                "recordArn": RECORD_ARN,
+                "recordId": RECORD_ID,
+                "status": "PENDING_APPROVAL",
+                "updatedAt": record["updatedAt"],
+            },
+            GET,
+        )
+        stub.add_response("get_registry_record", {**record, "status": "PENDING_APPROVAL"}, GET)
+        status, finished = call(handler, event("GET", f"/api/operations/{operation_id}"))
+        assert status == 200
+        assert finished["submissionId"] == operation_id
+        assert finished["snapshotHash"] == snapshot["snapshotHash"]
+        assert stored(db, f"SUBMISSION#{operation_id}") == snapshot
+        assert stored(db, "LOCK") is None
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_submission_refuses_a_draft_without_the_pinned_supplement(monkeypatch):
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        handler, created, _ = setup_draft(stub, registry, db)
+        record = aws_record(CUSTOM_DRAFT, descriptors=CUSTOM_DESCRIPTORS, customMetadata=META)
+        stub.add_response("get_registry_record", record, GET)
+        stub.add_response(
+            "get_registry",
+            {
+                "name": "registry",
+                "registryId": "abcdEFGH1234",
+                "registryArn": REGISTRY_ARN,
+                "status": "ACTIVE",
+                "createdAt": record["createdAt"],
+                "updatedAt": record["updatedAt"],
+                "approvalConfiguration": {"autoApprovalRules": []},
+            },
+            {"registryId": REGISTRY_ARN},
+        )
+        # 連絡先などが欠けた下書きを、空文字で補ってスナップショットに固定しない
+        monkeypatch.setattr(RecordDraft, "supplement", lambda self: {"contact": "a@example.com"})
+        status, body = submit(handler, created)
+        assert status == 400
+        assert "連絡先・利用条件・接続先の参照" in body["error"]["message"]
+        assert stored(db, "LOCK") is None
+        stub.assert_no_pending_responses()
+
+
 @pytest.mark.parametrize("before_status", ["PENDING_APPROVAL", "REJECTED"])
 @mock_aws
 def test_editing_invalidates_the_previous_submission_and_allows_the_same_unpublished_version(
@@ -438,6 +509,8 @@ def test_editing_invalidates_the_previous_submission_and_allows_the_same_unpubli
         stub_submission(stub, record)
         _, submitted = submit(handler, created)
         original = stored(db, f'SUBMISSION#{submitted["submissionId"]}')
+        store = DraftStore(SUPPLEMENT_TABLE, REGISTRY_ARN, db)
+        assert store.get_submission(RECORD_ID, submitted["submissionId"])["invalidated"] is False
         pending = {**record, "status": before_status}
         stub.add_response("get_registry_record", pending, GET)
         stub.add_response(
@@ -476,6 +549,11 @@ def test_editing_invalidates_the_previous_submission_and_allows_the_same_unpubli
         assert stored(db, "MANAGEMENT")["activeSubmissionId"] is None
         assert stored(db, f'SUBMISSION#{submitted["submissionId"]}#INVALIDATED') is not None
         assert stored(db, f'SUBMISSION#{submitted["submissionId"]}') == original
+        # 公開承認（#10）が読む入口では、元の申請が無効と分かる
+        assert store.get_submission(RECORD_ID, submitted["submissionId"]) == {
+            **original,
+            "invalidated": True,
+        }
         stub_submission(stub, record)
         request = event(
             "POST",

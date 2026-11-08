@@ -108,6 +108,10 @@ NOT_EDITABLE_STATUSES: frozenset[RecordStatus] = IN_FLIGHT_STATUSES | {"DEPRECAT
 # SPA の `OPERATION_STATES`（frontend/src/drafts/api.ts）と揃える
 OperationState = Literal["IN_PROGRESS", "VERIFYING", "FAILED", "SUCCEEDED"]
 OperationKind = Literal["CREATE", "UPDATE", "SUBMIT"]
+SUBMIT_KIND: OperationKind = "SUBMIT"
+
+# Registry レコード ID の形式。SPA の `RECORD_ID_PATTERN`（frontend/src/drafts/api.ts）と揃える
+RECORD_ID_PATTERN = re.compile(r"[A-Za-z0-9]{12}")
 
 # 確定した操作（実行制御の項目）を補助テーブルの TTL で削除するまでの秒数（設計書「補助テーブルに保存するもの」）。
 # この間は同じ Idempotency-Key に同じ結果を返す。未確定の操作とロックには TTL を付けない
@@ -144,7 +148,10 @@ class DraftOperation(_DraftOperationRequired, total=False):
     errorCode: str
     # AWS の書き込み API が返した request ID（設計書「操作記録」）
     awsRequestId: str
+    # 申請: 保存した申請スナップショットのハッシュ
     snapshotHash: str
+    # 申請: 標準の申請 API が受け付けを返した。未設定なら、照合時に申請 API を呼び直す
+    approvalRequested: bool
 
 
 class DraftView(TypedDict):

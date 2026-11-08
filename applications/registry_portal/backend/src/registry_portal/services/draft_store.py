@@ -55,6 +55,16 @@ class DraftStore:
     def _operation_pk(op_id: str) -> str:
         return f"OP#{op_id}"
 
+    @staticmethod
+    def _submission_sk(submission_id: str) -> str:
+        """申請スナップショットのソートキー。申請 ID は申請操作の操作 ID と同じ。"""
+        return f"SUBMISSION#{submission_id}"
+
+    @classmethod
+    def _invalidated_sk(cls, submission_id: str) -> str:
+        """承認待ちの間の編集で申請を無効にした記録のソートキー。スナップショット自体は変更しない。"""
+        return f"{cls._submission_sk(submission_id)}#INVALIDATED"
+
     def _key(self, pk: str, sk: str) -> dict[str, Any]:
         return {"pk": {"S": pk}, "sk": {"S": sk}}
 
@@ -77,6 +87,18 @@ class DraftStore:
     def get_lock(self, record_id: str) -> dict[str, Any] | None:
         return self.get(self.record_pk(record_id), "LOCK")
 
+    def get_submission(self, record_id: str, submission_id: str) -> dict[str, Any] | None:
+        """申請スナップショットと、その申請が無効にされたか（`invalidated`）を返す。
+
+        公開承認（#10）は、`invalidated` が真の申請を決裁してはならない。
+        """
+        pk = self.record_pk(record_id)
+        snapshot = self.get(pk, self._submission_sk(submission_id))
+        if snapshot is None:
+            return None
+        invalidated = self.get(pk, self._invalidated_sk(submission_id)) is not None
+        return {**snapshot, "invalidated": invalidated}
+
     def _put(
         self,
         item: Mapping[str, Any],
@@ -93,6 +115,27 @@ class DraftStore:
                 name: {"S": value} for name, value in values.items()
             }
         return {"Put": put}
+
+    def _put_control(
+        self,
+        operation: DraftOperation,
+        state: OperationState,
+        allowed_states: Mapping[str, OperationState],
+    ) -> dict[str, Any]:
+        """実行制御の項目を、操作 ID と現在の状態が想定どおりのときだけ書き換える。
+
+        allowed_states は、条件式の値の名前（`:running` など）から許可する現在の状態への対応。
+        """
+        op_id = operation["operationId"]
+        names = ", ".join(allowed_states)
+        control = self._put(
+            {**operation, "pk": self._operation_pk(op_id), "sk": "CONTROL", "state": state},
+            f"operationId = :op AND #state IN ({names})",
+            {":op": op_id, **allowed_states},
+        )
+        # state は DynamoDB の予約語のため、属性名を置き換える
+        control["Put"]["ExpressionAttributeNames"] = {"#state": "state"}
+        return control
 
     def _release_lock(self, pk: str, op_id: str) -> dict[str, Any]:
         return {
@@ -137,12 +180,9 @@ class DraftStore:
 
     def save_pending(self, operation: DraftOperation) -> None:
         op_id = operation["operationId"]
-        control = self._put(
-            {**operation, "pk": self._operation_pk(op_id), "sk": "CONTROL", "state": "VERIFYING"},
-            "operationId = :op AND #state IN (:running, :verifying)",
-            {":op": op_id, ":running": "IN_PROGRESS", ":verifying": "VERIFYING"},
+        control = self._put_control(
+            operation, "VERIFYING", {":running": "IN_PROGRESS", ":verifying": "VERIFYING"}
         )
-        control["Put"]["ExpressionAttributeNames"] = {"#state": "state"}
         record_pk = self.record_pk(operation["recordId"])
         team = {":team": operation["ownerTeam"]}
         if operation["kind"] == "CREATE":
@@ -172,17 +212,7 @@ class DraftStore:
         self._transact(items)
 
     def save_submission(self, operation: DraftOperation, snapshot: Mapping[str, Any]) -> None:
-        control = self._put(
-            {
-                **operation,
-                "pk": self._operation_pk(operation["operationId"]),
-                "sk": "CONTROL",
-                "state": "VERIFYING",
-            },
-            "operationId = :op AND #state = :running",
-            {":op": operation["operationId"], ":running": "IN_PROGRESS"},
-        )
-        control["Put"]["ExpressionAttributeNames"] = {"#state": "state"}
+        control = self._put_control(operation, "VERIFYING", {":running": "IN_PROGRESS"})
         self._transact(
             [
                 control,
@@ -190,7 +220,7 @@ class DraftStore:
                     {
                         **snapshot,
                         "pk": operation["lockPk"],
-                        "sk": f"SUBMISSION#{operation['operationId']}",
+                        "sk": self._submission_sk(operation["operationId"]),
                     }
                 ),
             ]
@@ -254,7 +284,7 @@ class DraftStore:
                 self._put(
                     {
                         "pk": operation["lockPk"],
-                        "sk": f"SUBMISSION#{previous}#INVALIDATED",
+                        "sk": self._invalidated_sk(previous),
                         "operationId": operation["operationId"],
                         "invalidatedAt": operation["startedAt"],
                     }
