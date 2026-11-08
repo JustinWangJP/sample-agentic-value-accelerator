@@ -124,7 +124,7 @@ async function submit() {
       ?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
   )
 }
-async function mount(responses: Response[]) {
+async function mount(responses: (Response | Error)[]) {
   const { fetchImpl, calls } = fakeFetch(responses)
   const api = createApiClient({ baseUrl: '', fetch: fetchImpl, getAccessToken: () => 'token' })
   await act(() =>
@@ -142,6 +142,142 @@ async function mount(responses: Response[]) {
 function sentBody(calls: { init?: RequestInit }[], index = 1) {
   return JSON.parse(String(calls[index]?.init?.body))
 }
+
+function savedList(draft: { name: string; recordType: string } = a2aDraft, status = 'DRAFT') {
+  return jsonResponse(200, {
+    items: [{
+      ...detailOf(draft), status, ...draft, operationId: null,
+    }],
+    nextToken: null,
+  })
+}
+
+it('保存済み Agent を理由と関連参照で申請し、承認待ちを表示する', async () => {
+  const calls = await mount([
+    savedList(),
+    jsonResponse(200, detailOf(a2aDraft)),
+    jsonResponse(200, { ...succeeded(a2aDraft), status: 'PENDING_APPROVAL' }),
+  ])
+  await click('編集')
+  await click('保存済みの内容を申請')
+  await setValue('reason', '決済チームで利用するため')
+  await click('関連参照を追加')
+  await setValue('referenceId-0', 'mcpABC123456')
+  await setValue('referenceVersion-0', '1.2.0')
+  await submit()
+  expect(calls[2]?.url).toBe('/api/records/agentABC1234/submit')
+  expect(calls[2]?.init?.method).toBe('POST')
+  expect(sentBody(calls, 2)).toEqual({
+    expectedContentHash: 'a'.repeat(64),
+    reason: '決済チームで利用するため',
+    relatedReferences: [{ recordId: 'mcpABC123456', recordVersion: '1.2.0' }],
+  })
+  expect(container.textContent).toContain('申請しました。承認待ちです。')
+})
+
+it('保存の結果確認中は、変更がなくても申請を停止する', async () => {
+  await mount([
+    savedList(), jsonResponse(200, detailOf(a2aDraft)),
+    jsonResponse(202, { operationId: 'op-save', operationState: 'VERIFYING', message: '結果確認中' }),
+  ])
+  await click('編集')
+  await submit()
+  expect(button('保存済みの内容を申請').disabled).toBe(true)
+})
+
+it('MCP の申請には関連参照を表示せず、空の参照を送る', async () => {
+  const calls = await mount([
+    savedList(mcpDraft), jsonResponse(200, detailOf(mcpDraft)),
+    jsonResponse(200, { ...succeeded(mcpDraft), status: 'PENDING_APPROVAL' }),
+  ])
+  await click('編集')
+  await click('保存済みの内容を申請')
+  expect(field('referenceId-0')).toBeNull()
+  expect(container.textContent).not.toContain('関連参照を追加')
+  await setValue('reason', 'MCP の利用を承認してください')
+  await submit()
+  expect(sentBody(calls, 2).relatedReferences).toEqual([])
+})
+
+it('申請の検証エラーは理由と参照を残し、訂正して再申請できる', async () => {
+  const calls = await mount([
+    savedList(), jsonResponse(200, detailOf(a2aDraft)),
+    jsonResponse(400, { error: { code: 'VALIDATION_ERROR', message: '関連参照はカタログ項目ではありません。' } }),
+    jsonResponse(200, { ...succeeded(a2aDraft), status: 'PENDING_APPROVAL' }),
+  ])
+  await click('編集')
+  await click('保存済みの内容を申請')
+  await setValue('reason', '確認をお願いします')
+  await click('関連参照を追加')
+  await setValue('referenceId-0', 'mcpABC123456')
+  await setValue('referenceVersion-0', '1.0.0')
+  await submit()
+  expect(container.textContent).toContain('関連参照はカタログ項目ではありません。')
+  expect(field('reason')?.value).toBe('確認をお願いします')
+  expect(field('referenceId-0')?.value).toBe('mcpABC123456')
+  await click('関連参照 1 を削除')
+  await submit()
+  expect(calls).toHaveLength(4)
+  expect(container.textContent).toContain('申請しました。承認待ちです。')
+})
+
+it('申請の結果確認中は再送せず、操作の照合で承認待ちになる', async () => {
+  const calls = await mount([
+    savedList(), jsonResponse(200, detailOf(a2aDraft)),
+    jsonResponse(202, { operationId: 'op-submit', operationState: 'VERIFYING', message: '照合中' }),
+    jsonResponse(200, { ...succeeded(a2aDraft), status: 'PENDING_APPROVAL' }),
+  ])
+  await click('編集')
+  await click('保存済みの内容を申請')
+  await setValue('reason', '確認をお願いします')
+  await submit()
+  expect(button('申請する').closest('fieldset')?.disabled).toBe(true)
+  await submit()
+  expect(calls).toHaveLength(3)
+  await click('処理結果を確認')
+  expect(calls[3]?.url).toBe('/api/operations/op-submit')
+  expect(container.textContent).toContain('申請しました。承認待ちです。')
+})
+
+it('申請の通信断は成功とせず、再送を停止して一覧での確認を案内する', async () => {
+  const calls = await mount([savedList(), jsonResponse(200, detailOf(a2aDraft)), new Error('通信断')])
+  await click('編集')
+  await click('保存済みの内容を申請')
+  await setValue('reason', '確認をお願いします')
+  await submit()
+  expect(container.textContent).toContain('申請結果が不明です。')
+  expect(container.textContent).not.toContain('申請しました。')
+  await submit()
+  expect(calls).toHaveLength(3)
+})
+
+it('承認待ちの編集は元申請の無効化を明示し、再保存後に申請できる', async () => {
+  const calls = await mount([
+    savedList(a2aDraft, 'PENDING_APPROVAL'),
+    jsonResponse(200, { ...detailOf(a2aDraft), status: 'PENDING_APPROVAL' }),
+    jsonResponse(200, { ...succeeded(a2aDraft), contentHash: 'b'.repeat(64) }),
+    jsonResponse(200, { ...succeeded(a2aDraft), status: 'PENDING_APPROVAL' }),
+  ])
+  await click('編集')
+  expect(container.textContent).toContain('元の申請は無効になります。')
+  expect(button('保存済みの内容を申請').disabled).toBe(true)
+  await submit()
+  expect(container.textContent).toContain('元の申請を無効にしました。')
+  await click('保存済みの内容を申請')
+  await setValue('reason', '再申請します')
+  await submit()
+  expect(sentBody(calls, 3).expectedContentHash).toBe('b'.repeat(64))
+})
+
+it('未保存の変更を申請に混ぜず、保存を案内する', async () => {
+  const calls = await mount([savedList(), jsonResponse(200, detailOf(a2aDraft))])
+  await click('編集')
+  await setValue('description', '変更した説明')
+  expect(button('保存済みの内容を申請').disabled).toBe(true)
+  await click('保存済みの内容を申請')
+  expect(field('reason')).toBeNull()
+  expect(calls).toHaveLength(2)
+})
 
 it('種別に MCP を選ぶと server 定義と tools 定義の入力が現れ、その本文で作成する', async () => {
   const calls = await mount([empty, jsonResponse(201, succeeded(mcpDraft))])

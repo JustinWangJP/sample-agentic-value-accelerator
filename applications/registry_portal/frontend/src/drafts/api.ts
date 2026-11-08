@@ -55,6 +55,11 @@ export type DraftSummary = Omit<DraftDetail, 'draft' | 'contentHash'> & {
   operationId: string | null
 }
 export type DraftPage = { items: DraftSummary[]; nextToken: string | null }
+export type DraftSubmission = {
+  expectedContentHash: string
+  reason: string
+  relatedReferences: { recordId: string; recordVersion: string }[]
+}
 
 /**
  * API が返す書き込み操作の状態。バックエンドの OperationState（domain/drafts.py）のうち、
@@ -98,6 +103,7 @@ export type DraftApi = {
     expectedContentHash: string,
   ) => Promise<DraftOperation>
   getDraftOperation: (operationId: string) => Promise<DraftOperation>
+  submitDraft: (recordId: string, submission: DraftSubmission) => Promise<DraftOperation>
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -202,5 +208,7 @@ export function createDraftApi(request: ApiRequest, invalidResponse: () => Error
       ),
     getDraftOperation: (id) =>
       checked(request('GET', `/api/operations/${encodeURIComponent(id)}`), isOperation),
+    submitDraft: (id, submission) =>
+      checked(request('POST', `/api/records/${encodeURIComponent(id)}/submit`, submission), isOperation),
   }
 }
