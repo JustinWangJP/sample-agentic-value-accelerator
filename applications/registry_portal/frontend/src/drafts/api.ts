@@ -55,8 +55,9 @@ export type DraftSummary = Omit<DraftDetail, 'draft' | 'contentHash'> & {
   operationId: string | null
 }
 export type DraftPage = { items: DraftSummary[]; nextToken: string | null }
-/** Registry レコード ID の形式。バックエンドの RECORD_ID_PATTERN（domain/drafts.py）と揃える */
-export const RECORD_ID_PATTERN = '[A-Za-z0-9]{12}'
+/** Registry レコード ID の長さと形式。バックエンドの RECORD_ID_LENGTH・RECORD_ID_PATTERN（domain/drafts.py）と揃える */
+export const RECORD_ID_LENGTH = 12
+export const RECORD_ID_PATTERN = `[A-Za-z0-9]{${RECORD_ID_LENGTH}}`
 /** 申請入力の上限。バックエンドの REASON_MAX_LENGTH・RELATED_REFERENCES_MAX（domain/submissions.py）と揃える */
 export const SUBMISSION_REASON_MAX_LENGTH = 4096
 export const RELATED_REFERENCES_MAX = 20
@@ -91,8 +92,8 @@ export const REGISTRY_THROTTLED = 'REGISTRY_THROTTLED'
 /** 自動承認の設定が想定外のため申請を止めた（503）。AWS へ書き込んでおらず、結果は確定している */
 export const APPROVAL_CONFIGURATION_CHANGED = 'APPROVAL_CONFIGURATION_CHANGED'
 
-/** 保存の失敗のうち、AWS に届いたかどうかが分からないものか */
-export function isUncertainSaveError(error: { status: number; code: string }): boolean {
+/** 書き込み（作成・保存・申請）の失敗のうち、AWS に届いたかどうかが分からないものか */
+export function isUncertainWriteError(error: { status: number; code: string }): boolean {
   return (
     (error.status === 0 || error.status >= 500) &&
     error.code !== DRAFTS_NOT_CONFIGURED &&
@@ -100,9 +101,12 @@ export function isUncertainSaveError(error: { status: number; code: string }): b
   )
 }
 
-/** 作成の失敗のうち、その Idempotency-Key の操作が失敗として確定し、次は新しいキーが必要なものか */
-export function settlesCreateKey(error: { status: number; code: string }): boolean {
-  return error.status === 400 || error.code === REGISTRY_THROTTLED
+/**
+ * 作成・申請の失敗のうち、次は新しい Idempotency-Key が必要なものか。
+ * 結果が不明な間は同じキーで照合を続け、それ以外（確定した失敗）はキーを作り直す
+ */
+export function settlesIdempotencyKey(error: { status: number; code: string }): boolean {
+  return !isUncertainWriteError(error)
 }
 
 export type DraftApi = {

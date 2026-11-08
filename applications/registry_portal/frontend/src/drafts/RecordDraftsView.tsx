@@ -8,8 +8,8 @@ import { CATALOG_RECORD_TYPES, RECORD_TYPE_LABELS } from '../api/recordType'
 import {
   DEFAULT_DRAFT_ENVIRONMENT,
   isEditableStatus,
-  isUncertainSaveError,
-  settlesCreateKey,
+  isUncertainWriteError,
+  settlesIdempotencyKey,
   type RecordDraft,
   type DraftDetail,
   type DraftOperation,
@@ -441,7 +441,7 @@ function DraftEditor({
   const isNew = initial.kind === 'new'
   const text = EDITOR_TEXT[initial.kind]
   const resultLocked = save.kind === 'result' && save.operation.operationState !== 'FAILED'
-  const uncertain = save.kind === 'error' && isUncertainSaveError(save.error)
+  const uncertain = save.kind === 'error' && isUncertainWriteError(save.error)
   const saveDisabled =
     save.kind === 'saving' ||
     resultLocked ||
@@ -461,7 +461,7 @@ function DraftEditor({
       receiveResult(operation)
     } catch (failure) {
       const error = toApiError(failure, '下書きを保存できませんでした。')
-      if (isNew && settlesCreateKey(error)) setCreateKey(crypto.randomUUID())
+      if (isNew && settlesIdempotencyKey(error)) setCreateKey(crypto.randomUUID())
       setSave({ kind: 'error', error })
     }
   }
@@ -504,7 +504,7 @@ function DraftEditor({
         秘密情報を入力せず、接続先や認証情報の参照を記載してください。申請するときは、公開中の版より大きい版が必要です。
       </p>
       {initial.kind === 'edit' && initial.detail.status === 'PENDING_APPROVAL' && (
-        <p>承認待ちです。下書きを編集して保存すると、元の申請は無効になります。</p>
+        <p>審査待ちです。下書きを編集して保存すると、元の申請は無効になります。</p>
       )}
       <form
         onSubmit={(event) => {

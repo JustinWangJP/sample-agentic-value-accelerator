@@ -1,11 +1,13 @@
 import { useState } from 'react'
 import { toApiError, type ApiClient, type ApiError } from '../api/client'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
-import { RECORD_TYPE_LABELS } from '../api/recordType'
+import { AGENT_RECORD_TYPE, RECORD_TYPE_LABELS } from '../api/recordType'
 import {
-  isUncertainSaveError,
+  isUncertainWriteError,
+  RECORD_ID_LENGTH,
   RECORD_ID_PATTERN,
   RELATED_REFERENCES_MAX,
+  settlesIdempotencyKey,
   SUBMISSION_REASON_MAX_LENGTH,
   type DraftDetail,
   type DraftOperation,
@@ -20,7 +22,10 @@ type SubmissionState =
   | { kind: 'result'; operation: DraftOperation }
 
 export function SubmissionView({
-  api, detail, onBack, onRelogin,
+  api,
+  detail,
+  onBack,
+  onRelogin,
 }: {
   api: ApiClient
   detail: DraftDetail
@@ -32,24 +37,31 @@ export function SubmissionView({
   const [state, setState] = useState<SubmissionState>({ kind: 'idle' })
   // 申請フォームごとの Idempotency-Key。結果が不明な間は同じキーを保ち、確定した失敗の後は作り直す
   const [submitKey, setSubmitKey] = useState(() => crypto.randomUUID())
-  const uncertain = state.kind === 'error' && isUncertainSaveError(state.error)
-  const locked = state.kind === 'submitting' || uncertain ||
+  const uncertain = state.kind === 'error' && isUncertainWriteError(state.error)
+  const isAgent = detail.draft.recordType === AGENT_RECORD_TYPE
+  const locked =
+    state.kind === 'submitting' ||
+    uncertain ||
     (state.kind === 'result' && state.operation.operationState !== 'FAILED')
 
   async function submit() {
     if (locked || !reason.trim()) return
     setState({ kind: 'submitting' })
     try {
-      const operation = await api.submitDraft(detail.recordId, {
-        expectedContentHash: detail.contentHash,
-        reason: reason.trim(),
-        relatedReferences: detail.draft.recordType === 'AGENT' ? references : [],
-      }, submitKey)
+      const operation = await api.submitDraft(
+        detail.recordId,
+        {
+          expectedContentHash: detail.contentHash,
+          reason: reason.trim(),
+          relatedReferences: isAgent ? references : [],
+        },
+        submitKey,
+      )
       if (operation.operationState === 'FAILED') setSubmitKey(crypto.randomUUID())
       setState({ kind: 'result', operation })
     } catch (failure) {
       const error = toApiError(failure, '申請できませんでした。')
-      if (!isUncertainSaveError(error)) setSubmitKey(crypto.randomUUID())
+      if (settlesIdempotencyKey(error)) setSubmitKey(crypto.randomUUID())
       setState({ kind: 'error', error })
     }
   }
@@ -74,7 +86,7 @@ export function SubmissionView({
             <textarea name="reason" required maxLength={SUBMISSION_REASON_MAX_LENGTH} rows={4} value={reason}
               onChange={(event) => setReason(event.target.value)} />
           </label>
-          {detail.draft.recordType === 'AGENT' && (
+          {isAgent && (
             <fieldset>
               <legend>関連参照（任意、最大{RELATED_REFERENCES_MAX}件）</legend>
               <p>公開済みのカタログ項目のレコード ID と版を指定してください。</p>
@@ -83,7 +95,7 @@ export function SubmissionView({
                   <label>
                     レコード ID {index + 1}
                     <input name={`referenceId-${index}`} required pattern={RECORD_ID_PATTERN}
-                      maxLength={12} value={reference.recordId}
+                      maxLength={RECORD_ID_LENGTH} value={reference.recordId}
                       onChange={(event) => setReferences(references.map((item, i) =>
                         i === index ? { ...item, recordId: event.target.value } : item))} />
                   </label>
@@ -117,7 +129,7 @@ export function SubmissionView({
       )}
       {state.kind === 'result' && (
         state.operation.operationState === 'SUCCEEDED' ? (
-          <p role="status">申請しました。承認待ちです。公開版は変わりません。</p>
+          <p role="status">申請しました。審査待ちです。公開版は変わりません。</p>
         ) : state.operation.operationState === 'FAILED' ? (
           <p role="alert">申請に失敗しました。{state.operation.message}</p>
         ) : (

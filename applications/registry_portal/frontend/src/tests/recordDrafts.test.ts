@@ -6,6 +6,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createApiClient } from '../api/client'
 import { RecordDraftsView } from '../drafts/RecordDraftsView'
+import { settlesIdempotencyKey } from '../drafts/api'
 import { fakeFetch, jsonResponse } from './helpers'
 
 const common = {
@@ -155,7 +156,7 @@ function savedList(draft: { name: string; recordType: string } = a2aDraft, statu
   })
 }
 
-it('保存済み Agent を理由と関連参照で申請し、承認待ちを表示する', async () => {
+it('保存済み Agent を理由と関連参照で申請し、審査待ちを表示する', async () => {
   const calls = await mount([
     savedList(),
     jsonResponse(200, detailOf(a2aDraft)),
@@ -175,7 +176,7 @@ it('保存済み Agent を理由と関連参照で申請し、承認待ちを表
     reason: '決済チームで利用するため',
     relatedReferences: [{ recordId: 'mcpABC123456', recordVersion: '1.2.0' }],
   })
-  expect(container.textContent).toContain('申請しました。承認待ちです。')
+  expect(container.textContent).toContain('申請しました。審査待ちです。')
 })
 
 it('保存の結果確認中は、変更がなくても申請を停止する', async () => {
@@ -223,7 +224,7 @@ it('申請の検証エラーは理由と参照を残し、訂正して再申請�
   expect(calls).toHaveLength(4)
   // 検証エラーで失敗が確定したので、訂正した申請は新しい Idempotency-Key で送る
   expect(idempotencyKey(calls, 3)).not.toBe(idempotencyKey(calls, 2))
-  expect(container.textContent).toContain('申請しました。承認待ちです。')
+  expect(container.textContent).toContain('申請しました。審査待ちです。')
 })
 
 it('申請はフォームごとの Idempotency-Key を送る', async () => {
@@ -275,10 +276,10 @@ it('自動承認の設定変更（503）は結果不明と扱わず、理由を�
   await submit()
   expect(calls).toHaveLength(4)
   expect(idempotencyKey(calls, 3)).not.toBe(idempotencyKey(calls, 2))
-  expect(container.textContent).toContain('申請しました。承認待ちです。')
+  expect(container.textContent).toContain('申請しました。審査待ちです。')
 })
 
-it('申請の結果確認中は再送せず、操作の照合で承認待ちになる', async () => {
+it('申請の結果確認中は再送せず、操作の照合で審査待ちになる', async () => {
   const calls = await mount([
     savedList(), jsonResponse(200, detailOf(a2aDraft)),
     jsonResponse(202, { operationId: 'op-submit', operationState: 'VERIFYING', message: '照合中' }),
@@ -293,7 +294,7 @@ it('申請の結果確認中は再送せず、操作の照合で承認待ちに�
   expect(calls).toHaveLength(3)
   await click('処理結果を確認')
   expect(calls[3]?.url).toBe('/api/operations/op-submit')
-  expect(container.textContent).toContain('申請しました。承認待ちです。')
+  expect(container.textContent).toContain('申請しました。審査待ちです。')
 })
 
 it('申請の通信断は成功とせず、再送を停止して一覧での確認を案内する', async () => {
@@ -308,7 +309,7 @@ it('申請の通信断は成功とせず、再送を停止して一覧での確�
   expect(calls).toHaveLength(3)
 })
 
-it('承認待ちの編集は元申請の無効化を明示し、再保存後に申請できる', async () => {
+it('審査待ちの編集は元申請の無効化を明示し、再保存後に申請できる', async () => {
   const calls = await mount([
     savedList(a2aDraft, 'PENDING_APPROVAL'),
     jsonResponse(200, { ...detailOf(a2aDraft), status: 'PENDING_APPROVAL' }),
@@ -547,4 +548,15 @@ it('Agent の編集では descriptor を A2A に切り替えて PATCH できる'
   await submit()
   expect(calls[2]?.init?.method).toBe('PATCH')
   expect(sentBody(calls, 2)).toEqual({ draft: a2aDraft, expectedContentHash: 'a'.repeat(64) })
+})
+
+it('作成と申請は、結果が不明な失敗だけ同じキーを保ち、確定した失敗では作り直す', () => {
+  for (const status of [400, 401, 403, 409]) {
+    expect(settlesIdempotencyKey({ status, code: 'ANY' })).toBe(true)
+  }
+  expect(settlesIdempotencyKey({ status: 429, code: 'REGISTRY_THROTTLED' })).toBe(true)
+  expect(settlesIdempotencyKey({ status: 503, code: 'APPROVAL_CONFIGURATION_CHANGED' })).toBe(true)
+  expect(settlesIdempotencyKey({ status: 503, code: 'DRAFTS_NOT_CONFIGURED' })).toBe(true)
+  expect(settlesIdempotencyKey({ status: 0, code: 'NETWORK_ERROR' })).toBe(false)
+  expect(settlesIdempotencyKey({ status: 502, code: 'REGISTRY_UNAVAILABLE' })).toBe(false)
 })
