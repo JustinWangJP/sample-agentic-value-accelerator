@@ -114,10 +114,14 @@ NOT_EDITABLE_STATUSES: frozenset[RecordStatus] = IN_FLIGHT_STATUSES | {"DEPRECAT
 # ポータルの書き込み操作の状態。API が返すのは IN_PROGRESS 以外の3つで、
 # SPA の `OPERATION_STATES`（frontend/src/drafts/api.ts）と揃える
 OperationState = Literal["IN_PROGRESS", "VERIFYING", "FAILED", "SUCCEEDED"]
-OperationKind = Literal["CREATE", "UPDATE", "SUBMIT"]
+OperationKind = Literal["CREATE", "UPDATE", "SUBMIT", "APPROVE", "REJECT"]
 CREATE_KIND: OperationKind = "CREATE"
 UPDATE_KIND: OperationKind = "UPDATE"
 SUBMIT_KIND: OperationKind = "SUBMIT"
+APPROVE_KIND: OperationKind = "APPROVE"
+REJECT_KIND: OperationKind = "REJECT"
+# 決裁 handler が行う操作（公開承認・却下）。操作照会は種別ごとに参照できる主体を変える
+DECISION_KINDS: frozenset[OperationKind] = frozenset({APPROVE_KIND, REJECT_KIND})
 
 # Registry レコード ID の形式。SPA の `RECORD_ID_PATTERN` と `RECORD_ID_LENGTH`
 # （frontend/src/drafts/api.ts）と揃える
@@ -163,6 +167,13 @@ class DraftOperation(_DraftOperationRequired, total=False):
     snapshotHash: str
     # 申請: 標準の申請 API が受け付けを返した。未設定なら、照合時に申請 API を呼び直す
     submissionAccepted: bool
+    # 決裁: 却下で必須・承認でも記録する理由。AWS の statusReason にそのまま送る
+    reason: str
+    # 決裁: 対象とした申請スナップショットの ID と、その時点のレコードの版
+    submissionId: str
+    recordVersion: str
+    # 決裁: AWS の状態更新 API が受け付けを返した。未設定なら、決裁 handler の再送で呼び直す
+    decisionAccepted: bool
 
 
 class DraftView(TypedDict):

@@ -80,7 +80,7 @@ jobs:
         run: npm run build
 
   draft-iam:
-    name: draft IAM（terraform fmt / validate）
+    name: registry portal IAM（terraform fmt / validate）
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -94,10 +94,16 @@ jobs:
           terraform_version: "1.10.5"
       - name: terraform fmt
         run: terraform fmt -check -recursive
-      # ルートモジュール（management）の validate で、呼び出す下書きモジュールも検査する
-      - name: terraform init
+      # 各ルートモジュール（management・decision）の validate で、呼び出す下位モジュールも検査する
+      - name: terraform init（management）
         working-directory: applications/registry_portal/infrastructure/management
         run: terraform init -backend=false
-      - name: terraform validate
+      - name: terraform validate（management）
         working-directory: applications/registry_portal/infrastructure/management
+        run: terraform validate
+      - name: terraform init（decision）
+        working-directory: applications/registry_portal/infrastructure/decision
+        run: terraform init -backend=false
+      - name: terraform validate（decision）
+        working-directory: applications/registry_portal/infrastructure/decision
         run: terraform validate
