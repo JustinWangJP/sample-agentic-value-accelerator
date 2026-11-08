@@ -91,6 +91,31 @@ export type DraftOperation =
   | { operationId: string; operationState: UnsettledOperationState; message: string }
 
 /**
+ * 操作と審査の履歴の1項目。バックエンドの history.py と揃える。
+ * operator と state が null / UNKNOWN の項目は、取り込み前から公開されていた版の承認（承認者不明）
+ */
+export const HISTORY_KINDS = ['CREATE', 'UPDATE', 'SUBMIT', 'APPROVE', 'REJECT'] as const
+export type HistoryKind = (typeof HISTORY_KINDS)[number]
+export const HISTORY_STATES = ['SUCCEEDED', 'FAILED', 'IN_PROGRESS', 'UNKNOWN'] as const
+export type HistoryEntry = {
+  operationId: string | null
+  kind: HistoryKind
+  operator: { issuer: string; subject: string } | null
+  startedAt: string | null
+  targetHash: string | null
+  state: (typeof HISTORY_STATES)[number]
+  awsRequestId?: string
+  errorCode?: string
+  reason?: string
+  recordVersion?: string
+}
+export type RecordHistory = {
+  recordId: string
+  ownerTeam: string
+  entries: HistoryEntry[]
+}
+
+/**
  * AWS への書き込みが行われていないと確定できるエラーのコード（バックエンドの drafts.py）。
  * 5xx でも「結果が不明」とは扱わない
  */
@@ -132,6 +157,7 @@ export type DraftApi = {
     submission: DraftSubmission,
     idempotencyKey: string,
   ) => Promise<DraftOperation>
+  getHistory: (recordId: string) => Promise<RecordHistory>
 }
 
 function isDraft(value: unknown): value is RecordDraft {
@@ -198,6 +224,30 @@ function isOperation(value: unknown): value is DraftOperation {
       (isUnsettledOperationState(value.operationState) && typeof value.message === 'string'))
   )
 }
+function isHistoryEntry(value: unknown): value is HistoryEntry {
+  return (
+    isObject(value) &&
+    (value.operationId === null || typeof value.operationId === 'string') &&
+    HISTORY_KINDS.some((kind) => kind === value.kind) &&
+    (value.operator === null ||
+      (isObject(value.operator) && hasStrings(value.operator, ['issuer', 'subject']))) &&
+    (value.startedAt === null || typeof value.startedAt === 'string') &&
+    (value.targetHash === null || typeof value.targetHash === 'string') &&
+    HISTORY_STATES.some((state) => state === value.state) &&
+    (value.awsRequestId === undefined || typeof value.awsRequestId === 'string') &&
+    (value.errorCode === undefined || typeof value.errorCode === 'string') &&
+    (value.reason === undefined || typeof value.reason === 'string') &&
+    (value.recordVersion === undefined || typeof value.recordVersion === 'string')
+  )
+}
+function isHistory(value: unknown): value is RecordHistory {
+  return (
+    isObject(value) &&
+    hasStrings(value, ['recordId', 'ownerTeam']) &&
+    Array.isArray(value.entries) &&
+    value.entries.every(isHistoryEntry)
+  )
+}
 
 export function createDraftApi(request: ApiRequest, invalidResponse: () => Error): DraftApi {
   async function checked<T>(
@@ -236,6 +286,11 @@ export function createDraftApi(request: ApiRequest, invalidResponse: () => Error
           'idempotency-key': key,
         }),
         isOperation,
+      ),
+    getHistory: (id) =>
+      checked(
+        request('GET', `/api/records/${encodeURIComponent(id)}/history`),
+        isHistory,
       ),
   }
 }
