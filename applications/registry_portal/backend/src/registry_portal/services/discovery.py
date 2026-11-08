@@ -417,7 +417,10 @@ class DiscoveryClient:
                 return None
         if isinstance(records, list) and len(records) == 1 and errors == []:
             record = _mapping_or_empty(records[0])
-            if record.get("recordId") == record_id and record.get("status") == "APPROVED":
+            if record.get("recordId") == record_id and isinstance(record.get("status"), str):
+                if record["status"] != "APPROVED":
+                    # 廃止済みなど、公開承認済みの版を持たないレコードはカタログ項目ではない
+                    return None
                 if not is_catalog_record_type(record.get("recordType")):
                     return None
                 detail = _parse_detail(record)

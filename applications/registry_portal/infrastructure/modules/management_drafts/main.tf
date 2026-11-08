@@ -1,4 +1,4 @@
-# 管理 Lambda の既存ロールに、Agent 下書きの作成・編集に必要な権限だけを追加する。
+# 管理 Lambda の既存ロールに、下書きの作成・編集・申請に必要な権限だけを追加する。
 # ポリシー本文はテストで検査するため、JSON のテンプレートに分けている。
 resource "aws_iam_role_policy" "management_drafts" {
   name = "registry-portal-management-drafts"

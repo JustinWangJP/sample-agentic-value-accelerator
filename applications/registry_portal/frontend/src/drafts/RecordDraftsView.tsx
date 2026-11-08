@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { OperationCheck } from './OperationCheck'
+import { SubmissionView } from './SubmissionView'
 import { ApiError, toApiError, type ApiClient, type Role } from '../api/client'
 import { DATA_CLASSIFICATIONS } from '../api/dataClassification'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
@@ -6,8 +8,8 @@ import { CATALOG_RECORD_TYPES, RECORD_TYPE_LABELS } from '../api/recordType'
 import {
   DEFAULT_DRAFT_ENVIRONMENT,
   isEditableStatus,
-  isUncertainSaveError,
-  settlesCreateKey,
+  isUncertainWriteError,
+  settlesIdempotencyKey,
   type RecordDraft,
   type DraftDetail,
   type DraftOperation,
@@ -20,13 +22,14 @@ import {
   RECORD_TYPE_DESCRIPTORS,
   type FieldInput,
 } from './descriptors'
-import { draftPayload, emptyDraft, parseDraftJson, switchKind } from './draftForm'
+import { draftPayload, emptyDraft, isSameDraft, parseDraftJson, switchKind } from './draftForm'
 
 type Props = { api: ApiClient; roles: Role[]; teams: string[]; onRelogin: () => void }
 type Screen =
   | { kind: 'list' }
   | { kind: 'new'; key: string }
   | { kind: 'edit'; detail: DraftDetail }
+  | { kind: 'submit'; detail: DraftDetail }
 type PageState =
   | { kind: 'loading' }
   | { kind: 'ready'; page: DraftPage }
@@ -184,6 +187,8 @@ export function RecordDraftsView({ api, roles, teams, onRelogin }: Props) {
             </>
           )}
         </>
+      ) : screen.kind === 'submit' ? (
+        <SubmissionView api={api} detail={screen.detail} onBack={back} onRelogin={onRelogin} />
       ) : (
         <DraftEditor
           key={screen.kind === 'new' ? screen.key : screen.detail.recordId}
@@ -191,48 +196,11 @@ export function RecordDraftsView({ api, roles, teams, onRelogin }: Props) {
           initial={screen}
           teams={teams}
           onBack={back}
+          onSubmitDraft={(detail) => setScreen({ kind: 'submit', detail })}
           onRelogin={onRelogin}
         />
       )}
     </section>
-  )
-}
-
-function OperationCheck({
-  api,
-  operationId,
-  onDone,
-  onRelogin,
-}: {
-  api: ApiClient
-  operationId: string
-  onDone: (operation: DraftOperation) => void
-  onRelogin: () => void
-}) {
-  const [message, setMessage] = useState('結果確認中です。確定するまで書き込みを停止しています。')
-  const [error, setError] = useState<ApiError | null>(null)
-  const [busy, setBusy] = useState(false)
-  async function check() {
-    setBusy(true)
-    setError(null)
-    try {
-      const result = await api.getDraftOperation(operationId)
-      if (result.operationState !== 'VERIFYING') onDone(result)
-      else setMessage(result.message)
-    } catch (failure) {
-      setError(toApiError(failure, '処理結果を取得できませんでした。'))
-    } finally {
-      setBusy(false)
-    }
-  }
-  return (
-    <div>
-      <p role="status">{message}</p>
-      <button type="button" disabled={busy} onClick={() => void check()}>
-        処理結果を確認
-      </button>
-      {error && <RequestErrorAlert error={error} onRelogin={onRelogin} />}
-    </div>
   )
 }
 
@@ -448,16 +416,21 @@ function DraftEditor({
   initial,
   teams,
   onBack,
+  onSubmitDraft,
   onRelogin,
 }: {
   api: ApiClient
-  initial: Exclude<Screen, { kind: 'list' }>
+  initial: Extract<Screen, { kind: 'new' | 'edit' }>
   teams: string[]
   onBack: () => void
+  onSubmitDraft: (detail: DraftDetail) => void
   onRelogin: () => void
 }) {
   const [draft, setDraft] = useState<RecordDraft>(() =>
     initial.kind === 'edit' ? initial.detail.draft : emptyDraft(teams[0] ?? ''),
+  )
+  const [savedDetail, setSavedDetail] = useState<DraftDetail | null>(
+    initial.kind === 'edit' ? initial.detail : null,
   )
   const [inputMode, setInputMode] = useState<'form' | 'json'>('form')
   const [jsonText, setJsonText] = useState('')
@@ -468,7 +441,7 @@ function DraftEditor({
   const isNew = initial.kind === 'new'
   const text = EDITOR_TEXT[initial.kind]
   const resultLocked = save.kind === 'result' && save.operation.operationState !== 'FAILED'
-  const uncertain = save.kind === 'error' && isUncertainSaveError(save.error)
+  const uncertain = save.kind === 'error' && isUncertainWriteError(save.error)
   const saveDisabled =
     save.kind === 'saving' ||
     resultLocked ||
@@ -488,11 +461,12 @@ function DraftEditor({
       receiveResult(operation)
     } catch (failure) {
       const error = toApiError(failure, '下書きを保存できませんでした。')
-      if (isNew && settlesCreateKey(error)) setCreateKey(crypto.randomUUID())
+      if (isNew && settlesIdempotencyKey(error)) setCreateKey(crypto.randomUUID())
       setSave({ kind: 'error', error })
     }
   }
   function receiveResult(operation: DraftOperation) {
+    if (operation.operationState === 'SUCCEEDED') setSavedDetail(operation)
     if (isNew && operation.operationState === 'FAILED') {
       setCreateKey(crypto.randomUUID())
     }
@@ -514,6 +488,7 @@ function DraftEditor({
     setSave({ kind: 'saving' })
     try {
       const latest = await api.getDraft(initial.detail.recordId)
+      setSavedDetail(latest)
       setDraft(latest.draft)
       setJsonError(null)
       setHash(latest.contentHash)
@@ -528,6 +503,9 @@ function DraftEditor({
       <p>
         秘密情報を入力せず、接続先や認証情報の参照を記載してください。申請するときは、公開中の版より大きい版が必要です。
       </p>
+      {initial.kind === 'edit' && initial.detail.status === 'PENDING_APPROVAL' && (
+        <p>審査待ちです。下書きを編集して保存すると、元の申請は無効になります。</p>
+      )}
       <form
         onSubmit={(event) => {
           event.preventDefault()
@@ -587,7 +565,11 @@ function DraftEditor({
       )}
       {save.kind === 'result' &&
         (save.operation.operationState === 'SUCCEEDED' ? (
-          <p role="status">下書きを保存しました。公開版は変わりません。</p>
+          <p role="status">
+            下書きを保存しました。公開版は変わりません。
+            {initial.kind === 'edit' && initial.detail.status === 'PENDING_APPROVAL' &&
+              '元の申請を無効にしました。再度申請してください。'}
+          </p>
         ) : save.operation.operationState === 'FAILED' ? (
           <p role="alert">{save.operation.message}</p>
         ) : (
@@ -601,6 +583,26 @@ function DraftEditor({
             onRelogin={onRelogin}
           />
         ))}
+      {savedDetail && (
+        <>
+          <p>申請には保存済みの内容を使います。変更中の場合は先に保存してください。</p>
+          <button
+            type="button"
+            disabled={
+              savedDetail.status !== 'DRAFT' ||
+              !savedDetail.hasDraft ||
+              save.kind === 'saving' ||
+              (save.kind === 'result' && save.operation.operationState === 'VERIFYING') ||
+              uncertain ||
+              jsonError !== null ||
+              !isSameDraft(draft, savedDetail.draft)
+            }
+            onClick={() => onSubmitDraft(savedDetail)}
+          >
+            保存済みの内容を申請
+          </button>
+        </>
+      )}
       <button
         type="button"
         onClick={onBack}
