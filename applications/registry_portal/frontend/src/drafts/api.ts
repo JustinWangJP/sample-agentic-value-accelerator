@@ -55,6 +55,12 @@ export type DraftSummary = Omit<DraftDetail, 'draft' | 'contentHash'> & {
   operationId: string | null
 }
 export type DraftPage = { items: DraftSummary[]; nextToken: string | null }
+/** Registry レコード ID の形式。バックエンドの RECORD_ID_PATTERN（domain/drafts.py）と揃える */
+export const RECORD_ID_PATTERN = '[A-Za-z0-9]{12}'
+/** 申請入力の上限。バックエンドの REASON_MAX_LENGTH・RELATED_REFERENCES_MAX（domain/submissions.py）と揃える */
+export const SUBMISSION_REASON_MAX_LENGTH = 4096
+export const RELATED_REFERENCES_MAX = 20
+
 export type DraftSubmission = {
   expectedContentHash: string
   reason: string
@@ -82,10 +88,16 @@ export type DraftOperation =
 export const DRAFTS_NOT_CONFIGURED = 'DRAFTS_NOT_CONFIGURED'
 /** AWS が混雑で処理しなかった（429）。その Idempotency-Key の操作は失敗として確定している */
 export const REGISTRY_THROTTLED = 'REGISTRY_THROTTLED'
+/** 自動承認の設定が想定外のため申請を止めた（503）。AWS へ書き込んでおらず、結果は確定している */
+export const APPROVAL_CONFIGURATION_CHANGED = 'APPROVAL_CONFIGURATION_CHANGED'
 
 /** 保存の失敗のうち、AWS に届いたかどうかが分からないものか */
 export function isUncertainSaveError(error: { status: number; code: string }): boolean {
-  return (error.status === 0 || error.status >= 500) && error.code !== DRAFTS_NOT_CONFIGURED
+  return (
+    (error.status === 0 || error.status >= 500) &&
+    error.code !== DRAFTS_NOT_CONFIGURED &&
+    error.code !== APPROVAL_CONFIGURATION_CHANGED
+  )
 }
 
 /** 作成の失敗のうち、その Idempotency-Key の操作が失敗として確定し、次は新しいキーが必要なものか */
@@ -103,7 +115,11 @@ export type DraftApi = {
     expectedContentHash: string,
   ) => Promise<DraftOperation>
   getDraftOperation: (operationId: string) => Promise<DraftOperation>
-  submitDraft: (recordId: string, submission: DraftSubmission) => Promise<DraftOperation>
+  submitDraft: (
+    recordId: string,
+    submission: DraftSubmission,
+    idempotencyKey: string,
+  ) => Promise<DraftOperation>
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -208,7 +224,12 @@ export function createDraftApi(request: ApiRequest, invalidResponse: () => Error
       ),
     getDraftOperation: (id) =>
       checked(request('GET', `/api/operations/${encodeURIComponent(id)}`), isOperation),
-    submitDraft: (id, submission) =>
-      checked(request('POST', `/api/records/${encodeURIComponent(id)}/submit`, submission), isOperation),
+    submitDraft: (id, submission, key) =>
+      checked(
+        request('POST', `/api/records/${encodeURIComponent(id)}/submit`, submission, {
+          'idempotency-key': key,
+        }),
+        isOperation,
+      ),
   }
 }

@@ -142,6 +142,9 @@ async function mount(responses: (Response | Error)[]) {
 function sentBody(calls: { init?: RequestInit }[], index = 1) {
   return JSON.parse(String(calls[index]?.init?.body))
 }
+function idempotencyKey(calls: { init?: RequestInit }[], index: number) {
+  return new Headers(calls[index]?.init?.headers).get('idempotency-key')
+}
 
 function savedList(draft: { name: string; recordType: string } = a2aDraft, status = 'DRAFT') {
   return jsonResponse(200, {
@@ -218,6 +221,60 @@ it('申請の検証エラーは理由と参照を残し、訂正して再申請�
   await click('関連参照 1 を削除')
   await submit()
   expect(calls).toHaveLength(4)
+  // 検証エラーで失敗が確定したので、訂正した申請は新しい Idempotency-Key で送る
+  expect(idempotencyKey(calls, 3)).not.toBe(idempotencyKey(calls, 2))
+  expect(container.textContent).toContain('申請しました。承認待ちです。')
+})
+
+it('申請はフォームごとの Idempotency-Key を送る', async () => {
+  const calls = await mount([
+    savedList(), jsonResponse(200, detailOf(a2aDraft)),
+    jsonResponse(200, { ...succeeded(a2aDraft), status: 'PENDING_APPROVAL' }),
+  ])
+  await click('編集')
+  await click('保存済みの内容を申請')
+  await setValue('reason', '確認をお願いします')
+  await submit()
+  expect(idempotencyKey(calls, 2)).toMatch(/^[A-Za-z0-9_-]{1,128}$/)
+})
+
+it('申請の内容の競合（409）は、一覧に戻って最新の内容を取得するよう案内する', async () => {
+  await mount([
+    savedList(), jsonResponse(200, detailOf(a2aDraft)),
+    jsonResponse(409, {
+      error: { code: 'CONTENT_CONFLICT', message: '内容が変更されたか、別の操作が処理中です。' },
+    }),
+  ])
+  await click('編集')
+  await click('保存済みの内容を申請')
+  await setValue('reason', '確認をお願いします')
+  await submit()
+  expect(container.textContent).toContain('内容が変更されたか、別の操作が処理中です。')
+  expect(container.textContent).toContain('一覧に戻って最新の内容を取得し、確認してから申請してください。')
+  expect(container.textContent).not.toContain('申請結果が不明です。')
+})
+
+it('自動承認の設定変更（503）は結果不明と扱わず、理由を示して再申請できる状態に戻す', async () => {
+  const calls = await mount([
+    savedList(), jsonResponse(200, detailOf(a2aDraft)),
+    jsonResponse(503, {
+      error: {
+        code: 'APPROVAL_CONFIGURATION_CHANGED',
+        message: '自動承認の設定が変更されたため申請を停止しました。管理者に連絡してください。',
+      },
+    }),
+    jsonResponse(200, { ...succeeded(a2aDraft), status: 'PENDING_APPROVAL' }),
+  ])
+  await click('編集')
+  await click('保存済みの内容を申請')
+  await setValue('reason', '確認をお願いします')
+  await submit()
+  expect(container.textContent).toContain('自動承認の設定が変更されたため申請を停止しました。')
+  expect(container.textContent).not.toContain('申請結果が不明です。')
+  expect(button('申請する').closest('fieldset')?.disabled).toBe(false)
+  await submit()
+  expect(calls).toHaveLength(4)
+  expect(idempotencyKey(calls, 3)).not.toBe(idempotencyKey(calls, 2))
   expect(container.textContent).toContain('申請しました。承認待ちです。')
 })
 

@@ -22,7 +22,7 @@ import {
   RECORD_TYPE_DESCRIPTORS,
   type FieldInput,
 } from './descriptors'
-import { draftPayload, emptyDraft, parseDraftJson, switchKind } from './draftForm'
+import { draftPayload, emptyDraft, isSameDraft, parseDraftJson, switchKind } from './draftForm'
 
 type Props = { api: ApiClient; roles: Role[]; teams: string[]; onRelogin: () => void }
 type Screen =
@@ -595,7 +595,7 @@ function DraftEditor({
               (save.kind === 'result' && save.operation.operationState === 'VERIFYING') ||
               uncertain ||
               jsonError !== null ||
-              JSON.stringify(draftPayload(draft)) !== JSON.stringify(draftPayload(savedDetail.draft))
+              !isSameDraft(draft, savedDetail.draft)
             }
             onClick={() => onSubmitDraft(savedDetail)}
           >

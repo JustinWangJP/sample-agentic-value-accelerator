@@ -75,6 +75,11 @@ export function draftPayload(draft: RecordDraft): RecordDraft {
   ) as RecordDraft
 }
 
+/** 2つの下書きが、サーバーへ送る本文として同じ内容か。未保存の変更の判定に使う */
+export function isSameDraft(a: RecordDraft, b: RecordDraft): boolean {
+  return JSON.stringify(draftPayload(a)) === JSON.stringify(draftPayload(b))
+}
+
 export type JsonDraftResult = { draft: RecordDraft } | { error: string }
 
 /**

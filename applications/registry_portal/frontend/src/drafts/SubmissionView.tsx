@@ -2,7 +2,15 @@ import { useState } from 'react'
 import { toApiError, type ApiClient, type ApiError } from '../api/client'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { RECORD_TYPE_LABELS } from '../api/recordType'
-import { isUncertainSaveError, type DraftDetail, type DraftOperation, type DraftSubmission } from './api'
+import {
+  isUncertainSaveError,
+  RECORD_ID_PATTERN,
+  RELATED_REFERENCES_MAX,
+  SUBMISSION_REASON_MAX_LENGTH,
+  type DraftDetail,
+  type DraftOperation,
+  type DraftSubmission,
+} from './api'
 import { OperationCheck } from './OperationCheck'
 
 type SubmissionState =
@@ -22,6 +30,8 @@ export function SubmissionView({
   const [reason, setReason] = useState('')
   const [references, setReferences] = useState<DraftSubmission['relatedReferences']>([])
   const [state, setState] = useState<SubmissionState>({ kind: 'idle' })
+  // 申請フォームごとの Idempotency-Key。結果が不明な間は同じキーを保ち、確定した失敗の後は作り直す
+  const [submitKey, setSubmitKey] = useState(() => crypto.randomUUID())
   const uncertain = state.kind === 'error' && isUncertainSaveError(state.error)
   const locked = state.kind === 'submitting' || uncertain ||
     (state.kind === 'result' && state.operation.operationState !== 'FAILED')
@@ -34,10 +44,13 @@ export function SubmissionView({
         expectedContentHash: detail.contentHash,
         reason: reason.trim(),
         relatedReferences: detail.draft.recordType === 'AGENT' ? references : [],
-      })
+      }, submitKey)
+      if (operation.operationState === 'FAILED') setSubmitKey(crypto.randomUUID())
       setState({ kind: 'result', operation })
     } catch (failure) {
-      setState({ kind: 'error', error: toApiError(failure, '申請できませんでした。') })
+      const error = toApiError(failure, '申請できませんでした。')
+      if (!isUncertainSaveError(error)) setSubmitKey(crypto.randomUUID())
+      setState({ kind: 'error', error })
     }
   }
 
@@ -58,18 +71,18 @@ export function SubmissionView({
         <fieldset disabled={locked}>
           <label>
             申請理由
-            <textarea name="reason" required maxLength={4096} rows={4} value={reason}
+            <textarea name="reason" required maxLength={SUBMISSION_REASON_MAX_LENGTH} rows={4} value={reason}
               onChange={(event) => setReason(event.target.value)} />
           </label>
           {detail.draft.recordType === 'AGENT' && (
             <fieldset>
-              <legend>関連参照（任意、最大20件）</legend>
+              <legend>関連参照（任意、最大{RELATED_REFERENCES_MAX}件）</legend>
               <p>公開済みのカタログ項目のレコード ID と版を指定してください。</p>
               {references.map((reference, index) => (
                 <div key={index}>
                   <label>
                     レコード ID {index + 1}
-                    <input name={`referenceId-${index}`} required pattern="[a-zA-Z0-9]{12}"
+                    <input name={`referenceId-${index}`} required pattern={RECORD_ID_PATTERN}
                       maxLength={12} value={reference.recordId}
                       onChange={(event) => setReferences(references.map((item, i) =>
                         i === index ? { ...item, recordId: event.target.value } : item))} />
@@ -85,7 +98,7 @@ export function SubmissionView({
                   </button>
                 </div>
               ))}
-              <button type="button" disabled={references.length >= 20}
+              <button type="button" disabled={references.length >= RELATED_REFERENCES_MAX}
                 onClick={() => setReferences([...references, { recordId: '', recordVersion: '' }])}>
                 関連参照を追加
               </button>
