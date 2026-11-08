@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { OperationCheck } from './OperationCheck'
+import { RecordHistoryView } from './RecordHistoryView'
 import { SubmissionView } from './SubmissionView'
 import { ApiError, toApiError, type ApiClient, type Role } from '../api/client'
 import { DATA_CLASSIFICATIONS } from '../api/dataClassification'
@@ -438,6 +439,7 @@ function DraftEditor({
   const [hash, setHash] = useState(initial.kind === 'edit' ? initial.detail.contentHash : '')
   const [createKey, setCreateKey] = useState(initial.kind === 'new' ? initial.key : '')
   const [save, setSave] = useState<SaveState>({ kind: 'idle' })
+  const [showHistory, setShowHistory] = useState(false)
   const isNew = initial.kind === 'new'
   const text = EDITOR_TEXT[initial.kind]
   const resultLocked = save.kind === 'result' && save.operation.operationState !== 'FAILED'
@@ -601,6 +603,20 @@ function DraftEditor({
           >
             保存済みの内容を申請
           </button>
+        </>
+      )}
+      {initial.kind === 'edit' && (
+        <>
+          <button type="button" onClick={() => setShowHistory((value) => !value)}>
+            {showHistory ? '履歴を閉じる' : '操作と審査の履歴を表示'}
+          </button>
+          {showHistory && (
+            <RecordHistoryView
+              api={api}
+              recordId={initial.detail.recordId}
+              onRelogin={onRelogin}
+            />
+          )}
         </>
       )}
       <button
