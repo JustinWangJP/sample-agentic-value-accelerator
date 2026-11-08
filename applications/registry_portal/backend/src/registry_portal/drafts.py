@@ -13,6 +13,7 @@ from registry_portal.domain.catalog import CATALOG_RECORD_TYPES
 from registry_portal.domain.drafts import (
     AWS_FAILED_STATUSES,
     CREATE_KIND,
+    DECISION_KINDS,
     DRAFT_STATUS,
     IN_FLIGHT_STATUSES,
     NOT_EDITABLE_STATUSES,
@@ -44,6 +45,7 @@ from registry_portal.domain.submissions import (
 )
 from registry_portal.services.discovery import DiscoveryClient, DiscoveryUnavailable
 from registry_portal.errors import ApiError, ForbiddenError, RequestValidationError
+from registry_portal.curation import RecordCuration, settle_decision
 from registry_portal.services.draft_store import DraftStore, StoreConflict
 
 # AWS が入力や設定を理由に保存を拒否したと確定できるエラー。利用者が入力や設定を直して再実行する。
@@ -157,11 +159,13 @@ class RecordDrafts:
         store: DraftStore,
         client: RegistryControlClient,
         discovery: DiscoveryClient,
+        decisions: RecordCuration,
     ) -> None:
         self.registry = registry
         self.store = store
         self._registry = client
         self._discovery = discovery
+        self._decisions = decisions
 
     def create(self, caller: Caller, body: Mapping[str, Any], key: str) -> DraftResponse:
         require_publisher(caller)
@@ -358,15 +362,20 @@ class RecordDrafts:
             raise DraftUnavailable() from None
 
     def operation(self, caller: Caller, op_id: str) -> DraftResponse:
-        require_publisher(caller)
         if not re.fullmatch(r"[a-f0-9]{32,64}", op_id):
             raise RequestValidationError("操作 ID の形式が正しくありません。")
         try:
             operation = self.store.get_operation(op_id)
         except (BotoCoreError, ClientError):
-            # 補助ストアを読めないときは、所有チームを確かめられないので「確認中」とは返さない
+            # 補助ストアを読めないときは、権限を確かめられないので「確認中」とは返さない
             raise DraftUnavailable() from None
-        if not operation or operation["ownerTeam"] not in caller.teams:
+        if not operation:
+            raise ForbiddenError()
+        if operation["kind"] in DECISION_KINDS:
+            # 決裁操作は Curator だけが参照する。管理 handler は決裁の権限がないため AWS を呼び直さない
+            return settle_decision(self._decisions, operation, caller=caller)
+        require_publisher(caller)
+        if operation["ownerTeam"] not in caller.teams:
             raise ForbiddenError()
         if operation["state"] == "SUCCEEDED":
             return 200, operation["result"]

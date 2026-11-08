@@ -41,6 +41,30 @@ def load_auth_settings(environ: Mapping[str, str]) -> AuthSettings:
 
 
 @dataclass(frozen=True)
+class RegistrySettings:
+    """借用する既存 Registry の位置。利用者のリクエストからは受け取らない。"""
+
+    # 既存 Registry の ARN（arn:aws:agent-registry:<region>:<account>:registry/<id>）
+    arn: str
+    # Registry のリージョン。ARN から導出する
+    region: str
+
+
+_REGISTRY_ARN = re.compile(
+    r"arn:aws(?:-[a-z]+)*:agent-registry:(?P<region>[a-z0-9-]+):\d{12}:registry/[A-Za-z0-9]{12,16}"
+)
+
+
+def load_registry_settings(environ: Mapping[str, str]) -> RegistrySettings:
+    """環境変数から Registry の ARN とリージョンを読む。形式の誤りは ConfigurationError とする。"""
+    registry_arn = environ.get("REGISTRY_ARN", "").strip()
+    match = _REGISTRY_ARN.fullmatch(registry_arn)
+    if match is None:
+        raise ConfigurationError("設定が正しくありません: REGISTRY_ARN の形式が不正です")
+    return RegistrySettings(arn=registry_arn, region=match.group("region"))
+
+
+@dataclass(frozen=True)
 class DiscoverySettings:
     """JWT 認可の Registry に、発見用 M2M トークンで問い合わせるための設定。
 
@@ -91,9 +115,6 @@ _REQUIRED_DISCOVERY_KEYS = (
     "DISCOVERY_CLIENT_ID",
     "DISCOVERY_CLIENT_SECRET_ARN",
 )
-_REGISTRY_ARN = re.compile(
-    r"arn:aws(?:-[a-z]+)*:agent-registry:(?P<region>[a-z0-9-]+):\d{12}:registry/[A-Za-z0-9]{12,16}"
-)
 
 _SECRET_ARN = re.compile(
     r"arn:aws(?:-[a-z]+)*:secretsmanager:(?P<region>[a-z0-9-]+):\d{12}:secret:.+"
@@ -105,10 +126,12 @@ def load_discovery_settings(environ: Mapping[str, str]) -> DiscoverySettings:
     missing = [key for key in _REQUIRED_DISCOVERY_KEYS if not environ.get(key, "").strip()]
     if missing:
         raise ConfigurationError(f"発見設定が不足しています: {', '.join(missing)}")
-    registry_arn = environ["REGISTRY_ARN"].strip()
-    match = _REGISTRY_ARN.fullmatch(registry_arn)
-    if match is None:
-        raise ConfigurationError("発見設定が正しくありません: REGISTRY_ARN の形式が不正です")
+    try:
+        registry = load_registry_settings(environ)
+    except ConfigurationError:
+        raise ConfigurationError(
+            "発見設定が正しくありません: REGISTRY_ARN の形式が不正です"
+        ) from None
     token_url = environ["DISCOVERY_TOKEN_URL"].strip()
     if not token_url.startswith("https://"):
         raise ConfigurationError(
@@ -121,8 +144,8 @@ def load_discovery_settings(environ: Mapping[str, str]) -> DiscoverySettings:
             "発見設定が正しくありません: DISCOVERY_CLIENT_SECRET_ARN の形式が不正です"
         )
     return DiscoverySettings(
-        registry_arn=registry_arn,
-        registry_region=match.group("region"),
+        registry_arn=registry.arn,
+        registry_region=registry.region,
         token_url=token_url,
         client_id=environ["DISCOVERY_CLIENT_ID"].strip(),
         client_secret_arn=client_secret_arn,

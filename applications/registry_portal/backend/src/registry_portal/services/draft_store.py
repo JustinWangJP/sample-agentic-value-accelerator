@@ -295,3 +295,32 @@ class DraftStore:
                 )
             )
         self._transact(items)
+
+    def finish_decision(
+        self,
+        operation: DraftOperation,
+        result: Mapping[str, Any],
+        management: Management,
+        published: Mapping[str, Any] | None,
+        published_version: str,
+    ) -> None:
+        """決裁の成功を確定する。公開承認では Curator が確認した内容を公開版スナップショットに保存する。
+
+        published は公開承認のときだけ指定する。PUBLISHED#版 の項目は申請スナップショットの値を写し、
+        決裁のたびに新しく作る（版は公開中の版より大きいため、上書きされない）。
+        """
+        record_pk = self.record_pk(operation["recordId"])
+        owner = self._put(
+            {**management.item, "pk": record_pk, "sk": "MANAGEMENT"},
+            "attribute_not_exists(pk) OR ownerTeam = :team",
+            {":team": operation["ownerTeam"]},
+        )
+        items = [
+            owner,
+            *self._close(operation, "SUCCEEDED", {"result": result}, operation["recordId"]),
+        ]
+        if published is not None:
+            items.append(
+                self._put({**published, "pk": record_pk, "sk": f"PUBLISHED#{published_version}"})
+            )
+        self._transact(items)
