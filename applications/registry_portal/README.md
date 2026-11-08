@@ -17,10 +17,10 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 | `backend/src/registry_portal/services/discovery.py` | 発見アダプター。発見用 M2M トークンの取得・キャッシュと、JWT 認可の Registry の発見 API 呼び出し |
 | `backend/src/registry_portal/services/catalog_supplement.py` | 補助テーブルから所有チームの正本と公開版のスナップショットを読む |
 | `backend/src/registry_portal/services/http.py` | 標準ライブラリによる HTTP トランスポート。テストではフェイクに差し替える |
-| `backend/src/registry_portal/drafts.py` | custom Agent の下書きの作成・編集・一覧・操作の照合 API。排他・冪等性と、AWS の失敗の API エラーへの変換 |
+| `backend/src/registry_portal/drafts.py` | 下書きの作成・編集・一覧・申請・操作の照合 API。排他・冪等性、申請前の検査と申請 API の呼び出し、AWS の失敗の API エラーへの変換 |
 | `backend/src/registry_portal/domain/drafts.py` | 下書きのフォーム入力・管理情報のモデル、AWS の作成用・更新用 payload への変換、状態と environment の値。SPA の `frontend/src/drafts/api.ts` と値を揃える |
-| `backend/src/registry_portal/domain/submissions.py` | 申請入力・semver の比較・申請スナップショットの構築 |
-| `backend/src/registry_portal/services/draft_store.py` | 補助テーブルの下書き用の項目（管理情報・ロック・操作・操作記録）の読み書き |
+| `backend/src/registry_portal/domain/submissions.py` | 申請入力、semver の比較、`isA2A`・公開中の版・関連参照の参照先の検査、申請スナップショットの構築 |
+| `backend/src/registry_portal/services/draft_store.py` | 補助テーブルの下書き用の項目（管理情報・ロック・操作・操作記録・申請スナップショット `SUBMISSION#`・無効化記録）の読み書き |
 | `infrastructure/` | 下書きの IAM モジュール（`modules/management_drafts`）と、既存ロールへ適用するルートモジュール（`management`） |
 | `frontend/` | React SPA。Authorization Code + PKCE でログインし、アクセストークンはメモリー上だけで保持する |
 
@@ -286,7 +286,6 @@ API Gateway の CORS で `PATCH` と `Idempotency-Key` ヘッダーも許可し�
 
 公式資料は [CreateRegistryRecord](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_CreateRegistryRecord.html)、[UpdateRegistryRecord](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_UpdateRegistryRecord.html)、[GetRegistryRecord](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_GetRegistryRecord.html)、[版のライフサイクル](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-record-lifecycle.html)、[Registry IAM](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-iam-permissions.html)、[DynamoDB トランザクションの認可](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html) を参照してください。実 AWS への書き込みはこの実装検証では行っていません。デプロイ後に実環境で非同期状態・公開中の版と下書き・IAM 境界を確認してください。
 
-
 ## 下書きの申請（#9）
 
 `POST /api/records/{recordId}/submit` は、所属チームが所有する保存済みの `DRAFT` を申請します。Publisher 以外、所属チームなし、他チームのレコードは AWS を呼ぶ前に403で拒否します。`REJECTED` は編集して保存し、`DRAFT` に戻してから再申請します。
@@ -302,14 +301,14 @@ API Gateway の CORS で `PATCH` と `Idempotency-Key` ヘッダーも許可し�
 ```
 
 - `reason` は前後の空白を除いた1〜4096文字です。秘密情報らしき値は保存せず400にします。
-- `relatedReferences` は Agent のみ指定でき、最大20件です。MCP・Skill は空の配列を指定します。重複と不正な ID・semver は400にします。
-- `Idempotency-Key` は任意の1〜128文字の英数字・`_`・`-` です。SPA は申請フォームごとに生成し、同じ申請の再送では維持します。同じキーの異なる本文は409です。確定した失敗の後は新しいキーで再実行します。省略時は本文・主体・最終編集日時から操作 ID を導出します。
+- `relatedReferences` は Agent のみ指定でき、最大20件です。MCP・Skill は空の配列を指定します。参照先は Skill または MCP サーバーのカタログ項目に限り、申請するレコード自身は指定できません（設計書「関連参照」）。重複と不正な ID・semver は400にします。
+- `Idempotency-Key` は必須で、1〜128文字の英数字・`_`・`-` です。省略すると400です。SPA は申請フォームごとに生成し、同じ申請の再送では維持します。同じキーの異なる本文は409です。確定した失敗の後は新しいキーで再実行します。
 
 申請は既存のレコード単位ロックを取得し、管理 API の `GetRegistryRecord` で AWS の現物を読みます。状態が `DRAFT` でないか、取得時の内容ハッシュと異なれば409です。Agent は metadata の `isA2A` が真偽値で、descriptor と一致することも検査します。
 
-公開中の版と参照先は、発見用 JWT の `BatchGetDiscoverableRegistryRecord` で確認します。`recordVersion` は semver の順序で公開中の版より大きい必要があります。数値の prerelease 識別子も数値として比較します。補助ストアに記録済みの公開版も下限とし、発見 API の反映遅延で版を戻しません。却下された番号が公開されていなければ、編集後の再申請で同じ番号を使えます。AWS がビルドメタデータの `+` を受け付けないため、既存の下書き入力と同様に `+build` は許可しません。関連参照は指定した ID と版が公開承認済みの場合だけ受け付けます。AWS や補助ストアを読めない場合は502にし、未公開や0件とは区別します。[公開版と管理上の最新版](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-record-lifecycle.html)
+公開中の版と参照先は、発見用 JWT の `BatchGetDiscoverableRegistryRecord` で確認します。`recordVersion` は semver の順序で公開中の版より大きい必要があります。数値の prerelease 識別子も数値として比較します。補助ストアに記録済みの公開版も下限とし、発見 API の反映遅延で版を戻しません。却下された番号が公開されていなければ、編集後の再申請で同じ番号を使えます。AWS がビルドメタデータの `+` を受け付けないため、既存の下書き入力と同様に `+build` は許可しません。関連参照は指定した ID と版が公開承認済みの場合だけ受け付けます。廃止済み（`DEPRECATED`）など公開承認済みの版を持たない参照先は、カタログ項目ではないとして400にします。AWS や補助ストアを読めない場合は502にし、未公開や0件とは区別します。[公開版と管理上の最新版](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-record-lifecycle.html)
 
-毎回 `GetRegistry` で自動承認設定も確認します。`approvalConfiguration.autoApprovalRules` が省略または空なら手動承認です。ルールがあれば503 `APPROVAL_CONFIGURATION_CHANGED` とし、申請を止めて管理者への連絡を表示します。AWS へは書き込んでいないため、SPA はこの503を結果不明として扱わず、フォームを再開して次の申請を新しいキーで行います。アプリが設定を変更することはありません。[GetRegistry](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_GetRegistry.html)、[自動承認設定](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_ApprovalConfiguration.html)
+毎回 `GetRegistry` で自動承認設定も確認します。照合で申請 API を呼び直す前にも確認し直します（後述）。`approvalConfiguration.autoApprovalRules` が省略または空なら手動承認です。ルールがあれば503 `APPROVAL_CONFIGURATION_CHANGED` とし、申請を止めて管理者への連絡を表示します。AWS へは書き込んでいないため、SPA はこの503を結果不明として扱わず、フォームを再開して次の申請を新しいキーで行います。アプリが設定を変更することはありません。[GetRegistry](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_GetRegistry.html)、[自動承認設定](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_ApprovalConfiguration.html)
 
 ### 固定する申請内容
 
@@ -331,10 +330,21 @@ canonical JSON はキーを並べ、区切りを `,` と `:` に固定し、Unic
 
 ### 申請結果と編集中の無効化
 
-AWS の申請 API は202を返します。ポータルは続けて現物を再取得し、内容が一致する `PENDING_APPROVAL` を確認した場合だけ200 `SUCCEEDED` とします。応答は既存の下書き操作と同じ形に `submissionId` と `snapshotHash` を加えます。`MANAGEMENT.activeSubmissionId` はこの確定時にだけ設定します。公開承認と `PUBLISHED#{recordVersion}` の保存は #10 が担当します。[SubmitRegistryRecordForApproval](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_SubmitRegistryRecordForApproval.html)
+AWS の申請 API は202を返します。ポータルは続けて現物を再取得し、内容が一致する `PENDING_APPROVAL` を確認した場合に200 `SUCCEEDED` とします。照合より先に審査で決裁されて `APPROVED`・`REJECTED` になっていた場合も、申請は受け付けられているため `SUCCEEDED` とします。申請 API が `ConflictException` を返した場合は、申請前の検査の後で状態が変わったものとして操作を失敗に確定し、409 `CONTENT_CONFLICT` を返します。応答は既存の下書き操作と同じ形に `submissionId` と `snapshotHash` を加えます。`MANAGEMENT.activeSubmissionId` はこの確定時にだけ設定します。公開承認と `PUBLISHED#{recordVersion}` の保存は #10 が担当します。[SubmitRegistryRecordForApproval](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_SubmitRegistryRecordForApproval.html)
 
-タイムアウト、AWS の5xx、AWS 成功後の補助ストア障害、再取得でまだ `DRAFT` が見える場合は202 `VERIFYING` を返します。ロックは期限で解除せず、別の書き込みを409で止めます。`GET /api/operations/{operationId}` は現物を再取得して結果を確定します。スナップショットの保存後に申請 API の受け付けを確認できていない操作（`approvalRequested` がない）で、現物が内容の一致する `DRAFT` のままなら、申請 API を呼び直します。先の呼び出しが届いていた可能性があるため、呼び直しのエラーは失敗と確定せず202のまま次の照合に委ねます。受け付けを確認済みの操作は呼び直しません。AWS が入力不備や混雑で処理せず拒否したと確定した場合は失敗を記録し、ロックを解除します。申請前の確認に失敗した場合も AWS へ申請せずロックを解除します。
+タイムアウト、AWS の5xx、AWS 成功後の補助ストア障害、再取得でまだ `DRAFT` が見える場合は202 `VERIFYING` を返します。ロックは期限で解除せず、別の書き込みを409で止めます。`GET /api/operations/{operationId}` は現物を再取得して、次のように結果を確定します。
 
-承認待ちや却下後の編集が AWS で `DRAFT` に戻ったことを確認すると、`activeSubmissionId` を消し、`SUBMISSION#{元の申請ID}#INVALIDATED` を追記します。元のスナップショットは残します。#10 はレコード共通ロックに加え、申請が現在の `activeSubmissionId` と一致し、無効化記録がないことを確認する必要があります。`DraftStore.get_submission` はスナップショットに無効化の有無（`invalidated`）を付けて返すので、#10 はこの入口から読みます。
+| 現物 | 照合の結果 |
+|---|---|
+| `CREATING`・`UPDATING` | 202 `VERIFYING` のまま |
+| 内容がスナップショットと一致しない（ポータル外の編集など） | 申請は成立しないため `FAILED`（`CONTENT_CHANGED`）を確定し、ロックを解除 |
+| 内容が一致する `DRAFT`・申請 API の受け付けを確認済み | 反映待ちとして202のまま |
+| 内容が一致する `DRAFT`・受け付けを未確認（`submissionAccepted` がない） | 自動承認設定を確認し直してから申請 API を呼び直す。設定が想定外なら呼ばずに `FAILED` を確定。呼び直しのエラーは、先の呼び出しが届いていた可能性があるため失敗と確定せず202のまま |
+| 内容が一致する `PENDING_APPROVAL`・`APPROVED`・`REJECTED` | `SUCCEEDED` を確定し、ロックを解除 |
+| それ以外（`DEPRECATED` など） | `FAILED` を確定し、ロックを解除 |
 
-Seam 1 の Stubber と moto で、保存の順序、認可、公開版との semver 比較、関連参照、`isA2A`、自動承認、固定内容とハッシュ、補助情報が欠けた下書きの拒否、編集時の無効化と `get_submission` の `invalidated`、同じ未公開番号の再申請、AWS の結果不明、スナップショット保存後に止まった申請の再開、AWS 成功後の補助ストア障害を検証します。Seam 2 の Vitest で、申請の `Idempotency-Key`、409の再取得案内、503 `APPROVAL_CONFIGURATION_CHANGED` の表示を確認します。実 AWS への書き込みは行っていません。デプロイ後は実環境で申請時の非同期状態、公開中の版との併存、IAM 境界を確認してください。
+照合（読み取りの GET）が申請 API を呼び直すのは、スナップショットの保存後に止まった操作がロックを持ち続けないようにするためです。設計書「同時操作」に、この例外を記載しています。AWS が入力不備や混雑で処理せず拒否したと確定した場合は失敗を記録し、ロックを解除します。申請前の確認に失敗した場合も AWS へ申請せずロックを解除します。
+
+審査待ちや却下後の編集をポータルで保存し、AWS で `DRAFT` に戻ったことを確認すると、`activeSubmissionId` を消し、`SUBMISSION#{元の申請ID}#INVALIDATED` を追記します。元のスナップショットは残します。#10 はレコード共通ロックに加え、申請が現在の `activeSubmissionId` と一致し、無効化記録がないことを確認する必要があります。`DraftStore.get_submission` はスナップショットに無効化の有無（`invalidated`）を付けて返すので、#10 はこの入口から読みます。無効化記録はポータルでの編集だけが書くため、AWS コンソールなどポータル外の編集では `invalidated` は偽のままです。#10 は決裁の前に現物の `contentHash` をスナップショットの `contentHash` と照合し直し、一致しなければ決裁してはいけません。
+
+Seam 1 の Stubber と moto で、保存の順序、認可、公開版との semver 比較、関連参照、`isA2A`、自動承認、固定内容とハッシュ、補助情報が欠けた下書きの拒否、編集時の無効化と `get_submission` の `invalidated`、同じ未公開番号の再申請、AWS の結果不明、スナップショット保存後に止まった申請の再開と再開前の自動承認設定の再確認、照合前の決裁・ポータル外の編集・廃止でのロック解除、`Idempotency-Key` の必須化、申請 API の `ConflictException` の409、廃止済み・Agent・自身を参照先にした関連参照の拒否、AWS 成功後の補助ストア障害を検証します。Seam 2 の Vitest で、申請の `Idempotency-Key`（確定した失敗の後に作り直す判定は作成と共通）、409の再取得案内、503 `APPROVAL_CONFIGURATION_CHANGED` の表示を確認します。実 AWS への書き込みは行っていません。デプロイ後は実環境で申請時の非同期状態、公開中の版との併存、IAM 境界を確認してください。

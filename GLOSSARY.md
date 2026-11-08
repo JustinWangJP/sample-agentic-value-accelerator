@@ -45,6 +45,7 @@ _Avoid_: ドラフト資産
 **申請**:
 審査のために固定した下書きの内容と、その提出の記録。決裁はこの固定内容に対して行う。
 _Avoid_: 承認リクエスト、レビュー依頼
+AWS の API 名と状態（`SubmitRegistryRecordForApproval`、`PENDING_APPROVAL`、`approvalConfiguration`）は原語のまま使う。画面では `PENDING_APPROVAL` を「審査待ち」と表示する。
 
 **公開版スナップショット**:
 公開承認した版に対応する連絡先、利用条件、接続先の参照、関連参照を固定した記録。カタログ項目の詳細に使う。
