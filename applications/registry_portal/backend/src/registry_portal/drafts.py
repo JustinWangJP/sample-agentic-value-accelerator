@@ -12,11 +12,14 @@ from registry_portal.auth import Caller, Role
 from registry_portal.domain.catalog import CATALOG_RECORD_TYPES
 from registry_portal.domain.drafts import (
     AWS_FAILED_STATUSES,
+    CREATE_KIND,
     DRAFT_STATUS,
     IN_FLIGHT_STATUSES,
     NOT_EDITABLE_STATUSES,
     RECORD_ID_PATTERN,
     SUBMIT_KIND,
+    SUBMITTED_STATUSES,
+    UPDATE_KIND,
     RecordDraft,
     DraftOperation,
     DraftResult,
@@ -34,14 +37,17 @@ from registry_portal.domain.drafts import (
 from registry_portal.domain.submissions import (
     Submission,
     SubmissionInput,
+    check_a2a_metadata,
+    check_newer_than_published,
+    check_reference_target,
     submission_snapshot,
-    version_key,
 )
 from registry_portal.services.discovery import DiscoveryClient, DiscoveryUnavailable
 from registry_portal.errors import ApiError, ForbiddenError, RequestValidationError
 from registry_portal.services.draft_store import DraftStore, StoreConflict
 
-# AWS が入力や設定を理由に保存を拒否したと確定できるエラー。利用者が入力や設定を直して再実行する
+# AWS が入力や設定を理由に保存を拒否したと確定できるエラー。利用者が入力や設定を直して再実行する。
+# 申請 API の ConflictException だけは、状態の変化による競合として 409 にする（_call_submit_api）
 AWS_REJECTED_ERRORS = frozenset(
     {
         "ValidationException",
@@ -58,7 +64,7 @@ DraftResponse = tuple[int, DraftView | DraftResult | OperationStatus]
 
 
 class RegistryControlClient(Protocol):
-    """下書きの作成・編集が使う Registry 管理 API（agent-registry-control）の操作。"""
+    """下書きの作成・編集・申請が使う Registry 管理 API（agent-registry-control）の操作。"""
 
     def get_registry(self, *, registryId: str) -> Mapping[str, Any]: ...
 
@@ -145,10 +151,17 @@ def _aws_request_id(response: Mapping[str, Any]) -> str | None:
 
 
 class RecordDrafts:
-    def __init__(self, registry: str, store: DraftStore, client: RegistryControlClient) -> None:
+    def __init__(
+        self,
+        registry: str,
+        store: DraftStore,
+        client: RegistryControlClient,
+        discovery: DiscoveryClient,
+    ) -> None:
         self.registry = registry
         self.store = store
         self._registry = client
+        self._discovery = discovery
 
     def create(self, caller: Caller, body: Mapping[str, Any], key: str) -> DraftResponse:
         require_publisher(caller)
@@ -164,7 +177,7 @@ class RecordDrafts:
             "principal": principal,
             "requestHash": digest(draft.fields),
             "draft": dict(draft.fields),
-            "kind": "CREATE",
+            "kind": CREATE_KIND,
             "state": "IN_PROGRESS",
             "lockPk": self.store.name_lock_pk(draft.fields["name"]),
             "startedAt": _now(),
@@ -373,20 +386,18 @@ class RecordDrafts:
         caller: Caller,
         record_id: str,
         body: Mapping[str, Any],
-        discovery: DiscoveryClient,
-        key: str = "",
+        key: str,
     ) -> DraftResponse:
         management = self._management(caller, record_id)
+        # キーなしの再送を本文から同じ操作とみなすと、確定した失敗を返し続けるため必須にする
+        check_idempotency_key(key)
         try:
             request = SubmissionInput.parse(body)
         except ValueError as error:
             raise RequestValidationError(str(error)) from None
-        if key:
-            check_idempotency_key(key)
         principal = principal_of(caller)
         request_hash = digest(body)
-        identity = key or digest([body, management.item.get("lastEditedAt")])
-        op_id = digest([SUBMIT_KIND, self.registry, record_id, principal, identity])
+        op_id = digest([SUBMIT_KIND, self.registry, record_id, principal, key])
         operation: DraftOperation = {
             "operationId": op_id,
             "ownerTeam": management.owner_team,
@@ -415,7 +426,7 @@ class RecordDrafts:
         submission = Submission(op_id, principal, operation["startedAt"], request)
         try:
             try:
-                snapshot = self._prepare_submission(caller, operation, submission, discovery)
+                snapshot = self._prepare_submission(caller, operation, submission)
             except (
                 ApiError,
                 ValueError,
@@ -431,7 +442,7 @@ class RecordDrafts:
                     raise RequestValidationError(str(error)) from None
                 raise DraftUnavailable() from None
             self.store.save_submission(operation, snapshot)
-            return self._request_approval(operation)
+            return self._call_submit_api(operation)
         except (BotoCoreError, ClientError, StoreConflict):
             return self._pending(operation)
 
@@ -440,7 +451,6 @@ class RecordDrafts:
         caller: Caller,
         operation: DraftOperation,
         submission: Submission,
-        discovery: DiscoveryClient,
     ) -> dict[str, Any]:
         """AWS 上の現物を読んで申請の条件を検査し、操作を更新してスナップショットを返す。"""
         record_id = operation["recordId"]
@@ -453,9 +463,17 @@ class RecordDrafts:
         ):
             raise DraftConflict()
         draft = self._read_draft(record, management)
-        self._check_a2a_metadata(record, request)
-        published_version = self._check_record_version(record_id, record, management, discovery)
-        self._check_references(request, discovery)
+        check_a2a_metadata(record, request.references)
+        published = self._discovery.get_record(record_id)
+        published_version = check_newer_than_published(
+            str(record["recordVersion"]),
+            [
+                management.published_version(record),
+                published.item.record_version if published else None,
+            ],
+        )
+        for reference in request.references:
+            check_reference_target(record_id, reference, self._discovery.get_record)
         self._check_approval_configuration()
         if not management.item.get("lastEditedBy"):
             raise DraftConflict("最終編集者を確認できません。下書きを保存し直してください。")
@@ -465,54 +483,6 @@ class RecordDrafts:
         operation["snapshotHash"] = snapshot["snapshotHash"]
         return snapshot
 
-    @staticmethod
-    def _check_a2a_metadata(record: Mapping[str, Any], request: SubmissionInput) -> None:
-        """Agent は metadata の isA2A が descriptor と一致すること。関連参照は Agent だけに許す。"""
-        if record["recordType"] != "AGENT":
-            if request.references:
-                raise RequestValidationError("関連参照は Agent の申請にのみ指定できます。")
-            return
-        metadata = record.get("customMetadata", {})
-        expected_a2a = "a2aAgentCard" in record.get("descriptors", {})
-        if not isinstance(metadata.get("isA2A"), bool) or metadata["isA2A"] != expected_a2a:
-            raise RequestValidationError(
-                "isA2A が定義と一致しません。下書きを保存し直してください。"
-            )
-
-    @staticmethod
-    def _check_record_version(
-        record_id: str,
-        record: Mapping[str, Any],
-        management: Management,
-        discovery: DiscoveryClient,
-    ) -> str | None:
-        """recordVersion が公開中の版より大きいことを検査し、公開中の版を返す。
-
-        公開中の版は、補助ストアに保持した版と発見 API の版の大きい方とする。
-        却下後の再申請は公開中の版と比べるだけなので、同じ値を許す。
-        """
-        version = version_key(str(record["recordVersion"]))
-        published = discovery.get_record(record_id)
-        candidates = [
-            known
-            for known in (
-                management.published_version(record),
-                published.item.record_version if published else None,
-            )
-            if known is not None
-        ]
-        published_version = max(candidates, key=version_key) if candidates else None
-        if published_version is not None and version <= version_key(published_version):
-            raise RequestValidationError("recordVersion は公開中の版より大きくしてください。")
-        return published_version
-
-    @staticmethod
-    def _check_references(request: SubmissionInput, discovery: DiscoveryClient) -> None:
-        for reference in request.references:
-            target = discovery.get_record(reference["recordId"])
-            if target is None or target.item.record_version != reference["recordVersion"]:
-                raise RequestValidationError("関連参照の指定した版はカタログ項目ではありません。")
-
     def _check_approval_configuration(self) -> None:
         """自動承認の規則が1件でもあれば、申請が審査を経ずに公開されるため止める。"""
         configuration = self._registry.get_registry(registryId=self.registry)
@@ -520,44 +490,67 @@ class RecordDrafts:
         if rules != []:
             raise ApprovalConfigurationChanged()
 
-    def _request_approval(self, operation: DraftOperation, retry: bool = False) -> DraftResponse:
+    def _call_submit_api(self, operation: DraftOperation, resume: bool = False) -> DraftResponse:
         """標準の申請 API を呼び、結果を照合する。
 
-        retry は、スナップショットの保存後に申請 API の受け付けを確認できなかった操作の再試行を示す。
-        先の呼び出しが AWS に届いていた可能性があるため、再試行のエラーでは失敗と確定せず、
+        resume は、スナップショットの保存後に申請 API の受け付けを確認できなかった操作の再開を示す。
+        再開の前に自動承認の設定を確かめ直し、想定から外れていれば申請 API を呼ばずに失敗を確定する。
+        先の呼び出しが AWS に届いていた可能性があるため、再開時の申請 API のエラーでは失敗と確定せず、
         結果確認中のまま次の照合に委ねる。
         """
+        if resume:
+            try:
+                self._check_approval_configuration()
+            except ApprovalConfigurationChanged:
+                self.store.abort(operation, ApprovalConfigurationChanged.code)
+                return self._failed(operation)
         try:
             response = self._registry.submit_registry_record_for_approval(
                 registryId=self.registry, recordId=operation["recordId"]
             )
         except ClientError as error:
-            if retry:
+            if resume:
                 self._record_request_id(operation, error.response)
                 return self._pending(operation)
+            if error.response["Error"]["Code"] == "ConflictException":
+                # 申請の前に検査した後で、レコードの状態が変わった
+                self._record_request_id(operation, error.response)
+                self.store.abort(operation, "AWS_CONFLICT")
+                raise DraftConflict() from None
             return self._registry_error(operation, error)
         self._record_request_id(operation, response)
-        operation["approvalRequested"] = True
+        operation["submissionAccepted"] = True
         self.store.save_pending(operation)
         return self._verify_submission(operation)
 
     def _verify_submission(self, operation: DraftOperation) -> DraftResponse:
+        """AWS のレコードを読み、申請の結果を確定する。確定できなければ結果確認中を返す。
+
+        結果確認中のまま残すのは、AWS が処理中のときと、申請 API の受け付け後に DRAFT が見えたとき
+        （反映待ち）だけにする。それ以外は確定させ、ロックを解除する。
+        """
         if "snapshotHash" not in operation:
             return self._pending(operation)
         record = self._registry.get_registry_record(
             registryId=self.registry, recordId=operation["recordId"]
         )
-        management = Management(operation["management"])
-        unchanged = content_hash(record, management) == operation["expectedContentHash"]
-        if (
-            record["status"] == DRAFT_STATUS
-            and unchanged
-            and not operation.get("approvalRequested")
-        ):
-            # スナップショットの保存後、申請 API の受け付けを確認する前に止まった操作を再開する
-            return self._request_approval(operation, retry=True)
-        if record["status"] != "PENDING_APPROVAL" or not unchanged:
+        status = record["status"]
+        if status in IN_FLIGHT_STATUSES:
             return self._pending(operation)
+        management = Management(operation["management"])
+        if content_hash(record, management) != operation["expectedContentHash"]:
+            # 申請スナップショットと内容が一致しないので、この申請は成立しない
+            self.store.abort(operation, "CONTENT_CHANGED")
+            return self._failed(operation)
+        if status == DRAFT_STATUS:
+            if operation.get("submissionAccepted"):
+                return self._pending(operation)
+            # スナップショットの保存後、申請 API の受け付けを確認する前に止まった操作を再開する
+            return self._call_submit_api(operation, resume=True)
+        if status not in SUBMITTED_STATUSES:
+            self.store.abort(operation, status)
+            return self._failed(operation)
+        # 審査待ち、または照合より先に審査で決裁された。どちらも申請は受け付けられている
         management = Management({**management.item, "activeSubmissionId": operation["operationId"]})
         result: SubmissionResult = {
             **draft_view(record, management, RecordDraft.parse(operation["draft"])),
@@ -587,7 +580,7 @@ class RecordDrafts:
             "operationId": uuid4().hex,
             "ownerTeam": management.owner_team,
             "principal": principal_of(caller),
-            "kind": "UPDATE",
+            "kind": UPDATE_KIND,
             "draft": dict(draft.fields),
             "expectedContentHash": expected,
             "state": "IN_PROGRESS",
@@ -674,7 +667,7 @@ class RecordDrafts:
         if status == DRAFT_STATUS and draft.is_applied_to(record):
             return success_status, self._finish(operation, record, draft)
         if (
-            operation["kind"] == "UPDATE"
+            operation["kind"] == UPDATE_KIND
             and not update_accepted
             and content_hash(record, Management(operation["management"]))
             == operation["expectedContentHash"]

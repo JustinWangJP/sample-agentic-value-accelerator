@@ -195,6 +195,7 @@ def create_management_handler(
                 RegistryControlClient,
                 boto3.client("agent-registry-control", region_name=region),
             ),
+            discovery_client,
         )
         if catalog_settings.supplement_table_name
         else None
@@ -246,7 +247,6 @@ def create_management_handler(
             caller,
             _path_parameter(event),
             _json_body(event, SUBMISSION_BODY_MAX_LENGTH),
-            discovery_client,
             _idempotency_key(event),
         )
 

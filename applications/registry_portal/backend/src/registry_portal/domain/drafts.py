@@ -93,8 +93,15 @@ RecordStatus = Literal[
 ]
 RECORD_STATUSES: tuple[RecordStatus, ...] = get_args(RecordStatus)
 DRAFT_STATUS: RecordStatus = "DRAFT"
+# 申請を AWS が受け付け、Curator の審査待ちになった状態
+PENDING_APPROVAL_STATUS: RecordStatus = "PENDING_APPROVAL"
 # 公開承認済みで、AWS が公開中の版を返している状態
 PUBLISHED_STATUS: RecordStatus = "APPROVED"
+REJECTED_STATUS: RecordStatus = "REJECTED"
+# 申請が AWS に受け付けられた後にだけ取りうる状態（審査待ち、または審査で決裁済み）
+SUBMITTED_STATUSES: frozenset[RecordStatus] = frozenset(
+    {PENDING_APPROVAL_STATUS, PUBLISHED_STATUS, REJECTED_STATUS}
+)
 # AWS が書き込みを処理中で、結果がまだ確定していない状態
 IN_FLIGHT_STATUSES: frozenset[RecordStatus] = frozenset({"CREATING", "UPDATING"})
 # AWS が書き込みの失敗を確定した状態
@@ -108,10 +115,14 @@ NOT_EDITABLE_STATUSES: frozenset[RecordStatus] = IN_FLIGHT_STATUSES | {"DEPRECAT
 # SPA の `OPERATION_STATES`（frontend/src/drafts/api.ts）と揃える
 OperationState = Literal["IN_PROGRESS", "VERIFYING", "FAILED", "SUCCEEDED"]
 OperationKind = Literal["CREATE", "UPDATE", "SUBMIT"]
+CREATE_KIND: OperationKind = "CREATE"
+UPDATE_KIND: OperationKind = "UPDATE"
 SUBMIT_KIND: OperationKind = "SUBMIT"
 
-# Registry レコード ID の形式。SPA の `RECORD_ID_PATTERN`（frontend/src/drafts/api.ts）と揃える
-RECORD_ID_PATTERN = re.compile(r"[A-Za-z0-9]{12}")
+# Registry レコード ID の形式。SPA の `RECORD_ID_PATTERN` と `RECORD_ID_LENGTH`
+# （frontend/src/drafts/api.ts）と揃える
+RECORD_ID_LENGTH = 12
+RECORD_ID_PATTERN = re.compile(rf"[A-Za-z0-9]{{{RECORD_ID_LENGTH}}}")
 
 # 確定した操作（実行制御の項目）を補助テーブルの TTL で削除するまでの秒数（設計書「補助テーブルに保存するもの」）。
 # この間は同じ Idempotency-Key に同じ結果を返す。未確定の操作とロックには TTL を付けない
@@ -137,7 +148,7 @@ class _DraftOperationRequired(TypedDict):
 class DraftOperation(_DraftOperationRequired, total=False):
     """補助ストアに保存する、下書きの書き込み操作。"""
 
-    # 作成: 同じ Idempotency-Key に異なる内容が来たことを検出する
+    # 作成・申請: 同じ Idempotency-Key に異なる内容が来たことを検出する
     requestHash: str
     # 更新: 取得時の内容ハッシュ。AWS に適用されなかったことの判定にも使う
     expectedContentHash: str
@@ -151,7 +162,7 @@ class DraftOperation(_DraftOperationRequired, total=False):
     # 申請: 保存した申請スナップショットのハッシュ
     snapshotHash: str
     # 申請: 標準の申請 API が受け付けを返した。未設定なら、照合時に申請 API を呼び直す
-    approvalRequested: bool
+    submissionAccepted: bool
 
 
 class DraftView(TypedDict):

@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from registry_portal.domain.catalog import (
+    A2A_DESCRIPTOR_TYPE,
+    AGENT_RECORD_TYPE,
+    MCP_RECORD_TYPE,
+    SKILL_RECORD_TYPE,
+    CatalogDetail,
+)
 from registry_portal.domain.descriptors import SUPPLEMENT_FIELDS
 from registry_portal.domain.drafts import (
     RECORD_ID_PATTERN,
     SEMVER,
+    TEXT_LIMITS,
     Management,
     PrincipalRecord,
     RecordDraft,
@@ -23,8 +31,8 @@ from registry_portal.domain.secrets import scan_json, scan_text
 # 申請入力の上限。SPA の申請フォーム（frontend/src/drafts/api.ts）と揃える
 REASON_MAX_LENGTH = 4096
 RELATED_REFERENCES_MAX = 20
-# 関連参照の recordVersion の上限。下書きの recordVersion（TEXT_LIMITS）と同じ
-REFERENCE_VERSION_MAX_LENGTH = 255
+# 関連参照の参照先にできる種別（設計書「関連参照」: Agent と、それが使う Skill・MCP サーバーとの関係）
+REFERENCE_TARGET_RECORD_TYPES = frozenset({MCP_RECORD_TYPE, SKILL_RECORD_TYPE})
 
 # スナップショットに残す AWS 上のレコードの項目
 SNAPSHOT_RECORD_FIELDS = (
@@ -49,6 +57,49 @@ def version_key(value: str) -> tuple[int, int, int, tuple[tuple[int, int | str],
         tuple((0, int(p)) if p.isdigit() else (1, p) for p in pre.split(".")) if pre else ((2, ""),)
     )
     return int(match[1]), int(match[2]), int(match[3]), parts
+
+
+def check_a2a_metadata(record: Mapping[str, Any], references: list[dict[str, str]]) -> None:
+    """Agent は metadata の isA2A が descriptor と一致すること。関連参照は Agent だけに許す。"""
+    if record["recordType"] != AGENT_RECORD_TYPE:
+        if references:
+            raise ValueError("関連参照は Agent の申請にのみ指定できます。")
+        return
+    metadata = record.get("customMetadata", {})
+    expected_a2a = A2A_DESCRIPTOR_TYPE in record.get("descriptors", {})
+    if not isinstance(metadata.get("isA2A"), bool) or metadata["isA2A"] != expected_a2a:
+        raise ValueError("isA2A が定義と一致しません。下書きを保存し直してください。")
+
+
+def check_newer_than_published(version: str, known_published: list[str | None]) -> str | None:
+    """recordVersion が公開中の版より大きいことを検査し、公開中の版を返す。
+
+    公開中の版は、知っている版（補助ストアと発見 API）の大きい方とする。
+    却下後の再申請は公開中の版と比べるだけなので、同じ値を許す。
+    """
+    candidates = [known for known in known_published if known is not None]
+    published = max(candidates, key=version_key) if candidates else None
+    if published is not None and version_key(version) <= version_key(published):
+        raise ValueError("recordVersion は公開中の版より大きくしてください。")
+    return published
+
+
+def check_reference_target(
+    record_id: str,
+    reference: Mapping[str, str],
+    catalog_item_of: Callable[[str], CatalogDetail | None],
+) -> None:
+    """関連参照の参照先が、指定した版の Skill・MCP サーバーのカタログ項目であることを検査する。
+
+    catalog_item_of は、レコード ID から公開承認済みの版を取得する（自己参照なら呼ばない）。
+    """
+    if reference["recordId"] == record_id:
+        raise ValueError("関連参照に申請するレコード自身は指定できません。")
+    target = catalog_item_of(reference["recordId"])
+    if target is None or target.item.record_version != reference["recordVersion"]:
+        raise ValueError("関連参照の指定した版はカタログ項目ではありません。")
+    if target.item.record_type not in REFERENCE_TARGET_RECORD_TYPES:
+        raise ValueError("関連参照には Skill または MCP サーバーのカタログ項目を指定してください。")
 
 
 @dataclass(frozen=True)
@@ -83,7 +134,7 @@ class SubmissionInput:
             record_id, version = reference["recordId"], reference["recordVersion"]
             if not isinstance(record_id, str) or not RECORD_ID_PATTERN.fullmatch(record_id):
                 raise ValueError("関連参照の recordId の形式が正しくありません。")
-            if not isinstance(version, str) or len(version) > REFERENCE_VERSION_MAX_LENGTH:
+            if not isinstance(version, str) or len(version) > TEXT_LIMITS["recordVersion"]:
                 raise ValueError("関連参照の recordVersion の形式が正しくありません。")
             version_key(version)
             if reference in normalized:

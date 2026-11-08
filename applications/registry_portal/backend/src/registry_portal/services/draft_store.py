@@ -8,7 +8,9 @@ from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 
 from registry_portal.domain.drafts import (
+    CREATE_KIND,
     SETTLED_OPERATION_RETENTION_SECONDS,
+    UPDATE_KIND,
     DraftOperation,
     DraftResult,
     Management,
@@ -91,6 +93,8 @@ class DraftStore:
         """申請スナップショットと、その申請が無効にされたか（`invalidated`）を返す。
 
         公開承認（#10）は、`invalidated` が真の申請を決裁してはならない。
+        無効化記録はポータルでの編集だけが書くため、ポータル外の編集では `invalidated` は偽のままになる。
+        #10 は決裁の前に、現物の内容ハッシュをスナップショットの `contentHash` と照合し直すこと。
         """
         pk = self.record_pk(record_id)
         snapshot = self.get(pk, self._submission_sk(submission_id))
@@ -153,7 +157,7 @@ class DraftStore:
         """操作が持つロックをすべて解除する。作成では名前のロックとレコードのロックの2つを持つ。"""
         op_id = operation["operationId"]
         items = [self._release_lock(operation["lockPk"], op_id)]
-        if operation["kind"] == "CREATE" and record_id:
+        if operation["kind"] == CREATE_KIND and record_id:
             items.append(self._release_lock(self.record_pk(record_id), op_id))
         return items
 
@@ -185,7 +189,7 @@ class DraftStore:
         )
         record_pk = self.record_pk(operation["recordId"])
         team = {":team": operation["ownerTeam"]}
-        if operation["kind"] == "CREATE":
+        if operation["kind"] == CREATE_KIND:
             owner = self._put(
                 {
                     "pk": record_pk,
@@ -279,7 +283,7 @@ class DraftStore:
             *self._close(operation, "SUCCEEDED", {"result": result}, result["recordId"]),
         ]
         previous = operation.get("management", {}).get("activeSubmissionId")
-        if operation["kind"] == "UPDATE" and previous:
+        if operation["kind"] == UPDATE_KIND and previous:
             items.append(
                 self._put(
                     {

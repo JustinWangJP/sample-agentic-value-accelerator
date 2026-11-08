@@ -320,8 +320,7 @@ def test_skill_submission_retains_provenance_supplement_for_review():
         assert snapshot["supplement"]["skillDigest"] == "sha256:" + "ab" * 32
 
 
-def stub_submission(stub, record, error=None):
-    stub.add_response("get_registry_record", record, GET)
+def stub_approval_configuration(stub, record, rules=()):
     stub.add_response(
         "get_registry",
         {
@@ -331,10 +330,15 @@ def stub_submission(stub, record, error=None):
             "status": "ACTIVE",
             "createdAt": record["createdAt"],
             "updatedAt": record["updatedAt"],
-            "approvalConfiguration": {"autoApprovalRules": []},
+            "approvalConfiguration": {"autoApprovalRules": list(rules)},
         },
         {"registryId": REGISTRY_ARN},
     )
+
+
+def stub_submission(stub, record, error=None):
+    stub.add_response("get_registry_record", record, GET)
+    stub_approval_configuration(stub, record)
     if error:
         stub.add_client_error("submit_registry_record_for_approval", error, expected_params=GET)
     else:
@@ -404,6 +408,7 @@ def test_unknown_aws_submission_keeps_the_snapshot_and_lock_until_readback():
         # 申請結果がまだ DRAFT と見えたら申請 API を呼び直す。先の呼び出しが届いていた可能性が
         # あるため、再試行のエラーは失敗と確定せず、ロックも解除しない。
         stub.add_response("get_registry_record", record, GET)
+        stub_approval_configuration(stub, record)
         stub.add_client_error(
             "submit_registry_record_for_approval", "ConflictException", expected_params=GET
         )
@@ -445,8 +450,10 @@ def test_submission_stopped_after_the_snapshot_resumes_on_readback():
         assert status == 202
         operation_id = pending["operationId"]
         snapshot = stored(db, f"SUBMISSION#{operation_id}")
-        # 照合で DRAFT のままなら申請 API を呼び直し、承認待ちを確認して確定する
+        # 照合で DRAFT のままなら自動承認の設定を確かめ直してから申請 API を呼び直し、
+        # 審査待ちを確認して確定する
         stub.add_response("get_registry_record", record, GET)
+        stub_approval_configuration(stub, record)
         stub.add_response(
             "submit_registry_record_for_approval",
             {
@@ -707,5 +714,148 @@ def test_a_duplicate_during_preflight_cannot_release_the_first_requests_lock():
         assert duplicates == [(202, "VERIFYING")]
         assert status == 200
         assert result["operationState"] == "SUCCEEDED"
+        assert stored(db, "LOCK") is None
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_resumed_submission_rechecks_automatic_approval_before_calling_aws():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        handler, created, _ = setup_draft(stub, registry, db)
+        record = aws_record(CUSTOM_DRAFT, descriptors=CUSTOM_DESCRIPTORS, customMetadata=META)
+        stub_submission(stub, record, error="InternalServerException")
+        status, pending = submit(handler, created)
+        assert status == 202
+        operation_id = pending["operationId"]
+        # スナップショットの保存後に自動承認が設定された。申請 API を呼ばずに失敗を確定する
+        stub.add_response("get_registry_record", record, GET)
+        stub_approval_configuration(stub, record, ["APPROVE_ALL"])
+        status, body = call(handler, event("GET", f"/api/operations/{operation_id}"))
+        assert status == 200
+        assert body["operationState"] == "FAILED"
+        assert stored(db, "LOCK") is None
+        assert stored(db, "MANAGEMENT").get("activeSubmissionId") is None
+        stub.assert_no_pending_responses()
+
+
+@pytest.mark.parametrize("decided", ["APPROVED", "REJECTED"])
+@mock_aws
+def test_submission_decided_before_readback_settles_and_releases_the_lock(decided):
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        handler, created, _ = setup_draft(stub, registry, db)
+        record = aws_record(CUSTOM_DRAFT, descriptors=CUSTOM_DESCRIPTORS, customMetadata=META)
+        stub_submission(stub, record, error="InternalServerException")
+        status, pending = submit(handler, created)
+        assert status == 202
+        operation_id = pending["operationId"]
+        # 照合より先に Curator が決裁した。申請は受け付けられていたので成功として確定する
+        stub.add_response("get_registry_record", {**record, "status": decided}, GET)
+        status, body = call(handler, event("GET", f"/api/operations/{operation_id}"))
+        assert status == 200
+        assert body["operationState"] == "SUCCEEDED"
+        assert body["submissionId"] == operation_id
+        assert stored(db, "LOCK") is None
+        stub.assert_no_pending_responses()
+
+
+@pytest.mark.parametrize("status_after", ["DRAFT", "PENDING_APPROVAL", "DEPRECATED"])
+@mock_aws
+def test_submission_edited_or_deprecated_outside_the_portal_fails_and_releases_the_lock(
+    status_after,
+):
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        handler, created, _ = setup_draft(stub, registry, db)
+        record = aws_record(CUSTOM_DRAFT, descriptors=CUSTOM_DESCRIPTORS, customMetadata=META)
+        stub_submission(stub, record, error="InternalServerException")
+        status, pending = submit(handler, created)
+        assert status == 202
+        operation_id = pending["operationId"]
+        changed = {**record, "status": status_after}
+        if status_after != "DEPRECATED":
+            # AWS コンソールなどで内容が編集され、申請スナップショットと一致しなくなった
+            changed["description"] = "ポータル外で編集した説明"
+        stub.add_response("get_registry_record", changed, GET)
+        status, body = call(handler, event("GET", f"/api/operations/{operation_id}"))
+        assert status == 200
+        assert body["operationState"] == "FAILED"
+        assert stored(db, "LOCK") is None
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_submission_requires_an_idempotency_key():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        handler, created, transport = setup_draft(stub, registry, db)
+        status, body = submit(handler, created, key="")
+        assert status == 400
+        assert body["error"]["code"] == "VALIDATION_ERROR"
+        assert stored(db, "LOCK") is None
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_aws_conflict_on_submission_is_a_settled_409():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        handler, created, _ = setup_draft(stub, registry, db)
+        record = aws_record(CUSTOM_DRAFT, descriptors=CUSTOM_DESCRIPTORS, customMetadata=META)
+        stub_submission(stub, record, error="ConflictException")
+        status, body = submit(handler, created)
+        assert status == 409
+        assert body["error"]["code"] == "CONTENT_CONFLICT"
+        assert stored(db, "LOCK") is None
+        stub.assert_no_pending_responses()
+
+
+def deprecated(record_id):
+    return json_response(
+        200,
+        {
+            "registryRecords": [
+                {
+                    **summary(record_id, "SKILL", recordVersion="1.0.0", status="DEPRECATED"),
+                    "descriptors": CUSTOM_DESCRIPTORS,
+                }
+            ],
+            "errors": [],
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("reference_id", "target"),
+    [
+        # 廃止済みはカタログ項目ではない（502 ではなく 400）
+        ("skillABC1234", deprecated("skillABC1234")),
+        # 参照先は Skill・MCP サーバーに限る
+        ("agentABC1234", published("1.0.0", "agentABC1234", "AGENT")),
+        # 申請するレコード自身は参照できない（発見 API を呼ばずに拒否する）
+        (RECORD_ID, None),
+    ],
+)
+@mock_aws
+def test_submission_rejects_references_that_are_not_skill_or_mcp_catalog_items(
+    reference_id, target
+):
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        responses = [absent()] + ([target] if target is not None else [])
+        handler, created, _ = setup_draft(stub, registry, db, responses)
+        stub.add_response(
+            "get_registry_record",
+            aws_record(CUSTOM_DRAFT, descriptors=CUSTOM_DESCRIPTORS, customMetadata=META),
+            GET,
+        )
+        status, body = submit(
+            handler,
+            created,
+            relatedReferences=[{"recordId": reference_id, "recordVersion": "1.0.0"}],
+        )
+        assert status == 400
+        assert body["error"]["code"] == "VALIDATION_ERROR"
         assert stored(db, "LOCK") is None
         stub.assert_no_pending_responses()

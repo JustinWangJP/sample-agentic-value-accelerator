@@ -16,6 +16,7 @@ from registry_portal.domain.catalog import (
     is_data_classification,
     supports_a2a_filter,
 )
+from registry_portal.domain.drafts import RECORD_ID_PATTERN
 from registry_portal.errors import (
     A2ASearchNotReadyError,
     CatalogItemNotFoundError,
@@ -40,7 +41,6 @@ _ALLOWED_SEARCH_KEYS = frozenset({"query", "type", "a2a", "dataClassification"})
 # AWS の nextToken の長さの上限は4096。空白・制御文字・非 ASCII を含むものは拒否する
 _NEXT_TOKEN_PATTERN = re.compile(r"[\x21-\x7e]{1,4096}")
 # AWS の recordId は英数字12文字
-_RECORD_ID_PATTERN = re.compile(r"[A-Za-z0-9]{12}")
 # AWS の searchQuery は1〜256文字
 _SEARCH_QUERY_MAX_LENGTH = 256
 _INVALID_TYPE_MESSAGE = (
@@ -134,7 +134,7 @@ def get_catalog_detail(
     discovery: DiscoveryClient, record_id: str, supplement: CatalogSupplement | None
 ) -> tuple[int, Mapping[str, Any]]:
     """発見 API からカタログ項目の公開中の版を返す。"""
-    if not _RECORD_ID_PATTERN.fullmatch(record_id):
+    if not RECORD_ID_PATTERN.fullmatch(record_id):
         raise RequestValidationError("カタログ項目の ID の形式が正しくありません。")
     try:
         detail = discovery.get_record(record_id)
