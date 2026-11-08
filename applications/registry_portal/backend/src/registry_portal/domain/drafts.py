@@ -4,7 +4,7 @@ import hashlib
 import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, TypedDict, TypeIs, get_args
+from typing import Any, Literal, TypedDict, TypeIs, cast, get_args
 
 from registry_portal.domain.catalog import (
     AGENT_RECORD_TYPE,
@@ -122,6 +122,36 @@ APPROVE_KIND: OperationKind = "APPROVE"
 REJECT_KIND: OperationKind = "REJECT"
 # 決裁 handler が行う操作（公開承認・却下）。操作照会は種別ごとに参照できる主体を変える
 DECISION_KINDS: frozenset[OperationKind] = frozenset({APPROVE_KIND, REJECT_KIND})
+
+# 履歴 API が返す操作記録の結果。SPA の `HISTORY_STATES`（frontend/src/drafts/api.ts）と揃える。
+# 結果の追記記録（RESULT）がない操作は結果確認中（IN_PROGRESS）、取り込み前の公開承認は不明（UNKNOWN）
+HistoryState = Literal["SUCCEEDED", "FAILED", "IN_PROGRESS", "UNKNOWN"]
+HISTORY_SUCCEEDED: HistoryState = "SUCCEEDED"
+HISTORY_FAILED: HistoryState = "FAILED"
+HISTORY_IN_PROGRESS: HistoryState = "IN_PROGRESS"
+HISTORY_UNKNOWN: HistoryState = "UNKNOWN"
+
+# 追記記録の段階。操作の開始時に INTENT、結果の確定時に RESULT を追記する
+AuditPhase = Literal["INTENT", "RESULT"]
+AUDIT_INTENT: AuditPhase = "INTENT"
+AUDIT_RESULT: AuditPhase = "RESULT"
+# 追記記録だけを Query で読むためのソートキーの接頭辞
+AUDIT_SK_PREFIX = "AUDIT#"
+_AUDIT_SK = re.compile(r"AUDIT#([^#]+)#(INTENT|RESULT)")
+
+
+def audit_sk(op_id: str, phase: AuditPhase) -> str:
+    """追記記録のソートキー（AUDIT#<操作 ID>#<段階>）。"""
+    return f"{AUDIT_SK_PREFIX}{op_id}#{phase}"
+
+
+def parse_audit_sk(sk: object) -> tuple[str, AuditPhase]:
+    """追記記録のソートキーを操作 ID と段階に分ける。形式が契約と異なれば ValueError。"""
+    match = _AUDIT_SK.fullmatch(sk) if isinstance(sk, str) else None
+    if match is None:
+        raise ValueError("保存された操作記録のキーの形式が正しくありません。")
+    return match.group(1), cast(AuditPhase, match.group(2))
+
 
 # Registry レコード ID の形式。SPA の `RECORD_ID_PATTERN` と `RECORD_ID_LENGTH`
 # （frontend/src/drafts/api.ts）と揃える
@@ -267,9 +297,9 @@ class Management:
             or not isinstance(owner_team, str)
             or not owner_team
             or any(key in item and not isinstance(item[key], str) for key in ALL_SUPPLEMENT_FIELDS)
-            or (
-                item.get("publishedVersion") is not None
-                and not isinstance(item["publishedVersion"], str)
+            or any(
+                item.get(key) is not None and not isinstance(item[key], str)
+                for key in ("publishedVersion", "adoptedPublishedVersion")
             )
             or ("lastEditedBy" in item and not _is_principal(item["lastEditedBy"]))
         ):
@@ -311,6 +341,16 @@ class Management:
         if record["status"] == PUBLISHED_STATUS:
             return str(record["recordVersion"])
         version = self.item.get("publishedVersion")
+        return version if isinstance(version, str) else None
+
+    @property
+    def adopted_published_version(self) -> str | None:
+        """取り込み（#16）の時点で既に公開されていた版。ポータルに公開承認の操作記録がない。
+
+        取り込みが管理情報に書き込み、以後の編集や決裁でも `**base` で引き継ぐ。
+        ポータルで作成したレコードには存在しない。
+        """
+        version = self.item.get("adoptedPublishedVersion")
         return version if isinstance(version, str) else None
 
     def hashed_fields(self) -> dict[str, Any]:

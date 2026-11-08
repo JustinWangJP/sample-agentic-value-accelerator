@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
-from typing import Any, Protocol, cast
+from typing import Any, NamedTuple, NotRequired, Protocol, TypedDict, Unpack, cast
 
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 
 from registry_portal.domain.catalog import published_snapshot_sk
 from registry_portal.domain.drafts import (
+    AUDIT_INTENT,
+    AUDIT_RESULT,
+    AUDIT_SK_PREFIX,
     CREATE_KIND,
     SETTLED_OPERATION_RETENTION_SECONDS,
     UPDATE_KIND,
@@ -19,11 +22,23 @@ from registry_portal.domain.drafts import (
     OperationRecord,
     OperationState,
     StoredOperation,
+    AuditPhase,
+    audit_sk,
     is_decision_operation,
+    parse_audit_sk,
 )
 
 # 補助テーブルの TTL 属性名。テーブルの TTL 設定でこの属性を指定する（README「custom Agent の下書き」）
 TTL_ATTRIBUTE = "expiresAt"
+
+
+class QueryParams(TypedDict):
+    """DynamoDB Query に渡す引数。2ページ目以降は ExclusiveStartKey を付ける。"""
+
+    TableName: str
+    KeyConditionExpression: str
+    ExpressionAttributeValues: dict[str, Any]
+    ExclusiveStartKey: NotRequired[dict[str, Any]]
 
 
 class DraftStoreClient(Protocol):
@@ -35,13 +50,15 @@ class DraftStoreClient(Protocol):
 
     def transact_write_items(self, *, TransactItems: list[dict[str, Any]]) -> Mapping[str, Any]: ...
 
-    def query(
-        self,
-        *,
-        TableName: str,
-        KeyConditionExpression: str,
-        ExpressionAttributeValues: dict[str, Any],
-    ) -> Mapping[str, Any]: ...
+    def query(self, **kwargs: Unpack[QueryParams]) -> Mapping[str, Any]: ...
+
+
+class AuditRecord(NamedTuple):
+    """追記記録1件。ソートキーから取り出した操作 ID と段階を、保存した内容と組にする。"""
+
+    operation_id: str
+    phase: AuditPhase
+    item: dict[str, Any]
 
 
 class StoreConflict(Exception):
@@ -121,20 +138,30 @@ class DraftStore:
     def get_lock(self, record_id: str) -> dict[str, Any] | None:
         return self.get(self.record_pk(record_id), "LOCK")
 
-    def list_audit(self, record_id: str) -> list[dict[str, Any]]:
-        """レコードに追記した操作記録（AUDIT 項目）をすべて読む。順序は並び替えず呼び出し側に任せる。"""
-        response = self._client.query(
-            TableName=self.table,
-            KeyConditionExpression="pk = :pk AND begins_with(sk, :sk)",
-            ExpressionAttributeValues={
+    def list_audit(self, record_id: str) -> list[AuditRecord]:
+        """レコードに追記した操作記録（AUDIT 項目）をすべて読む。順序は並び替えず呼び出し側に任せる。
+
+        Query は1回の応答が 1MB までのため、LastEvaluatedKey がなくなるまで続きを読む
+        （README「操作と審査の履歴」）。ソートキーの形式が契約と異なれば ValueError。
+        """
+        params: QueryParams = {
+            "TableName": self.table,
+            "KeyConditionExpression": "pk = :pk AND begins_with(sk, :sk)",
+            "ExpressionAttributeValues": {
                 ":pk": {"S": self.record_pk(record_id)},
-                ":sk": {"S": "AUDIT#"},
+                ":sk": {"S": AUDIT_SK_PREFIX},
             },
-        )
-        return [
-            {key: TypeDeserializer().deserialize(value) for key, value in item.items()}
-            for item in response.get("Items", [])
-        ]
+        }
+        records: list[AuditRecord] = []
+        while True:
+            response = self._client.query(**params)
+            for raw in response.get("Items", []):
+                item = {key: TypeDeserializer().deserialize(value) for key, value in raw.items()}
+                records.append(AuditRecord(*parse_audit_sk(item.get("sk")), item))
+            last_key = response.get("LastEvaluatedKey")
+            if not last_key:
+                return records
+            params["ExclusiveStartKey"] = last_key
 
     def get_submission(self, record_id: str, submission_id: str) -> dict[str, Any] | None:
         """申請スナップショットと、その申請が無効にされたか（`invalidated`）を返す。
@@ -225,7 +252,7 @@ class DraftStore:
             [
                 self._put({"pk": lock, "sk": "LOCK", "operationId": op_id}),
                 self._put({**operation, "pk": self._operation_pk(op_id), "sk": "CONTROL"}),
-                self._put({**operation, "pk": lock, "sk": f"AUDIT#{op_id}#INTENT"}),
+                self._put({**operation, "pk": lock, "sk": audit_sk(op_id, AUDIT_INTENT)}),
             ]
         )
 
@@ -305,22 +332,18 @@ class DraftStore:
                 "operationId = :op",
                 {":op": op_id},
             ),
-            self._put({**outcome, "pk": operation["lockPk"], "sk": f"AUDIT#{op_id}#RESULT"}),
+            self._put({**outcome, "pk": operation["lockPk"], "sk": audit_sk(op_id, AUDIT_RESULT)}),
         ]
         # 作成の操作はロックを名前で取るため、レコード ID が確定した時点でレコード単位の操作記録にも写す。
+        # 正本（名前のロック側）と同じく、操作の内容を INTENT、結果を RESULT に分けて写す。
         # 条件式（attribute_not_exists）付きのため、既存の記録を上書きしない
         target = record_id if record_id is not None else operation.get("recordId")
         if target is not None and self.record_pk(target) != operation["lockPk"]:
-            audit_items.append(
-                self._put(
-                    {
-                        **operation,
-                        **outcome,
-                        "pk": self.record_pk(target),
-                        "sk": f"AUDIT#{op_id}#RESULT",
-                    }
-                )
-            )
+            target_pk = self.record_pk(target)
+            audit_items += [
+                self._put({**operation, "pk": target_pk, "sk": audit_sk(op_id, AUDIT_INTENT)}),
+                self._put({**outcome, "pk": target_pk, "sk": audit_sk(op_id, AUDIT_RESULT)}),
+            ]
         return [*audit_items, *self._release_locks(operation, record_id)]
 
     def abort(self, operation: OperationRecord, code: str) -> None:

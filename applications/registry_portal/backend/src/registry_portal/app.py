@@ -226,6 +226,7 @@ def create_management_handler(
     # 決裁操作の照会（GET /api/operations）は管理 handler が担う。決裁自体は決裁 handler が行うため、
     # このインスタンスは AWS の状態更新 API を呼び出さない（IAM でも拒否される）
     curation = None
+    history_service = None
     if catalog_settings.supplement_table_name:
         control_client = registry_client or cast(
             RegistryControlClient,

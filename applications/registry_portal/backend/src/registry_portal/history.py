@@ -15,13 +15,19 @@ from botocore.exceptions import BotoCoreError, ClientError
 from registry_portal.auth import Caller, Role
 from registry_portal.domain.drafts import (
     APPROVE_KIND,
+    AUDIT_RESULT,
+    HISTORY_FAILED,
+    HISTORY_IN_PROGRESS,
+    HISTORY_SUCCEEDED,
+    HISTORY_UNKNOWN,
     RECORD_ID_PATTERN,
+    HistoryState,
 )
 from registry_portal.errors import ApiError, ForbiddenError, RequestValidationError
-from registry_portal.services.draft_store import DraftStore
+from registry_portal.services.draft_store import AuditRecord, DraftStore
 
-# 追記記録のソートキー（AUDIT#<操作 ID>#INTENT / AUDIT#<操作 ID>#RESULT）の要素数
-_AUDIT_SK_PARTS = 3
+# 保存内容の異常（管理情報や操作記録の形式違反）は、空の結果にせず利用者に区別して伝える
+_STORED_DATA_INVALID = "保存された操作履歴の形式が正しくありません。管理者に連絡してください。"
 
 
 class HistoryUnavailable(ApiError):
@@ -41,7 +47,7 @@ def _is_privileged(caller: Caller) -> bool:
     return Role.CURATOR in caller.roles or Role.ADMIN in caller.roles
 
 
-def _entry(operation: Mapping[str, Any], *, state: str) -> dict[str, Any]:
+def _entry(operation: Mapping[str, Any], *, state: HistoryState) -> dict[str, Any]:
     """追記記録1件分（または組）を、API が返す履歴1項目に組み立てる。"""
     entry: dict[str, Any] = {
         "operationId": operation.get("operationId"),
@@ -59,16 +65,24 @@ def _entry(operation: Mapping[str, Any], *, state: str) -> dict[str, Any]:
     return {key: value for key, value in entry.items() if value is not None}
 
 
-def _unknown_approver_entry() -> dict[str, Any]:
-    """取り込み前から公開されていた版の承認。承認者は操作記録に残っていないため「不明」。"""
+def _unknown_decider_entry(record_version: str) -> dict[str, Any]:
+    """取り込み前から公開されていた版の公開承認。決裁した主体は操作記録に残っていないため「不明」。"""
     return {
         "operationId": None,
         "kind": APPROVE_KIND,
         "operator": None,
         "startedAt": None,
         "targetHash": None,
-        "state": "UNKNOWN",
+        "state": HISTORY_UNKNOWN,
+        "recordVersion": record_version,
     }
+
+
+def _settled_state(phases: set[str], operation: Mapping[str, Any]) -> HistoryState:
+    """追記記録の段階から操作の結果を決める。RESULT がなければ結果確認中。"""
+    if AUDIT_RESULT not in phases:
+        return HISTORY_IN_PROGRESS
+    return HISTORY_FAILED if "errorCode" in operation else HISTORY_SUCCEEDED
 
 
 class RecordHistory:
@@ -87,52 +101,39 @@ class RecordHistory:
             raise ForbiddenError("操作履歴の閲覧には所属チームが必要です。")
         try:
             management = self.store.get_management(record_id)
+            if management is None or management.item.get("managed") is not True:
+                raise RecordHistoryNotFound()
+            if not privileged and not management.is_owned_by(caller.teams):
+                raise ForbiddenError()
+            records = self.store.list_audit(record_id)
         except (BotoCoreError, ClientError):
             raise HistoryUnavailable() from None
         except ValueError:
-            raise HistoryUnavailable(
-                "保存された管理情報の形式が正しくありません。管理者に連絡してください。"
-            ) from None
-        if management is None or management.item.get("managed") is not True:
-            raise RecordHistoryNotFound()
-        if not privileged and not management.is_owned_by(caller.teams):
-            raise ForbiddenError()
-        entries = self._entries(record_id)
-        if management.item.get("publishedVersion") is not None and not any(
-            entry["kind"] == APPROVE_KIND and entry["state"] == "SUCCEEDED" for entry in entries
-        ):
-            entries.insert(0, _unknown_approver_entry())
+            raise HistoryUnavailable(_STORED_DATA_INVALID) from None
+        entries = _entries(records)
+        # 取り込み前に公開されていた版は、後でポータルが別の版を公開承認しても履歴から消さない
+        adopted = management.adopted_published_version
+        if adopted is not None:
+            entries.insert(0, _unknown_decider_entry(adopted))
         return 200, {
             "recordId": record_id,
             "ownerTeam": management.owner_team,
             "entries": entries,
         }
 
-    def _entries(self, record_id: str) -> list[dict[str, Any]]:
-        try:
-            items = self.store.list_audit(record_id)
-        except (BotoCoreError, ClientError):
-            raise HistoryUnavailable() from None
-        operations: dict[str, dict[str, Any]] = {}
-        settled: dict[str, bool] = {}
-        for item in items:
-            parts = str(item.get("sk", "")).split("#")
-            if len(parts) != _AUDIT_SK_PARTS:
-                continue
-            op_id, phase = parts[1], parts[2]
-            merged = {**operations.get(op_id, {}), **item}
-            operations[op_id] = merged
-            if phase == "RESULT":
-                settled[op_id] = "errorCode" not in merged
-        entries = [
-            _entry(
-                operation,
-                state=(
-                    "SUCCEEDED"
-                    if settled.get(op_id) is True
-                    else "FAILED" if settled.get(op_id) is False else "IN_PROGRESS"
-                ),
-            )
-            for op_id, operation in operations.items()
-        ]
-        return sorted(entries, key=lambda entry: str(entry.get("startedAt") or ""))
+
+def _entries(records: list[AuditRecord]) -> list[dict[str, Any]]:
+    """操作 ID ごとに INTENT と RESULT を重ね、開始時刻の順に並べた履歴項目を返す。"""
+    operations: dict[str, dict[str, Any]] = {}
+    phases: dict[str, set[str]] = {}
+    for record in records:
+        operations[record.operation_id] = {
+            **operations.get(record.operation_id, {}),
+            **record.item,
+        }
+        phases.setdefault(record.operation_id, set()).add(record.phase)
+    entries = [
+        _entry(operation, state=_settled_state(phases[op_id], operation))
+        for op_id, operation in operations.items()
+    ]
+    return sorted(entries, key=lambda entry: str(entry.get("startedAt") or ""))
