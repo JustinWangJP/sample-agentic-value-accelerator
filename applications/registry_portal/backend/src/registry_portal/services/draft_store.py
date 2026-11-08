@@ -35,14 +35,6 @@ class DraftStoreClient(Protocol):
 
     def transact_write_items(self, *, TransactItems: list[dict[str, Any]]) -> Mapping[str, Any]: ...
 
-    def query(
-        self,
-        *,
-        TableName: str,
-        KeyConditionExpression: str,
-        ExpressionAttributeValues: dict[str, Any],
-    ) -> Mapping[str, Any]: ...
-
 
 class StoreConflict(Exception):
     """別の操作が排他権を持つか、同じキーの操作が既にある。"""
@@ -120,21 +112,6 @@ class DraftStore:
 
     def get_lock(self, record_id: str) -> dict[str, Any] | None:
         return self.get(self.record_pk(record_id), "LOCK")
-
-    def list_audit(self, record_id: str) -> list[dict[str, Any]]:
-        """レコードに追記した操作記録（AUDIT 項目）をすべて読む。順序は並び替えず呼び出し側に任せる。"""
-        response = self._client.query(
-            TableName=self.table,
-            KeyConditionExpression="pk = :pk AND begins_with(sk, :sk)",
-            ExpressionAttributeValues={
-                ":pk": {"S": self.record_pk(record_id)},
-                ":sk": {"S": "AUDIT#"},
-            },
-        )
-        return [
-            {key: TypeDeserializer().deserialize(value) for key, value in item.items()}
-            for item in response.get("Items", [])
-        ]
 
     def get_submission(self, record_id: str, submission_id: str) -> dict[str, Any] | None:
         """申請スナップショットと、その申請が無効にされたか（`invalidated`）を返す。
@@ -292,7 +269,7 @@ class DraftStore:
         op_id = operation["operationId"]
         if "awsRequestId" in operation:
             outcome = {**outcome, "awsRequestId": operation["awsRequestId"]}
-        audit_items = [
+        return [
             self._put(
                 {
                     **operation,
@@ -306,22 +283,8 @@ class DraftStore:
                 {":op": op_id},
             ),
             self._put({**outcome, "pk": operation["lockPk"], "sk": f"AUDIT#{op_id}#RESULT"}),
+            *self._release_locks(operation, record_id),
         ]
-        # 作成の操作はロックを名前で取るため、レコード ID が確定した時点でレコード単位の操作記録にも写す。
-        # 条件式（attribute_not_exists）付きのため、既存の記録を上書きしない
-        target = record_id if record_id is not None else operation.get("recordId")
-        if target is not None and self.record_pk(target) != operation["lockPk"]:
-            audit_items.append(
-                self._put(
-                    {
-                        **operation,
-                        **outcome,
-                        "pk": self.record_pk(target),
-                        "sk": f"AUDIT#{op_id}#RESULT",
-                    }
-                )
-            )
-        return [*audit_items, *self._release_locks(operation, record_id)]
 
     def abort(self, operation: OperationRecord, code: str) -> None:
         self._transact(

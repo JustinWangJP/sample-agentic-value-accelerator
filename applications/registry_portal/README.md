@@ -417,19 +417,3 @@ terraform apply
 モジュールは、借用する既存 HTTP API（`http_api_id`）に `GET /api/reviews`、`GET /api/reviews/{recordId}`、`POST /api/reviews/{recordId}/approve`、`POST /api/reviews/{recordId}/reject` の route を作り、決裁 Lambda（payload format 2.0）に統合して既存の JWT authorizer（`jwt_authorizer_id`）を適用します。HTTP API の呼び出し許可（`aws_lambda_permission`）は `/api/reviews` 以下の path に限ります。HTTP API・authorizer・CORS の設定は #5 の IaC が持ちます。CORS で `POST` と `Idempotency-Key` ヘッダーを許可してください。
 
 Seam 1 の Stubber と moto で、認可（Curator 以外の拒否）、AWS 正本の一覧と補助情報の結合、保存済みスナップショットから計算し直したハッシュ・Curator が見たハッシュ・内容ハッシュの照合による409、自己承認の拒否（Admin を含む）、却下済み・処理中の拒否、公開承認・却下の理由の必須化と255文字上限、申請・公開版スナップショットが読めない場合の `MISSING`、決裁操作の照会を決裁した Curator に限ること、`status` の不接受、AWS の拒否・混雑・結果不明、同じキーでの再送と操作照会による確定、AWS 成功後の補助ストア障害、公開版スナップショットと管理情報の保存を検証します。Seam 2 の Vitest で、Curator 以外の非表示、一覧と差分（定義と metadata を含む）の表示、「申請なし」と「取得できない」・「初回公開」と「未取得」の区別、書き換えられたスナップショットの決裁停止、承認・却下の本文とキー、「検索への反映待ち」、409 の再読み込み、結果不明の再試行を確認します。実 AWS への書き込みは行っていません。デプロイ後に実環境で、別ユーザーによる承認までの流れと IAM の境界を確認してください。
-
-## 操作と審査の履歴（#11）
-
-`GET /api/records/{recordId}/history` は、Registry レコードごとの操作と審査の履歴を返します。履歴の正本は補助テーブルの追記記録（`AUDIT#<操作 ID>#INTENT` / `AUDIT#<操作 ID>#RESULT`）だけで、保存した記録から組み立てます。作成の操作はロックをレコード名で取るため、レコード ID が確定した時点でレコード単位の追記記録にも写します。追記はどちらも上書きを禁止する条件式（`attribute_not_exists`）付きで行い、確定した操作の実行制御項目（TTL 付き）とは違い、追記記録は無期限に保持します（設計書「監査」）。
-
-各項目は、操作 ID・操作者（issuer と subject）・対象のハッシュ（内容ハッシュまたはスナップショットのハッシュ）・開始時刻・結果（成功 / 失敗とエラーコード / 進行中）・AWS request ID を含みます。決裁（公開承認・却下）には理由と対象の版も含まれます。結果が確定していない操作（意図の記録だけがあるもの）は「進行中」として表示します。
-
-閲覧の権限はロールと所有チームで検査します。Curator と Admin はすべてのレコード、Publisher は所属チームが所有チームのレコードだけが読めます。Viewer（ロールを持たない利用者）は読めません。管理下にないレコード（管理情報がないもの）は404です。取り込み前から公開されていたカタログ項目で、承認者の操作記録が残っていないものは、承認者を「不明」とする項目を返します（#15 の取り込みで所有チームが割り当てられたレコードなど）。
-
-SPA の下書き編集画面で「操作と審査の履歴を表示」から開きます。作成・編集・申請・公開承認・却下を種別の日本語ラベルで表示し、決裁の理由も確認できます。
-
-### IAM
-
-履歴の読み取りには補助テーブルへの `dynamodb:Query` が必要なため、[下書き用モジュールのポリシー](infrastructure/modules/management_drafts/draft-policy.json.tftpl) に追加します。ルートモジュールは既存の [`infrastructure/management`](infrastructure/management/main.tf) をそのまま使います。route（`GET /api/records/{recordId}/history`）は既存 HTTP API の管理 Lambda 統合に追加してください（#5 の IaC が持ちます）。
-
-Seam 1 の Stubber と moto で、認可（Viewer と所属チームのない Publisher の拒否、他チームの拒否、Curator の許可）、未管理レコードの404、作成・申請・公開承認の履歴項目（操作 ID・操作者・対象ハッシュ・開始時刻・結果・AWS request ID・決裁理由）、追記記録の上書き禁止の条件式、承認者不明の項目、進行中の操作を検証します。Seam 2 の Vitest で、API の応答の検査、履歴項目の表示、「不明」の表示、取得エラーの日本語表示を確認します。実 AWS への書き込みは行っていません。デプロイ後に実環境で、`Query` の IAM 境界と route の追加を確認してください。
