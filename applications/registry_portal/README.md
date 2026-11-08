@@ -18,13 +18,14 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 | `backend/src/registry_portal/services/discovery.py` | 発見アダプター。発見用 M2M トークンの取得・キャッシュと、JWT 認可の Registry の発見 API 呼び出し |
 | `backend/src/registry_portal/services/catalog_supplement.py` | 補助テーブルから所有チームの正本と公開版のスナップショットを読む |
 | `backend/src/registry_portal/services/http.py` | 標準ライブラリによる HTTP トランスポート。テストではフェイクに差し替える |
+| `backend/src/registry_portal/operations.py` | 下書きと決裁の操作に共通する API 層の補助（AWS のエラーの分類、`Idempotency-Key` の検査、操作の応答と request ID の記録） |
 | `backend/src/registry_portal/drafts.py` | 下書きの作成・編集・一覧・申請・操作の照合 API。排他・冪等性、申請前の検査と申請 API の呼び出し、AWS の失敗の API エラーへの変換 |
-| `backend/src/registry_portal/curation.py` | 審査待ちの一覧・詳細と、Curator の決裁（公開承認・却下）API。AWS の承認待ちを正本とし、スナップショットの照合と決裁の手順（意図の記録→AWS→再取得→確定）を担う。決裁 handler と管理 handler の操作照会の両方から使う |
+| `backend/src/registry_portal/curation.py` | 審査待ちの一覧・詳細と、Curator の決裁（公開承認・却下）API。AWS の承認待ちを正本とし、スナップショットの照合と決裁の手順（意図の記録→AWS→再取得→確定）を担う。決裁 handler と管理 handler の操作照会（`app.py` が操作の種別で振り分ける）の両方から使う |
 | `backend/src/registry_portal/domain/drafts.py` | 下書きのフォーム入力・管理情報のモデル、AWS の作成用・更新用 payload への変換、状態と environment の値。SPA の `frontend/src/drafts/api.ts` と値を揃える |
-| `backend/src/registry_portal/domain/submissions.py` | 申請入力、semver の比較、`isA2A`・公開中の版・関連参照の参照先の検査、申請スナップショットの構築 |
-| `backend/src/registry_portal/domain/curation.py` | 決裁入力（スナップショットのハッシュと理由）の検査、決裁できる状態の規則、自己承認の禁止、公開版スナップショット（`PUBLISHED#版`）への書き出し |
+| `backend/src/registry_portal/domain/submissions.py` | 申請入力、semver の比較、`isA2A`・公開中の版・関連参照の参照先の検査、申請スナップショットの構築と、保存済みスナップショットからのハッシュの再計算 |
+| `backend/src/registry_portal/domain/curation.py` | 決裁入力（スナップショットのハッシュと理由）の検査、決裁できる状態の規則、自己承認の禁止、決裁の種別ごとの AWS の遷移先、公開版スナップショット（`PUBLISHED#版`）への書き出しと差分用の読み取り |
 | `backend/src/registry_portal/services/draft_store.py` | 補助テーブルの下書き用の項目（管理情報・ロック・操作・操作記録・申請スナップショット `SUBMISSION#`・無効化記録）の読み書き |
-| `infrastructure/` | 下書きの IAM モジュール（`modules/management_drafts`）、決裁 Lambda と実行ロールのモジュール（`modules/decision`）、既存ロールへ適用するルートモジュール（`management`）と決裁 Lambda 用のルートモジュール（`decision`） |
+| `infrastructure/` | 下書きの IAM モジュール（`modules/management_drafts`）、決裁 Lambda・実行ロール・審査と決裁の route のモジュール（`modules/decision`）、既存ロールへ適用するルートモジュール（`management`）と決裁 Lambda 用のルートモジュール（`decision`） |
 | `frontend/` | React SPA。Authorization Code + PKCE でログインし、アクセストークンはメモリー上だけで保持する |
 
 ## 認可
@@ -103,6 +104,8 @@ A2A の判定と検索用の写しの設計理由は [ADR-0006](../../docs/adr/0
 | `termsOfUse` | S（任意） | 利用条件 |
 | `connectionReference` | S（任意） | 接続先の参照 |
 | `relatedReferences` | L（Agent は必須） | `recordId` と `recordVersion` の文字列を持つマップのリスト。Agent 以外は読みません |
+| `record` | M（#10 以降） | 公開承認した定義と metadata（申請スナップショットの `record`）。カタログ詳細は読まず、次回審査の差分に使います |
+| `approvedBy` / `approvedAt` | M / S（#10 以降） | 公開承認した Curator（`issuer` と `subject`）と日時。記録がない版では審査画面に「不明」と表示します |
 
 スナップショットがない場合（補助テーブルが未設定、または未管理レコードなど）、API はこれらの値を `null` で返し、SPA は「未取得」と表示します。スナップショットはあるが属性がない場合は空文字で返し、「未登録」と表示します。関連参照は、空のリストなら「関連参照はありません」と表示します。Agent 以外の関連参照は常に空です。属性の型が契約と異なる場合は 502 `DISCOVERY_UNAVAILABLE` を返します。
 
@@ -360,10 +363,12 @@ Curator は審査待ちの一覧を見て、申請のスナップショットと
 | API | 契約 |
 | --- | --- |
 | `GET /api/reviews` | AWS の承認待ち（`PENDING_APPROVAL`）を正本とする一覧に、申請の補助情報（申請者・申請理由・スナップショットのハッシュ）を結合して返す。`nextToken` をそのまま中継する。Curator のみ |
-| `GET /api/reviews/{recordId}` | 審査対象の詳細。申請のスナップショット全体と、差分の比較対象（公開中の版のスナップショット）を返す。審査待ちでなければ404 `REVIEW_NOT_FOUND` |
-| `POST /api/reviews/{recordId}/approve` | `{ "snapshotHash": 審査したスナップショットのハッシュ, "reason": 承認理由 }`。`Idempotency-Key` 必須。Curator のみ |
+| `GET /api/reviews/{recordId}` | 審査対象の詳細。申請のスナップショット全体と、差分の比較対象（公開中の版のスナップショット）を返す。審査待ちでなければ404 `PENDING_APPROVAL_NOT_FOUND` |
+| `POST /api/reviews/{recordId}/approve` | `{ "snapshotHash": 審査したスナップショットのハッシュ, "reason": 公開承認の理由 }`。理由は必須。`Idempotency-Key` 必須。Curator のみ |
 | `POST /api/reviews/{recordId}/reject` | 同じ本文。却下理由は必須。Curator のみ |
-| `GET /api/operations/{operationId}` | 既存の操作照会。決裁操作は Curator だけが参照できる（下書き操作は従来どおり Publisher） |
+| `GET /api/operations/{operationId}` | 既存の操作照会。決裁操作は、その決裁を行った Curator 本人だけが参照できる（下書き操作は従来どおり所有チームの Publisher） |
+
+一覧と詳細の `submissionState` は申請スナップショットの取得状態です。`NONE` はポータル経由の申請がない、`AVAILABLE` は取得できた、`MISSING` は管理情報が申請を指しているのにスナップショットを読めない（保存内容の異常）ことを表し、SPA は「申請なし」と「取得できない」を区別して表示します。詳細の `publishedState` は公開版スナップショットの取得状態で、`NONE` は公開版がない（初回公開）、`MISSING` は公開中の版があるのにスナップショットがない（ADR-0007 の「未取得」）ことを表します。詳細の `snapshotIntact` は、保存済みの申請スナップショットから計算し直したハッシュが申請時の `snapshotHash` と一致するかを示し、偽なら SPA は決裁させません（API も409で拒否します）。
 
 ### 決裁の手順と守る規則
 
@@ -371,22 +376,23 @@ Curator は審査待ちの一覧を見て、申請のスナップショットと
 
 1. レコード単位のロック（下書きと共通の `LOCK`）を取り、決裁の意図（対象・理由・種別）を `AUDIT#…#INTENT` に記録します。
 2. 現物と申請スナップショットを照合し、対象を操作に固定（pin）して保存します。次のすべてが揃わなければ、AWS を呼ばずに409 `CONTENT_CONFLICT` で拒否します。
-   - AWS のレコードが `PENDING_APPROVAL` であること。却下済み（再申請が必要）、AWS 処理中（`CREATING` / `UPDATING` / `*_FAILED`）、すでに決裁済みは拒否します
+   - AWS のレコードが `PENDING_APPROVAL` であること。却下済み（再申請が必要）、AWS 処理中（`CREATING` / `UPDATING`）、AWS での作成・更新の失敗（`*_FAILED`）、すでに決裁済みは拒否します
    - 申請が管理情報の `activeSubmissionId` と一致し、無効化記録（`SUBMISSION#…#INVALIDATED`）がないこと
+   - 保存済みスナップショットの内容から申請時と同じ方法（canonical JSON の SHA-256）で計算し直したハッシュが、記録された `snapshotHash` と一致すること（保存後の書き換えを検出します）
    - Curator が送った `snapshotHash` が、保存済みスナップショットの `snapshotHash` と一致すること
    - 現物から計算し直した内容ハッシュ（`contentHash`）が、スナップショットの `contentHash` と一致すること
    - 決裁する Curator が申請者でも最終編集者でもないこと（自己承認の禁止。Admin が Curator を兼ねていても同じで、403 `FORBIDDEN`）
-3. AWS の [UpdateRegistryRecordStatus](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_UpdateRegistryRecordStatus.html) を `statusReason` = 決裁理由で呼びます。理由は承認・却下の両方で記録します。却下は必須、承認は任意です（記録した理由をそのまま AWS に送れるよう、どちらも255文字以内に制限します。AWS の `statusReason` が 0〜255 文字であるためです。[サービスモデルの `UpdateRegistryRecordStatusRequestStatusReasonString`](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_UpdateRegistryRecordStatus.html) を参照してください）。
+3. AWS の [UpdateRegistryRecordStatus](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_UpdateRegistryRecordStatus.html) を `statusReason` = 決裁理由で呼びます。理由は公開承認・却下の両方で必須とし、どちらも記録します（設計書「API」の「理由とスナップショットのハッシュを検査して公開承認する」）。記録した理由をそのまま AWS に送れるよう、どちらも255文字以内に制限します（AWS の `statusReason` が 0〜255 文字であるためです。[サービスモデルの `UpdateRegistryRecordStatusRequestStatusReasonString`](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_UpdateRegistryRecordStatus.html) を参照してください）。
 4. 再取得して、期待した状態・版・内容ハッシュが確認できてから成功を記録します。確認できなければ202 `VERIFYING`（結果確認中）とし、ロックを保持してそのレコードへの書き込みを止めます。AWS が処理せず拒否したと確定できる場合（`ValidationException` など）は失敗として確定し、ロックを解除します。混雑（`ThrottlingException`）は429、レコードの状態が変わっていた（`ConflictException`）は409です。AWS が失敗したものを承認済みとは表示しません。
 
-公開承認が確定すると、Curator が確認した内容を公開版スナップショット（ADR-0007）として保存します（キー: `pk` = `REGISTRY#{arn}#RECORD#{recordId}`、`sk` = `PUBLISHED#{recordVersion}`）。`contact`・`termsOfUse`・`connectionReference`・`relatedReferences` は申請スナップショットの値をそのまま写し、カタログ詳細が読み取ります。同時に管理情報の `publishedVersion` を更新し、`activeSubmissionId` を消します。却下は公開版スナップショットを書き換えず、`activeSubmissionId` だけを消します。
+公開承認が確定すると、Curator が確認した内容を公開版スナップショット（ADR-0007）として保存します（キー: `pk` = `REGISTRY#{arn}#RECORD#{recordId}`、`sk` = `PUBLISHED#{recordVersion}`）。`contact`・`termsOfUse`・`connectionReference`・`relatedReferences` は申請スナップショットの値をそのまま写し、カタログ詳細が読み取ります。次回審査の差分に使うため、定義と metadata（`record`）と公開承認した Curator（`approvedBy`・`approvedAt`）も保存します。同時に管理情報の `publishedVersion` を更新し、`activeSubmissionId` を消します。却下は公開版スナップショットを書き換えず、`activeSubmissionId` だけを消します。
 
 ### 結果確認中の決裁の確定
 
 `UpdateRegistryRecordStatus` に冪等性の引数がないため、結果不明の決裁を再送では確定しません。確定の経路は2つです。
 
 - **同じ `Idempotency-Key` での再送**（決裁 handler）: 同じキー・同じ本文なら同じ操作として扱い、現物から結果を確定します。AWS の呼び出しまで至らなかった操作は、意図に記録した同じ決裁（種別・理由）を送り直します。先の呼び出しが AWS に届いていた可能性があるため、送り直しのエラーでは失敗と確定しません。同じキーに異なる本文は409です。確定した失敗の後は新しいキーを使います。
-- **操作照会 `GET /api/operations/{id}`**（管理 handler）: AWS を呼び直さず、観測できる状態から確定します（管理 Lambda の実行ロールには決裁の権限がないため）。`APPROVED` / `REJECTED` が見えれば成功として確定し、公開版スナップショットも保存します。`PENDING_APPROVAL` のままなら反映待ちとして202を返します。
+- **操作照会 `GET /api/operations/{id}`**（管理 handler）: 決裁した Curator 本人だけが参照できます。AWS を呼び直さず、観測できる状態から確定します（管理 Lambda の実行ロールには決裁の権限がないため）。`APPROVED` / `REJECTED` が見えれば成功として確定し、公開版スナップショットも保存します。`PENDING_APPROVAL` のままなら反映待ちとして202を返します。
 
 公開承認の後、検索（発見 API）は結果整合性のためすぐには反映されないことがあります。SPA は承認の確定後に「検索への反映待ち」を表示します（PRD ストーリー15）。
 
@@ -394,11 +400,11 @@ Curator は審査待ちの一覧を見て、申請のスナップショットと
 
 決裁 handler は審査と決裁の4つの API だけを受け持ちます。補助テーブル（`SUPPLEMENT_TABLE_NAME`）がないとどの API も提供できないため、起動エラーにします（カタログを提供し続ける管理 handler とは異なります）。発見用 JWT の設定（`DISCOVERY_*`）は使いません。公開中の版は補助ストアに保持した `publishedVersion` と `PUBLISHED#版` スナップショットから読みます。
 
-SPA の「審査待ち」は Curator（`registry-curator` グループ）だけに表示します。一覧から審査対象を開くと、申請のスナップショット（申請理由・申請者・定義と metadata・連絡先など）と公開中の版との差分を確認できます。409では最新の申請の再読み込みを促し、結果不明の失敗では同じ `Idempotency-Key` で再試行します。ポータルで管理されていない承認待ち（ポータル外で申請されたもの）は一覧に表示しますが、決裁はできません。
+SPA の「審査待ち」は Curator（`registry-curator` グループ）だけに表示します。一覧から審査対象を開くと、申請のスナップショット（申請理由・申請者・定義と metadata・連絡先など）と公開中の版との差分（表示名・説明・定義・metadata・連絡先・利用条件・接続先の参照・関連参照）、公開中の版を公開承認した Curator を確認できます。409では最新の申請の再読み込みを促し、結果不明の失敗では同じ `Idempotency-Key` で再試行します。ポータルで管理されていない承認待ち（ポータル外で申請されたもの）は一覧に表示しますが、決裁はできません。
 
 ### IAM とルートモジュール
 
-決裁 Lambda と専用の実行ロールは [決裁用 Terraform モジュール](infrastructure/modules/decision/main.tf) が定義します。ポリシー本文は [テンプレート](infrastructure/modules/decision/decision-policy.json.tftpl) に分けており、テスト（`backend/tests/test_decision_permissions.py`）で、状態遷移と読み取り・補助テーブルの操作・ログだけが許可され、descriptor の作成・更新や申請の権限がないことを検査します。ルートモジュール [`infrastructure/decision`](infrastructure/decision/main.tf) から適用します。
+決裁 Lambda と専用の実行ロール、審査と決裁の route は [決裁用 Terraform モジュール](infrastructure/modules/decision/main.tf) が定義します。ポリシー本文は [テンプレート](infrastructure/modules/decision/decision-policy.json.tftpl) に分けており、テスト（`backend/tests/test_decision_permissions.py`）で、状態遷移と読み取り・補助テーブルの操作・ログだけが許可され、descriptor の作成・更新や申請の権限がないことを検査します。ルートモジュール [`infrastructure/decision`](infrastructure/decision/main.tf) から適用します。
 
 ```bash
 cd applications/registry_portal/infrastructure/decision
@@ -408,6 +414,6 @@ terraform plan
 terraform apply
 ```
 
-デプロイ先の HTTP API で `GET /api/reviews`、`GET /api/reviews/{recordId}`、`POST /api/reviews/{recordId}/approve`、`POST /api/reviews/{recordId}/reject` を決裁 Lambda に割り当て、既存の JWT authorizer を適用してください（route の定義は #5 の IaC が持ちます）。CORS で `POST` と `Idempotency-Key` ヘッダーを許可してください。
+モジュールは、借用する既存 HTTP API（`http_api_id`）に `GET /api/reviews`、`GET /api/reviews/{recordId}`、`POST /api/reviews/{recordId}/approve`、`POST /api/reviews/{recordId}/reject` の route を作り、決裁 Lambda（payload format 2.0）に統合して既存の JWT authorizer（`jwt_authorizer_id`）を適用します。HTTP API の呼び出し許可（`aws_lambda_permission`）は `/api/reviews` 以下の path に限ります。HTTP API・authorizer・CORS の設定は #5 の IaC が持ちます。CORS で `POST` と `Idempotency-Key` ヘッダーを許可してください。
 
-Seam 1 の Stubber と moto で、認可（Curator 以外の拒否）、AWS 正本の一覧と補助情報の結合、スナップショットのハッシュと内容ハッシュの照合による409、自己承認の拒否（Admin を含む）、却下済み・処理中の拒否、理由の必須化と255文字上限、`status` の不接受、AWS の拒否・混雑・結果不明、同じキーでの再送と操作照会による確定、AWS 成功後の補助ストア障害、公開版スナップショットと管理情報の保存を検証します。Seam 2 の Vitest で、Curator 以外の非表示、一覧と差分の表示、承認・却下の本文とキー、「検索への反映待ち」、409 の再読み込み、結果不明の再試行を確認します。実 AWS への書き込みは行っていません。デプロイ後に実環境で、別ユーザーによる承認までの流れと IAM の境界を確認してください。
+Seam 1 の Stubber と moto で、認可（Curator 以外の拒否）、AWS 正本の一覧と補助情報の結合、保存済みスナップショットから計算し直したハッシュ・Curator が見たハッシュ・内容ハッシュの照合による409、自己承認の拒否（Admin を含む）、却下済み・処理中の拒否、公開承認・却下の理由の必須化と255文字上限、申請・公開版スナップショットが読めない場合の `MISSING`、決裁操作の照会を決裁した Curator に限ること、`status` の不接受、AWS の拒否・混雑・結果不明、同じキーでの再送と操作照会による確定、AWS 成功後の補助ストア障害、公開版スナップショットと管理情報の保存を検証します。Seam 2 の Vitest で、Curator 以外の非表示、一覧と差分（定義と metadata を含む）の表示、「申請なし」と「取得できない」・「初回公開」と「未取得」の区別、書き換えられたスナップショットの決裁停止、承認・却下の本文とキー、「検索への反映待ち」、409 の再読み込み、結果不明の再試行を確認します。実 AWS への書き込みは行っていません。デプロイ後に実環境で、別ユーザーによる承認までの流れと IAM の境界を確認してください。
