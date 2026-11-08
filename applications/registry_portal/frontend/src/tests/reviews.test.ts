@@ -20,6 +20,7 @@ const summary = {
   status: 'PENDING_APPROVAL',
   managed: true,
   ownerTeam: 'team-payments',
+  submissionState: 'AVAILABLE',
   submissionId: 'submission-1',
   snapshotHash: SNAPSHOT_HASH,
   reason: '利用者向けに公開する',
@@ -64,16 +65,21 @@ const detail = {
   status: 'PENDING_APPROVAL',
   managed: true,
   publishedVersion: '1.0.0',
+  submissionState: 'AVAILABLE',
   submissionId: 'submission-1',
   snapshotHash: SNAPSHOT_HASH,
+  snapshotIntact: true,
   invalidated: false,
   snapshot,
+  publishedState: 'AVAILABLE',
   published: {
     recordVersion: '1.0.0',
     contact: 'old@example.com',
     termsOfUse: '旧利用条件',
     connectionReference: 'https://example.com/payments',
     relatedReferences: [],
+    record: { ...snapshot.record, description: '残高を調べる', recordVersion: '1.0.0' },
+    approvedBy: { ...submittedBy, subject: 'curator-1' },
   },
 }
 const approveResult = {
@@ -152,6 +158,15 @@ function sentBody(calls: { init?: RequestInit }[], index: number) {
 function idempotencyKey(calls: { init?: RequestInit }[], index: number) {
   return new Headers(calls[index]?.init?.headers).get('idempotency-key')
 }
+/** 差分表の行（項目名）の「公開中の版」と「申請された版」 */
+function diffRow(label: string): [string | null | undefined, string | null | undefined] {
+  const row = [...container.querySelectorAll('table tr')].find(
+    (element) => element.querySelector('th')?.textContent === label,
+  )
+  if (!row) throw new Error(`差分の行がありません ${label}`)
+  const cells = row.querySelectorAll('td')
+  return [cells[0]?.textContent, cells[1]?.textContent]
+}
 
 it('Curator 以外には審査待ちの画面を出さない', async () => {
   const calls = await mount([jsonResponse(200, { items: [], nextToken: null })], ['Publisher'])
@@ -164,8 +179,8 @@ it('AWS の承認待ちに申請の補助情報を結合して一覧に表示す
   expect(calls[0]?.url).toBe('/api/reviews')
   expect(container.textContent).toContain('決済 Agent')
   expect(container.textContent).toContain('申請理由: 利用者向けに公開する（申請者 publisher-1）')
-  expect(container.textContent).toContain('PENDING_APPROVAL')
-  // ポータル経由の申請がない審査待ちは、決裁の対象にできない
+  // AWS の PENDING_APPROVAL は画面で「審査待ち」と表示する
+  expect(container.textContent).toContain('状態 審査待ち')
   await click('審査する')
   expect(calls).toHaveLength(2)
   expect(calls[1]?.url).toBe('/api/reviews/agentABC1234')
@@ -174,7 +189,7 @@ it('AWS の承認待ちに申請の補助情報を結合して一覧に表示す
 it('ポータルで管理されていない審査待ちには決裁の案内を出す', async () => {
   await mount([
     jsonResponse(200, {
-      items: [{ ...summary, managed: false, ownerTeam: null, submissionId: null, snapshotHash: null, reason: null, submittedBy: null }],
+      items: [{ ...summary, managed: false, ownerTeam: null, submissionState: 'NONE', submissionId: null, snapshotHash: null, reason: null, submittedBy: null }],
       nextToken: null,
     }),
   ])
@@ -182,7 +197,7 @@ it('ポータルで管理されていない審査待ちには決裁の案内を�
   expect(button('審査する').disabled).toBe(true)
 })
 
-it('スナップショットと公開中の版の差分を表示し、承認理由を付けて公開承認する', async () => {
+it('スナップショットと公開中の版の差分を表示し、公開承認の理由を付けて公開承認する', async () => {
   const calls = await mount([
     jsonResponse(200, { items: [summary], nextToken: null }),
     jsonResponse(200, detail),
@@ -192,10 +207,15 @@ it('スナップショットと公開中の版の差分を表示し、承認理�
   expect(container.textContent).toContain('申請者: publisher-1 / 最終編集者: publisher-2')
   expect(container.textContent).toContain('連絡先: new@example.com / 利用条件: 改訂後の利用条件')
   expect(container.textContent).toContain('公開中の版 1.0.0')
-  // 差分: 公開中の版と申請された版
-  expect(container.querySelectorAll('table td')[2]?.textContent).toBe('old@example.com')
-  expect(container.querySelectorAll('table td')[3]?.textContent).toBe('new@example.com')
+  // 差分: 公開中の版と申請された版。補助情報だけでなく定義と metadata も比べる
+  expect(diffRow('連絡先')).toEqual(['old@example.com', 'new@example.com'])
+  expect(diffRow('説明')).toEqual(['残高を調べる', '決済を調べる'])
+  expect(diffRow('定義（descriptors）')[1]).toContain('照会')
+  expect(container.textContent).toContain('公開承認した Curator: curator-1')
+  // 公開承認にも理由が必須
+  expect(button('公開承認する').disabled).toBe(true)
   await setValue('approveReason', '内容を確認した')
+  expect(button('公開承認する').disabled).toBe(false)
   await submitForm(0)
   const body = sentBody(calls, 2)
   expect(calls[2]?.url).toBe('/api/reviews/agentABC1234/approve')
@@ -288,4 +308,55 @@ it('結果が不明な失敗のあとは同じキーで再試行する', async (
   expect(sentBody(calls, 3)).toEqual({ snapshotHash: SNAPSHOT_HASH, reason: '内容を確認した' })
   expect(idempotencyKey(calls, 3)).toBe(firstKey)
   expect(container.textContent).toContain('公開承認しました（版 2.0.0）')
+})
+
+it('申請はあるはずなのに読めない審査待ちは、「申請なし」と区別して表示する', async () => {
+  await mount([
+    jsonResponse(200, {
+      items: [{ ...summary, submissionState: 'MISSING', snapshotHash: null, reason: null, submittedBy: null }],
+      nextToken: null,
+    }),
+  ])
+  expect(container.textContent).toContain('申請スナップショットを取得できません')
+  expect(container.textContent).not.toContain('ポータル経由の申請なし')
+  expect(button('審査する').disabled).toBe(true)
+})
+
+it('公開版スナップショットが読めないときは「初回公開」ではなく「未取得」と表示する', async () => {
+  await mount([
+    jsonResponse(200, { items: [summary], nextToken: null }),
+    jsonResponse(200, { ...detail, publishedState: 'MISSING', published: null }),
+  ])
+  await click('審査する')
+  expect(container.textContent).toContain('公開中の版 1.0.0 のスナップショットは未取得です')
+  expect(container.textContent).not.toContain('初めて公開されます')
+})
+
+it('定義と承認者を記録する前の公開版は、差分を「未取得」、承認者を「不明」と表示する', async () => {
+  await mount([
+    jsonResponse(200, { items: [summary], nextToken: null }),
+    jsonResponse(200, { ...detail, published: { ...detail.published, record: null, approvedBy: null } }),
+  ])
+  await click('審査する')
+  expect(diffRow('説明')).toEqual(['未取得', '決済を調べる'])
+  expect(container.textContent).toContain('公開承認した Curator: 不明')
+})
+
+it('書き換えられた申請スナップショットは決裁させない', async () => {
+  const calls = await mount([
+    jsonResponse(200, { items: [summary], nextToken: null }),
+    jsonResponse(200, { ...detail, snapshotIntact: false }),
+  ])
+  await click('審査する')
+  expect(container.textContent).toContain('申請時の内容と一致しません')
+  await setValue('approveReason', '内容を確認した')
+  expect(button('公開承認する').disabled).toBe(true)
+  await submitForm(0)
+  expect(calls).toHaveLength(2)
+})
+
+it('状態が AWS の値の一覧にない応答は不正な応答として扱う', async () => {
+  await mount([jsonResponse(200, { items: [{ ...summary, status: 'UNKNOWN' }], nextToken: null })])
+  expect(container.textContent).not.toContain('決済 Agent')
+  expect(container.querySelector('[role="alert"]')).not.toBeNull()
 })

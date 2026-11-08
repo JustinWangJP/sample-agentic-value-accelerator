@@ -1,5 +1,6 @@
 import { createDraftApi, type DraftApi } from '../drafts/api'
 import { createReviewApi, type ReviewApi } from '../reviews/api'
+import { hasStrings, isObject } from './guards'
 import { isDataClassification, type DataClassification } from './dataClassification'
 import {
   AGENT_RECORD_TYPE,
@@ -130,14 +131,6 @@ function isErrorDto(value: unknown): value is ErrorDto {
     typeof (error as { code?: unknown }).code === 'string' &&
     typeof (error as { message?: unknown }).message === 'string'
   )
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function hasStrings(object: Record<string, unknown>, keys: readonly string[]): boolean {
-  return keys.every((key) => typeof object[key] === 'string')
 }
 
 function isCatalogItem(value: unknown): value is CatalogItem {

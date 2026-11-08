@@ -1,18 +1,39 @@
 // 審査と決裁（Seam 2: SPA の fetch 境界）。Curator が審査待ちの一覧と詳細を見て、公開承認・却下を行う。
 // バックエンドの curation.py と契約を揃える。クライアントから AWS の status は送らない。
+import { hasStrings, isObject } from '../api/guards'
 import { isCatalogRecordType, type CatalogRecordType } from '../api/recordType'
 import type { ApiRequest } from '../api/request'
-import type { RecordStatus } from '../drafts/api'
+import {
+  isRecordStatus,
+  isUnsettledOperationState,
+  type OperationState,
+  type RecordStatus,
+  type UnsettledOperationState,
+} from '../drafts/api'
 
 /** 決裁理由の上限。AWS の statusReason（0〜255文字）に合わせる（バックエンドの REASON_MAX_LENGTH） */
-export const REVIEW_REASON_MAX_LENGTH = 255
+export const DECISION_REASON_MAX_LENGTH = 255
 
-export type ReviewReference = { recordId: string; recordVersion: string }
+/** 決裁の種別。API の path（/approve・/reject）で AWS の遷移先が決まる（バックエンドの DECISION_TARGETS） */
+export const DECISION_KINDS = ['approve', 'reject'] as const
+export type DecisionKind = (typeof DECISION_KINDS)[number]
 
-export type ReviewPrincipal = { issuer: string; subject: string }
+/**
+ * 申請スナップショット・公開版スナップショットの取得状態。バックエンドの AttachmentState（domain/curation.py）と揃える。
+ * NONE はそもそも存在しない（ポータル外の申請・初回公開）、MISSING は存在するはずなのに読めない（保存内容の異常）
+ */
+export const ATTACHMENT_STATES = ['NONE', 'AVAILABLE', 'MISSING'] as const
+export type AttachmentState = (typeof ATTACHMENT_STATES)[number]
+function isAttachmentState(value: unknown): value is AttachmentState {
+  return ATTACHMENT_STATES.some((state) => state === value)
+}
+
+export type RecordReference = { recordId: string; recordVersion: string }
+
+export type Principal = { issuer: string; subject: string }
 
 /** 審査待ちの一覧の項目。AWS の承認待ちを正本とし、申請の補助情報を結合したもの */
-export type ReviewSummary = {
+export type PendingSummary = {
   recordId: string
   name: string
   displayName: string
@@ -21,37 +42,43 @@ export type ReviewSummary = {
   status: RecordStatus
   managed: boolean
   ownerTeam: string | null
+  submissionState: AttachmentState
   submissionId: string | null
   snapshotHash: string | null
   reason: string | null
   submittedAt: string | null
-  submittedBy: ReviewPrincipal | null
+  submittedBy: Principal | null
   invalidated: boolean
   operationId: string | null
 }
 
-export type ReviewPage = { items: ReviewSummary[]; nextToken: string | null }
+export type PendingPage = { items: PendingSummary[]; nextToken: string | null }
 
-/** 差分の比較対象（公開中の版のスナップショット）。ADR-0007 の公開版スナップショットから読む */
+/**
+ * 差分の比較対象（公開中の版のスナップショット）。ADR-0007 の公開版スナップショットから読む。
+ * 定義（record）と承認者（approvedBy）を記録する前のスナップショットでは null
+ */
 export type PublishedBase = {
   recordVersion: string
   contact: string | null
   termsOfUse: string | null
   connectionReference: string | null
-  relatedReferences: ReviewReference[]
+  relatedReferences: RecordReference[]
+  record: Record<string, unknown> | null
+  approvedBy: Principal | null
 }
 
 /** 申請のスナップショット。Curator が審査し、決裁時にハッシュで固定する対象 */
 export type SubmissionSnapshot = {
   submissionId: string
-  submittedBy: ReviewPrincipal
-  lastEditedBy: ReviewPrincipal
+  submittedBy: Principal
+  lastEditedBy: Principal
   submittedAt: string
   reason: string
   record: Record<string, unknown>
   ownerTeam: string
   supplement: Record<string, unknown>
-  relatedReferences: ReviewReference[]
+  relatedReferences: RecordReference[]
   contact: string
   termsOfUse: string
   connectionReference: string
@@ -59,7 +86,7 @@ export type SubmissionSnapshot = {
   snapshotHash: string
 }
 
-export type ReviewDetail = {
+export type PendingDetail = {
   recordId: string
   name: string
   displayName: string
@@ -70,77 +97,86 @@ export type ReviewDetail = {
   status: RecordStatus
   managed: boolean
   publishedVersion: string | null
+  submissionState: AttachmentState
   submissionId: string | null
   snapshotHash: string | null
+  /** 保存後にスナップショットが書き換えられていれば false。決裁は 409 で拒否される */
+  snapshotIntact: boolean
   invalidated: boolean
   snapshot: SubmissionSnapshot | null
+  publishedState: AttachmentState
   published: PublishedBase | null
 }
 
 /** 決裁の結果。SUCCEEDED は決裁が AWS に反映され、公開版スナップショットも保存済み */
 export type DecisionOperation =
-  | (Omit<ReviewSummary, 'managed' | 'ownerTeam' | 'submissionId' | 'snapshotHash' | 'reason' | 'submittedAt' | 'submittedBy' | 'invalidated' | 'operationId'> & {
-      operationId: string
-      operationState: 'SUCCEEDED'
+  | {
+      recordId: string
+      name: string
+      displayName: string
+      recordType: CatalogRecordType
+      recordVersion: string
+      status: RecordStatus
       ownerTeam: string
       publishedVersion: string | null
+      operationId: string
+      operationState: Extract<OperationState, 'SUCCEEDED'>
       submissionId: string
       snapshotHash: string
-    })
-  | { operationId: string; operationState: 'VERIFYING' | 'FAILED'; message: string }
+    }
+  | { operationId: string; operationState: UnsettledOperationState; message: string }
 
 export type DecisionInput = { snapshotHash: string; reason: string }
 
 export type ReviewApi = {
-  listReviews: (nextToken?: string) => Promise<ReviewPage>
-  getReview: (recordId: string) => Promise<ReviewDetail>
-  approveReview: (recordId: string, input: DecisionInput, idempotencyKey: string) => Promise<DecisionOperation>
-  rejectReview: (recordId: string, input: DecisionInput, idempotencyKey: string) => Promise<DecisionOperation>
+  listReviews: (nextToken?: string) => Promise<PendingPage>
+  getReview: (recordId: string) => Promise<PendingDetail>
+  decideSubmission: (
+    kind: DecisionKind,
+    recordId: string,
+    input: DecisionInput,
+    idempotencyKey: string,
+  ) => Promise<DecisionOperation>
   getDecisionOperation: (operationId: string) => Promise<DecisionOperation>
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-function hasStrings(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  return keys.every((key) => typeof value[key] === 'string')
-}
 function isStringOrNull(value: unknown): value is string | null {
   return value === null || typeof value === 'string'
 }
-function isPrincipal(value: unknown): value is ReviewPrincipal {
+function isPrincipal(value: unknown): value is Principal {
   return isObject(value) && hasStrings(value, ['issuer', 'subject'])
 }
-function isReference(value: unknown): value is ReviewReference {
+function isReference(value: unknown): value is RecordReference {
   return isObject(value) && hasStrings(value, ['recordId', 'recordVersion'])
 }
-function isReferenceList(value: unknown): value is ReviewReference[] {
+function isReferenceList(value: unknown): value is RecordReference[] {
   return Array.isArray(value) && value.every(isReference)
 }
 
-function isSummary(value: unknown): value is ReviewSummary {
+function isSummary(value: unknown): value is PendingSummary {
   return (
     isObject(value) &&
     hasStrings(value, ['recordId', 'name', 'displayName', 'recordVersion']) &&
     isCatalogRecordType(value.recordType) &&
-    typeof value.status === 'string' &&
+    isRecordStatus(value.status) &&
     typeof value.managed === 'boolean' &&
     isStringOrNull(value.ownerTeam) &&
+    isAttachmentState(value.submissionState) &&
     isStringOrNull(value.submissionId) &&
     isStringOrNull(value.snapshotHash) &&
     isStringOrNull(value.reason) &&
     isStringOrNull(value.submittedAt) &&
     (value.submittedBy === null || isPrincipal(value.submittedBy)) &&
     typeof value.invalidated === 'boolean' &&
-    (value.operationId === null || typeof value.operationId === 'string')
+    isStringOrNull(value.operationId)
   )
 }
-function isPage(value: unknown): value is ReviewPage {
+function isPage(value: unknown): value is PendingPage {
   return (
     isObject(value) &&
     Array.isArray(value.items) &&
     value.items.every(isSummary) &&
-    (value.nextToken === null || typeof value.nextToken === 'string')
+    isStringOrNull(value.nextToken)
   )
 }
 function isPublished(value: unknown): value is PublishedBase {
@@ -150,7 +186,9 @@ function isPublished(value: unknown): value is PublishedBase {
     isStringOrNull(value.contact) &&
     isStringOrNull(value.termsOfUse) &&
     isStringOrNull(value.connectionReference) &&
-    isReferenceList(value.relatedReferences)
+    isReferenceList(value.relatedReferences) &&
+    (value.record === null || isObject(value.record)) &&
+    (value.approvedBy === null || isPrincipal(value.approvedBy))
   )
 }
 function isSnapshot(value: unknown): value is SubmissionSnapshot {
@@ -174,19 +212,22 @@ function isSnapshot(value: unknown): value is SubmissionSnapshot {
     isReferenceList(value.relatedReferences)
   )
 }
-function isDetail(value: unknown): value is ReviewDetail {
+function isDetail(value: unknown): value is PendingDetail {
   return (
     isObject(value) &&
     hasStrings(value, ['recordId', 'name', 'displayName', 'description', 'recordVersion']) &&
     isCatalogRecordType(value.recordType) &&
-    typeof value.status === 'string' &&
+    isRecordStatus(value.status) &&
     typeof value.managed === 'boolean' &&
     isStringOrNull(value.ownerTeam) &&
     isStringOrNull(value.publishedVersion) &&
+    isAttachmentState(value.submissionState) &&
     isStringOrNull(value.submissionId) &&
     isStringOrNull(value.snapshotHash) &&
+    typeof value.snapshotIntact === 'boolean' &&
     typeof value.invalidated === 'boolean' &&
     (value.snapshot === null || isSnapshot(value.snapshot)) &&
+    isAttachmentState(value.publishedState) &&
     (value.published === null || isPublished(value.published))
   )
 }
@@ -200,15 +241,14 @@ function isOperation(value: unknown): value is DecisionOperation {
         'name',
         'displayName',
         'recordVersion',
-        'status',
         'ownerTeam',
         'submissionId',
         'snapshotHash',
       ]) &&
+      isRecordStatus(value.status) &&
       isStringOrNull(value.publishedVersion) &&
       isCatalogRecordType(value.recordType)) ||
-      ((value.operationState === 'VERIFYING' || value.operationState === 'FAILED') &&
-        typeof value.message === 'string'))
+      (isUnsettledOperationState(value.operationState) && typeof value.message === 'string'))
   )
 }
 
@@ -228,16 +268,9 @@ export function createReviewApi(request: ApiRequest, invalidResponse: () => Erro
         isPage,
       ),
     getReview: (id) => checked(request('GET', `/api/reviews/${encodeURIComponent(id)}`), isDetail),
-    approveReview: (id, input, key) =>
+    decideSubmission: (kind, id, input, key) =>
       checked(
-        request('POST', `/api/reviews/${encodeURIComponent(id)}/approve`, input, {
-          'idempotency-key': key,
-        }),
-        isOperation,
-      ),
-    rejectReview: (id, input, key) =>
-      checked(
-        request('POST', `/api/reviews/${encodeURIComponent(id)}/reject`, input, {
+        request('POST', `/api/reviews/${encodeURIComponent(id)}/${kind}`, input, {
           'idempotency-key': key,
         }),
         isOperation,
