@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
-from typing import Any, Protocol, cast
+from typing import Any, NamedTuple, NotRequired, Protocol, TypedDict, Unpack, cast
 
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 
 from registry_portal.domain.catalog import published_snapshot_sk
 from registry_portal.domain.drafts import (
+    AUDIT_INTENT,
+    AUDIT_RESULT,
+    AUDIT_SK_PREFIX,
     CREATE_KIND,
     SETTLED_OPERATION_RETENTION_SECONDS,
     UPDATE_KIND,
@@ -19,11 +22,34 @@ from registry_portal.domain.drafts import (
     OperationRecord,
     OperationState,
     StoredOperation,
+    AuditPhase,
+    audit_sk,
     is_decision_operation,
+    parse_audit_sk,
 )
 
 # 補助テーブルの TTL 属性名。テーブルの TTL 設定でこの属性を指定する（README「custom Agent の下書き」）
 TTL_ATTRIBUTE = "expiresAt"
+
+# 作成の操作の INTENT をレコード単位に写すときに含めない項目。
+# recordId と awsRequestId は開始（begin）より後に書き足すため、開始時の意図に揃えるよう除く。
+# 定義の全文（draft）は正本（名前のロック側の INTENT）にだけ残し、無期限に残る写しには重ねて保存しない
+_EXCLUDED_FROM_INTENT_COPY = frozenset({"recordId", "awsRequestId", "draft", "pk", "sk"})
+
+
+def _deserialize(item: Mapping[str, Any]) -> dict[str, Any]:
+    """DynamoDB の型付きの項目を Python の値に戻す。"""
+    deserializer = TypeDeserializer()
+    return {key: deserializer.deserialize(value) for key, value in item.items()}
+
+
+class QueryParams(TypedDict):
+    """DynamoDB Query に渡す引数。2ページ目以降は ExclusiveStartKey を付ける。"""
+
+    TableName: str
+    KeyConditionExpression: str
+    ExpressionAttributeValues: dict[str, Any]
+    ExclusiveStartKey: NotRequired[dict[str, Any]]
 
 
 class DraftStoreClient(Protocol):
@@ -34,6 +60,16 @@ class DraftStoreClient(Protocol):
     ) -> Mapping[str, Any]: ...
 
     def transact_write_items(self, *, TransactItems: list[dict[str, Any]]) -> Mapping[str, Any]: ...
+
+    def query(self, **kwargs: Unpack[QueryParams]) -> Mapping[str, Any]: ...
+
+
+class AppendedRecord(NamedTuple):
+    """操作記録の追記記録1件（GLOSSARY「操作記録」）。ソートキーから取り出した操作 ID と段階を、保存した内容と組にする。"""
+
+    operation_id: str
+    phase: AuditPhase
+    item: dict[str, Any]
 
 
 class StoreConflict(Exception):
@@ -79,9 +115,7 @@ class DraftStore:
         item = self._client.get_item(
             TableName=self.table, Key=self._key(pk, sk), ConsistentRead=True
         ).get("Item")
-        if item is None:
-            return None
-        return {key: TypeDeserializer().deserialize(value) for key, value in item.items()}
+        return None if item is None else _deserialize(item)
 
     def get_operation(self, op_id: str) -> StoredOperation | None:
         """操作を種別を問わず読む。種別ごとの項目は is_decision_operation で見分ける。"""
@@ -112,6 +146,31 @@ class DraftStore:
 
     def get_lock(self, record_id: str) -> dict[str, Any] | None:
         return self.get(self.record_pk(record_id), "LOCK")
+
+    def list_appended_records(self, record_id: str) -> list[AppendedRecord]:
+        """レコードに追記した操作記録（AUDIT 項目）をすべて読む。順序は並び替えず呼び出し側に任せる。
+
+        Query は1回の応答が 1MB までのため、LastEvaluatedKey がなくなるまで続きを読む
+        （README「操作と審査の履歴」）。ソートキーの形式が契約と異なれば ValueError。
+        """
+        params: QueryParams = {
+            "TableName": self.table,
+            "KeyConditionExpression": "pk = :pk AND begins_with(sk, :sk)",
+            "ExpressionAttributeValues": {
+                ":pk": {"S": self.record_pk(record_id)},
+                ":sk": {"S": AUDIT_SK_PREFIX},
+            },
+        }
+        records: list[AppendedRecord] = []
+        while True:
+            response = self._client.query(**params)
+            for raw in response.get("Items", []):
+                item = _deserialize(raw)
+                records.append(AppendedRecord(*parse_audit_sk(item.get("sk")), item))
+            last_key = response.get("LastEvaluatedKey")
+            if not last_key:
+                return records
+            params["ExclusiveStartKey"] = last_key
 
     def get_submission(self, record_id: str, submission_id: str) -> dict[str, Any] | None:
         """申請スナップショットと、その申請が無効にされたか（`invalidated`）を返す。
@@ -202,7 +261,7 @@ class DraftStore:
             [
                 self._put({"pk": lock, "sk": "LOCK", "operationId": op_id}),
                 self._put({**operation, "pk": self._operation_pk(op_id), "sk": "CONTROL"}),
-                self._put({**operation, "pk": lock, "sk": f"AUDIT#{op_id}#INTENT"}),
+                self._put({**operation, "pk": lock, "sk": audit_sk(op_id, AUDIT_INTENT)}),
             ]
         )
 
@@ -229,7 +288,17 @@ class DraftStore:
                 "attribute_not_exists(pk) OR operationId = :op",
                 {":op": op_id},
             )
-            items = [control, owner, lock]
+            # 作成はロックをレコード名で取るため、レコード ID が分かった時点で開始時の意図をレコード単位にも写す。
+            # 結果が確定する前（結果確認中）から、レコードの履歴に操作が現れるようにする
+            intent = {
+                key: value
+                for key, value in operation.items()
+                if key not in _EXCLUDED_FROM_INTENT_COPY
+            }
+            intent_copy = self._put(
+                {**intent, "pk": record_pk, "sk": audit_sk(op_id, AUDIT_INTENT)}
+            )
+            items = [control, owner, lock, intent_copy]
         else:
             owner = self._put(
                 {**operation["management"], "pk": record_pk, "sk": "MANAGEMENT"},
@@ -269,7 +338,7 @@ class DraftStore:
         op_id = operation["operationId"]
         if "awsRequestId" in operation:
             outcome = {**outcome, "awsRequestId": operation["awsRequestId"]}
-        return [
+        audit_items = [
             self._put(
                 {
                     **operation,
@@ -282,9 +351,18 @@ class DraftStore:
                 "operationId = :op",
                 {":op": op_id},
             ),
-            self._put({**outcome, "pk": operation["lockPk"], "sk": f"AUDIT#{op_id}#RESULT"}),
-            *self._release_locks(operation, record_id),
+            self._put({**outcome, "pk": operation["lockPk"], "sk": audit_sk(op_id, AUDIT_RESULT)}),
         ]
+        # 作成の操作は、保存中（save_pending）にレコード単位へ写した INTENT と組になるよう、RESULT も写す。
+        # 条件式（attribute_not_exists）付きのため、既存の記録を上書きしない
+        target = record_id if record_id is not None else operation.get("recordId")
+        if target is not None and self.record_pk(target) != operation["lockPk"]:
+            audit_items.append(
+                self._put(
+                    {**outcome, "pk": self.record_pk(target), "sk": audit_sk(op_id, AUDIT_RESULT)}
+                )
+            )
+        return [*audit_items, *self._release_locks(operation, record_id)]
 
     def abort(self, operation: OperationRecord, code: str) -> None:
         self._transact(

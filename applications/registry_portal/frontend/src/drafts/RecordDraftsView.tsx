@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { OperationCheck } from './OperationCheck'
+import { RecordHistoryToggle } from './RecordHistoryView'
 import { SubmissionView } from './SubmissionView'
 import { ApiError, toApiError, type ApiClient, type Role } from '../api/client'
 import { DATA_CLASSIFICATIONS } from '../api/dataClassification'
@@ -602,6 +603,9 @@ function DraftEditor({
             保存済みの内容を申請
           </button>
         </>
+      )}
+      {initial.kind === 'edit' && (
+        <RecordHistoryToggle api={api} recordId={initial.detail.recordId} onRelogin={onRelogin} />
       )}
       <button
         type="button"

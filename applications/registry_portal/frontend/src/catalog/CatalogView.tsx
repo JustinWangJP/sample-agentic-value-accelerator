@@ -22,12 +22,14 @@ import {
 
 type Props = {
   api: ApiClient
+  /** カタログ詳細から操作履歴を開けるか（所有チームによらず履歴を読める Curator・Admin） */
+  canViewHistory: boolean
   /** ログインし直す（401 のとき） */
   onRelogin: () => void
 }
 
 /** カタログ項目を種別ごとにページ単位で一覧する */
-export function CatalogView({ api, onRelogin }: Props) {
+export function CatalogView({ api, canViewHistory, onRelogin }: Props) {
   const [state, setState] = useState<CatalogState>(() => initialCatalogState('AGENT'))
   const [selectedItem, setSelectedItem] = useState<CatalogItem | null>(null)
   const isLoading = state.view.status === 'loading'
@@ -71,6 +73,7 @@ export function CatalogView({ api, onRelogin }: Props) {
           key={selectedItem.recordId}
           api={api}
           item={selectedItem}
+          canViewHistory={canViewHistory}
           onRelogin={onRelogin}
           onClose={() => setSelectedItem(null)}
         />

@@ -42,6 +42,7 @@ from registry_portal.drafts import (
     RegistryControlClient,
     require_publisher,
 )
+from registry_portal.history import RecordHistory
 from registry_portal.services.catalog_supplement import CatalogSupplement, SupplementClient
 from registry_portal.services.discovery import DiscoveryDependencies, create_discovery_client
 from registry_portal.services.draft_store import DraftStore, DraftStoreClient
@@ -89,6 +90,7 @@ def _route_key(event: LambdaEvent) -> str:
 _PARAMETERIZED_ROUTES = (
     ("GET /api/catalog/", "", "GET /api/catalog/{recordId}"),
     ("GET /api/records/", "", "GET /api/records/{recordId}"),
+    ("GET /api/records/", "/history", "GET /api/records/{recordId}/history"),
     ("PATCH /api/records/", "", "PATCH /api/records/{recordId}"),
     ("POST /api/records/", "/submit", "POST /api/records/{recordId}/submit"),
     ("GET /api/operations/", "", "GET /api/operations/{operationId}"),
@@ -224,6 +226,7 @@ def create_management_handler(
     # 決裁操作の照会（GET /api/operations）は管理 handler が担う。決裁自体は決裁 handler が行うため、
     # このインスタンスは AWS の状態更新 API を呼び出さない（IAM でも拒否される）
     curation = None
+    history_service = None
     if catalog_settings.supplement_table_name:
         control_client = registry_client or cast(
             RegistryControlClient,
@@ -241,6 +244,7 @@ def create_management_handler(
         curation = RecordCuration(
             discovery_settings.registry_arn, store, cast(RegistryStatusClient, control_client)
         )
+        history_service = RecordHistory(store)
 
     def drafts_for(caller: Caller) -> RecordDrafts:
         # 権限のない呼び出し元には、設定の状態より先に 403 を返す
@@ -274,6 +278,12 @@ def create_management_handler(
 
     def get_record(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
         return drafts_for(caller).get(caller, _path_parameter(event))
+
+    def get_history(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        # 履歴の閲覧は Publisher（所有チーム）・Curator・Admin に開くため、閲覧の認可は履歴 API の内側で行う
+        if history_service is None:
+            raise DraftsNotConfigured()
+        return history_service.history(caller, _path_parameter(event))
 
     def list_records(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
         return drafts_for(caller).list_drafts(caller, _query_of(event))
@@ -309,6 +319,7 @@ def create_management_handler(
         "POST /api/records": post_record,
         "GET /api/records": list_records,
         "GET /api/records/{recordId}": get_record,
+        "GET /api/records/{recordId}/history": get_history,
         "PATCH /api/records/{recordId}": patch_record,
         "GET /api/operations/{operationId}": get_operation,
         "POST /api/records/{recordId}/submit": submit_record,

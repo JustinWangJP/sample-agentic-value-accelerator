@@ -76,7 +76,7 @@ def items_with_sk(db, fragment):
     ]
 
 
-def audit_items(db, suffix):
+def audit_items_ending_with(db, suffix):
     return [item for item in items_with_sk(db, "AUDIT#") if item["sk"]["S"].endswith(suffix)]
 
 
@@ -381,7 +381,7 @@ def test_rejected_create_releases_name_for_a_new_operation(error_code, http_stat
         stub_create(stub)
         assert call(handler, event(body=DRAFT, key="new-operation"))[0] == 201
         stub.assert_no_pending_responses()
-    results = audit_items(db, "#RESULT")
+    results = audit_items_ending_with(db, "#RESULT")
     assert results[0]["awsRequestId"] == {"S": "aws-request-1"}
 
 
@@ -1102,7 +1102,9 @@ def test_management_keeps_the_last_editor_and_audit_keeps_the_aws_request_id():
     saved = management_item(db)
     assert saved["lastEditedBy"]["M"]["subject"] == {"S": "bob"}
     assert "lastEditedAt" in saved
-    assert sorted(item["awsRequestId"]["S"] for item in audit_items(db, "#RESULT")) == [
+    assert sorted(item["awsRequestId"]["S"] for item in audit_items_ending_with(db, "#RESULT")) == [
+        # 作成の操作記録は名前ロックとレコードの両方に追記される（#11 の履歴のため）
+        "aws-create-1",
         "aws-create-1",
         "aws-update-1",
     ]

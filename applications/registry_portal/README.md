@@ -417,3 +417,23 @@ terraform apply
 モジュールは、借用する既存 HTTP API（`http_api_id`）に `GET /api/reviews`、`GET /api/reviews/{recordId}`、`POST /api/reviews/{recordId}/approve`、`POST /api/reviews/{recordId}/reject` の route を作り、決裁 Lambda（payload format 2.0）に統合して既存の JWT authorizer（`jwt_authorizer_id`）を適用します。HTTP API の呼び出し許可（`aws_lambda_permission`）は `/api/reviews` 以下の path に限ります。HTTP API・authorizer・CORS の設定は #5 の IaC が持ちます。CORS で `POST` と `Idempotency-Key` ヘッダーを許可してください。
 
 Seam 1 の Stubber と moto で、認可（Curator 以外の拒否）、AWS 正本の一覧と補助情報の結合、保存済みスナップショットから計算し直したハッシュ・Curator が見たハッシュ・内容ハッシュの照合による409、自己承認の拒否（Admin を含む）、却下済み・処理中の拒否、公開承認・却下の理由の必須化と255文字上限、申請・公開版スナップショットが読めない場合の `MISSING`、決裁操作の照会を決裁した Curator に限ること、`status` の不接受、AWS の拒否・混雑・結果不明、同じキーでの再送と操作照会による確定、AWS 成功後の補助ストア障害、公開版スナップショットと管理情報の保存を検証します。Seam 2 の Vitest で、Curator 以外の非表示、一覧と差分（定義と metadata を含む）の表示、「申請なし」と「取得できない」・「初回公開」と「未取得」の区別、書き換えられたスナップショットの決裁停止、承認・却下の本文とキー、「検索への反映待ち」、409 の再読み込み、結果不明の再試行を確認します。実 AWS への書き込みは行っていません。デプロイ後に実環境で、別ユーザーによる承認までの流れと IAM の境界を確認してください。
+
+## 操作と審査の履歴（#11）
+
+`GET /api/records/{recordId}/history` は、Registry レコードごとの操作と審査の履歴を返します。履歴の正本は補助テーブルの追記記録（`AUDIT#<操作 ID>#INTENT` / `AUDIT#<操作 ID>#RESULT`）だけで、保存した記録から組み立てます。作成の操作はロックをレコード名で取るため、レコード ID が分かった時点（AWS が作成を受け付け、結果確認中として保存するとき）に INTENT（開始時の意図）をレコード単位の追記記録にも写し、結果の確定時に RESULT も写します。そのため作成が結果確認中のまま止まっても、管理情報と同時に履歴へ現れます。INTENT の写しは開始時の意図に揃え、開始後に書き足す `recordId`・`awsRequestId` を含めません。定義の全文（`draft`）は名前のロック側の正本にだけ残し、無期限に残る写しには重ねて保存しません。追記はどちらも上書きを禁止する条件式（`attribute_not_exists`）付きで行い、確定した操作の実行制御項目（TTL 付き）とは違い、追記記録は無期限に保持します（設計書「監査」）。
+
+各項目は、操作 ID・主体（`principal`、issuer と subject の組。GLOSSARY「主体」）・対象のハッシュ（`targetHash`）・開始時刻・結果（成功 / 失敗とエラーコード / 結果確認中）・AWS request ID を含みます。決裁（公開承認・却下）には理由と対象の版も含まれます。対象のハッシュは、編集・申請・決裁では操作の時点の内容ハッシュ（またはスナップショットのハッシュ）、作成では作成した内容の内容ハッシュです。作成の結果が確定するまでは内容ハッシュがないため `null` です（依頼の照合に使う `requestHash` は内容ハッシュではないため使いません）。必須の項目（`operationId`・`kind`・`principal`・`startedAt`・`targetHash`・`state`）は値がなくても `null` として必ず返します。結果が確定していない操作（INTENT だけがあるもの）は、操作照会と同じ `VERIFYING`（結果確認中）で返します。結果の値（`HistoryState`）は `backend/src/registry_portal/domain/drafts.py` に定義し、SPA の `HISTORY_STATES`（`OPERATION_STATES` に `UNKNOWN` を加えたもの）と揃えます。
+
+追記記録は無期限に積み上がるため、Query の1回の応答の上限（1MB）を超えても欠けないよう、`LastEvaluatedKey` がなくなるまで続きを読みます（[Paginating table query results](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Query.Pagination.html)）。ソートキーの形式が崩れた追記記録、INTENT のない操作、必須の項目（種別・主体・開始時刻）が欠けた操作、形式違反の管理情報は、空の結果や欠けた項目のまま返さず、502（`HISTORY_UNAVAILABLE`、保存内容の形式の異常を示すメッセージ）を返します。この変更より前に結果確認中のまま残った作成の操作は、レコード単位の INTENT の写しがないため、確定するとそのレコードの履歴が 502 になります。
+
+閲覧の権限はロールと所有チームで検査します。Curator と Admin はすべてのレコード、Publisher は所属チームが所有チームのレコードだけが読めます。Viewer だけを持つ利用者（Publisher・Curator・Admin のいずれも持たない利用者）は読めません。管理下にないレコード（管理情報がないもの）は404です。取り込み前から公開されていたカタログ項目は、公開承認した主体の操作記録が残っていないため、その主体を「不明」とする公開承認の項目（`state: UNKNOWN`、`principal: null`、`recordVersion` は取り込み時の公開版）を返します。取り込み（#16）は、取り込んだ時点の公開版を管理情報の `adoptedPublishedVersion` に書き込んでください。この値は以後の編集や決裁でも引き継がれるため、取り込み後にポータルで別の版を公開承認しても「不明」の項目は消えません。取り込みが実装されるまでは、この項目が実運用で現れることはありません（テストでは管理情報を直接置いて確認しています）。
+
+結果確認中の決裁（公開承認・却下）は、[ADR-0010](../../docs/adr/0010-settling-uncertain-decisions.md) のとおり、決裁した Curator 本人にだけ中身を返します。それ以外の閲覧者（所有チームの Publisher、決裁していない Curator、Admin）には、種別・主体・開始時刻・結果確認中であることだけを返し、操作 ID・理由・対象のハッシュと版・AWS request ID は返しません（`withheld: true`、`operationId` と `targetHash` は `null`）。
+
+SPA では「操作と審査の履歴を表示」から開きます。Publisher は下書き編集画面、Curator は審査画面、Curator と Admin はカタログ詳細からも開けます（カタログ詳細の未管理レコードは404の案内になります）。作成・編集・申請・公開承認・却下を種別の日本語ラベルで表示し、主体は subject と issuer の組で、決裁の理由も確認できます。0件（「操作の記録はありません。」）と、権限がない（403）・管理下にない（404）・取得できない（502）場合のエラーは区別して表示します。
+
+### IAM
+
+履歴の読み取りには補助テーブルへの `dynamodb:Query` が必要なため、[下書き用モジュールのポリシー](infrastructure/modules/management_drafts/draft-policy.json.tftpl) に追加します。ルートモジュールは既存の [`infrastructure/management`](infrastructure/management/main.tf) をそのまま使います。route（`GET /api/records/{recordId}/history`）は既存 HTTP API の管理 Lambda 統合に追加してください（#5 の IaC が持ちます）。
+
+Seam 1 の Stubber と moto で、認可（Viewer と所属チームのない Publisher の拒否、他チームの拒否、Curator と Admin の許可）、補助テーブル未設定時の503、未管理レコードの404、管理下で操作記録のないレコードの0件、作成・申請・公開承認の履歴項目（操作 ID・主体・対象ハッシュ・開始時刻・結果・AWS request ID・決裁理由。作成の対象ハッシュが作成した内容の内容ハッシュであること）、作成・申請・公開承認でアプリが送るすべての追記記録の書き込みに上書き禁止の条件式が付くこと（書き込み要求を記録して検査）と、確定済みの操作の結果を補助ストアから追記し直すと拒否され記録が変わらないこと、作成の INTENT の写しが正本から定義の全文を除いたものと一致すること、結果確認中の作成が履歴に現れること、決裁した主体が不明な項目とその後の公開承認で消えないこと、結果確認中の決裁の中身を決裁した Curator 以外に返さないこと、Query の複数ページの読み取り、形式の崩れた追記記録（ソートキー・主体・種別・開始時刻・INTENT の欠落）の 502 を検証します。Seam 2 の Vitest で、API の応答の検査（旧い値や必須の項目の欠落の拒否）、履歴項目の表示、「不明」と「結果確認中」の表示、0件と403・404・502 の区別、伏せた決裁の表示、開閉ボタンを押すまで API を呼ばないこと、カタログ詳細の導線が Curator・Admin だけに出ることとそこからの404の案内を確認します。実 AWS への書き込みは行っていません。デプロイ後に実環境で、`Query` の IAM 境界と route の追加を確認してください。

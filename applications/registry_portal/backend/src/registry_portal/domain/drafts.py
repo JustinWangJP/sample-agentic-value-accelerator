@@ -4,7 +4,7 @@ import hashlib
 import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, TypedDict, TypeIs, get_args
+from typing import Any, Literal, TypedDict, TypeIs, cast, get_args
 
 from registry_portal.domain.catalog import (
     AGENT_RECORD_TYPE,
@@ -115,6 +115,7 @@ NOT_EDITABLE_STATUSES: frozenset[RecordStatus] = IN_FLIGHT_STATUSES | {"DEPRECAT
 # SPA の `OPERATION_STATES`（frontend/src/drafts/api.ts）と揃える
 OperationState = Literal["IN_PROGRESS", "VERIFYING", "FAILED", "SUCCEEDED"]
 OperationKind = Literal["CREATE", "UPDATE", "SUBMIT", "APPROVE", "REJECT"]
+OPERATION_KINDS: tuple[OperationKind, ...] = get_args(OperationKind)
 CREATE_KIND: OperationKind = "CREATE"
 UPDATE_KIND: OperationKind = "UPDATE"
 SUBMIT_KIND: OperationKind = "SUBMIT"
@@ -122,6 +123,37 @@ APPROVE_KIND: OperationKind = "APPROVE"
 REJECT_KIND: OperationKind = "REJECT"
 # 決裁 handler が行う操作（公開承認・却下）。操作照会は種別ごとに参照できる主体を変える
 DECISION_KINDS: frozenset[OperationKind] = frozenset({APPROVE_KIND, REJECT_KIND})
+
+# 履歴 API が返す操作記録の結果。SPA の `HISTORY_STATES`（frontend/src/drafts/api.ts）と揃える。
+# 結果確認中は、操作照会（OperationState）が API で返す値と同じ VERIFYING で表す。
+# 結果の追記記録（RESULT）がない操作は結果確認中（VERIFYING）、取り込み前の公開承認は不明（UNKNOWN）
+HistoryState = Literal["SUCCEEDED", "FAILED", "VERIFYING", "UNKNOWN"]
+HISTORY_SUCCEEDED: HistoryState = "SUCCEEDED"
+HISTORY_FAILED: HistoryState = "FAILED"
+HISTORY_VERIFYING: HistoryState = "VERIFYING"
+HISTORY_UNKNOWN: HistoryState = "UNKNOWN"
+
+# 追記記録の段階。操作の開始時に INTENT、結果の確定時に RESULT を追記する
+AuditPhase = Literal["INTENT", "RESULT"]
+AUDIT_INTENT: AuditPhase = "INTENT"
+AUDIT_RESULT: AuditPhase = "RESULT"
+# 追記記録だけを Query で読むためのソートキーの接頭辞
+AUDIT_SK_PREFIX = "AUDIT#"
+_AUDIT_SK = re.compile(r"AUDIT#([^#]+)#(INTENT|RESULT)")
+
+
+def audit_sk(op_id: str, phase: AuditPhase) -> str:
+    """追記記録のソートキー（AUDIT#<操作 ID>#<段階>）。"""
+    return f"{AUDIT_SK_PREFIX}{op_id}#{phase}"
+
+
+def parse_audit_sk(sk: object) -> tuple[str, AuditPhase]:
+    """追記記録のソートキーを操作 ID と段階に分ける。形式が契約と異なれば ValueError。"""
+    match = _AUDIT_SK.fullmatch(sk) if isinstance(sk, str) else None
+    if match is None:
+        raise ValueError("保存された操作記録のキーの形式が正しくありません。")
+    return match.group(1), cast(AuditPhase, match.group(2))
+
 
 # Registry レコード ID の形式。SPA の `RECORD_ID_PATTERN` と `RECORD_ID_LENGTH`
 # （frontend/src/drafts/api.ts）と揃える
@@ -244,7 +276,8 @@ def digest(value: object) -> str:
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 
 
-def _is_principal(value: object) -> bool:
+def is_principal(value: object) -> TypeIs[PrincipalRecord]:
+    """保存された主体（issuer と subject の組）の形式か。"""
     return (
         isinstance(value, Mapping)
         and isinstance(value.get("issuer"), str)
@@ -267,11 +300,11 @@ class Management:
             or not isinstance(owner_team, str)
             or not owner_team
             or any(key in item and not isinstance(item[key], str) for key in ALL_SUPPLEMENT_FIELDS)
-            or (
-                item.get("publishedVersion") is not None
-                and not isinstance(item["publishedVersion"], str)
+            or any(
+                item.get(key) is not None and not isinstance(item[key], str)
+                for key in ("publishedVersion", "adoptedPublishedVersion")
             )
-            or ("lastEditedBy" in item and not _is_principal(item["lastEditedBy"]))
+            or ("lastEditedBy" in item and not is_principal(item["lastEditedBy"]))
         ):
             raise ValueError("保存された管理情報の形式が正しくありません。")
         return cls(item)
@@ -302,15 +335,30 @@ class Management:
     def owner_team(self) -> str:
         return str(self.item["ownerTeam"])
 
+    @property
+    def is_managed(self) -> bool:
+        """ポータルの管理下にあるか。未管理（取り込み前）のレコードは決裁できず、履歴もない。"""
+        return self.item.get("managed") is True
+
     def is_owned_by(self, teams: Collection[str]) -> bool:
         """ポータルの管理下にあり、所有チームが指定の所属チームに含まれるか。"""
-        return self.item.get("managed") is True and self.owner_team in teams
+        return self.is_managed and self.owner_team in teams
 
     def published_version(self, record: Mapping[str, Any]) -> str | None:
         """公開中の版。AWS が新しい下書きを返している間は、補助ストアに保持した版を返す。"""
         if record["status"] == PUBLISHED_STATUS:
             return str(record["recordVersion"])
         version = self.item.get("publishedVersion")
+        return version if isinstance(version, str) else None
+
+    @property
+    def adopted_published_version(self) -> str | None:
+        """取り込み（#16）の時点で既に公開されていた版。ポータルに公開承認の操作記録がない。
+
+        取り込みが管理情報に書き込み、以後の編集や決裁でも `**base` で引き継ぐ。
+        ポータルで作成したレコードには存在しない。
+        """
+        version = self.item.get("adoptedPublishedVersion")
         return version if isinstance(version, str) else None
 
     def hashed_fields(self) -> dict[str, Any]:

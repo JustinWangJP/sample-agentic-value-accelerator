@@ -1,0 +1,116 @@
+import { useEffect, useState } from 'react'
+import type { ApiClient, ApiError } from '../api/client'
+import { settleWhileActive } from '../catalog/requests'
+import { RequestErrorAlert } from '../components/RequestErrorAlert'
+import type { HistoryEntry, HistoryState, OperationKind } from './api'
+
+/** 操作と審査の種別の表示。バックエンドの OperationKind（domain/drafts.py）と揃える */
+const KIND_LABELS: Record<OperationKind, string> = {
+  CREATE: '作成',
+  UPDATE: '編集',
+  SUBMIT: '申請',
+  APPROVE: '公開承認',
+  REJECT: '却下',
+}
+
+/** 操作の結果の表示。結果の追記記録がない操作は「結果確認中」（GLOSSARY「結果確認中」） */
+const STATE_LABELS: Record<HistoryState, string> = {
+  SUCCEEDED: '成功',
+  FAILED: '失敗',
+  VERIFYING: '結果確認中',
+  UNKNOWN: '不明',
+}
+
+function stateLabel(entry: HistoryEntry): string {
+  const label = STATE_LABELS[entry.state]
+  return entry.errorCode ? `${label}（${entry.errorCode}）` : label
+}
+
+/**
+ * 操作した主体（issuer と subject の組）。
+ * 取り込み前から公開されていた版は、公開承認した主体が操作記録に残っていないため「不明」
+ */
+function principalLabel(entry: HistoryEntry): string {
+  return entry.principal ? `${entry.principal.subject}（${entry.principal.issuer}）` : '不明'
+}
+
+type LoadState =
+  | { kind: 'loading' }
+  | { kind: 'ready'; entries: HistoryEntry[] }
+  | { kind: 'error'; error: ApiError }
+
+type Props = {
+  api: ApiClient
+  recordId: string
+  onRelogin: () => void
+}
+
+/** 履歴の表示を開閉するボタンと、開いたときの履歴。下書き編集・審査・カタログ詳細の各画面で使う */
+export function RecordHistoryToggle(props: Props) {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <button type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+        {open ? '履歴を閉じる' : '操作と審査の履歴を表示'}
+      </button>
+      {open && <RecordHistoryView {...props} />}
+    </>
+  )
+}
+
+/** Registry レコードごとの操作と審査の履歴（GET /api/records/{recordId}/history） */
+export function RecordHistoryView({ api, recordId, onRelogin }: Props) {
+  const [state, setState] = useState<LoadState>({ kind: 'loading' })
+
+  useEffect(
+    () =>
+      settleWhileActive(api.getHistory(recordId), '操作履歴を取得できませんでした。', (result) =>
+        setState(
+          result.ok
+            ? { kind: 'ready', entries: result.value.entries }
+            : { kind: 'error', error: result.error },
+        ),
+      ),
+    [api, recordId],
+  )
+
+  return (
+    <section className="history" aria-labelledby={`history-${recordId}`}>
+      <h4 id={`history-${recordId}`}>操作と審査の履歴</h4>
+      {state.kind === 'loading' ? (
+        <p role="status">操作履歴を読み込んでいます…</p>
+      ) : state.kind === 'error' ? (
+        <RequestErrorAlert error={state.error} onRelogin={onRelogin} />
+      ) : state.entries.length === 0 ? (
+        <p>操作の記録はありません。</p>
+      ) : (
+        <ul className="history-entries">
+          {state.entries.map((entry, index) => (
+            <li key={entry.operationId ?? `no-id-${index}`}>
+              <p>
+                {KIND_LABELS[entry.kind]}・{stateLabel(entry)}
+                {entry.recordVersion ? `・版 ${entry.recordVersion}` : ''}
+              </p>
+              <p>
+                主体 {principalLabel(entry)}
+                {entry.startedAt ? `・${entry.startedAt}` : ''}
+              </p>
+              {entry.withheld ? (
+                <p>結果確認中の決裁の内容は、決裁した Curator 本人にだけ表示します。</p>
+              ) : (
+                <>
+                  <p>
+                    操作 ID {entry.operationId ?? 'なし'}
+                    {entry.awsRequestId ? `・AWS request ID ${entry.awsRequestId}` : ''}
+                  </p>
+                  {entry.targetHash && <p>対象のハッシュ {entry.targetHash}</p>}
+                  {entry.reason && <p>理由 {entry.reason}</p>}
+                </>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}

@@ -1,3 +1,4 @@
+import type { Role } from '../api/client'
 import { isDataClassification } from '../api/dataClassification'
 import { hasStrings, isObject } from '../api/guards'
 import { isCatalogRecordType, type CatalogRecordType } from '../api/recordType'
@@ -90,6 +91,49 @@ export type DraftOperation =
   | (DraftDetail & { operationId: string; operationState: Extract<OperationState, 'SUCCEEDED'> })
   | { operationId: string; operationState: UnsettledOperationState; message: string }
 
+/** 操作の種別。バックエンドの OperationKind（domain/drafts.py）と揃える */
+export const OPERATION_KINDS = ['CREATE', 'UPDATE', 'SUBMIT', 'APPROVE', 'REJECT'] as const
+export type OperationKind = (typeof OPERATION_KINDS)[number]
+/**
+ * 履歴 API が返す操作記録の結果。バックエンドの HistoryState（domain/drafts.py）と揃える。
+ * 書き込み操作の応答の状態（OPERATION_STATES）に、取り込み前の公開承認の UNKNOWN（不明）を加えたもの。
+ * 結果の追記記録がない操作は、操作照会と同じ VERIFYING（結果確認中）で表す
+ */
+export const HISTORY_STATES = [...OPERATION_STATES, 'UNKNOWN'] as const
+export type HistoryState = (typeof HISTORY_STATES)[number]
+/** 操作した主体（GLOSSARY「主体」）。検証済みアクセストークンの iss と sub の組 */
+export type Principal = { issuer: string; subject: string }
+/**
+ * 操作と審査の履歴の1項目。バックエンドの history.py と揃える。
+ * principal が null で state が UNKNOWN の項目は、取り込み前から公開されていた版の公開承認（決裁した主体が不明）。
+ * withheld が true の項目は結果確認中の決裁で、決裁した Curator 以外には操作 ID・理由・対象のハッシュと版を返さない（ADR-0010）
+ */
+export type HistoryEntry = {
+  operationId: string | null
+  kind: OperationKind
+  principal: Principal | null
+  startedAt: string | null
+  targetHash: string | null
+  state: HistoryState
+  awsRequestId?: string
+  errorCode?: string
+  reason?: string
+  recordVersion?: string
+  withheld?: true
+}
+/**
+ * 所有チームによらず、すべての Registry レコードの操作履歴を読める業務ロール（Curator・Admin）か。
+ * バックエンドの history.py の `_is_privileged` と揃える
+ */
+export function canViewAllHistory(roles: readonly Role[]): boolean {
+  return roles.includes('Curator') || roles.includes('Admin')
+}
+export type RecordHistory = {
+  recordId: string
+  ownerTeam: string
+  entries: HistoryEntry[]
+}
+
 /**
  * AWS への書き込みが行われていないと確定できるエラーのコード（バックエンドの drafts.py）。
  * 5xx でも「結果が不明」とは扱わない
@@ -132,6 +176,7 @@ export type DraftApi = {
     submission: DraftSubmission,
     idempotencyKey: string,
   ) => Promise<DraftOperation>
+  getHistory: (recordId: string) => Promise<RecordHistory>
 }
 
 function isDraft(value: unknown): value is RecordDraft {
@@ -198,6 +243,31 @@ function isOperation(value: unknown): value is DraftOperation {
       (isUnsettledOperationState(value.operationState) && typeof value.message === 'string'))
   )
 }
+function isHistoryEntry(value: unknown): value is HistoryEntry {
+  return (
+    isObject(value) &&
+    (value.operationId === null || typeof value.operationId === 'string') &&
+    OPERATION_KINDS.some((kind) => kind === value.kind) &&
+    (value.principal === null ||
+      (isObject(value.principal) && hasStrings(value.principal, ['issuer', 'subject']))) &&
+    (value.startedAt === null || typeof value.startedAt === 'string') &&
+    (value.targetHash === null || typeof value.targetHash === 'string') &&
+    HISTORY_STATES.some((state) => state === value.state) &&
+    (value.awsRequestId === undefined || typeof value.awsRequestId === 'string') &&
+    (value.errorCode === undefined || typeof value.errorCode === 'string') &&
+    (value.reason === undefined || typeof value.reason === 'string') &&
+    (value.recordVersion === undefined || typeof value.recordVersion === 'string') &&
+    (value.withheld === undefined || value.withheld === true)
+  )
+}
+function isHistory(value: unknown): value is RecordHistory {
+  return (
+    isObject(value) &&
+    hasStrings(value, ['recordId', 'ownerTeam']) &&
+    Array.isArray(value.entries) &&
+    value.entries.every(isHistoryEntry)
+  )
+}
 
 export function createDraftApi(request: ApiRequest, invalidResponse: () => Error): DraftApi {
   async function checked<T>(
@@ -236,6 +306,11 @@ export function createDraftApi(request: ApiRequest, invalidResponse: () => Error
           'idempotency-key': key,
         }),
         isOperation,
+      ),
+    getHistory: (id) =>
+      checked(
+        request('GET', `/api/records/${encodeURIComponent(id)}/history`),
+        isHistory,
       ),
   }
 }
