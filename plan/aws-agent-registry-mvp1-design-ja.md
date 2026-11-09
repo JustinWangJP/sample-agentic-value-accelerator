@@ -11,6 +11,7 @@ us-east-1 にある既存の AWS Agent Registry 1個を使い、Agent・MCP サ�
 - [ADR-0003 MVP1 は公開 HTTPS で提供し、閉域化と private 用 Registry は見送る](../docs/adr/0003-public-https-without-waf-and-single-registry.md)
 - [ADR-0004 CI から AWS へは反映せず、反映はローカルから手動で行う](../docs/adr/0004-no-aws-deployment-from-ci.md)
 - [ADR-0010 結果確認中の決裁は、決裁 handler の再送と、決裁した Curator の操作照会で確定する](../docs/adr/0010-settling-uncertain-decisions.md)
+- [ADR-0011 結果確認中の操作の回復は、Admin が決裁 handler で行い、Registry の再取得で確定できないときだけ強制解除する](../docs/adr/0011-admin-recovery-operation.md)
 
 ## 前提とした事実
 
@@ -334,6 +335,8 @@ ADR-0004 に従い、GitHub Actions では AWS への反映を一切行わない
 | `POST /api/records/{id}/deprecate` | 元に戻せない廃止であることを明示し、二重確認を経て実行する | Curator |
 | `POST /api/records/{id}/adopt` | 未管理レコードの取り込みと所有チームの割り当て | Admin |
 | `GET /api/operations/{id}` | 操作結果、結果確認中の状態、回復結果 | 人間 |
+| `GET /api/records/{id}/recovery` | ロックを持つ未確定の操作の概要（種別・主体・開始時刻・回復できるか）。決裁 Lambda が処理する | Admin |
+| `POST /api/records/{id}/recovery` | Registry を再取得して照合し、確定できなければ理由を付けて強制解除する。決裁 Lambda が処理する | Admin |
 | `GET /api/records/{id}/history` | 操作と審査の履歴 | 人間 |
 | `GET /api/notifications` | 自分宛ての通知と未読件数 | 人間 |
 | `POST /api/notifications/read` | 既読位置の更新 | 人間 |

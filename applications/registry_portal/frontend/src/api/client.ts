@@ -1,4 +1,5 @@
 import { createDraftApi, type DraftApi } from '../drafts/api'
+import { createRecoveryApi, type RecoveryApi } from '../recovery/api'
 import { createReviewApi, type ReviewApi } from '../reviews/api'
 import { hasStrings, isObject } from './guards'
 import { isDataClassification, type DataClassification } from './dataClassification'
@@ -187,7 +188,8 @@ export type ApiClientOptions = {
 }
 
 export type ApiClient = DraftApi &
-  ReviewApi & {
+  ReviewApi &
+  RecoveryApi & {
   getMe: () => Promise<Me>
   /** nextToken はバックエンドが中継する AWS の値で、SPA では中身を解釈しない */
   listCatalog: (
@@ -267,6 +269,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
   return {
     ...createDraftApi(request, () => invalidResponse(200)),
     ...createReviewApi(request, () => invalidResponse(200)),
+    ...createRecoveryApi(request, () => invalidResponse(200)),
     getMe: () => request<Me>('GET', '/api/me'),
     listCatalog: (type, nextToken, a2aOnly) => {
       const query = new URLSearchParams({ type })

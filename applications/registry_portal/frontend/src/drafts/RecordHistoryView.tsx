@@ -2,16 +2,7 @@ import { useEffect, useState } from 'react'
 import type { ApiClient, ApiError } from '../api/client'
 import { settleWhileActive } from '../catalog/requests'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
-import type { HistoryEntry, HistoryState, OperationKind } from './api'
-
-/** 操作と審査の種別の表示。バックエンドの OperationKind（domain/drafts.py）と揃える */
-const KIND_LABELS: Record<OperationKind, string> = {
-  CREATE: '作成',
-  UPDATE: '編集',
-  SUBMIT: '申請',
-  APPROVE: '公開承認',
-  REJECT: '却下',
-}
+import { KIND_LABELS, type HistoryEntry, type HistoryState } from './api'
 
 /** 操作の結果の表示。結果の追記記録がない操作は「結果確認中」（GLOSSARY「結果確認中」） */
 const STATE_LABELS: Record<HistoryState, string> = {

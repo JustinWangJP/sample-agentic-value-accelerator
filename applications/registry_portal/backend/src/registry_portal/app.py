@@ -43,6 +43,7 @@ from registry_portal.drafts import (
     require_publisher,
 )
 from registry_portal.history import RecordHistory
+from registry_portal.recovery import RECOVERY_BODY_MAX_LENGTH, OperationRecovery
 from registry_portal.services.catalog_supplement import CatalogSupplement, SupplementClient
 from registry_portal.services.discovery import DiscoveryDependencies, create_discovery_client
 from registry_portal.services.draft_store import DraftStore, DraftStoreClient
@@ -93,6 +94,8 @@ _PARAMETERIZED_ROUTES = (
     ("GET /api/records/", "/history", "GET /api/records/{recordId}/history"),
     ("PATCH /api/records/", "", "PATCH /api/records/{recordId}"),
     ("POST /api/records/", "/submit", "POST /api/records/{recordId}/submit"),
+    ("GET /api/records/", "/recovery", "GET /api/records/{recordId}/recovery"),
+    ("POST /api/records/", "/recovery", "POST /api/records/{recordId}/recovery"),
     ("GET /api/operations/", "", "GET /api/operations/{operationId}"),
     ("GET /api/reviews/", "", "GET /api/reviews/{recordId}"),
     ("POST /api/reviews/", "/approve", "POST /api/reviews/{recordId}/approve"),
@@ -347,19 +350,15 @@ def create_curation_handler(
         # 決裁 handler は補助テーブルなしではどの API も提供できないため、起動を止める
         raise ConfigurationError("決裁 handler の設定が不足しています: SUPPLEMENT_TABLE_NAME")
     region = registry_settings.region
-    curation = RecordCuration(
+    store = DraftStore(
+        catalog_settings.supplement_table_name,
         registry_settings.arn,
-        DraftStore(
-            catalog_settings.supplement_table_name,
-            registry_settings.arn,
-            store_client or cast(DraftStoreClient, boto3.client("dynamodb", region_name=region)),
-        ),
-        registry_client
-        or cast(
-            RegistryStatusClient,
-            boto3.client("agent-registry-control", region_name=region),
-        ),
+        store_client or cast(DraftStoreClient, boto3.client("dynamodb", region_name=region)),
     )
+    curation_client = registry_client or cast(
+        RegistryStatusClient, boto3.client("agent-registry-control", region_name=region)
+    )
+    curation = RecordCuration(registry_settings.arn, store, curation_client)
 
     def list_reviews(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
         return curation.list_reviews(caller, _query_of(event))
@@ -368,6 +367,26 @@ def create_curation_handler(
         if _query_of(event):
             raise RequestValidationError("審査詳細にクエリパラメーターは指定できません。")
         return curation.review(caller, _path_parameter(event))
+
+    recovery = OperationRecovery(
+        registry_settings.arn,
+        store,
+        curation,
+        # 発見の設定を持たない決裁 handler では、申請の検査を行わない（回復は観測だけで確定する）
+        RecordDrafts(
+            registry_settings.arn, store, cast(RegistryControlClient, curation_client), None
+        ),
+    )
+
+    def get_recovery(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        if _query_of(event):
+            raise RequestValidationError("回復の照会にクエリパラメーターは指定できません。")
+        return recovery.inspect(caller, _path_parameter(event))
+
+    def recover_operation(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        return recovery.recover(
+            caller, _path_parameter(event), _json_body(event, RECOVERY_BODY_MAX_LENGTH)
+        )
 
     def decision_route(kind: OperationKind) -> Route:
         """決裁の種別ごとの route。AWS の遷移先は種別だけで決まり、本文からは受け取らない。"""
@@ -388,6 +407,8 @@ def create_curation_handler(
         "GET /api/reviews/{recordId}": get_review,
         "POST /api/reviews/{recordId}/approve": decision_route(APPROVE_KIND),
         "POST /api/reviews/{recordId}/reject": decision_route(REJECT_KIND),
+        "GET /api/records/{recordId}/recovery": get_recovery,
+        "POST /api/records/{recordId}/recovery": recover_operation,
     }
 
     return _serve(routes, settings)

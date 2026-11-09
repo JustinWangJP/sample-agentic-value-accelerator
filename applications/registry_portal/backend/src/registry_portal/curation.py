@@ -51,6 +51,7 @@ from registry_portal.operations import (
     operation_status,
     principal_of,
     record_request_id,
+    settled_result,
 )
 from registry_portal.services.draft_store import DraftStore, StoreConflict
 
@@ -365,6 +366,24 @@ class RecordCuration:
                 raise PendingApprovalNotFound() from None
             raise
 
+    def observe_record_status(self, record_id: str) -> str | None:
+        """Registry のレコードを再取得し、AWS の状態を返す。削除済み（404）は None（読めた結果）。
+
+        Admin の回復操作が、Registry の状態を見ないまま強制解除しないための確認。
+        読めなければ DecisionUnavailable（502）。
+        """
+        try:
+            record = self._registry_client.get_registry_record(
+                registryId=self.registry, recordId=record_id
+            )
+        except ClientError as error:
+            if error.response["Error"]["Code"] == "ResourceNotFoundException":
+                return None
+            raise DecisionUnavailable() from None
+        except BotoCoreError:
+            raise DecisionUnavailable() from None
+        return str(record["status"])
+
     def _check_and_pin(self, operation: DecisionOperation) -> Mapping[str, Any]:
         """現物と申請スナップショットを照合し、決裁の対象を操作に固定する。
 
@@ -459,7 +478,7 @@ class RecordCuration:
     def settle(self, operation: DecisionOperation, *, allow_reissue: bool) -> DecisionResponse:
         """操作の結果を確定する。確定できなければ結果確認中を返す。"""
         if operation["state"] == "SUCCEEDED":
-            return 200, operation["result"]
+            return 200, settled_result(operation)
         if operation["state"] == "FAILED":
             return _failed(operation)
         try:

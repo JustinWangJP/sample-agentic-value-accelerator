@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from uuid import uuid4
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -50,6 +50,7 @@ from registry_portal.operations import (
     operation_status,
     principal_of,
     record_request_id,
+    settled_result,
 )
 from registry_portal.services.draft_store import DraftStore, StoreConflict
 
@@ -133,12 +134,19 @@ class RecordDrafts:
         registry: str,
         store: DraftStore,
         client: RegistryControlClient,
-        discovery: DiscoveryClient,
+        discovery: DiscoveryClient | None,
     ) -> None:
+        """discovery は申請の検査だけが使う。決裁 handler（Admin の回復）は発見の設定を持たないため None にする。"""
         self.registry = registry
         self.store = store
         self._registry = client
-        self._discovery = discovery
+        self._discovery_client = discovery
+
+    @property
+    def _discovery(self) -> DiscoveryClient:
+        if self._discovery_client is None:
+            raise RuntimeError("この handler には発見の設定がないため、申請は受け付けられません。")
+        return self._discovery_client
 
     def create(self, caller: Caller, body: Mapping[str, Any], key: str) -> DraftResponse:
         require_publisher(caller)
@@ -336,15 +344,25 @@ class RecordDrafts:
         require_publisher(caller)
         if operation["ownerTeam"] not in caller.teams:
             raise ForbiddenError()
+        return self._settle(operation, allow_resubmit=True)
+
+    def settle_by_observation(self, operation: DraftOperation) -> DraftResponse:
+        """Admin の回復操作から、Registry の観測できる状態だけで操作を確定する。
+
+        決裁 handler の実行ロールは申請 API の権限を持たないため、申請 API は呼び直さない。
+        """
+        return self._settle(operation, allow_resubmit=False)
+
+    def _settle(self, operation: DraftOperation, *, allow_resubmit: bool) -> DraftResponse:
         if operation["state"] == "SUCCEEDED":
-            return 200, operation["result"]
+            return 200, cast("DraftResult", settled_result(operation))
         if operation["state"] == "FAILED":
             return self._failed(operation)
         if not operation.get("recordId"):
             return self._pending(operation)
         try:
             if operation["kind"] == SUBMIT_KIND:
-                return self._verify_submission(operation)
+                return self._verify_submission(operation, allow_resubmit=allow_resubmit)
             return self._verify(operation, 200)
         except (BotoCoreError, ClientError, StoreConflict):
             return self._pending(operation)
@@ -491,7 +509,9 @@ class RecordDrafts:
         self.store.save_pending(operation)
         return self._verify_submission(operation)
 
-    def _verify_submission(self, operation: DraftOperation) -> DraftResponse:
+    def _verify_submission(
+        self, operation: DraftOperation, *, allow_resubmit: bool = True
+    ) -> DraftResponse:
         """AWS のレコードを読み、申請の結果を確定する。確定できなければ結果確認中を返す。
 
         結果確認中のまま残すのは、AWS が処理中のときと、申請 API の受け付け後に DRAFT が見えたとき
@@ -511,7 +531,7 @@ class RecordDrafts:
             self.store.abort(operation, "CONTENT_CHANGED")
             return self._failed(operation)
         if status == DRAFT_STATUS:
-            if operation.get("submissionAccepted"):
+            if operation.get("submissionAccepted") or not allow_resubmit:
                 return self._pending(operation)
             # スナップショットの保存後、申請 API の受け付けを確認する前に止まった操作を再開する
             return self._call_submit_api(operation, resume=True)

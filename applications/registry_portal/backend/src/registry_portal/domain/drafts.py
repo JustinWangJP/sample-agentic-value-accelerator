@@ -4,7 +4,7 @@ import hashlib
 import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, TypedDict, TypeIs, cast, get_args
+from typing import Any, Literal, NotRequired, TypedDict, TypeIs, cast, get_args
 
 from registry_portal.domain.catalog import (
     AGENT_RECORD_TYPE,
@@ -170,6 +170,22 @@ class PrincipalRecord(TypedDict):
     subject: str
 
 
+RecoveryMode = Literal["RECONCILED", "RELEASED"]
+# SPA の `RECOVERY_MODES`（frontend/src/recovery/api.ts）と揃える
+RECOVERY_RECONCILED: RecoveryMode = "RECONCILED"
+RECOVERY_RELEASED: RecoveryMode = "RELEASED"
+
+
+class RecoveryRecord(TypedDict):
+    """Admin の回復操作が結果を確定した、または強制解除したときの記録（設計書「ロールと所有」）。"""
+
+    # RECONCILED: Registry を再取得した結果から確定した。RELEASED: 確定できないまま Admin が強制解除した
+    mode: RecoveryMode
+    by: PrincipalRecord
+    at: str
+    reason: str
+
+
 class _OperationRequired(TypedDict):
     operationId: str
     ownerTeam: str
@@ -198,6 +214,8 @@ class OperationRecord(_OperationRequired, total=False):
     awsRequestId: str
     # 申請: 保存した申請スナップショットのハッシュ。決裁: Curator が審査したスナップショットのハッシュ
     snapshotHash: str
+    # Admin の回復操作が確定・解除した操作にだけ付く
+    recovery: RecoveryRecord
 
 
 class _DraftOperationRequired(OperationRecord):
@@ -266,6 +284,7 @@ class OperationStatus(TypedDict):
     operationId: str
     operationState: OperationState
     message: str
+    recovery: NotRequired[RecoveryRecord]
 
 
 def has_draft(status: str) -> bool:

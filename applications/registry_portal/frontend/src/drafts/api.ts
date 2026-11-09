@@ -94,6 +94,14 @@ export type DraftOperation =
 /** 操作の種別。バックエンドの OperationKind（domain/drafts.py）と揃える */
 export const OPERATION_KINDS = ['CREATE', 'UPDATE', 'SUBMIT', 'APPROVE', 'REJECT'] as const
 export type OperationKind = (typeof OPERATION_KINDS)[number]
+/** 操作と審査の種別の表示 */
+export const KIND_LABELS: Record<OperationKind, string> = {
+  CREATE: '作成',
+  UPDATE: '編集',
+  SUBMIT: '申請',
+  APPROVE: '公開承認',
+  REJECT: '却下',
+}
 /**
  * 履歴 API が返す操作記録の結果。バックエンドの HistoryState（domain/drafts.py）と揃える。
  * 書き込み操作の応答の状態（OPERATION_STATES）に、取り込み前の公開承認の UNKNOWN（不明）を加えたもの。
