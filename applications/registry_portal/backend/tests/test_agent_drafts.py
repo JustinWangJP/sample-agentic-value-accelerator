@@ -1103,8 +1103,6 @@ def test_management_keeps_the_last_editor_and_audit_keeps_the_aws_request_id():
     assert saved["lastEditedBy"]["M"]["subject"] == {"S": "bob"}
     assert "lastEditedAt" in saved
     assert sorted(item["awsRequestId"]["S"] for item in audit_items(db, "#RESULT")) == [
-        # 作成の操作記録は名前ロックとレコードの両方に追記される（#11 の履歴のため）
-        "aws-create-1",
         "aws-create-1",
         "aws-update-1",
     ]
