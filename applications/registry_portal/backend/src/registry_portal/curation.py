@@ -134,7 +134,7 @@ def _display_name(record: Mapping[str, Any]) -> str:
 
 def _is_managed(management: Management | None) -> TypeGuard[Management]:
     """ポータルの管理下にあるか。未管理（取り込み前）のレコードは決裁できない。"""
-    return management is not None and management.item.get("managed") is True
+    return management is not None and management.is_managed
 
 
 def _snapshot_view(submission: Mapping[str, Any]) -> dict[str, Any]:

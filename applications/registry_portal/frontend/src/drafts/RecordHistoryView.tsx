@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
-import { ApiError, toApiError, type ApiClient } from '../api/client'
+import type { ApiClient, ApiError } from '../api/client'
+import { settleWhileActive } from '../catalog/requests'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
-import type { HistoryEntry, HistoryKind, HistoryState } from './api'
+import type { HistoryEntry, HistoryState, OperationKind } from './api'
 
 /** 操作と審査の種別の表示。バックエンドの OperationKind（domain/drafts.py）と揃える */
-const KIND_LABELS: Record<HistoryKind, string> = {
+const KIND_LABELS: Record<OperationKind, string> = {
   CREATE: '作成',
   UPDATE: '編集',
   SUBMIT: '申請',
@@ -16,7 +17,7 @@ const KIND_LABELS: Record<HistoryKind, string> = {
 const STATE_LABELS: Record<HistoryState, string> = {
   SUCCEEDED: '成功',
   FAILED: '失敗',
-  IN_PROGRESS: '結果確認中',
+  VERIFYING: '結果確認中',
   UNKNOWN: '不明',
 }
 
@@ -25,9 +26,12 @@ function stateLabel(entry: HistoryEntry): string {
   return entry.errorCode ? `${label}（${entry.errorCode}）` : label
 }
 
-/** 操作した主体。取り込み前から公開されていた版は、公開承認した主体が操作記録に残っていないため「不明」 */
-function operatorLabel(entry: HistoryEntry): string {
-  return entry.operator ? entry.operator.subject : '不明'
+/**
+ * 操作した主体（issuer と subject の組）。
+ * 取り込み前から公開されていた版は、公開承認した主体が操作記録に残っていないため「不明」
+ */
+function principalLabel(entry: HistoryEntry): string {
+  return entry.principal ? `${entry.principal.subject}（${entry.principal.issuer}）` : '不明'
 }
 
 type LoadState =
@@ -58,24 +62,17 @@ export function RecordHistoryToggle(props: Props) {
 export function RecordHistoryView({ api, recordId, onRelogin }: Props) {
   const [state, setState] = useState<LoadState>({ kind: 'loading' })
 
-  useEffect(() => {
-    let active = true
-    api.getHistory(recordId).then(
-      (history) => {
-        if (active) setState({ kind: 'ready', entries: history.entries })
-      },
-      (failure: unknown) => {
-        if (active)
-          setState({
-            kind: 'error',
-            error: toApiError(failure, '操作履歴を取得できませんでした。'),
-          })
-      },
-    )
-    return () => {
-      active = false
-    }
-  }, [api, recordId])
+  useEffect(
+    () =>
+      settleWhileActive(api.getHistory(recordId), '操作履歴を取得できませんでした。', (result) =>
+        setState(
+          result.ok
+            ? { kind: 'ready', entries: result.value.entries }
+            : { kind: 'error', error: result.error },
+        ),
+      ),
+    [api, recordId],
+  )
 
   return (
     <section className="history" aria-labelledby={`history-${recordId}`}>
@@ -89,21 +86,27 @@ export function RecordHistoryView({ api, recordId, onRelogin }: Props) {
       ) : (
         <ul className="history-entries">
           {state.entries.map((entry, index) => (
-            <li key={entry.operationId ?? `unknown-${index}`}>
+            <li key={entry.operationId ?? `no-id-${index}`}>
               <p>
                 {KIND_LABELS[entry.kind]}・{stateLabel(entry)}
                 {entry.recordVersion ? `・版 ${entry.recordVersion}` : ''}
               </p>
               <p>
-                操作者 {operatorLabel(entry)}
+                主体 {principalLabel(entry)}
                 {entry.startedAt ? `・${entry.startedAt}` : ''}
               </p>
-              <p>
-                操作 ID {entry.operationId ?? 'なし'}
-                {entry.awsRequestId ? `・AWS request ID ${entry.awsRequestId}` : ''}
-              </p>
-              {entry.targetHash && <p>対象のハッシュ {entry.targetHash}</p>}
-              {entry.reason && <p>理由 {entry.reason}</p>}
+              {entry.withheld ? (
+                <p>結果確認中の決裁の内容は、決裁した Curator 本人にだけ表示します。</p>
+              ) : (
+                <>
+                  <p>
+                    操作 ID {entry.operationId ?? 'なし'}
+                    {entry.awsRequestId ? `・AWS request ID ${entry.awsRequestId}` : ''}
+                  </p>
+                  {entry.targetHash && <p>対象のハッシュ {entry.targetHash}</p>}
+                  {entry.reason && <p>理由 {entry.reason}</p>}
+                </>
+              )}
             </li>
           ))}
         </ul>

@@ -115,6 +115,7 @@ NOT_EDITABLE_STATUSES: frozenset[RecordStatus] = IN_FLIGHT_STATUSES | {"DEPRECAT
 # SPA の `OPERATION_STATES`（frontend/src/drafts/api.ts）と揃える
 OperationState = Literal["IN_PROGRESS", "VERIFYING", "FAILED", "SUCCEEDED"]
 OperationKind = Literal["CREATE", "UPDATE", "SUBMIT", "APPROVE", "REJECT"]
+OPERATION_KINDS: tuple[OperationKind, ...] = get_args(OperationKind)
 CREATE_KIND: OperationKind = "CREATE"
 UPDATE_KIND: OperationKind = "UPDATE"
 SUBMIT_KIND: OperationKind = "SUBMIT"
@@ -124,11 +125,12 @@ REJECT_KIND: OperationKind = "REJECT"
 DECISION_KINDS: frozenset[OperationKind] = frozenset({APPROVE_KIND, REJECT_KIND})
 
 # 履歴 API が返す操作記録の結果。SPA の `HISTORY_STATES`（frontend/src/drafts/api.ts）と揃える。
-# 結果の追記記録（RESULT）がない操作は結果確認中（IN_PROGRESS）、取り込み前の公開承認は不明（UNKNOWN）
-HistoryState = Literal["SUCCEEDED", "FAILED", "IN_PROGRESS", "UNKNOWN"]
+# 結果確認中は、操作照会（OperationState）が API で返す値と同じ VERIFYING で表す。
+# 結果の追記記録（RESULT）がない操作は結果確認中（VERIFYING）、取り込み前の公開承認は不明（UNKNOWN）
+HistoryState = Literal["SUCCEEDED", "FAILED", "VERIFYING", "UNKNOWN"]
 HISTORY_SUCCEEDED: HistoryState = "SUCCEEDED"
 HISTORY_FAILED: HistoryState = "FAILED"
-HISTORY_IN_PROGRESS: HistoryState = "IN_PROGRESS"
+HISTORY_VERIFYING: HistoryState = "VERIFYING"
 HISTORY_UNKNOWN: HistoryState = "UNKNOWN"
 
 # 追記記録の段階。操作の開始時に INTENT、結果の確定時に RESULT を追記する
@@ -274,7 +276,8 @@ def digest(value: object) -> str:
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 
 
-def _is_principal(value: object) -> bool:
+def is_principal(value: object) -> TypeIs[PrincipalRecord]:
+    """保存された主体（issuer と subject の組）の形式か。"""
     return (
         isinstance(value, Mapping)
         and isinstance(value.get("issuer"), str)
@@ -301,7 +304,7 @@ class Management:
                 item.get(key) is not None and not isinstance(item[key], str)
                 for key in ("publishedVersion", "adoptedPublishedVersion")
             )
-            or ("lastEditedBy" in item and not _is_principal(item["lastEditedBy"]))
+            or ("lastEditedBy" in item and not is_principal(item["lastEditedBy"]))
         ):
             raise ValueError("保存された管理情報の形式が正しくありません。")
         return cls(item)
@@ -332,9 +335,14 @@ class Management:
     def owner_team(self) -> str:
         return str(self.item["ownerTeam"])
 
+    @property
+    def is_managed(self) -> bool:
+        """ポータルの管理下にあるか。未管理（取り込み前）のレコードは決裁できず、履歴もない。"""
+        return self.item.get("managed") is True
+
     def is_owned_by(self, teams: Collection[str]) -> bool:
         """ポータルの管理下にあり、所有チームが指定の所属チームに含まれるか。"""
-        return self.item.get("managed") is True and self.owner_team in teams
+        return self.is_managed and self.owner_team in teams
 
     def published_version(self, record: Mapping[str, Any]) -> str | None:
         """公開中の版。AWS が新しい下書きを返している間は、補助ストアに保持した版を返す。"""

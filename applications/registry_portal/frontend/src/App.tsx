@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { CatalogView } from './catalog/CatalogView'
+import { canViewAllHistory } from './drafts/api'
 import { RecordDraftsView } from './drafts/RecordDraftsView'
 import { ReviewsView } from './reviews/ReviewsView'
 import type { StartupState } from './startup'
@@ -57,7 +58,11 @@ export function StartupView({ state }: { state: StartupState | null }) {
               でログインします。
             </p>
           </section>
-          <CatalogView api={state.api} roles={state.me.roles} onRelogin={state.relogin} />
+          <CatalogView
+            api={state.api}
+            canViewHistory={canViewAllHistory(state.me.roles)}
+            onRelogin={state.relogin}
+          />
           <ReviewsView api={state.api} roles={state.me.roles} onRelogin={state.relogin} />
           <RecordDraftsView api={state.api} roles={state.me.roles} teams={state.me.teams} onRelogin={state.relogin} />
         </>

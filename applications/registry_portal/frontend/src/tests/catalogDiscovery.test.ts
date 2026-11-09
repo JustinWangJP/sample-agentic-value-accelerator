@@ -80,7 +80,7 @@ async function mount(...responses: (Response | Error)[]) {
   const { fetchImpl, calls } = fakeFetch([jsonResponse(200, { items: [agent], nextToken: null }), ...responses])
   const api = createApiClient({ baseUrl: '', fetch: fetchImpl, getAccessToken: () => 'viewer-token' })
   const relogin = vi.fn()
-  await act(() => root.render(createElement(CatalogView, { api, roles: [], onRelogin: relogin })))
+  await act(() => root.render(createElement(CatalogView, { api, canViewHistory: false, onRelogin: relogin })))
   return { calls, relogin }
 }
 
