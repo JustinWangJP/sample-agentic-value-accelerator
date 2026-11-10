@@ -41,7 +41,8 @@ def test_decision_policy_only_grants_status_transitions_reads_and_supplement_wri
     assert statements["DecisionSupplement"] == {
         "Sid": "DecisionSupplement",
         "Effect": "Allow",
-        "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"],
+        # Query は審査待ちの一覧が未解決の廃止依頼（#13）を読むために使う
+        "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query"],
         "Resource": TABLE_ARN,
     }
     assert statements["DecisionLogs"]["Resource"] == f"{LOG_GROUP_ARN}:*"
@@ -74,6 +75,8 @@ def test_module_creates_the_decision_lambda_with_its_own_role_and_log_group():
         "aws_apigatewayv2_route",
         "aws_lambda_permission",
         "aws_lambda_permission",
+        "aws_lambda_permission",
+        "aws_lambda_permission",
     ]
     # 実行ロールは決裁 Lambda 専用に新しく作る（管理 Lambda のロールを流用しない）
     assert 'Principal = { Service = "lambda.amazonaws.com" }' in main
@@ -94,6 +97,8 @@ def test_module_routes_only_review_and_recovery_apis_to_the_decision_lambda():
         "GET /api/reviews/{recordId}",
         "POST /api/reviews/{recordId}/approve",
         "POST /api/reviews/{recordId}/reject",
+        "POST /api/records/{recordId}/suspend",
+        "POST /api/records/{recordId}/deprecate",
         "GET /api/records/{recordId}/recovery",
         "POST /api/records/{recordId}/recovery",
     ]
@@ -107,6 +112,8 @@ def test_module_routes_only_review_and_recovery_apis_to_the_decision_lambda():
     source_arns = re.findall(r"source_arn\s*=\s*\"([^\"]+)\"", main)
     assert [arn.split("/*/*")[1] for arn in source_arns] == [
         "/api/reviews*",
+        "/api/records/*/suspend",
+        "/api/records/*/deprecate",
         "/api/records/*/recovery",
     ]
 

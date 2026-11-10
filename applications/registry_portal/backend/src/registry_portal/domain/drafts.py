@@ -98,6 +98,8 @@ PENDING_APPROVAL_STATUS: RecordStatus = "PENDING_APPROVAL"
 # 公開承認済みで、AWS が公開中の版を返している状態
 PUBLISHED_STATUS: RecordStatus = "APPROVED"
 REJECTED_STATUS: RecordStatus = "REJECTED"
+# 廃止済み。元に戻せない状態（公開停止・廃止は #13）
+DEPRECATED_STATUS: RecordStatus = "DEPRECATED"
 # 申請が AWS に受け付けられた後にだけ取りうる状態（審査待ち、または審査で決裁済み）
 SUBMITTED_STATUSES: frozenset[RecordStatus] = frozenset(
     {PENDING_APPROVAL_STATUS, PUBLISHED_STATUS, REJECTED_STATUS}
@@ -114,15 +116,20 @@ NOT_EDITABLE_STATUSES: frozenset[RecordStatus] = IN_FLIGHT_STATUSES | {"DEPRECAT
 # ポータルの書き込み操作の状態。API が返すのは IN_PROGRESS 以外の3つで、
 # SPA の `OPERATION_STATES`（frontend/src/drafts/api.ts）と揃える
 OperationState = Literal["IN_PROGRESS", "VERIFYING", "FAILED", "SUCCEEDED"]
-OperationKind = Literal["CREATE", "UPDATE", "SUBMIT", "APPROVE", "REJECT"]
+OperationKind = Literal["CREATE", "UPDATE", "SUBMIT", "APPROVE", "REJECT", "SUSPEND", "DEPRECATE"]
 OPERATION_KINDS: tuple[OperationKind, ...] = get_args(OperationKind)
 CREATE_KIND: OperationKind = "CREATE"
 UPDATE_KIND: OperationKind = "UPDATE"
 SUBMIT_KIND: OperationKind = "SUBMIT"
 APPROVE_KIND: OperationKind = "APPROVE"
 REJECT_KIND: OperationKind = "REJECT"
-# 決裁 handler が行う操作（公開承認・却下）。操作照会は種別ごとに参照できる主体を変える
-DECISION_KINDS: frozenset[OperationKind] = frozenset({APPROVE_KIND, REJECT_KIND})
+# 公開停止（却下による非公開化）と廃止（元に戻せない DEPRECATED）。決裁と同じく決裁 handler が行う
+SUSPEND_KIND: OperationKind = "SUSPEND"
+DEPRECATE_KIND: OperationKind = "DEPRECATE"
+# 決裁 handler が行う操作（公開承認・却下・公開停止・廃止）。操作照会は種別ごとに参照できる主体を変える
+DECISION_KINDS: frozenset[OperationKind] = frozenset(
+    {APPROVE_KIND, REJECT_KIND, SUSPEND_KIND, DEPRECATE_KIND}
+)
 
 # 履歴 API が返す操作記録の結果。SPA の `HISTORY_STATES`（frontend/src/drafts/api.ts）と揃える。
 # 結果確認中は、操作照会（OperationState）が API で返す値と同じ VERIFYING で表す。

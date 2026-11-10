@@ -12,6 +12,10 @@ const SNAPSHOT_HASH = 'b'.repeat(64)
 const submittedBy = { issuer: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_EXAMPLE', subject: 'publisher-1' }
 const lastEditedBy = { ...submittedBy, subject: 'publisher-2' }
 const summary = {
+  reviewKind: 'SUBMISSION',
+  requestId: null,
+  requestedAt: null,
+  requestedBy: null,
   recordId: 'agentABC1234',
   name: 'payments-a2a',
   displayName: '決済 Agent',
@@ -385,4 +389,84 @@ it('状態が AWS の値の一覧にない応答は不正な応答として扱�
   await mount([jsonResponse(200, { items: [{ ...summary, status: 'UNKNOWN' }], nextToken: null })])
   expect(container.textContent).not.toContain('決済 Agent')
   expect(container.querySelector('[role="alert"]')).not.toBeNull()
+})
+
+const deprecationRequest = {
+  ...summary,
+  reviewKind: 'DEPRECATION_REQUEST',
+  status: 'APPROVED',
+  submissionState: 'NONE',
+  submissionId: null,
+  snapshotHash: null,
+  reason: '利用が終わったため',
+  submittedAt: null,
+  submittedBy: null,
+  requestId: 'request-1',
+  requestedAt: '2026-11-09T01:00:00+00:00',
+  requestedBy: { ...submittedBy, subject: 'publisher-1' },
+}
+const suspendResult = {
+  ...approveResult,
+  status: 'REJECTED',
+  publishedVersion: '1.0.0',
+  submissionId: null,
+  snapshotHash: null,
+}
+const deprecateResult = {
+  ...approveResult,
+  status: 'DEPRECATED',
+  publishedVersion: '1.0.0',
+  submissionId: null,
+  snapshotHash: null,
+}
+
+it('廃止依頼を申請と並べて一覧に表示し、依頼者と理由を確認できる', async () => {
+  await mount([
+    jsonResponse(200, { items: [summary, deprecationRequest], nextToken: null }),
+  ])
+  expect(container.textContent).toContain('廃止依頼: 利用が終わったため（依頼者 publisher-1）')
+  // 申請の審査と廃止依頼への対応を同じ一覧で行う
+  expect(container.textContent).toContain('申請理由: 利用者向けに公開する')
+  expect(button('審査する').disabled).toBe(false)
+})
+
+it('公開停止は理由を本文に載せて、却下による非公開化として実行する', async () => {
+  const calls = await mount([
+    jsonResponse(200, { items: [deprecationRequest], nextToken: null }),
+    jsonResponse(200, suspendResult),
+  ])
+  await setValue('suspendReason', '問題が見つかったため')
+  await submitForm(0)
+  expect(calls[1]?.url).toBe('/api/records/agentABC1234/suspend')
+  expect(sentBody(calls, 1)).toEqual({ reason: '問題が見つかったため' })
+  expect(idempotencyKey(calls, 1)).toMatch(/^[A-Za-z0-9_-]+$/)
+  expect(container.textContent).toContain(
+    '公開停止しました。再公開には Publisher による編集と再申請が必要です。',
+  )
+})
+
+it('廃止は二重確認が必須で、確認してから confirm を付けて実行する', async () => {
+  const calls = await mount([
+    jsonResponse(200, { items: [deprecationRequest], nextToken: null }),
+    jsonResponse(200, deprecateResult),
+  ])
+  await setValue('deprecateReason', '利用終了のため')
+  // 確認のチェック（二重確認）がないときは廃止を実行できない
+  expect(button('廃止する').disabled).toBe(true)
+  expect(container.textContent).toContain('廃止は元に戻せません')
+  const checkbox = container.querySelector<HTMLInputElement>('[name="deprecateConfirm"]')
+  if (!checkbox) throw new Error('確認のチェックボックスがありません')
+  await act(() => checkbox.click())
+  expect(button('廃止する').disabled).toBe(false)
+  await submitForm(1)
+  expect(calls[1]?.url).toBe('/api/records/agentABC1234/deprecate')
+  expect(sentBody(calls, 1)).toEqual({ reason: '利用終了のため', confirm: true })
+  expect(container.textContent).toContain('廃止しました。この操作は元に戻せません。')
+})
+
+it('一覧の応答に審査待ちの種別がなければ拒否する', async () => {
+  const withoutKind = { ...summary }
+  delete (withoutKind as Record<string, unknown>).reviewKind
+  await mount([jsonResponse(200, { items: [withoutKind], nextToken: null })])
+  expect(container.textContent).toContain('API から想定外の応答が返されました。')
 })

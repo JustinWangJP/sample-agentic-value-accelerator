@@ -63,6 +63,8 @@ locals {
     "GET /api/reviews/{recordId}",
     "POST /api/reviews/{recordId}/approve",
     "POST /api/reviews/{recordId}/reject",
+    "POST /api/records/{recordId}/suspend",
+    "POST /api/records/{recordId}/deprecate",
     "GET /api/records/{recordId}/recovery",
     "POST /api/records/{recordId}/recovery",
   ]
@@ -88,14 +90,30 @@ resource "aws_apigatewayv2_route" "decision" {
   authorizer_id      = var.jwt_authorizer_id
 }
 
-# HTTP API から決裁 Lambda を呼び出す許可。審査と決裁の path（/api/reviews 以下）と、
-# 回復操作の path（/api/records/{recordId}/recovery）だけに限る
+# HTTP API から決裁 Lambda を呼び出す許可。審査と決裁の path（/api/reviews 以下）、公開停止・廃止の
+# path（/api/records/{recordId}/suspend・/deprecate）、回復操作の path（/api/records/{recordId}/recovery）だけに限る
 resource "aws_lambda_permission" "decision_api" {
   statement_id  = "AllowHttpApiInvokeReviews"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.decision.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/*/api/reviews*"
+}
+
+resource "aws_lambda_permission" "decision_lifecycle_api" {
+  statement_id  = "AllowHttpApiInvokeLifecycle"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.decision.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/*/api/records/*/suspend"
+}
+
+resource "aws_lambda_permission" "decision_deprecate_api" {
+  statement_id  = "AllowHttpApiInvokeDeprecate"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.decision.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/*/api/records/*/deprecate"
 }
 
 resource "aws_lambda_permission" "decision_recovery_api" {

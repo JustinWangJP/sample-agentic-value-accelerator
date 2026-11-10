@@ -127,7 +127,15 @@ export type DraftOperation =
     }
 
 /** 操作の種別。バックエンドの OperationKind（domain/drafts.py）と揃える */
-export const OPERATION_KINDS = ['CREATE', 'UPDATE', 'SUBMIT', 'APPROVE', 'REJECT'] as const
+export const OPERATION_KINDS = [
+  'CREATE',
+  'UPDATE',
+  'SUBMIT',
+  'APPROVE',
+  'REJECT',
+  'SUSPEND',
+  'DEPRECATE',
+] as const
 export type OperationKind = (typeof OPERATION_KINDS)[number]
 /** 操作と審査の種別の表示 */
 export const KIND_LABELS: Record<OperationKind, string> = {
@@ -136,6 +144,8 @@ export const KIND_LABELS: Record<OperationKind, string> = {
   SUBMIT: '申請',
   APPROVE: '公開承認',
   REJECT: '却下',
+  SUSPEND: '公開停止',
+  DEPRECATE: '廃止',
 }
 /**
  * 履歴 API が返す操作記録の結果。バックエンドの HistoryState（domain/drafts.py）と揃える。
@@ -226,6 +236,32 @@ export type DraftApi = {
     idempotencyKey: string,
   ) => Promise<DraftOperation>
   getHistory: (recordId: string) => Promise<RecordHistory>
+  /** 廃止依頼。AWS の状態は変えず、Curator が審査待ちの一覧で対応する（設計書「業務上の状態」） */
+  requestDeprecation: (recordId: string, input: DeprecationRequestInput) => Promise<DeprecationRequest>
+}
+
+/** 廃止依頼の理由の上限。バックエンドの DEPRECATION_REASON_MAX_LENGTH（deprecation.py）と揃える */
+export const DEPRECATION_REASON_MAX_LENGTH = 255
+/** 廃止依頼の入力 */
+export type DeprecationRequestInput = { reason: string }
+/** 廃止依頼の状態。バックエンドの DEPRECATION_OPEN・DEPRECATION_RESOLVED（draft_store.py）と揃える */
+export const DEPRECATION_REQUEST_STATES = ['OPEN', 'RESOLVED'] as const
+export type DeprecationRequestState = (typeof DEPRECATION_REQUEST_STATES)[number]
+export type DeprecationRequest = {
+  state: DeprecationRequestState
+  requestId: string
+  recordId: string
+  reason: string
+  requestedBy: Principal
+  requestedAt: string
+}
+function isDeprecationRequest(value: unknown): value is DeprecationRequest {
+  return (
+    isObject(value) &&
+    DEPRECATION_REQUEST_STATES.some((state) => state === value.state) &&
+    hasStrings(value, ['requestId', 'recordId', 'reason', 'requestedAt']) &&
+    isPrincipal(value.requestedBy)
+  )
 }
 
 function isDraft(value: unknown): value is RecordDraft {
@@ -354,6 +390,11 @@ export function createDraftApi(request: ApiRequest, invalidResponse: () => Error
       checked(
         request('GET', `/api/records/${encodeURIComponent(id)}/history`),
         isHistory,
+      ),
+    requestDeprecation: (id, input) =>
+      checked(
+        request('POST', `/api/records/${encodeURIComponent(id)}/deprecation-requests`, input),
+        isDeprecationRequest,
       ),
   }
 }

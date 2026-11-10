@@ -588,3 +588,28 @@ it('作成と申請は、結果が不明な失敗だけ同じキーを保ち、�
   expect(settlesIdempotencyKey({ status: 0, code: 'NETWORK_ERROR' })).toBe(false)
   expect(settlesIdempotencyKey({ status: 502, code: 'REGISTRY_UNAVAILABLE' })).toBe(false)
 })
+
+it('廃止依頼は理由を本文に載せて送り、Curator への依頼を表示する', async () => {
+  const calls = await mount([
+    savedList(a2aDraft, 'APPROVED'),
+    jsonResponse(200, detailOf(a2aDraft)),
+    jsonResponse(200, {
+      state: 'OPEN',
+      requestId: 'request-1',
+      recordId: 'agentABC1234',
+      reason: '利用が終わったため',
+      requestedBy: { issuer: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_EXAMPLE', subject: 'alice' },
+      requestedAt: '2026-11-09T01:00:00+00:00',
+    }),
+  ])
+  await click('編集')
+  await setValue('deprecationReason', '利用が終わったため')
+  await act(() =>
+    container
+      .querySelectorAll('form')[1]
+      ?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+  )
+  expect(calls[2]?.url).toBe('/api/records/agentABC1234/deprecation-requests')
+  expect(sentBody(calls, 2)).toEqual({ reason: '利用が終わったため' })
+  expect(container.textContent).toContain('廃止依頼を送信しました。Curator が対応します')
+})

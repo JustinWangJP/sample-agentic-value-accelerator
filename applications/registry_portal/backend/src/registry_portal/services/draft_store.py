@@ -25,8 +25,13 @@ from registry_portal.domain.drafts import (
     AuditPhase,
     audit_sk,
     is_decision_operation,
+    is_principal,
     parse_audit_sk,
 )
+
+# 廃止依頼の状態。SPA の DEPRECATION_REQUEST_STATES（frontend/src/drafts/api.ts）と揃える
+DEPRECATION_OPEN = "OPEN"
+DEPRECATION_RESOLVED = "RESOLVED"
 
 # 補助テーブルの TTL 属性名。テーブルの TTL 設定でこの属性を指定する（README「custom Agent の下書き」）
 TTL_ATTRIBUTE = "expiresAt"
@@ -76,6 +81,25 @@ class StoreConflict(Exception):
     """別の操作が排他権を持つか、同じキーの操作が既にある。"""
 
 
+def parse_deprecation_request(item: Mapping[str, Any]) -> dict[str, Any]:
+    """保存された廃止依頼を検査する。型が契約と異なれば ValueError。
+
+    依頼の正本（主体・理由・日時）は解決済みでも書き換えない。解決の記録は Curator の操作側が持つ。
+    """
+    if (
+        not isinstance(item.get("reason"), str)
+        or not isinstance(item.get("requestedAt"), str)
+        or not is_principal(item.get("requestedBy"))
+        or item.get("state")
+        not in (
+            DEPRECATION_OPEN,
+            DEPRECATION_RESOLVED,
+        )
+    ):
+        raise ValueError("保存された廃止依頼の形式が正しくありません。")
+    return dict(item)
+
+
 class DraftStore:
     """補助 DynamoDB テーブルの下書き用の項目（管理情報・ロック・操作・追記記録）を扱う。
 
@@ -94,6 +118,10 @@ class DraftStore:
         """作成中でレコード ID がまだない Registry レコードを、名前で排他するためのキー。"""
         return f"REGISTRY#{self.registry}#NAME#{name}"
 
+    def deprecation_pk(self) -> str:
+        """廃止依頼（レコードをまたぐ一覧用）のパーティションキー。ソートキーはレコード ID。"""
+        return f"REGISTRY#{self.registry}#DEPRECATION"
+
     @staticmethod
     def _operation_pk(op_id: str) -> str:
         return f"OP#{op_id}"
@@ -110,6 +138,57 @@ class DraftStore:
 
     def _key(self, pk: str, sk: str) -> dict[str, Any]:
         return {"pk": {"S": pk}, "sk": {"S": sk}}
+
+    def get_deprecation_request(self, record_id: str) -> dict[str, Any] | None:
+        """廃止依頼1件を読む。保存内容の型が契約と異なれば ValueError。"""
+        item = self.get(self.deprecation_pk(), record_id)
+        return None if item is None else parse_deprecation_request(item)
+
+    def list_deprecation_requests(self) -> list[dict[str, Any]]:
+        """廃止依頼をすべて読む。審査待ちの一覧が OPEN の依頼だけを遡って表示する。
+
+        Query は1回の応答が 1MB までのため、LastEvaluatedKey がなくなるまで続きを読む。
+        保存内容の型が契約と異なれば ValueError。
+        """
+        params: QueryParams = {
+            "TableName": self.table,
+            "KeyConditionExpression": "pk = :pk",
+            "ExpressionAttributeValues": {":pk": {"S": self.deprecation_pk()}},
+        }
+        requests: list[dict[str, Any]] = []
+        while True:
+            response = self._client.query(**params)
+            for raw in response.get("Items", []):
+                requests.append(parse_deprecation_request(_deserialize(raw)))
+            last_key = response.get("LastEvaluatedKey")
+            if not last_key:
+                return requests
+            params["ExclusiveStartKey"] = last_key
+
+    def save_deprecation_request(self, record_id: str, request: Mapping[str, Any]) -> None:
+        """廃止依頼を保存する。未解決の依頼がすでにあれば StoreConflict。
+
+        解決済みの依頼は新しい依頼で上書きする（レコードごとに依頼は1件だけ残る）。
+        """
+        put = self._put(
+            {**request, "pk": self.deprecation_pk(), "sk": record_id},
+            "attribute_not_exists(pk) OR #state = :resolved",
+            {":resolved": DEPRECATION_RESOLVED},
+        )
+        put["Put"]["ExpressionAttributeNames"] = {"#state": "state"}
+        self._transact([put])
+
+    def resolve_deprecation_request_item(
+        self, record_id: str, resolution: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """未解決の廃止依頼を解決済みにする、トランザクションの項目。未解決の依頼がなければ失敗する。"""
+        put = self._put(
+            {**resolution, "pk": self.deprecation_pk(), "sk": record_id},
+            "#state = :open",
+            {":open": DEPRECATION_OPEN},
+        )
+        put["Put"]["ExpressionAttributeNames"] = {"#state": "state"}
+        return put
 
     def get(self, pk: str, sk: str) -> dict[str, Any] | None:
         item = self._client.get_item(
@@ -412,12 +491,14 @@ class DraftStore:
         result: Mapping[str, Any],
         management: Management,
         published: Mapping[str, Any] | None,
+        deprecation_resolution: Mapping[str, Any] | None = None,
     ) -> None:
         """決裁の成功を確定する。公開承認では Curator が確認した内容を公開版スナップショットに保存する。
 
         published は公開承認のときだけ指定し、決裁の対象とした版（operation の recordVersion）の
         公開版スナップショットとして保存する。項目は申請スナップショットの値を写し、
         決裁のたびに新しく作る（版は公開中の版より大きいため、上書きされない）。
+        公開停止・廃止では、未解決の廃止依頼があれば deprecation_resolution で解決済みにする。
         """
         record_pk = self.record_pk(operation["recordId"])
         owner = self._put(
@@ -438,5 +519,9 @@ class DraftStore:
                         "sk": published_snapshot_sk(operation["recordVersion"]),
                     }
                 )
+            )
+        if deprecation_resolution is not None:
+            items.append(
+                self.resolve_deprecation_request_item(operation["recordId"], deprecation_resolution)
             )
         self._transact(items)

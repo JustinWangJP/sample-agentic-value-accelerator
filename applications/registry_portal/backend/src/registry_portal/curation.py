@@ -22,16 +22,22 @@ from registry_portal.domain.curation import (
     ATTACHMENT_MISSING,
     ATTACHMENT_NONE,
     DECISION_TARGETS,
+    LIFECYCLE_KINDS,
     AttachmentState,
     DecisionInput,
+    LifecycleInput,
     SelfApprovalError,
+    check_deprecatable,
     check_decidable,
     check_not_self_approval,
+    check_suspendable,
     published_base,
     published_item,
 )
 from registry_portal.domain.drafts import (
     APPROVE_KIND,
+    DEPRECATE_KIND,
+    SUSPEND_KIND,
     IN_FLIGHT_STATUSES,
     PENDING_APPROVAL_STATUS,
     RECORD_ID_PATTERN,
@@ -42,6 +48,7 @@ from registry_portal.domain.drafts import (
     digest,
 )
 from registry_portal.domain.submissions import recompute_snapshot_hash, snapshot_fields
+from registry_portal.deprecation import deprecation_request_view
 from registry_portal.errors import ApiError, ForbiddenError, RequestValidationError
 from registry_portal.operations import (
     AWS_REJECTED_ERRORS,
@@ -171,10 +178,62 @@ class RecordCuration:
             params["nextToken"] = token
         try:
             response = self._registry_client.list_registry_records(**params)
-            items = [self._summary(record) for record in response["registryRecords"]]
+            items = [
+                {"reviewKind": "SUBMISSION", **self._summary(record)}
+                for record in response["registryRecords"]
+            ]
+            items.extend(self._deprecation_requests())
             return 200, {"items": items, "nextToken": response.get("nextToken")}
         except (BotoCoreError, ClientError):
             raise DecisionUnavailable() from None
+
+    def _deprecation_requests(self) -> list[dict[str, Any]]:
+        """未解決の廃止依頼を、申請と並べて審査待ちの一覧に加える（設計書「API」）。
+
+        AWS の承認待ちとは別に補助テーブルが正本のため、nextToken のページの後に毎回並べる。
+        依頼の対象のレコードが削除済みなら、その依頼は表示しない（解決もできないため）。
+        """
+        try:
+            requests = self.store.list_deprecation_requests()
+        except (BotoCoreError, ClientError):
+            raise DecisionUnavailable() from None
+        except ValueError:
+            raise DecisionUnavailable(
+                "保存された廃止依頼の形式が正しくありません。管理者に連絡してください。"
+            ) from None
+        items: list[dict[str, Any]] = []
+        for request in requests:
+            if request.get("state") != "OPEN":
+                continue
+            record_id = str(request["recordId"])
+            try:
+                record = self._get_record(record_id)
+            except PendingApprovalNotFound:
+                continue
+            management = self._load_management(record_id)
+            items.append(
+                {
+                    "reviewKind": "DEPRECATION_REQUEST",
+                    **self._record_summary(record, management),
+                    **deprecation_request_view(request),
+                }
+            )
+        return items
+
+    def _record_summary(
+        self, record: Mapping[str, Any], management: Management | None
+    ) -> dict[str, Any]:
+        """審査待ちの一覧に並べる、レコードの要約（申請と廃止依頼で共通する項目）。"""
+        return {
+            "recordId": record["recordId"],
+            "name": record["name"],
+            "displayName": _display_name(record),
+            "recordType": record["recordType"],
+            "recordVersion": record.get("recordVersion", ""),
+            "status": record["status"],
+            "managed": _is_managed(management),
+            "ownerTeam": management.owner_team if management is not None else None,
+        }
 
     def _summary(self, record: Mapping[str, Any]) -> dict[str, Any]:
         """AWS の承認待ちレコード1件に、申請の補助情報を結合する。"""
@@ -183,14 +242,7 @@ class RecordCuration:
         lock = self._get_lock(record_id)
         state, submission_id, submission = self._active_submission(record_id, management)
         return {
-            "recordId": record_id,
-            "name": record["name"],
-            "displayName": _display_name(record),
-            "recordType": record["recordType"],
-            "recordVersion": record.get("recordVersion", ""),
-            "status": record["status"],
-            "managed": _is_managed(management),
-            "ownerTeam": management.owner_team if management is not None else None,
+            **self._record_summary(record, management),
             "submissionState": state,
             "submissionId": submission_id,
             "snapshotHash": submission.get("snapshotHash") if submission else None,
@@ -282,11 +334,20 @@ class RecordCuration:
         *,
         kind: OperationKind,
     ) -> DecisionResponse:
-        """公開承認（APPROVE）または却下（REJECT）。AWS の status はクライアントから受け取らない。"""
+        """公開承認（APPROVE）・却下（REJECT）・公開停止（SUSPEND）・廃止（DEPRECATE）。
+
+        AWS の status はクライアントから受け取らない。公開停止と廃止は申請スナップショットではなく
+        公開中の現物を対象にする（設計書「業務上の状態」）。
+        """
         require_curator(caller)
         check_idempotency_key(key)
+        lifecycle = kind in LIFECYCLE_KINDS
         try:
-            request = DecisionInput.parse(body, kind)
+            if lifecycle:
+                reason = LifecycleInput.parse(body, kind).reason
+            else:
+                decision = DecisionInput.parse(body, kind)
+                reason = decision.reason
         except ValueError as error:
             raise RequestValidationError(str(error)) from None
         if not RECORD_ID_PATTERN.fullmatch(record_id):
@@ -307,10 +368,11 @@ class RecordCuration:
             "lockPk": self.store.record_pk(record_id),
             "startedAt": now(),
             "management": dict(management.item),
-            "reason": request.reason,
-            "snapshotHash": request.snapshot_hash,
+            "reason": reason,
             "requestHash": digest(body),
         }
+        if not lifecycle:
+            operation["snapshotHash"] = decision.snapshot_hash
         try:
             existing = self.store.get_decision_operation(operation["operationId"])
         except (BotoCoreError, ClientError):
@@ -388,15 +450,27 @@ class RecordCuration:
 
         Curator が見たスナップショットのハッシュが、保存済みスナップショットから計算し直したハッシュと
         一致し、現物から計算し直した内容ハッシュも申請時と一致しなければ、決裁しない
-        （設計書「内容を確認してから決裁する」）。
+        （設計書「内容を確認してから決裁する」）。公開停止・廃止は申請を対象としないため、現物の状態と
+        内容ハッシュだけを固定する。
         """
         record_id = operation["recordId"]
         record = self._get_record(record_id)
         try:
-            check_decidable(str(record["status"]))
+            if operation["kind"] in LIFECYCLE_KINDS:
+                check = (
+                    check_suspendable if operation["kind"] == SUSPEND_KIND else check_deprecatable
+                )
+                check(str(record["status"]))
+            else:
+                check_decidable(str(record["status"]))
         except ValueError as error:
             raise DecisionConflict(str(error)) from None
         management = Management(operation["management"])
+        if operation["kind"] in LIFECYCLE_KINDS:
+            # 公開停止・廃止の対象は公開中の現物。内容ハッシュで固定し、決裁の照合に使う
+            operation["expectedContentHash"] = content_hash(record, management)
+            operation["recordVersion"] = str(record["recordVersion"])
+            return record
         state, submission_id, submission = self._active_submission(record_id, management)
         if state != ATTACHMENT_AVAILABLE or submission is None or submission_id is None:
             raise DecisionConflict(_SUBMISSION_UNCONFIRMED)
@@ -546,13 +620,19 @@ class RecordCuration:
         """決裁の成功を確定する。公開承認では、Curator が確認した内容を公開版として保存する。"""
         published: Mapping[str, Any] | None = None
         management_item = {**management.item, "activeSubmissionId": None}
-        if operation["kind"] == APPROVE_KIND:
+        resolution: dict[str, Any] | None = None
+        kind = operation["kind"]
+        if kind == APPROVE_KIND:
             submission = self._get_submission(operation["recordId"], str(operation["submissionId"]))
             if submission is None:
                 raise DecisionUnavailable("申請スナップショットを読み取れません。")
             published = published_item(submission, operation["principal"], now())
             management_item["publishedVersion"] = operation["recordVersion"]
+        elif kind in LIFECYCLE_KINDS:
+            # 公開停止・廃止で未解決の廃止依頼があれば、この決裁で解決済みにする
+            resolution = self._deprecation_resolution(operation)
         after = Management(management_item)
+        lifecycle = kind in LIFECYCLE_KINDS
         result: dict[str, Any] = {
             "recordId": operation["recordId"],
             "name": record["name"],
@@ -564,11 +644,38 @@ class RecordCuration:
             "publishedVersion": after.published_version(record),
             "operationId": operation["operationId"],
             "operationState": "SUCCEEDED",
-            "submissionId": operation["submissionId"],
-            "snapshotHash": operation["snapshotHash"],
+            # 公開停止・廃止は申請を対象としないため、申請の情報は持たない
+            "submissionId": None if lifecycle else operation["submissionId"],
+            "snapshotHash": None if lifecycle else operation["snapshotHash"],
         }
-        self.store.finish_decision(operation, result, after, published)
+        self.store.finish_decision(operation, result, after, published, resolution)
         return 200, result
+
+    def _deprecation_resolution(self, operation: DecisionOperation) -> dict[str, Any] | None:
+        """この決裁で解決できる未解決の廃止依頼。なければ None（トランザクションに入れない）。
+
+        依頼が保存されていなければ解決しない。保存内容の形式の異常は 502 として扱う。
+        """
+        try:
+            request = self.store.get_deprecation_request(operation["recordId"])
+        except (BotoCoreError, ClientError):
+            raise DecisionUnavailable() from None
+        except ValueError:
+            raise DecisionUnavailable(
+                "保存された廃止依頼の形式が正しくありません。管理者に連絡してください。"
+            ) from None
+        if request is None or request.get("state") != "OPEN":
+            return None
+        return {
+            **{
+                key: request[key]
+                for key in ("requestId", "recordId", "reason", "requestedBy", "requestedAt")
+            },
+            "state": "RESOLVED",
+            "resolution": "DEPRECATED" if operation["kind"] == DEPRECATE_KIND else "SUSPENDED",
+            "resolvedBy": operation["principal"],
+            "resolvedAt": now(),
+        }
 
     def _abort_quietly(self, operation: DecisionOperation, code: str) -> None:
         try:

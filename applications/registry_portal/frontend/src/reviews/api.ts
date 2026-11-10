@@ -21,6 +21,16 @@ export const DECISION_KINDS = ['approve', 'reject'] as const
 export type DecisionKind = (typeof DECISION_KINDS)[number]
 
 /**
+ * 審査待ちの一覧の項目の種別。申請（AWS の承認待ち）と廃止依頼（ポータル内で発生）を並べて表示する
+ * （設計書「API」。バックエンドの list_reviews と揃える）
+ */
+export const REVIEW_KINDS = ['SUBMISSION', 'DEPRECATION_REQUEST'] as const
+export type ReviewKind = (typeof REVIEW_KINDS)[number]
+function isReviewKind(value: unknown): value is ReviewKind {
+  return REVIEW_KINDS.some((kind) => kind === value)
+}
+
+/**
  * 申請スナップショット・公開版スナップショットの取得状態。バックエンドの AttachmentState（domain/curation.py）と揃える。
  * NONE はそもそも存在しない（ポータル外の申請・初回公開）、MISSING は存在するはずなのに読めない（保存内容の異常）
  */
@@ -36,6 +46,7 @@ export type { Principal }
 
 /** 審査待ちの一覧の項目。AWS の承認待ちを正本とし、申請の補助情報を結合したもの */
 export type PendingSummary = {
+  reviewKind: ReviewKind
   recordId: string
   name: string
   displayName: string
@@ -52,6 +63,10 @@ export type PendingSummary = {
   submittedBy: Principal | null
   invalidated: boolean
   operationId: string | null
+  /** 廃止依頼（reviewKind が DEPRECATION_REQUEST のときだけ値を持つ） */
+  requestId: string | null
+  requestedAt: string | null
+  requestedBy: Principal | null
 }
 
 export type PendingPage = { items: PendingSummary[]; nextToken: string | null }
@@ -123,8 +138,9 @@ export type DecisionOperation =
       publishedVersion: string | null
       operationId: string
       operationState: Extract<OperationState, 'SUCCEEDED'>
-      submissionId: string
-      snapshotHash: string
+      /** 公開停止・廃止は申請を対象としないため null */
+      submissionId: string | null
+      snapshotHash: string | null
       /** Admin の回復操作で確定した決裁にだけ付く */
       recovery?: RecoveryRecord
     }
@@ -137,6 +153,11 @@ export type DecisionOperation =
 
 export type DecisionInput = { snapshotHash: string; reason: string }
 
+/** 公開停止（却下による非公開化）の入力。バックエンドの LifecycleInput（SUSPEND）と揃える */
+export type SuspendInput = { reason: string }
+/** 廃止の入力。元に戻せないため確認（confirm）が必須（バックエンドの LifecycleInput（DEPRECATE）） */
+export type DeprecateInput = { reason: string; confirm: true }
+
 export type ReviewApi = {
   listReviews: (nextToken?: string) => Promise<PendingPage>
   getReview: (recordId: string) => Promise<PendingDetail>
@@ -144,6 +165,16 @@ export type ReviewApi = {
     kind: DecisionKind,
     recordId: string,
     input: DecisionInput,
+    idempotencyKey: string,
+  ) => Promise<DecisionOperation>
+  suspendRecord: (
+    recordId: string,
+    input: SuspendInput,
+    idempotencyKey: string,
+  ) => Promise<DecisionOperation>
+  deprecateRecord: (
+    recordId: string,
+    input: DeprecateInput,
     idempotencyKey: string,
   ) => Promise<DecisionOperation>
   getDecisionOperation: (operationId: string) => Promise<DecisionOperation>
@@ -162,6 +193,7 @@ function isReferenceList(value: unknown): value is RecordReference[] {
 function isSummary(value: unknown): value is PendingSummary {
   return (
     isObject(value) &&
+    isReviewKind(value.reviewKind) &&
     hasStrings(value, ['recordId', 'name', 'displayName', 'recordVersion']) &&
     isCatalogRecordType(value.recordType) &&
     isRecordStatus(value.status) &&
@@ -174,7 +206,10 @@ function isSummary(value: unknown): value is PendingSummary {
     isStringOrNull(value.submittedAt) &&
     (value.submittedBy === null || isPrincipal(value.submittedBy)) &&
     typeof value.invalidated === 'boolean' &&
-    isStringOrNull(value.operationId)
+    isStringOrNull(value.operationId) &&
+    isStringOrNull(value.requestId) &&
+    isStringOrNull(value.requestedAt) &&
+    (value.requestedBy === null || isPrincipal(value.requestedBy))
   )
 }
 function isPage(value: unknown): value is PendingPage {
@@ -242,15 +277,10 @@ function isOperation(value: unknown): value is DecisionOperation {
     isObject(value) &&
     typeof value.operationId === 'string' &&
     ((value.operationState === 'SUCCEEDED' &&
-      hasStrings(value, [
-        'recordId',
-        'name',
-        'displayName',
-        'recordVersion',
-        'ownerTeam',
-        'submissionId',
-        'snapshotHash',
-      ]) &&
+      hasStrings(value, ['recordId', 'name', 'displayName', 'recordVersion', 'ownerTeam']) &&
+      // 公開停止・廃止は申請を対象としないため、申請の情報は持たない
+      isStringOrNull(value.submissionId) &&
+      isStringOrNull(value.snapshotHash) &&
       isRecordStatus(value.status) &&
       isStringOrNull(value.publishedVersion) &&
       isCatalogRecordType(value.recordType)) ||
@@ -274,6 +304,20 @@ export function createReviewApi(request: ApiRequest, invalidResponse: () => Erro
     decideSubmission: (kind, id, input, key) =>
       checked(
         request('POST', `/api/reviews/${encodeURIComponent(id)}/${kind}`, input, {
+          'idempotency-key': key,
+        }),
+        isOperation,
+      ),
+    suspendRecord: (id, input, key) =>
+      checked(
+        request('POST', `/api/records/${encodeURIComponent(id)}/suspend`, input, {
+          'idempotency-key': key,
+        }),
+        isOperation,
+      ),
+    deprecateRecord: (id, input, key) =>
+      checked(
+        request('POST', `/api/records/${encodeURIComponent(id)}/deprecate`, input, {
           'idempotency-key': key,
         }),
         isOperation,

@@ -29,9 +29,15 @@ from registry_portal.curation import (
     RecordCuration,
     RegistryStatusClient,
 )
+from registry_portal.deprecation import (
+    DEPRECATION_BODY_MAX_LENGTH,
+    DeprecationRequests,
+)
 from registry_portal.domain.drafts import (
     APPROVE_KIND,
+    DEPRECATE_KIND,
     REJECT_KIND,
+    SUSPEND_KIND,
     OperationKind,
     is_decision_operation,
 )
@@ -95,6 +101,13 @@ _PARAMETERIZED_ROUTES = (
     ("GET /api/records/", "/history", "GET /api/records/{recordId}/history"),
     ("PATCH /api/records/", "", "PATCH /api/records/{recordId}"),
     ("POST /api/records/", "/submit", "POST /api/records/{recordId}/submit"),
+    (
+        "POST /api/records/",
+        "/deprecation-requests",
+        "POST /api/records/{recordId}/deprecation-requests",
+    ),
+    ("POST /api/records/", "/suspend", "POST /api/records/{recordId}/suspend"),
+    ("POST /api/records/", "/deprecate", "POST /api/records/{recordId}/deprecate"),
     ("GET /api/records/", "/recovery", "GET /api/records/{recordId}/recovery"),
     ("POST /api/records/", "/recovery", "POST /api/records/{recordId}/recovery"),
     ("GET /api/operations/", "", "GET /api/operations/{operationId}"),
@@ -231,6 +244,7 @@ def create_management_handler(
     # このインスタンスは AWS の状態更新 API を呼び出さない（IAM でも拒否される）
     curation = None
     history_service = None
+    deprecation_requests = None
     if catalog_settings.supplement_table_name:
         control_client = registry_client or cast(
             RegistryControlClient,
@@ -249,6 +263,7 @@ def create_management_handler(
             discovery_settings.registry_arn, store, cast(RegistryStatusClient, control_client)
         )
         history_service = RecordHistory(store)
+        deprecation_requests = DeprecationRequests(store, control_client)
 
     def drafts_for(caller: Caller) -> RecordDrafts:
         # 権限のない呼び出し元には、設定の状態より先に 403 を返す
@@ -305,6 +320,15 @@ def create_management_handler(
             _idempotency_key(event),
         )
 
+    def request_deprecation(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        # 廃止依頼も Publisher の書き込み操作。権限のない呼び出し元には設定の状態より先に 403 を返す
+        require_publisher(caller)
+        if deprecation_requests is None:
+            raise DraftsNotConfigured()
+        return deprecation_requests.create(
+            caller, _path_parameter(event), _json_body(event, DEPRECATION_BODY_MAX_LENGTH)
+        )
+
     def get_operation(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
         # 操作の種別で参照できる主体が変わる（決裁は決裁した Curator、下書きは所有チームの Publisher）。
         # 認可は種別ごとの照会の内側で行う
@@ -327,6 +351,7 @@ def create_management_handler(
         "PATCH /api/records/{recordId}": patch_record,
         "GET /api/operations/{operationId}": get_operation,
         "POST /api/records/{recordId}/submit": submit_record,
+        "POST /api/records/{recordId}/deprecation-requests": request_deprecation,
     }
 
     return _serve(routes, settings)
@@ -403,6 +428,9 @@ def create_curation_handler(
         "GET /api/reviews/{recordId}": get_review,
         "POST /api/reviews/{recordId}/approve": decision_route(APPROVE_KIND),
         "POST /api/reviews/{recordId}/reject": decision_route(REJECT_KIND),
+        # 公開停止と廃止も決裁 handler が行う（UpdateRegistryRecordStatus は決裁 Lambda の権限）
+        "POST /api/records/{recordId}/suspend": decision_route(SUSPEND_KIND),
+        "POST /api/records/{recordId}/deprecate": decision_route(DEPRECATE_KIND),
         "GET /api/records/{recordId}/recovery": get_recovery,
         "POST /api/records/{recordId}/recovery": recover_operation,
     }

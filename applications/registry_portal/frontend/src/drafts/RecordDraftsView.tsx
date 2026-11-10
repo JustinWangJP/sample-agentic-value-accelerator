@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { DeprecationRequestForm } from './DeprecationRequestForm'
 import { OperationCheck } from './OperationCheck'
 import { RecordHistoryToggle } from './RecordHistoryView'
 import { SubmissionView } from './SubmissionView'
@@ -603,6 +604,13 @@ function DraftEditor({
             保存済みの内容を申請
           </button>
         </>
+      )}
+      {initial.kind === 'edit' && initial.detail.status !== 'DEPRECATED' && (
+        <DeprecationRequestForm
+          api={api}
+          recordId={initial.detail.recordId}
+          onRelogin={onRelogin}
+        />
       )}
       {initial.kind === 'edit' && (
         <RecordHistoryToggle api={api} recordId={initial.detail.recordId} onRelogin={onRelogin} />

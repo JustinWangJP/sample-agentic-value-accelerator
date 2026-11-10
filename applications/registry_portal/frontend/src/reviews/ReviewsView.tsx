@@ -139,31 +139,55 @@ export function ReviewsView({ api, roles, onRelogin }: Props) {
             <p>{list.page.nextToken ? 'このページに審査待ちはありません。' : '審査待ちはありません。'}</p>
           )}
           <ul className="catalog-items">
-            {list.page.items.map((item) => (
-              <li key={item.recordId}>
-                <h3>{item.displayName}</h3>
-                <p>
-                  {RECORD_TYPE_LABELS[item.recordType]}・{item.name}・
-                  {item.ownerTeam ?? '所有チーム不明'}・版 {item.recordVersion}
-                </p>
-                <p>
-                  申請理由: {submissionLine(item)}
-                  {item.submittedBy && `（申請者 ${item.submittedBy.subject}）`}
-                </p>
-                <p>
-                  状態 {statusLabel(item.status)}
-                  {item.operationId && ' / 結果確認中'}
-                </p>
-                {!item.managed && <p>ポータルで管理されていないため、ここでは決裁できません。</p>}
-                <button
-                  type="button"
-                  disabled={item.operationId !== null || !item.snapshotHash}
-                  onClick={() => void openDetail(item.recordId)}
-                >
-                  審査する
-                </button>
-              </li>
-            ))}
+            {list.page.items.map((item) =>
+              item.reviewKind === 'DEPRECATION_REQUEST' ? (
+                <li key={`request-${item.recordId}`}>
+                  <h3>{item.displayName}</h3>
+                  <p>
+                    {RECORD_TYPE_LABELS[item.recordType]}・{item.name}・
+                    {item.ownerTeam ?? '所有チーム不明'}・版 {item.recordVersion}
+                  </p>
+                  <p>
+                    廃止依頼: {item.reason ?? '（理由なし）'}（依頼者{' '}
+                    {item.requestedBy ? item.requestedBy.subject : '不明'}）
+                  </p>
+                  <p>状態 {statusLabel(item.status)}</p>
+                  {!item.managed && <p>ポータルで管理されていないため、ここでは対応できません。</p>}
+                  <DeprecationRequestActions
+                    api={api}
+                    item={item}
+                    onRelogin={onRelogin}
+                    onDone={back}
+                  />
+                </li>
+              ) : (
+                <li key={item.recordId}>
+                  <h3>{item.displayName}</h3>
+                  <p>
+                    {RECORD_TYPE_LABELS[item.recordType]}・{item.name}・
+                    {item.ownerTeam ?? '所有チーム不明'}・版 {item.recordVersion}
+                  </p>
+                  <p>
+                    申請理由: {submissionLine(item)}
+                    {item.submittedBy && `（申請者 ${item.submittedBy.subject}）`}
+                  </p>
+                  <p>
+                    状態 {statusLabel(item.status)}
+                    {item.operationId && ' / 結果確認中'}
+                  </p>
+                  {!item.managed && (
+                    <p>ポータルで管理されていないため、ここでは決裁できません。</p>
+                  )}
+                  <button
+                    type="button"
+                    disabled={item.operationId !== null || !item.snapshotHash}
+                    onClick={() => void openDetail(item.recordId)}
+                  >
+                    審査する
+                  </button>
+                </li>
+              ),
+            )}
           </ul>
           <nav className="pager" aria-label="審査待ちのページ">
             <button
@@ -534,5 +558,158 @@ function DecisionOperationCheck({
       </button>
       {error && <RequestErrorAlert error={error} onRelogin={onRelogin} />}
     </div>
+  )
+}
+
+type LifecycleState =
+  | { kind: 'idle' }
+  | { kind: 'busy' }
+  | { kind: 'error'; error: ApiError }
+  | { kind: 'result'; operation: DecisionOperation }
+
+/**
+ * 廃止依頼への対応。Curator が公開停止（却下による非公開化）または廃止（元に戻せない）を行う。
+ * 廃止は理由の入力に加えて、確認のチェック（二重確認）を必須にする（設計書「業務上の状態」）
+ */
+function DeprecationRequestActions({
+  api,
+  item,
+  onRelogin,
+  onDone,
+}: {
+  api: ApiClient
+  item: PendingSummary
+  onRelogin: () => void
+  onDone: () => void
+}) {
+  const [reason, setReason] = useState('')
+  const [confirmed, setConfirmed] = useState(false)
+  const [state, setState] = useState<LifecycleState>({ kind: 'idle' })
+  const busy = state.kind === 'busy'
+
+  async function run(kind: 'suspend' | 'deprecate') {
+    const trimmed = reason.trim()
+    if (!trimmed) return
+    if (kind === 'deprecate' && !confirmed) return
+    setState({ kind: 'busy' })
+    try {
+      const operation =
+        kind === 'suspend'
+          ? await api.suspendRecord(item.recordId, { reason: trimmed }, crypto.randomUUID())
+          : await api.deprecateRecord(
+              item.recordId,
+              { reason: trimmed, confirm: true },
+              crypto.randomUUID(),
+            )
+      setState({ kind: 'result', operation })
+    } catch (failure) {
+      setState({
+        kind: 'error',
+        error: toApiError(
+          failure,
+          kind === 'suspend' ? '公開停止できませんでした。' : '廃止できませんでした。',
+        ),
+      })
+    }
+  }
+
+  return (
+    <section aria-label={`${item.displayName} の廃止依頼への対応`}>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault()
+          void run('suspend')
+        }}
+      >
+        <fieldset disabled={busy || !item.managed}>
+          <legend>公開停止</legend>
+          <p>
+            問題が見つかったものを理由付きで発見できなくします。これは却下による非公開化のため、
+            再公開には Publisher による編集と再申請が必要です。
+          </p>
+          <label>
+            公開停止の理由（必須）
+            <textarea
+              name="suspendReason"
+              required
+              maxLength={DECISION_REASON_MAX_LENGTH}
+              rows={3}
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+            />
+          </label>
+          <button type="submit" disabled={busy || !reason.trim()}>
+            公開停止する
+          </button>
+        </fieldset>
+      </form>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault()
+          void run('deprecate')
+        }}
+      >
+        <fieldset disabled={busy || !item.managed}>
+          <legend>廃止</legend>
+          <p>廃止は元に戻せません。レコードは DEPRECATED になり、再公開には新規の登録が必要です。</p>
+          <label>
+            廃止理由（必須）
+            <textarea
+              name="deprecateReason"
+              required
+              maxLength={DECISION_REASON_MAX_LENGTH}
+              rows={3}
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+            />
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              name="deprecateConfirm"
+              checked={confirmed}
+              onChange={(event) => setConfirmed(event.target.checked)}
+            />
+            廃止は元に戻せないことを確認しました
+          </label>
+          <button type="submit" disabled={busy || !reason.trim() || !confirmed}>
+            廃止する
+          </button>
+        </fieldset>
+      </form>
+      {state.kind === 'busy' && <p role="status">実行しています…</p>}
+      {state.kind === 'error' && (
+        <>
+          <RequestErrorAlert error={state.error} onRelogin={onRelogin} />
+          {state.error.status === 409 && (
+            <p>レコードの状態が変わっています。一覧を再読み込みして最新の状態を確認してください。</p>
+          )}
+        </>
+      )}
+      {state.kind === 'result' && state.operation.operationState === 'SUCCEEDED' && (
+        <p role="status">
+          {state.operation.status === 'DEPRECATED'
+            ? '廃止しました。この操作は元に戻せません。'
+            : '公開停止しました。再公開には Publisher による編集と再申請が必要です。'}
+        </p>
+      )}
+      {state.kind === 'result' && state.operation.operationState === 'VERIFYING' && (
+        <DecisionOperationCheck
+          api={api}
+          operationId={state.operation.operationId}
+          onDone={(operation) => setState({ kind: 'result', operation })}
+          onRelogin={onRelogin}
+        />
+      )}
+      {state.kind === 'result' && state.operation.operationState === 'FAILED' && (
+        <p role="alert">{state.operation.message}</p>
+      )}
+      {state.kind === 'idle' && item.status === 'DEPRECATED' && (
+        <p>このレコードはすでに廃止されています。一覧を再読み込みしてください。</p>
+      )}
+      <button type="button" onClick={onDone} disabled={busy}>
+        一覧を再読み込み
+      </button>
+    </section>
   )
 }

@@ -20,7 +20,8 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 | `backend/src/registry_portal/services/http.py` | 標準ライブラリによる HTTP トランスポート。テストではフェイクに差し替える |
 | `backend/src/registry_portal/operations.py` | 下書きと決裁の操作に共通する API 層の補助（AWS のエラーの分類、`Idempotency-Key` の検査、操作の応答と request ID の記録） |
 | `backend/src/registry_portal/drafts.py` | 下書きの作成・編集・一覧・申請・操作の照合 API。排他・冪等性、申請前の検査と申請 API の呼び出し、AWS の失敗の API エラーへの変換 |
-| `backend/src/registry_portal/curation.py` | 審査待ちの一覧・詳細と、Curator の決裁（公開承認・却下）API。AWS の承認待ちを正本とし、スナップショットの照合と決裁の手順（意図の記録→AWS→再取得→確定）を担う。決裁 handler と管理 handler の操作照会（`app.py` が操作の種別で振り分ける）の両方から使う |
+| `backend/src/registry_portal/deprecation.py` | Publisher の廃止依頼（管理 handler）。所有チームの検査と依頼の保存、審査待ちの一覧に並べる項目の組み立てを担う |
+| `backend/src/registry_portal/curation.py` | 審査待ちの一覧・詳細と、Curator の決裁（公開承認・却下・公開停止・廃止）API。AWS の承認待ちを正本とし、スナップショットの照合と決裁の手順（意図の記録→AWS→再取得→確定）を担う。決裁 handler と管理 handler の操作照会（`app.py` が操作の種別で振り分ける）の両方から使う |
 | `backend/src/registry_portal/domain/drafts.py` | 下書きのフォーム入力・管理情報のモデル、AWS の作成用・更新用 payload への変換、状態と environment の値。SPA の `frontend/src/drafts/api.ts` と値を揃える |
 | `backend/src/registry_portal/domain/submissions.py` | 申請入力、semver の比較、`isA2A`・公開中の版・関連参照の参照先の検査、申請スナップショットの構築と、保存済みスナップショットからのハッシュの再計算 |
 | `backend/src/registry_portal/domain/curation.py` | 決裁入力（スナップショットのハッシュと理由）の検査、決裁できる状態の規則、自己承認の禁止、決裁の種別ごとの AWS の遷移先、公開版スナップショット（`PUBLISHED#版`）への書き出しと差分用の読み取り |
@@ -47,7 +48,7 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 | `registry-admin` | Admin |
 | `team-*` | 所属チーム |
 
-`registry-publisher` を持てば、`team-*` がなくても業務ロールは Publisher と表示します。下書きの作成・編集・申請・廃止依頼では、対象の所有チームが所属チームに含まれることを別途検査します（作成・編集・申請は実装済み、廃止依頼は #13）。審査待ちの閲覧と決裁（公開承認・却下）は Curator の業務ロールだけが行え、チームでは絞り込みません（実装済み。設計書「ロールと所有」）。
+`registry-publisher` を持てば、`team-*` がなくても業務ロールは Publisher と表示します。下書きの作成・編集・申請・廃止依頼では、対象の所有チームが所属チームに含まれることを別途検査します（いずれも実装済み。設計書「ロールと所有」）。審査待ちの閲覧と決裁（公開承認・却下）、公開停止・廃止は Curator の業務ロールだけが行え、チームでは絞り込みません（実装済み。設計書「ロールと所有」）。
 
 メールアドレスや `x-user-email` などのリクエストヘッダーは、主体や権限の判定に使いません。
 
@@ -61,7 +62,10 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 | `GET /api/catalog?type=AGENT\|MCP\|SKILL[&a2a=true][&nextToken=...]` | カタログ項目（公開承認済みの Registry レコード）を種別ごとに1ページ（最大50件）返す。a2a は Agent の一覧のみ指定可。ログインした全員（Viewer）が呼び出せる |
 | `POST /api/catalog/search` | 自然言語・キーワード（必須）と絞り込み条件で検索し、関連度順に最大20件を返す。Viewer が呼び出せる |
 | `GET /api/catalog/{recordId}` | 指定したレコード ID の公開中の版、所有チーム、その版の連絡先・利用条件・接続先の参照・関連参照を返す。Viewer が呼び出せる |
-| `GET /api/reviews` | 審査待ちの一覧（AWS の承認待ちに申請の補助情報を結合）。Curator のみ（詳細は #10 の節） |
+| `POST /api/records/{recordId}/deprecation-requests` | 廃止依頼。対象の所有チームを所属チームに持つ Publisher のみ（詳細は「公開停止・廃止・廃止依頼」の節） |
+| `GET /api/reviews` | 審査待ちの一覧（AWS の承認待ちと廃止依頼に、申請の補助情報を結合）。Curator のみ（詳細は #10 の節） |
+| `POST /api/records/{recordId}/suspend` | 公開停止（却下による非公開化）。Curator のみ（決裁 handler。詳細は #13 の節） |
+| `POST /api/records/{recordId}/deprecate` | 廃止（元に戻せない DEPRECATED）。理由の入力と確認（confirm）が必須。Curator のみ（決裁 handler。詳細は #13 の節） |
 
 ### カタログの一覧・検索・詳細
 
@@ -414,7 +418,7 @@ terraform plan
 terraform apply
 ```
 
-モジュールは、借用する既存 HTTP API（`http_api_id`）に `GET /api/reviews`、`GET /api/reviews/{recordId}`、`POST /api/reviews/{recordId}/approve`、`POST /api/reviews/{recordId}/reject`、`GET /api/records/{recordId}/recovery`、`POST /api/records/{recordId}/recovery` の route を作り、決裁 Lambda（payload format 2.0）に統合して既存の JWT authorizer（`jwt_authorizer_id`）を適用します。HTTP API の呼び出し許可（`aws_lambda_permission`）は `/api/reviews` 以下と `/api/records/*/recovery` の path に限ります。HTTP API・authorizer・CORS の設定は #5 の IaC が持ちます。CORS で `POST` と `Idempotency-Key` ヘッダーを許可してください。
+モジュールは、借用する既存 HTTP API（`http_api_id`）に `GET /api/reviews`、`GET /api/reviews/{recordId}`、`POST /api/reviews/{recordId}/approve`、`POST /api/reviews/{recordId}/reject`、`POST /api/records/{recordId}/suspend`、`POST /api/records/{recordId}/deprecate`、`GET /api/records/{recordId}/recovery`、`POST /api/records/{recordId}/recovery` の route を作り、決裁 Lambda（payload format 2.0）に統合して既存の JWT authorizer（`jwt_authorizer_id`）を適用します。HTTP API の呼び出し許可（`aws_lambda_permission`）は `/api/reviews` 以下と `/api/records/*/suspend`・`/api/records/*/deprecate`・`/api/records/*/recovery` の path に限ります。HTTP API・authorizer・CORS の設定は #5 の IaC が持ちます。CORS で `POST` と `Idempotency-Key` ヘッダーを許可してください。
 
 Seam 1 の Stubber と moto で、認可（Curator 以外の拒否）、AWS 正本の一覧と補助情報の結合、保存済みスナップショットから計算し直したハッシュ・Curator が見たハッシュ・内容ハッシュの照合による409、自己承認の拒否（Admin を含む）、却下済み・処理中の拒否、公開承認・却下の理由の必須化と255文字上限、申請・公開版スナップショットが読めない場合の `MISSING`、決裁操作の照会を決裁した Curator に限ること、`status` の不接受、AWS の拒否・混雑・結果不明、同じキーでの再送と操作照会による確定、AWS 成功後の補助ストア障害、公開版スナップショットと管理情報の保存を検証します。Seam 2 の Vitest で、Curator 以外の非表示、一覧と差分（定義と metadata を含む）の表示、「申請なし」と「取得できない」・「初回公開」と「未取得」の区別、書き換えられたスナップショットの決裁停止、承認・却下の本文とキー、「検索への反映待ち」、409 の再読み込み、結果不明の再試行を確認します。実 AWS への書き込みは行っていません。デプロイ後に実環境で、別ユーザーによる承認までの流れと IAM の境界を確認してください。
 
@@ -437,6 +441,39 @@ SPA では「操作と審査の履歴を表示」から開きます。Publisher 
 履歴の読み取りには補助テーブルへの `dynamodb:Query` が必要なため、[下書き用モジュールのポリシー](infrastructure/modules/management_drafts/draft-policy.json.tftpl) に追加します。ルートモジュールは既存の [`infrastructure/management`](infrastructure/management/main.tf) をそのまま使います。route（`GET /api/records/{recordId}/history`）は既存 HTTP API の管理 Lambda 統合に追加してください（#5 の IaC が持ちます）。
 
 Seam 1 の Stubber と moto で、認可（Viewer と所属チームのない Publisher の拒否、他チームの拒否、Curator と Admin の許可）、補助テーブル未設定時の503、未管理レコードの404、管理下で操作記録のないレコードの0件、作成・申請・公開承認の履歴項目（操作 ID・主体・対象ハッシュ・開始時刻・結果・AWS request ID・決裁理由。作成の対象ハッシュが作成した内容の内容ハッシュであること）、作成・申請・公開承認でアプリが送るすべての追記記録の書き込みに上書き禁止の条件式が付くこと（書き込み要求を記録して検査）と、確定済みの操作の結果を補助ストアから追記し直すと拒否され記録が変わらないこと、作成の INTENT の写しが正本から定義の全文を除いたものと一致すること、結果確認中の作成が履歴に現れること、決裁した主体が不明な項目とその後の公開承認で消えないこと、結果確認中の決裁の中身を決裁した Curator 以外に返さないこと、Query の複数ページの読み取り、形式の崩れた追記記録（ソートキー・主体・種別・開始時刻・INTENT の欠落）の 502 を検証します。Seam 2 の Vitest で、API の応答の検査（旧い値や必須の項目の欠落の拒否）、履歴項目の表示、「不明」と「結果確認中」の表示、0件と403・404・502 の区別、伏せた決裁の表示、開閉ボタンを押すまで API を呼ばないこと、カタログ詳細の導線が Curator・Admin だけに出ることとそこからの404の案内を確認します。実 AWS への書き込みは行っていません。デプロイ後に実環境で、`Query` の IAM 境界と route の追加を確認してください。
+
+## 公開停止・廃止・廃止依頼（#13）
+
+公開停止と廃止は、申請の決裁とは別の、公開中のレコードに対する Curator の操作です。どちらも決裁 handler（`handlers/curation.py`）だけで行い、AWS の `UpdateRegistryRecordStatus` で状態を遷移させます。クライアントから AWS の `status` は受け取らず、API ごと（suspend / deprecate）に遷移先を決めます（ADR-0002、設計書「業務上の状態」）。
+
+| API | 内容 |
+| --- | --- |
+| `POST /api/records/{recordId}/suspend` | 公開停止。Curator のみ。本文は `{ "reason": 理由 }`（1〜255文字、必須）。公開中（`APPROVED`）の管理下のレコードだけが対象。`REJECTED` への却下として実行し、発見できなくする。再公開には Publisher による編集と再申請が必要 |
+| `POST /api/records/{recordId}/deprecate` | 廃止。Curator のみ。本文は `{ "reason": 理由, "confirm": true }`。理由（1〜255文字、必須）に加えて、確認（`confirm` に `true`）を必須にし、API と SPA の両方で「元に戻せない」ことを明示する。公開中（`APPROVED`）と公開停止済み（`REJECTED`）のレコードが対象。`DEPRECATED` へ遷移し、元に戻せない |
+| `POST /api/records/{recordId}/deprecation-requests` | 廃止依頼。管理 handler。対象の所有チームを所属チームに持つ Publisher のみ（所属チームのない Publisher・他チーム・Curator・Viewer は403 `FORBIDDEN`）。本文は `{ "reason": 理由 }`（1〜255文字、必須） |
+
+### 廃止依頼のしくみ
+
+廃止依頼は AWS の状態を変えません。補助テーブルの `pk` = `REGISTRY#{registryArn}#DEPRECATION`、`sk` = レコード ID の項目に、未解決（`state: OPEN`）の依頼として保存します。依頼の重複は条件付き書き込みで防ぎ、未解決の依頼があるレコードへの再依頼は409 `CONTENT_CONFLICT` です。解決済み（`RESOLVED`）の項目は、新しい依頼で上書きします。レコードごとに未解決の依頼は1件です。
+
+`GET /api/reviews`（審査待ちの一覧）は、AWS の承認待ち（`PENDING_APPROVAL`）に未解決の廃止依頼を並べて返します。各項目の `reviewKind` は `SUBMISSION`（申請）または `DEPRECATION_REQUEST`（廃止依頼）で、依頼の項目には依頼者（`requestedBy`）・依頼日時（`requestedAt`）・理由（`reason`）と、対象レコードの現在の状態を含みます。廃止依頼はポータル内で発生するため、`nextToken` のページングは AWS の承認待ちにだけ適用し、未解決の依頼は毎回の応答に並べて返します。Curator が公開停止または廃止を行うと、成功の確定と同じトランザクションで依頼は解決済み（`resolution: SUSPENDED` または `DEPRECATED`、解決した Curator と日時を記録）になります。通知は #15 が担います。
+
+### 決裁と同じ手順
+
+公開停止・廃止も決裁（#10）と同じ手順で行います。レコード単位のロックと意図の記録（`AUDIT#…#INTENT`、種別は `SUSPEND` / `DEPRECATE`）→ 現物の照合 → `UpdateRegistryRecordStatus`（`statusReason` は理由）→ 再取得しての確定です。申請を対象としないため、スナップショットのハッシュは受け取らず、代わりに開始時の現物の内容ハッシュ（`contentHash`）を固定します。操作照会（`GET /api/operations/{operationId}`）は決裁した Curator 本人だけが参照でき、Admin の回復操作（#12）も決裁と同じ扱いです。履歴（#11）には「公開停止」「廃止」として表示されます。
+
+成功すると、管理情報の `activeSubmissionId` を消します。公開版スナップショット（`PUBLISHED#版`）と管理情報の `publishedVersion` は書き換えません。公開停止後も `publishedVersion` は再申請の semver の下限として使われ、廃止しても公開履歴は残ります。
+
+### SPA
+
+- **Curator（審査待ち）**: 廃止依頼は申請と同じ一覧に表示されます。依頼の項目から、理由を入れて「公開停止する」または「廃止する」を実行できます。廃止は理由の入力に加えて「廃止は元に戻せないことを確認しました」のチェック（二重確認）が必須で、チェックしないと実行できません。どちらの確認画面も、公開停止が「却下による非公開化。再公開には編集と再申請が必要」であることを明示します。結果確認中（202）は決裁と同じ操作照会で確定します。`Idempotency-Key` はフォームごとに生成します。
+- **Publisher（下書きの編集画面）**: 廃止済みでない自分のチームのレコードに「廃止を依頼する」のフォーム（理由は必須）があります。未解決の依頼の重複（409）はその旨を表示します。
+
+### IAM と route
+
+公開停止・廃止の route（`POST /api/records/{recordId}/suspend`、`POST /api/records/{recordId}/deprecate`）は [決裁用 Terraform モジュール](infrastructure/modules/decision/main.tf) に追加しました。決裁 Lambda の実行ロールは、状態遷移（`UpdateRegistryRecordStatus`）に必要な権限をすでに持ちます。審査待ちの一覧が未解決の廃止依頼を読むため、補助テーブルへの `dynamodb:Query` を決裁ロールに追加しています。廃止依頼の route（`POST /api/records/{recordId}/deprecation-requests`）は管理 Lambda の統合に、#5 の IaC で追加してください（履歴の route と同じ扱い）。管理 Lambda のロールは、廃止依頼の保存に既存の `dynamodb:PutItem` を使うだけです。
+
+Seam 1 の Stubber と moto で、廃止依頼の認可（所有チームの検査、所属チームのない Publisher・他チーム・Curator・Viewer の403）、本文の検査（理由の必須化と255文字上限、秘密情報の拒否、未知の項目）、未解決の依頼の重複の409、廃止済み・未管理レコードの拒否、審査待ちの一覧での申請と依頼の並列表示、公開停止（公開中以外の409、AWS の呼び出しの引数、`REJECTED` の確定、依頼の解決、公開版スナップショットの不変）、廃止（確認の必須化、`DEPRECATED` の確定、依頼の解決）、Publisher・Viewer・Admin の403、`Idempotency-Key` の必須化を検証します。Seam 2 の Vitest で、廃止依頼の表示と依頼者・理由、公開停止の本文とキー、廃止の二重確認（チェックなしでは実行できないことと `confirm: true` の本文）、応答の検査（`reviewKind` のない項目の拒否）、Publisher の依頼フォームの本文を確認します。実 AWS への書き込みは行っていません。デプロイ後に実環境で、route の追加と IAM 境界を確認してください。
 
 ## 回復操作（#12）
 

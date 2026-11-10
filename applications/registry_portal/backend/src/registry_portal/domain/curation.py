@@ -10,11 +10,14 @@ from typing import Any, Literal
 from registry_portal.domain.drafts import (
     APPROVE_KIND,
     AWS_FAILED_STATUSES,
+    DEPRECATE_KIND,
+    DEPRECATED_STATUS,
     IN_FLIGHT_STATUSES,
     PENDING_APPROVAL_STATUS,
     PUBLISHED_STATUS,
     REJECT_KIND,
     REJECTED_STATUS,
+    SUSPEND_KIND,
     OperationKind,
     PrincipalRecord,
     RecordStatus,
@@ -28,7 +31,13 @@ REASON_MAX_LENGTH = 255
 DECISION_TARGETS: Mapping[OperationKind, RecordStatus] = {
     APPROVE_KIND: PUBLISHED_STATUS,
     REJECT_KIND: REJECTED_STATUS,
+    # 公開停止は「却下による非公開化」。再公開には Publisher の編集と再申請が必要（設計書「業務上の状態」）
+    SUSPEND_KIND: REJECTED_STATUS,
+    # 廃止は元に戻せない DEPRECATED
+    DEPRECATE_KIND: DEPRECATED_STATUS,
 }
+# 公開停止・廃止の操作。申請のスナップショットではなく、公開中の現物を対象にする
+LIFECYCLE_KINDS: frozenset[OperationKind] = frozenset({SUSPEND_KIND, DEPRECATE_KIND})
 # 公開版スナップショット（PUBLISHED#版）に写す項目。カタログ詳細が読み取る契約（ADR-0007）
 PUBLISHED_FIELDS = ("contact", "termsOfUse", "connectionReference")
 HASH_PATTERN = re.compile(r"[a-f0-9]{64}")
@@ -78,7 +87,82 @@ class DecisionInput:
 _REASON_REQUIRED: Mapping[OperationKind, str] = {
     APPROVE_KIND: "公開承認の理由は必須です。判断の根拠を記載してください。",
     REJECT_KIND: "却下理由は必須です。Publisher が修正できるように記載してください。",
+    SUSPEND_KIND: "公開停止の理由は必須です。問題の内容を記載してください。",
+    DEPRECATE_KIND: "廃止理由は必須です。判断の根拠を記載してください。",
 }
+
+
+@dataclass(frozen=True)
+class LifecycleInput:
+    """Curator が送る公開停止・廃止の入力。AWS の status は本文から受け取らない。
+
+    廃止は元に戻せないため、確認（confirm: true）を必須にする（設計書「業務上の状態」）。
+    """
+
+    reason: str
+
+    @classmethod
+    def parse(cls, body: Mapping[str, Any], kind: OperationKind) -> LifecycleInput:
+        keys = {"reason"} if kind == SUSPEND_KIND else {"reason", "confirm"}
+        if set(body) != keys:
+            if kind == DEPRECATE_KIND:
+                raise ValueError(
+                    "reason と confirm を指定してください。"
+                    "ステータスは API ごとに決まるため指定できません。"
+                )
+            raise ValueError(
+                "reason を指定してください。ステータスは API ごとに決まるため指定できません。"
+            )
+        reason = body["reason"]
+        stripped = reason.strip() if isinstance(reason, str) else ""
+        if not stripped:
+            raise ValueError(_REASON_REQUIRED[kind])
+        if len(stripped) > REASON_MAX_LENGTH:
+            raise ValueError(
+                f"理由は{REASON_MAX_LENGTH}文字以内で指定してください。"
+                "細かい内容は別の記録に残してください。"
+            )
+        if scan_text("reason", stripped):
+            raise ValueError(
+                "理由に秘密情報らしき値が含まれています。保管先への参照を記載してください。"
+            )
+        if kind == DEPRECATE_KIND and body["confirm"] is not True:
+            raise ValueError(
+                "廃止は元に戻せません。確認した場合だけ confirm に true を指定してください。"
+            )
+        return cls(stripped)
+
+
+def check_suspendable(status: str) -> None:
+    """公開停止できる状態か検査する。公開中（APPROVED）だけが対象（設計書「業務上の状態」）。"""
+    if status == PUBLISHED_STATUS:
+        return
+    if status in IN_FLIGHT_STATUSES:
+        raise ValueError(
+            "AWS が処理中のため公開停止できません。状態が確定してから確認してください。"
+        )
+    if status == PENDING_APPROVAL_STATUS:
+        raise ValueError(
+            "審査待ちの申請は却下してください。公開停止は公開中のレコードに対して行います。"
+        )
+    if status == REJECTED_STATUS:
+        raise ValueError("このレコードはすでに非公開です。Publisher が編集して再申請できます。")
+    if status == DEPRECATED_STATUS:
+        raise ValueError("廃止済みのレコードは公開停止できません。")
+    raise ValueError("公開中のレコードではないため公開停止できません。一覧から確認してください。")
+
+
+def check_deprecatable(status: str) -> None:
+    """廃止できる状態か検査する。公開中と、公開停止済み（再公開前）が対象。"""
+    if status in (PUBLISHED_STATUS, REJECTED_STATUS):
+        return
+    if status in IN_FLIGHT_STATUSES:
+        raise ValueError("AWS が処理中のため廃止できません。状態が確定してから確認してください。")
+    if status == DEPRECATED_STATUS:
+        raise ValueError("このレコードはすでに廃止されています。")
+    raise ValueError(
+        "公開中または公開停止済みのレコードではないため廃止できません。一覧から確認してください。"
+    )
 
 
 class SelfApprovalError(Exception):
