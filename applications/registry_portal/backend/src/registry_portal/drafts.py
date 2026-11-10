@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
-from typing import Any, Protocol, cast
+from collections.abc import Callable, Mapping
+from typing import Any, Protocol
 from uuid import uuid4
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -50,7 +50,6 @@ from registry_portal.operations import (
     operation_status,
     principal_of,
     record_request_id,
-    settled_result,
 )
 from registry_portal.services.draft_store import DraftStore, StoreConflict
 
@@ -128,25 +127,168 @@ def parse_draft(value: Mapping[str, Any]) -> RecordDraft:
         raise RequestValidationError(str(error)) from None
 
 
+class RegistryRecordReader(Protocol):
+    """操作の照合が使う Registry 管理 API（agent-registry-control）の読み取り。"""
+
+    def get_registry_record(self, *, registryId: str, recordId: str) -> Mapping[str, Any]: ...
+
+
+# 申請 API の受け付けを確認する前に止まった申請を、申請 API の呼び直しで再開する処理
+ResumeSubmission = Callable[[DraftOperation], DraftResponse]
+
+
+class DraftSettlement:
+    """下書きの操作（作成・更新・申請）を、Registry の観測できる状態から確定する。
+
+    AWS の書き込み API は呼ばない。申請の再開（申請 API の呼び直し）が必要なときだけ、呼び出し側が
+    resume_submission を渡す。発見の設定や申請の権限を持たない決裁 handler（Admin の回復操作）も、
+    これだけを使って下書きの操作を確定する。
+    """
+
+    def __init__(self, registry: str, store: DraftStore, client: RegistryRecordReader) -> None:
+        self.registry = registry
+        self.store = store
+        self._registry = client
+
+    def settle(
+        self, operation: DraftOperation, resume_submission: ResumeSubmission | None = None
+    ) -> DraftResponse:
+        """操作の結果を確定する。確定できなければ結果確認中を返す。
+
+        resume_submission を渡さなければ申請 API を呼び直さない（Admin の回復操作）。
+        """
+        if operation["state"] == "SUCCEEDED":
+            return 200, operation["result"]
+        if operation["state"] == "FAILED":
+            return self.failed(operation)
+        if not operation.get("recordId"):
+            return self.pending(operation)
+        try:
+            if operation["kind"] == SUBMIT_KIND:
+                return self.verify_submission(operation, resume_submission)
+            return self.verify(operation, 200)
+        except (BotoCoreError, ClientError, StoreConflict):
+            return self.pending(operation)
+
+    def pending(self, operation: Mapping[str, Any]) -> DraftResponse:
+        return 202, operation_status(
+            operation,
+            "VERIFYING",
+            "結果確認中です。確認が終わるまで、この下書きへの書き込みを停止しています。",
+        )
+
+    def failed(self, operation: Mapping[str, Any]) -> DraftResponse:
+        return 200, operation_status(
+            operation, "FAILED", "操作は失敗しました。内容を確認して再実行してください。"
+        )
+
+    def verify_submission(
+        self, operation: DraftOperation, resume_submission: ResumeSubmission | None = None
+    ) -> DraftResponse:
+        """AWS のレコードを読み、申請の結果を確定する。確定できなければ結果確認中を返す。
+
+        結果確認中のまま残すのは、AWS が処理中のときと、申請 API の受け付け後に DRAFT が見えたとき
+        （反映待ち）だけにする。それ以外は確定させ、ロックを解除する。
+        """
+        if "snapshotHash" not in operation:
+            return self.pending(operation)
+        record = self._registry.get_registry_record(
+            registryId=self.registry, recordId=operation["recordId"]
+        )
+        status = record["status"]
+        if status in IN_FLIGHT_STATUSES:
+            return self.pending(operation)
+        management = Management(operation["management"])
+        if content_hash(record, management) != operation["expectedContentHash"]:
+            # 申請スナップショットと内容が一致しないので、この申請は成立しない
+            self.store.abort(operation, "CONTENT_CHANGED")
+            return self.failed(operation)
+        if status == DRAFT_STATUS:
+            if operation.get("submissionAccepted") or resume_submission is None:
+                return self.pending(operation)
+            # スナップショットの保存後、申請 API の受け付けを確認する前に止まった操作を再開する
+            return resume_submission(operation)
+        if status not in SUBMITTED_STATUSES:
+            self.store.abort(operation, status)
+            return self.failed(operation)
+        # 審査待ち、または照合より先に審査で決裁された。どちらも申請は受け付けられている
+        management = Management({**management.item, "activeSubmissionId": operation["operationId"]})
+        result: SubmissionResult = {
+            **draft_view(record, management, RecordDraft.parse(operation["draft"])),
+            "operationId": operation["operationId"],
+            "operationState": "SUCCEEDED",
+            "submissionId": operation["operationId"],
+            "snapshotHash": operation["snapshotHash"],
+        }
+        self.store.finish(operation, result, management)
+        return 200, result
+
+    def verify(
+        self,
+        operation: DraftOperation,
+        success_status: int,
+        update_accepted: bool = False,
+    ) -> DraftResponse:
+        """AWS のレコードを読み、操作の結果を確定する。確定できなければ結果確認中を返す。
+
+        update_accepted は、更新 API が成功を返した直後の確認であることを示す。
+        このときは、更新前の内容が見えても「適用されなかった」とは判定しない。
+        """
+        record = self._registry.get_registry_record(
+            registryId=self.registry, recordId=operation["recordId"]
+        )
+        status = record["status"]
+        if status in IN_FLIGHT_STATUSES:
+            return self.pending(operation)
+        if status in AWS_FAILED_STATUSES:
+            self.store.abort(operation, status)
+            return self.failed(operation)
+        draft = RecordDraft.parse(operation["draft"])
+        if status == DRAFT_STATUS and draft.is_applied_to(record):
+            return success_status, self._finish(operation, record, draft)
+        if (
+            operation["kind"] == UPDATE_KIND
+            and not update_accepted
+            and content_hash(record, Management(operation["management"]))
+            == operation["expectedContentHash"]
+        ):
+            # 更新前の内容のまま処理中でもないので、更新は AWS に届かなかったと確定する
+            self.store.abort(operation, "NOT_APPLIED")
+            return self.failed(operation)
+        return self.pending(operation)
+
+    def _finish(
+        self, operation: DraftOperation, record: Mapping[str, Any], draft: RecordDraft
+    ) -> DraftResult:
+        management = Management.after_edit(
+            operation.get("management", {}),
+            operation["ownerTeam"],
+            draft,
+            operation["principal"],
+            now(),
+        )
+        result: DraftResult = {
+            **draft_view(record, management, draft),
+            "operationId": operation["operationId"],
+            "operationState": "SUCCEEDED",
+        }
+        self.store.finish(operation, result, management)
+        return result
+
+
 class RecordDrafts:
     def __init__(
         self,
         registry: str,
         store: DraftStore,
         client: RegistryControlClient,
-        discovery: DiscoveryClient | None,
+        discovery: DiscoveryClient,
     ) -> None:
-        """discovery は申請の検査だけが使う。決裁 handler（Admin の回復）は発見の設定を持たないため None にする。"""
         self.registry = registry
         self.store = store
         self._registry = client
-        self._discovery_client = discovery
-
-    @property
-    def _discovery(self) -> DiscoveryClient:
-        if self._discovery_client is None:
-            raise RuntimeError("この handler には発見の設定がないため、申請は受け付けられません。")
-        return self._discovery_client
+        self._discovery = discovery
+        self._settlement = DraftSettlement(registry, store, client)
 
     def create(self, caller: Caller, body: Mapping[str, Any], key: str) -> DraftResponse:
         require_publisher(caller)
@@ -177,7 +319,7 @@ class RecordDrafts:
                 if replayed:
                     return replayed
                 if existing.get("recordId"):
-                    return self._verify(existing, 201)
+                    return self._settlement.verify(existing, 201)
                 operation = existing
             else:
                 try:
@@ -189,7 +331,7 @@ class RecordDrafts:
                         raise DraftConflict() from None
                     return self._replay_create(
                         concurrent, operation["requestHash"]
-                    ) or self._pending(concurrent)
+                    ) or self._settlement.pending(concurrent)
             try:
                 response = self._registry.create_registry_record(
                     registryId=self.registry,
@@ -201,9 +343,9 @@ class RecordDrafts:
             operation["recordId"] = str(response["recordArn"]).rsplit("/", 1)[1]
             record_request_id(operation, response)
             self.store.save_pending(operation)
-            return self._verify(operation, 201)
+            return self._settlement.verify(operation, 201)
         except (BotoCoreError, ClientError, StoreConflict):
-            return self._pending(operation)
+            return self._settlement.pending(operation)
 
     def _replay_create(self, existing: DraftOperation, request_hash: str) -> DraftResponse | None:
         """同じ Idempotency-Key の操作が確定済みなら、その結果を返す。未確定なら None。"""
@@ -229,19 +371,7 @@ class RecordDrafts:
             raise RequestValidationError(
                 "Registry が操作を拒否しました。入力と設定を確認してください。"
             ) from None
-        return self._pending(operation)
-
-    def _pending(self, operation: Mapping[str, Any]) -> DraftResponse:
-        return 202, operation_status(
-            operation,
-            "VERIFYING",
-            "結果確認中です。確認が終わるまで、この下書きへの書き込みを停止しています。",
-        )
-
-    def _failed(self, operation: Mapping[str, Any]) -> DraftResponse:
-        return 200, operation_status(
-            operation, "FAILED", "操作は失敗しました。内容を確認して再実行してください。"
-        )
+        return self._settlement.pending(operation)
 
     def _load_management(self, record_id: str) -> Management | None:
         """管理情報を読む。読めない場合や型が壊れている場合は、所属外や0件として扱わず502にする。"""
@@ -344,28 +474,10 @@ class RecordDrafts:
         require_publisher(caller)
         if operation["ownerTeam"] not in caller.teams:
             raise ForbiddenError()
-        return self._settle(operation, allow_resubmit=True)
+        return self._settlement.settle(operation, self._resume_submission)
 
-    def settle_by_observation(self, operation: DraftOperation) -> DraftResponse:
-        """Admin の回復操作から、Registry の観測できる状態だけで操作を確定する。
-
-        決裁 handler の実行ロールは申請 API の権限を持たないため、申請 API は呼び直さない。
-        """
-        return self._settle(operation, allow_resubmit=False)
-
-    def _settle(self, operation: DraftOperation, *, allow_resubmit: bool) -> DraftResponse:
-        if operation["state"] == "SUCCEEDED":
-            return 200, cast("DraftResult", settled_result(operation))
-        if operation["state"] == "FAILED":
-            return self._failed(operation)
-        if not operation.get("recordId"):
-            return self._pending(operation)
-        try:
-            if operation["kind"] == SUBMIT_KIND:
-                return self._verify_submission(operation, allow_resubmit=allow_resubmit)
-            return self._verify(operation, 200)
-        except (BotoCoreError, ClientError, StoreConflict):
-            return self._pending(operation)
+    def _resume_submission(self, operation: DraftOperation) -> DraftResponse:
+        return self._call_submit_api(operation, resume=True)
 
     def submit(
         self,
@@ -430,7 +542,7 @@ class RecordDrafts:
             self.store.save_submission(operation, snapshot)
             return self._call_submit_api(operation)
         except (BotoCoreError, ClientError, StoreConflict):
-            return self._pending(operation)
+            return self._settlement.pending(operation)
 
     def _prepare_submission(
         self,
@@ -489,7 +601,7 @@ class RecordDrafts:
                 self._check_approval_configuration()
             except ApprovalConfigurationChanged:
                 self.store.abort(operation, ApprovalConfigurationChanged.code)
-                return self._failed(operation)
+                return self._settlement.failed(operation)
         try:
             response = self._registry.submit_registry_record_for_approval(
                 registryId=self.registry, recordId=operation["recordId"]
@@ -497,7 +609,7 @@ class RecordDrafts:
         except ClientError as error:
             if resume:
                 record_request_id(operation, error.response)
-                return self._pending(operation)
+                return self._settlement.pending(operation)
             if error.response["Error"]["Code"] == "ConflictException":
                 # 申請の前に検査した後で、レコードの状態が変わった
                 record_request_id(operation, error.response)
@@ -507,48 +619,7 @@ class RecordDrafts:
         record_request_id(operation, response)
         operation["submissionAccepted"] = True
         self.store.save_pending(operation)
-        return self._verify_submission(operation)
-
-    def _verify_submission(
-        self, operation: DraftOperation, *, allow_resubmit: bool = True
-    ) -> DraftResponse:
-        """AWS のレコードを読み、申請の結果を確定する。確定できなければ結果確認中を返す。
-
-        結果確認中のまま残すのは、AWS が処理中のときと、申請 API の受け付け後に DRAFT が見えたとき
-        （反映待ち）だけにする。それ以外は確定させ、ロックを解除する。
-        """
-        if "snapshotHash" not in operation:
-            return self._pending(operation)
-        record = self._registry.get_registry_record(
-            registryId=self.registry, recordId=operation["recordId"]
-        )
-        status = record["status"]
-        if status in IN_FLIGHT_STATUSES:
-            return self._pending(operation)
-        management = Management(operation["management"])
-        if content_hash(record, management) != operation["expectedContentHash"]:
-            # 申請スナップショットと内容が一致しないので、この申請は成立しない
-            self.store.abort(operation, "CONTENT_CHANGED")
-            return self._failed(operation)
-        if status == DRAFT_STATUS:
-            if operation.get("submissionAccepted") or not allow_resubmit:
-                return self._pending(operation)
-            # スナップショットの保存後、申請 API の受け付けを確認する前に止まった操作を再開する
-            return self._call_submit_api(operation, resume=True)
-        if status not in SUBMITTED_STATUSES:
-            self.store.abort(operation, status)
-            return self._failed(operation)
-        # 審査待ち、または照合より先に審査で決裁された。どちらも申請は受け付けられている
-        management = Management({**management.item, "activeSubmissionId": operation["operationId"]})
-        result: SubmissionResult = {
-            **draft_view(record, management, RecordDraft.parse(operation["draft"])),
-            "operationId": operation["operationId"],
-            "operationState": "SUCCEEDED",
-            "submissionId": operation["operationId"],
-            "snapshotHash": operation["snapshotHash"],
-        }
-        self.store.finish(operation, result, management)
-        return 200, result
+        return self._settlement.verify_submission(operation)
 
     def update(self, caller: Caller, record_id: str, body: Mapping[str, Any]) -> DraftResponse:
         management = self._management(caller, record_id)
@@ -608,9 +679,9 @@ class RecordDrafts:
             except ClientError as error:
                 return self._registry_error(operation, error)
             record_request_id(operation, response)
-            return self._verify(operation, 200, update_accepted=True)
+            return self._settlement.verify(operation, 200, update_accepted=True)
         except (BotoCoreError, ClientError, StoreConflict):
-            return self._pending(operation)
+            return self._settlement.pending(operation)
 
     def _check_editable(
         self,
@@ -630,55 +701,3 @@ class RecordDrafts:
             raise RequestValidationError("種別は作成後に変更できません。")
         # フォームで読めないレコードは、フォームの内容で上書きしない
         self._read_draft(record, management)
-
-    def _verify(
-        self,
-        operation: DraftOperation,
-        success_status: int,
-        update_accepted: bool = False,
-    ) -> DraftResponse:
-        """AWS のレコードを読み、操作の結果を確定する。確定できなければ結果確認中を返す。
-
-        update_accepted は、更新 API が成功を返した直後の確認であることを示す。
-        このときは、更新前の内容が見えても「適用されなかった」とは判定しない。
-        """
-        record = self._registry.get_registry_record(
-            registryId=self.registry, recordId=operation["recordId"]
-        )
-        status = record["status"]
-        if status in IN_FLIGHT_STATUSES:
-            return self._pending(operation)
-        if status in AWS_FAILED_STATUSES:
-            self.store.abort(operation, status)
-            return self._failed(operation)
-        draft = RecordDraft.parse(operation["draft"])
-        if status == DRAFT_STATUS and draft.is_applied_to(record):
-            return success_status, self._finish(operation, record, draft)
-        if (
-            operation["kind"] == UPDATE_KIND
-            and not update_accepted
-            and content_hash(record, Management(operation["management"]))
-            == operation["expectedContentHash"]
-        ):
-            # 更新前の内容のまま処理中でもないので、更新は AWS に届かなかったと確定する
-            self.store.abort(operation, "NOT_APPLIED")
-            return self._failed(operation)
-        return self._pending(operation)
-
-    def _finish(
-        self, operation: DraftOperation, record: Mapping[str, Any], draft: RecordDraft
-    ) -> DraftResult:
-        management = Management.after_edit(
-            operation.get("management", {}),
-            operation["ownerTeam"],
-            draft,
-            operation["principal"],
-            now(),
-        )
-        result: DraftResult = {
-            **draft_view(record, management, draft),
-            "operationId": operation["operationId"],
-            "operationState": "SUCCEEDED",
-        }
-        self.store.finish(operation, result, management)
-        return result

@@ -10,3 +10,18 @@ export type ApiRequest = <T>(
   payload?: unknown,
   extraHeaders?: Record<string, string>,
 ) => Promise<T>
+
+/** 応答の形を検査する型ガード */
+export type ResponseGuard<T> = (value: unknown) => value is T
+
+/**
+ * 応答を型ガードで検査し、形が違えば invalidResponse の例外を投げる関数を作る。
+ * 各 API モジュール（drafts/api.ts・reviews/api.ts・recovery/api.ts）が共有する
+ */
+export function createResponseChecker(invalidResponse: () => Error) {
+  return async function checked<T>(response: Promise<unknown>, guard: ResponseGuard<T>): Promise<T> {
+    const value = await response
+    if (!guard(value)) throw invalidResponse()
+    return value
+  }
+}

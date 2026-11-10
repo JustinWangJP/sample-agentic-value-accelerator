@@ -15,6 +15,7 @@ const target = {
   operationState: 'VERIFYING',
   principal: { issuer, subject: 'curator-1' },
   startedAt: '2026-11-09T09:00:00+00:00',
+  recoverableAt: '2026-11-09T09:05:00+00:00',
   recoverable: true,
 }
 const recovery = (mode: string) => ({
@@ -82,7 +83,7 @@ async function inspect(responses: (Response | Error)[]) {
 
 it('Admin 以外には回復の画面を出さず、API も呼ばない', async () => {
   const calls = await mount([], ['Curator', 'Publisher'])
-  expect(container.textContent).not.toContain('操作の回復')
+  expect(container.textContent).not.toContain('回復操作')
   expect(calls).toHaveLength(0)
 })
 
@@ -103,10 +104,10 @@ it('結果確認中の操作がないレコードは、取得の失敗と区別�
 it('取得できないときはエラーとして表示する', async () => {
   await inspect([
     jsonResponse(502, {
-      error: { code: 'REGISTRY_UNAVAILABLE', message: '補助情報を取得できませんでした。', requestId: 'r-1' },
+      error: { code: 'SUPPLEMENT_UNAVAILABLE', message: '補助情報を読み書きできませんでした。', requestId: 'r-1' },
     }),
   ])
-  expect(container.querySelector('[role="alert"]')?.textContent).toContain('補助情報を取得できませんでした。')
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain('補助情報を読み書きできませんでした。')
   expect(container.textContent).not.toContain('結果確認中の操作はありません。')
 })
 
@@ -114,7 +115,8 @@ it('開始から間もない操作は回復できないと案内し、回復の�
   await inspect([
     jsonResponse(200, { recordId: RECORD_ID, operation: { ...target, recoverable: false } }),
   ])
-  expect(container.textContent).toContain('開始から5分が過ぎるまで回復できません。')
+  // 待ち時間は SPA に持たず、バックエンドが返す回復できる時刻を表示する
+  expect(container.textContent).toContain('2026-11-09T09:05:00+00:00 を過ぎるまで回復できません')
   expect(container.querySelector('[name="recoveryReason"]')).toBeNull()
 })
 
@@ -193,4 +195,32 @@ it('回復の失敗（409）はエラーとして表示し、結果を成功と�
   await click('Registry を再取得して照合')
   expect(container.querySelector('[role="alert"]')?.textContent).toContain('回復できません。')
   expect(container.textContent).not.toContain('成功')
+})
+
+it('回復できる時刻のない照会の応答は、形の違う応答として扱う', async () => {
+  const withoutTime: Record<string, unknown> = { ...target }
+  delete withoutTime.recoverableAt
+  await inspect([jsonResponse(200, { recordId: RECORD_ID, operation: withoutTime })])
+  expect(container.querySelector('[role="alert"]')).not.toBeNull()
+  expect(container.querySelector('[name="recoveryReason"]')).toBeNull()
+})
+
+it('AWS が受け付けた操作の強制解除の拒否（409）は、エラーとして表示しロックの解除を示さない', async () => {
+  await inspect([
+    jsonResponse(200, { recordId: RECORD_ID, operation: target }),
+    jsonResponse(202, { recordId: RECORD_ID, operationState: 'VERIFYING', message: '結果確認中です。', recovery: null }),
+    jsonResponse(409, {
+      error: {
+        code: 'ACCEPTED_BY_REGISTRY',
+        message: 'Registry は操作を受け付けています。反映を待ってから、再度照合してください。',
+        requestId: 'r-4',
+      },
+    }),
+  ])
+  await setValue('recoveryReason', 'Registry を確認した')
+  await click('Registry を再取得して照合')
+  await act(() => field('recoveryConfirm').click())
+  await click('強制解除する')
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain('反映を待ってから')
+  expect(container.textContent).not.toContain('結果 失敗')
 })

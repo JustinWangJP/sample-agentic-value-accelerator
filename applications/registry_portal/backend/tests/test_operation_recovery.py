@@ -16,11 +16,12 @@ from decision_helpers import (
     REASON,
     decide,
     missing_published,
+    put,
     setup_pending,
     stored,
     stub_status_update,
 )
-from draft_helpers import RECORD_ID, aws_record, call, clients, event
+from draft_helpers import RECORD_ARN, RECORD_ID, aws_record, call, clients, event
 from record_fixtures import CUSTOM_DESCRIPTORS, CUSTOM_DRAFT, stub_create
 from registry_portal import recovery
 from registry_portal.app import create_curation_handler, create_management_handler
@@ -279,12 +280,17 @@ def test_admin_can_inspect_the_operation_holding_the_lock_without_calling_aws(mo
         assert body["operation"]["operationState"] == "VERIFYING"
         assert body["operation"]["principal"]["subject"] == "carol"
         assert body["operation"]["recoverable"] is True
+        # 回復できる時刻は開始時刻から MIN_OPERATION_AGE 後。SPA は待ち時間を自分で持たない
+        started = datetime.fromisoformat(body["operation"]["startedAt"])
+        recoverable_at = datetime.fromisoformat(body["operation"]["recoverableAt"])
+        assert recoverable_at - started == recovery.MIN_OPERATION_AGE
         # 理由・ハッシュなど、決裁の中身は返さない
         assert set(body["operation"]) == {
             "kind",
             "operationState",
             "principal",
             "startedAt",
+            "recoverableAt",
             "recoverable",
         }
         monkeypatch.setattr(recovery, "_utcnow", lambda: datetime.now(timezone.utc))
@@ -390,6 +396,7 @@ def test_decision_faults_never_record_a_success_and_only_unknown_outcomes_keep_t
         ("AccessDeniedException", 403, "FAILED", False),
         ("ThrottlingException", 429, "FAILED", False),
         ("InternalServerException", 500, "VERIFYING", True),
+        ("ServiceUnavailableException", 503, "VERIFYING", True),
         ("timeout", None, "VERIFYING", True),
     ],
 )
@@ -477,4 +484,150 @@ def test_release_is_refused_while_the_registry_is_still_processing_the_record():
         status, body = recover(state["decision"], release=True)
         assert (status, body["error"]["code"]) == (409, "RECORD_STILL_PROCESSING")
         assert stored(db, "LOCK")["operationId"] == operation_id
+        stub.assert_no_pending_responses()
+
+
+def stub_submission_accepted(stub):
+    """申請 API までの応答を積む。申請 API は受け付けを返すが、再取得では DRAFT のまま（反映待ち）。"""
+    stub.add_response("get_registry_record", RECORD, GET)
+    stub.add_response(
+        "get_registry",
+        {
+            "name": "registry",
+            "registryId": "abcdEFGH1234",
+            "registryArn": REGISTRY_ARN,
+            "status": "ACTIVE",
+            "createdAt": RECORD["createdAt"],
+            "updatedAt": RECORD["updatedAt"],
+            "approvalConfiguration": {"autoApprovalRules": []},
+        },
+        {"registryId": REGISTRY_ARN},
+    )
+    stub.add_response(
+        "submit_registry_record_for_approval",
+        {
+            "registryArn": REGISTRY_ARN,
+            "recordArn": RECORD_ARN,
+            "recordId": RECORD_ID,
+            "status": "PENDING_APPROVAL",
+            "updatedAt": RECORD["updatedAt"],
+        },
+        GET,
+    )
+    stub.add_response("get_registry_record", RECORD, GET)
+
+
+@mock_aws
+def test_release_is_refused_for_a_decision_the_registry_accepted():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        state = setup_pending(stub, registry, db)
+        # AWS は決裁を受け付けたが、再取得ではまだ承認待ちに見える（反映待ち）
+        stub.add_response("get_registry_record", {**RECORD, "status": "PENDING_APPROVAL"}, GET)
+        stub_status_update(stub, approved=True)
+        stub.add_response("get_registry_record", {**RECORD, "status": "PENDING_APPROVAL"}, GET)
+        status, pending = decide(state["decision"], snapshot_hash=state["snapshot"]["snapshotHash"])
+        assert (status, pending["operationState"]) == (202, "VERIFYING")
+        operation_id = pending["operationId"]
+        # 受け付けた決裁は AWS に届いている。失敗として強制解除せず、ロックを残す
+        stub.add_response("get_registry_record", {**RECORD, "status": "PENDING_APPROVAL"}, GET)
+        status, body = recover(state["decision"], release=True)
+        assert (status, body["error"]["code"]) == (409, "ACCEPTED_BY_REGISTRY")
+        assert stored(db, "LOCK")["operationId"] == operation_id
+        assert stored(db, f"AUDIT#{operation_id}#RESULT") is None
+        # 反映が見えたら、照合で成功として確定できる
+        stub.add_response("get_registry_record", {**RECORD, "status": "APPROVED"}, GET)
+        status, body = recover(state["decision"])
+        assert (status, body["operationState"]) == (200, "SUCCEEDED")
+        assert stored(db, "LOCK") is None
+        stub.assert_no_pending_responses()
+
+
+def submit(management, created):
+    return call(
+        management,
+        event(
+            "POST",
+            f"/api/records/{RECORD_ID}/submit",
+            {
+                "expectedContentHash": created["contentHash"],
+                "reason": "利用者向けに公開する",
+                "relatedReferences": [],
+            },
+            key="submit-1",
+        ),
+    )
+
+
+@mock_aws
+def test_release_is_refused_for_a_submission_the_registry_accepted():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        management, decision, created = setup_draft(stub, registry, db)
+        stub_submission_accepted(stub)
+        status, pending = submit(management, created)
+        assert (status, pending["operationState"]) == (202, "VERIFYING")
+        # 申請 API の受け付けを確認済みの申請は、DRAFT が見えても強制解除しない
+        stub.add_response("get_registry_record", RECORD, GET)
+        status, body = recover(decision, release=True)
+        assert (status, body["error"]["code"]) == (409, "ACCEPTED_BY_REGISTRY")
+        assert stored(db, "LOCK")["operationId"] == pending["operationId"]
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_publisher_sees_the_recovery_in_the_operation_lookup_and_the_history():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        management, decision, created = setup_draft(stub, registry, db)
+        changed = {**CUSTOM_DRAFT, "description": "結果確認を待つ説明"}
+        stub.add_response("get_registry_record", RECORD, GET)
+        stub.add_client_error(
+            "update_registry_record", "InternalServerException", http_status_code=500
+        )
+        status, pending = call(
+            management,
+            event(
+                "PATCH",
+                f"/api/records/{RECORD_ID}",
+                {"draft": changed, "expectedContentHash": created["contentHash"]},
+            ),
+        )
+        assert (status, pending["operationState"]) == (202, "VERIFYING")
+        stub.add_response(
+            "get_registry_record",
+            aws_record(changed, descriptors=CUSTOM_DESCRIPTORS, customMetadata=META),
+            GET,
+        )
+        assert recover(decision)[0] == 200
+        # 更新した Publisher の操作照会（成功の結果）に、回復した Admin と理由が載る
+        status, body = call(
+            management, event("GET", f"/api/operations/{pending['operationId']}", key="")
+        )
+        assert (status, body["operationState"]) == (200, "SUCCEEDED")
+        assert body["recovery"]["mode"] == "RECONCILED"
+        assert body["recovery"]["by"]["subject"] == "admin-1"
+        # 操作と審査の履歴にも、回復結果が載る
+        status, history = call(
+            management, event("GET", f"/api/records/{RECORD_ID}/history", key="")
+        )
+        assert status == 200
+        entry = next(e for e in history["entries"] if e["operationId"] == pending["operationId"])
+        assert entry["state"] == "SUCCEEDED"
+        assert entry["recovery"]["reason"] == "Registry を確認した"
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_a_lock_without_its_operation_is_reported_as_a_supplement_failure():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        state, _ = stuck_decision(stub, registry, db)
+        # 補助ストアの異常（ロックが指す操作がない）は、Registry の障害とは別のコードで返す
+        put(db, "LOCK", {**stored(db, "LOCK"), "operationId": "f" * 64})
+        request = event("GET", RECOVERY_PATH, groups=ADMIN, key="")
+        status, body = call(state["decision"], request)
+        assert (status, body["error"]["code"]) == (502, "SUPPLEMENT_UNAVAILABLE")
+        status, body = recover(state["decision"])
+        assert (status, body["error"]["code"]) == (502, "SUPPLEMENT_UNAVAILABLE")
         stub.assert_no_pending_responses()

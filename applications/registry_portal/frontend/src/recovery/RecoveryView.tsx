@@ -1,32 +1,11 @@
 import { useState, type FormEvent } from 'react'
 import { toApiError, type ApiClient, type ApiError } from '../api/client'
+import { RecoveryDetails } from '../components/RecoveryDetails'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
-import {
-  KIND_LABELS,
-  RECORD_ID_PATTERN,
-  RECORD_ID_LENGTH,
-  type OperationState,
-} from '../drafts/api'
-import {
-  RECOVERY_REASON_MAX_LENGTH,
-  type RecoveryInspection,
-  type RecoveryMode,
-  type RecoveryResult,
-} from './api'
+import { KIND_LABELS, RECORD_ID_PATTERN, RECORD_ID_LENGTH, STATE_LABELS } from '../drafts/api'
+import { RECOVERY_REASON_MAX_LENGTH, type RecoveryInspection, type RecoveryResult } from './api'
 
 type Props = { api: ApiClient; roles: string[]; onRelogin: () => void }
-
-/** 回復の結果の表示。結果確認中・成功・失敗を取得の失敗とは別の状態として出す */
-const STATE_LABELS: Record<OperationState, string> = {
-  SUCCEEDED: '成功',
-  FAILED: '失敗',
-  VERIFYING: '結果確認中',
-}
-
-const MODE_LABELS: Record<RecoveryMode, string> = {
-  RECONCILED: 'Registry を再取得して確定',
-  RELEASED: '確定できないまま強制解除',
-}
 
 type Loaded =
   | { kind: 'idle' }
@@ -82,7 +61,7 @@ export function RecoveryView({ api, roles, onRelogin }: Props) {
 
   return (
     <section aria-labelledby="recovery-heading">
-      <h2 id="recovery-heading">操作の回復</h2>
+      <h2 id="recovery-heading">回復操作</h2>
       <p className="note">
         結果確認中のまま止まった操作を、Registry を再取得して確定します。確定できない場合だけ、強制解除できます。
       </p>
@@ -115,7 +94,9 @@ export function RecoveryView({ api, roles, onRelogin }: Props) {
             主体 {target.principal.subject}（{target.principal.issuer}）・{target.startedAt}
           </p>
           {!target.recoverable ? (
-            <p>開始から5分が過ぎるまで回復できません。時間をおいて再度確認してください。</p>
+            <p>
+              {target.recoverableAt} を過ぎるまで回復できません（実行中の可能性があるため）。時間をおいて再度確認してください。
+            </p>
           ) : (
             <>
               <label>
@@ -170,15 +151,7 @@ export function RecoveryView({ api, roles, onRelogin }: Props) {
             {unsettled ? '（結果確認中のままです。書き込みの停止は続いています）' : ''}
           </p>
           <p>{result.message}</p>
-          {result.recovery && (
-            <>
-              <p>回復の方法 {MODE_LABELS[result.recovery.mode]}</p>
-              <p>
-                回復した主体 {result.recovery.by.subject}・{result.recovery.at}
-              </p>
-              <p>回復の理由 {result.recovery.reason}</p>
-            </>
-          )}
+          {result.recovery && <RecoveryDetails recovery={result.recovery} />}
         </div>
       )}
     </section>

@@ -259,3 +259,31 @@ it('全レコードの履歴を読めるのは Curator と Admin だけ', () => 
   expect(canViewAllHistory(['Viewer', 'Publisher'])).toBe(false)
   expect(canViewAllHistory([])).toBe(false)
 })
+
+it('Admin の回復操作で確定した操作は、回復の方法・主体・理由を表示し、形の崩れた回復結果は受け付けない', async () => {
+  const recovered = {
+    ...entries[2],
+    operationId: 'recovered-op',
+    state: 'FAILED',
+    errorCode: 'ADMIN_RELEASED',
+    recovery: {
+      mode: 'RELEASED',
+      by: { issuer: 'https://issuer', subject: 'admin-1' },
+      at: '2026-11-03T00:00:00+00:00',
+      reason: 'Registry を確認した',
+    },
+  }
+  const { api } = client([jsonResponse(200, { ...historyBody, entries: [recovered] })])
+  await act(async () => {
+    root.render(createElement(RecordHistoryView, { api, recordId: 'agentABC1234', onRelogin: () => {} }))
+  })
+  const text = container.querySelector('ul.history-entries li')?.textContent ?? ''
+  expect(text).toContain('失敗（ADMIN_RELEASED）')
+  expect(text).toContain('確定できないまま強制解除')
+  expect(text).toContain('回復した主体 admin-1')
+  expect(text).toContain('回復の理由 Registry を確認した')
+  const broken = client([
+    jsonResponse(200, { ...historyBody, entries: [{ ...recovered, recovery: { mode: 'UNKNOWN' } }] }),
+  ])
+  await expect(broken.api.getHistory('agentABC1234')).rejects.toThrow('想定外の応答')
+})

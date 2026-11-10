@@ -1,16 +1,9 @@
 import { useEffect, useState } from 'react'
 import type { ApiClient, ApiError } from '../api/client'
 import { settleWhileActive } from '../catalog/requests'
+import { RecoveryDetails } from '../components/RecoveryDetails'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
-import { KIND_LABELS, type HistoryEntry, type HistoryState } from './api'
-
-/** 操作の結果の表示。結果の追記記録がない操作は「結果確認中」（GLOSSARY「結果確認中」） */
-const STATE_LABELS: Record<HistoryState, string> = {
-  SUCCEEDED: '成功',
-  FAILED: '失敗',
-  VERIFYING: '結果確認中',
-  UNKNOWN: '不明',
-}
+import { KIND_LABELS, STATE_LABELS, type HistoryEntry } from './api'
 
 function stateLabel(entry: HistoryEntry): string {
   const label = STATE_LABELS[entry.state]
@@ -96,6 +89,7 @@ export function RecordHistoryView({ api, recordId, onRelogin }: Props) {
                   </p>
                   {entry.targetHash && <p>対象のハッシュ {entry.targetHash}</p>}
                   {entry.reason && <p>理由 {entry.reason}</p>}
+                  {entry.recovery && <RecoveryDetails recovery={entry.recovery} />}
                 </>
               )}
             </li>

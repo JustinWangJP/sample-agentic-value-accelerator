@@ -51,7 +51,6 @@ from registry_portal.operations import (
     operation_status,
     principal_of,
     record_request_id,
-    settled_result,
 )
 from registry_portal.services.draft_store import DraftStore, StoreConflict
 
@@ -455,6 +454,9 @@ class RecordCuration:
             self._send_decision(operation)
         except ClientError as error:
             return self._aws_error(operation, error)
+        # 受け付けを記録してから照合する。反映待ちのまま止まっても、AWS に届いた決裁を
+        # 再送の要否や Admin の強制解除の判断で「届いたか不明」と扱わないため
+        self.store.save_pending(operation)
         return self.settle(operation, allow_reissue=True)
 
     def _aws_error(self, operation: DecisionOperation, error: ClientError) -> DecisionResponse:
@@ -478,7 +480,7 @@ class RecordCuration:
     def settle(self, operation: DecisionOperation, *, allow_reissue: bool) -> DecisionResponse:
         """操作の結果を確定する。確定できなければ結果確認中を返す。"""
         if operation["state"] == "SUCCEEDED":
-            return 200, settled_result(operation)
+            return 200, operation["result"]
         if operation["state"] == "FAILED":
             return _failed(operation)
         try:

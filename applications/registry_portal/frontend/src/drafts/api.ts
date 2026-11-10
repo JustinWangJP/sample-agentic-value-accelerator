@@ -1,8 +1,8 @@
 import type { Role } from '../api/client'
 import { isDataClassification } from '../api/dataClassification'
-import { hasStrings, isObject } from '../api/guards'
+import { hasStrings, isObject, isPrincipal, type Principal } from '../api/guards'
 import { isCatalogRecordType, type CatalogRecordType } from '../api/recordType'
-import type { ApiRequest } from '../api/request'
+import { createResponseChecker, type ApiRequest } from '../api/request'
 import {
   COMMON_TEXT_FIELDS,
   DESCRIPTOR_FIELD_SPECS,
@@ -11,7 +11,7 @@ import {
   type RecordDraft,
 } from './descriptors'
 
-export type { RecordDraft }
+export type { Principal, RecordDraft }
 
 /** 下書きを保存できる environment。バックエンドの ENVIRONMENTS（domain/drafts.py）と揃える */
 export const DRAFT_ENVIRONMENTS = ['dev'] as const
@@ -87,9 +87,44 @@ export type UnsettledOperationState = Exclude<OperationState, 'SUCCEEDED'>
 export function isUnsettledOperationState(value: unknown): value is UnsettledOperationState {
   return OPERATION_STATES.some((state) => state !== 'SUCCEEDED' && state === value)
 }
+/** 回復の方法。RECONCILED は Registry の再取得で確定、RELEASED は確定できないまま強制解除（バックエンドの RecoveryMode） */
+export const RECOVERY_MODES = ['RECONCILED', 'RELEASED'] as const
+export type RecoveryMode = (typeof RECOVERY_MODES)[number]
+/**
+ * Admin の回復操作が確定・強制解除した操作の記録（回復した主体・時刻・理由・方法）。
+ * バックエンドの RecoveryRecord・is_recovery_record（domain/drafts.py）と揃える。
+ * 操作照会・履歴・回復の応答に同じ形で載る
+ */
+export type RecoveryRecord = {
+  mode: RecoveryMode
+  by: Principal
+  at: string
+  reason: string
+}
+export function isRecoveryRecord(value: unknown): value is RecoveryRecord {
+  return (
+    isObject(value) &&
+    RECOVERY_MODES.some((mode) => mode === value.mode) &&
+    isPrincipal(value.by) &&
+    hasStrings(value, ['at', 'reason'])
+  )
+}
+/** 回復結果は、回復操作で確定した操作にだけ付く */
+function hasOptionalRecovery(value: Record<string, unknown>): boolean {
+  return value.recovery === undefined || isRecoveryRecord(value.recovery)
+}
 export type DraftOperation =
-  | (DraftDetail & { operationId: string; operationState: Extract<OperationState, 'SUCCEEDED'> })
-  | { operationId: string; operationState: UnsettledOperationState; message: string }
+  | (DraftDetail & {
+      operationId: string
+      operationState: Extract<OperationState, 'SUCCEEDED'>
+      recovery?: RecoveryRecord
+    })
+  | {
+      operationId: string
+      operationState: UnsettledOperationState
+      message: string
+      recovery?: RecoveryRecord
+    }
 
 /** 操作の種別。バックエンドの OperationKind（domain/drafts.py）と揃える */
 export const OPERATION_KINDS = ['CREATE', 'UPDATE', 'SUBMIT', 'APPROVE', 'REJECT'] as const
@@ -109,8 +144,13 @@ export const KIND_LABELS: Record<OperationKind, string> = {
  */
 export const HISTORY_STATES = [...OPERATION_STATES, 'UNKNOWN'] as const
 export type HistoryState = (typeof HISTORY_STATES)[number]
-/** 操作した主体（GLOSSARY「主体」）。検証済みアクセストークンの iss と sub の組 */
-export type Principal = { issuer: string; subject: string }
+/** 操作の結果の表示。結果の追記記録がない操作は「結果確認中」（GLOSSARY「結果確認中」）。履歴と回復操作の画面で使う */
+export const STATE_LABELS: Record<HistoryState, string> = {
+  SUCCEEDED: '成功',
+  FAILED: '失敗',
+  VERIFYING: '結果確認中',
+  UNKNOWN: '不明',
+}
 /**
  * 操作と審査の履歴の1項目。バックエンドの history.py と揃える。
  * principal が null で state が UNKNOWN の項目は、取り込み前から公開されていた版の公開承認（決裁した主体が不明）。
@@ -128,6 +168,7 @@ export type HistoryEntry = {
   reason?: string
   recordVersion?: string
   withheld?: true
+  recovery?: RecoveryRecord
 }
 /**
  * 所有チームによらず、すべての Registry レコードの操作履歴を読める業務ロール（Curator・Admin）か。
@@ -248,7 +289,8 @@ function isOperation(value: unknown): value is DraftOperation {
     isObject(value) &&
     typeof value.operationId === 'string' &&
     ((value.operationState === 'SUCCEEDED' && isDetail(value)) ||
-      (isUnsettledOperationState(value.operationState) && typeof value.message === 'string'))
+      (isUnsettledOperationState(value.operationState) && typeof value.message === 'string')) &&
+    hasOptionalRecovery(value)
   )
 }
 function isHistoryEntry(value: unknown): value is HistoryEntry {
@@ -256,8 +298,7 @@ function isHistoryEntry(value: unknown): value is HistoryEntry {
     isObject(value) &&
     (value.operationId === null || typeof value.operationId === 'string') &&
     OPERATION_KINDS.some((kind) => kind === value.kind) &&
-    (value.principal === null ||
-      (isObject(value.principal) && hasStrings(value.principal, ['issuer', 'subject']))) &&
+    (value.principal === null || isPrincipal(value.principal)) &&
     (value.startedAt === null || typeof value.startedAt === 'string') &&
     (value.targetHash === null || typeof value.targetHash === 'string') &&
     HISTORY_STATES.some((state) => state === value.state) &&
@@ -265,7 +306,8 @@ function isHistoryEntry(value: unknown): value is HistoryEntry {
     (value.errorCode === undefined || typeof value.errorCode === 'string') &&
     (value.reason === undefined || typeof value.reason === 'string') &&
     (value.recordVersion === undefined || typeof value.recordVersion === 'string') &&
-    (value.withheld === undefined || value.withheld === true)
+    (value.withheld === undefined || value.withheld === true) &&
+    hasOptionalRecovery(value)
   )
 }
 function isHistory(value: unknown): value is RecordHistory {
@@ -278,14 +320,7 @@ function isHistory(value: unknown): value is RecordHistory {
 }
 
 export function createDraftApi(request: ApiRequest, invalidResponse: () => Error): DraftApi {
-  async function checked<T>(
-    response: Promise<unknown>,
-    guard: (value: unknown) => value is T,
-  ): Promise<T> {
-    const value = await response
-    if (!guard(value)) throw invalidResponse()
-    return value
-  }
+  const checked = createResponseChecker(invalidResponse)
   return {
     listDrafts: (token) =>
       checked(

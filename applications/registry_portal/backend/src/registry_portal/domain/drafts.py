@@ -171,7 +171,7 @@ class PrincipalRecord(TypedDict):
 
 
 RecoveryMode = Literal["RECONCILED", "RELEASED"]
-# SPA の `RECOVERY_MODES`（frontend/src/recovery/api.ts）と揃える
+# SPA の `RECOVERY_MODES`（frontend/src/drafts/api.ts）と揃える
 RECOVERY_RECONCILED: RecoveryMode = "RECONCILED"
 RECOVERY_RELEASED: RecoveryMode = "RELEASED"
 
@@ -184,6 +184,17 @@ class RecoveryRecord(TypedDict):
     by: PrincipalRecord
     at: str
     reason: str
+
+
+def is_recovery_record(value: object) -> TypeIs[RecoveryRecord]:
+    """保存された回復の記録の形式か。SPA の isRecoveryRecord（frontend/src/drafts/api.ts）と揃える。"""
+    return (
+        isinstance(value, Mapping)
+        and value.get("mode") in get_args(RecoveryMode)
+        and is_principal(value.get("by"))
+        and isinstance(value.get("at"), str)
+        and isinstance(value.get("reason"), str)
+    )
 
 
 class _OperationRequired(TypedDict):
@@ -225,7 +236,7 @@ class _DraftOperationRequired(OperationRecord):
 class DraftOperation(_DraftOperationRequired, total=False):
     """補助ストアに保存する、下書きの書き込み操作（作成・更新・申請）。"""
 
-    result: DraftResult
+    result: StoredDraftResult
     # 申請: 標準の申請 API が受け付けを返した。未設定なら、照合時に申請 API を呼び直す
     submissionAccepted: bool
 
@@ -255,6 +266,15 @@ def is_decision_operation(operation: StoredOperation) -> TypeIs[DecisionOperatio
     return operation["kind"] in DECISION_KINDS
 
 
+def aws_accepted(operation: Mapping[str, Any]) -> bool:
+    """AWS の書き込み API が受け付け（成功応答）を返したと記録済みの操作か。
+
+    受け付けた操作は、Registry に反映が見えていなくても AWS に届いている。Admin の回復操作は、
+    このような操作を「確定できない」として強制解除しない（反映を待って照合する）。
+    """
+    return bool(operation.get("decisionAccepted") or operation.get("submissionAccepted"))
+
+
 class DraftView(TypedDict):
     """API が返す下書きの詳細。"""
 
@@ -271,6 +291,13 @@ class DraftResult(DraftView):
 
     operationId: str
     operationState: OperationState
+
+
+class StoredDraftResult(DraftResult, total=False):
+    """補助ストアに保存した、確定した下書きの操作の結果。操作照会はこれをそのまま返す。"""
+
+    # Admin の回復操作で確定した操作にだけ付く。補助ストアが確定時に結果へ写す（DraftStore._close）
+    recovery: RecoveryRecord
 
 
 class SubmissionResult(DraftResult):

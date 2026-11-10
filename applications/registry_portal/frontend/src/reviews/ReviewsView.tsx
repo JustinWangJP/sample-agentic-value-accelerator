@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { toApiError, type ApiClient, type ApiError } from '../api/client'
 import { RECORD_TYPE_LABELS } from '../api/recordType'
+import { RecoveredOperationNotice } from '../components/RecoveryDetails'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { RecordHistoryToggle } from '../drafts/RecordHistoryView'
 import {
@@ -501,18 +502,29 @@ function DecisionOperationCheck({
   const [message, setMessage] = useState('決裁の結果確認中です。確定するまでこのレコードへの書き込みを停止しています。')
   const [error, setError] = useState<ApiError | null>(null)
   const [busy, setBusy] = useState(false)
+  // Admin の回復操作で確定した決裁は、回復結果を見せてから結果の表示へ進む
+  const [recovered, setRecovered] = useState<DecisionOperation | null>(null)
   async function check() {
     setBusy(true)
     setError(null)
     try {
       const result = await api.getDecisionOperation(operationId)
-      if (result.operationState !== 'VERIFYING') onDone(result)
-      else setMessage(result.message)
+      if (result.operationState === 'VERIFYING') setMessage(result.message)
+      else if (result.recovery) setRecovered(result)
+      else onDone(result)
     } catch (failure) {
       setError(toApiError(failure, '決裁の結果を取得できませんでした。'))
     } finally {
       setBusy(false)
     }
+  }
+  if (recovered?.recovery) {
+    return (
+      <RecoveredOperationNotice
+        recovery={recovered.recovery}
+        onContinue={() => onDone(recovered)}
+      />
+    )
   }
   return (
     <div>

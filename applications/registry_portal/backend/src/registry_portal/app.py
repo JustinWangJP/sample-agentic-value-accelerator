@@ -37,6 +37,7 @@ from registry_portal.domain.drafts import (
 )
 from registry_portal.errors import ApiError, RequestValidationError, RouteNotFoundError
 from registry_portal.drafts import (
+    DraftSettlement,
     RecordDrafts,
     DraftsNotConfigured,
     RegistryControlClient,
@@ -368,14 +369,9 @@ def create_curation_handler(
             raise RequestValidationError("審査詳細にクエリパラメーターは指定できません。")
         return curation.review(caller, _path_parameter(event))
 
+    # 回復は Registry の観測だけで下書きの操作を確定する。申請 API の権限と発見の設定は使わない
     recovery = OperationRecovery(
-        registry_settings.arn,
-        store,
-        curation,
-        # 発見の設定を持たない決裁 handler では、申請の検査を行わない（回復は観測だけで確定する）
-        RecordDrafts(
-            registry_settings.arn, store, cast(RegistryControlClient, curation_client), None
-        ),
+        store, curation, DraftSettlement(registry_settings.arn, store, curation_client)
     )
 
     def get_recovery(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:

@@ -1,13 +1,15 @@
 // 審査と決裁（Seam 2: SPA の fetch 境界）。Curator が審査待ちの一覧と詳細を見て、公開承認・却下を行う。
 // バックエンドの curation.py と契約を揃える。クライアントから AWS の status は送らない。
-import { hasStrings, isObject } from '../api/guards'
+import { hasStrings, isObject, isPrincipal, type Principal } from '../api/guards'
 import { isCatalogRecordType, type CatalogRecordType } from '../api/recordType'
-import type { ApiRequest } from '../api/request'
+import { createResponseChecker, type ApiRequest } from '../api/request'
 import {
   isRecordStatus,
+  isRecoveryRecord,
   isUnsettledOperationState,
   type OperationState,
   type RecordStatus,
+  type RecoveryRecord,
   type UnsettledOperationState,
 } from '../drafts/api'
 
@@ -30,7 +32,7 @@ function isAttachmentState(value: unknown): value is AttachmentState {
 
 export type RecordReference = { recordId: string; recordVersion: string }
 
-export type Principal = { issuer: string; subject: string }
+export type { Principal }
 
 /** 審査待ちの一覧の項目。AWS の承認待ちを正本とし、申請の補助情報を結合したもの */
 export type PendingSummary = {
@@ -123,8 +125,15 @@ export type DecisionOperation =
       operationState: Extract<OperationState, 'SUCCEEDED'>
       submissionId: string
       snapshotHash: string
+      /** Admin の回復操作で確定した決裁にだけ付く */
+      recovery?: RecoveryRecord
     }
-  | { operationId: string; operationState: UnsettledOperationState; message: string }
+  | {
+      operationId: string
+      operationState: UnsettledOperationState
+      message: string
+      recovery?: RecoveryRecord
+    }
 
 export type DecisionInput = { snapshotHash: string; reason: string }
 
@@ -142,9 +151,6 @@ export type ReviewApi = {
 
 function isStringOrNull(value: unknown): value is string | null {
   return value === null || typeof value === 'string'
-}
-function isPrincipal(value: unknown): value is Principal {
-  return isObject(value) && hasStrings(value, ['issuer', 'subject'])
 }
 function isReference(value: unknown): value is RecordReference {
   return isObject(value) && hasStrings(value, ['recordId', 'recordVersion'])
@@ -248,16 +254,13 @@ function isOperation(value: unknown): value is DecisionOperation {
       isRecordStatus(value.status) &&
       isStringOrNull(value.publishedVersion) &&
       isCatalogRecordType(value.recordType)) ||
-      (isUnsettledOperationState(value.operationState) && typeof value.message === 'string'))
+      (isUnsettledOperationState(value.operationState) && typeof value.message === 'string')) &&
+    (value.recovery === undefined || isRecoveryRecord(value.recovery))
   )
 }
 
 export function createReviewApi(request: ApiRequest, invalidResponse: () => Error): ReviewApi {
-  async function checked<T>(response: Promise<unknown>, guard: (value: unknown) => value is T): Promise<T> {
-    const value = await response
-    if (!guard(value)) throw invalidResponse()
-    return value
-  }
+  const checked = createResponseChecker(invalidResponse)
   return {
     listReviews: (token) =>
       checked(

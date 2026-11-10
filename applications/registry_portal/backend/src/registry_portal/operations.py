@@ -82,11 +82,3 @@ def released_message(reason: str) -> str:
         f"Admin が結果を確認できないまま操作を強制解除しました（理由: {reason}）。"
         "Registry の状態を確認してから再実行してください。"
     )
-
-
-def settled_result(operation: Mapping[str, Any]) -> dict[str, Any]:
-    """成功が確定した操作の応答。回復操作で確定した操作には回復結果を添える。"""
-    result = dict(operation["result"])
-    if "recovery" in operation:
-        result["recovery"] = operation["recovery"]
-    return result
