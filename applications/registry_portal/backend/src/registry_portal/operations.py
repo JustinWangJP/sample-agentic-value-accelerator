@@ -15,6 +15,7 @@ from registry_portal.domain.drafts import (
     OperationRecord,
     OperationState,
     OperationStatus,
+    RECOVERY_RELEASED,
     PrincipalRecord,
 )
 from registry_portal.errors import RequestValidationError
@@ -61,9 +62,23 @@ def record_request_id(operation: OperationRecord, response: Mapping[str, Any]) -
 def operation_status(
     operation: Mapping[str, Any], state: OperationState, message: str
 ) -> OperationStatus:
-    """結果確認中、または失敗が確定した操作の応答。"""
-    return {
+    """結果確認中、または失敗が確定した操作の応答。回復操作で確定した操作には回復結果を添える。"""
+    recovery = operation.get("recovery")
+    if state == "FAILED" and recovery is not None and recovery["mode"] == RECOVERY_RELEASED:
+        message = released_message(recovery["reason"])
+    status: OperationStatus = {
         "operationId": operation["operationId"],
         "operationState": state,
         "message": message,
     }
+    if recovery is not None:
+        status["recovery"] = recovery
+    return status
+
+
+def released_message(reason: str) -> str:
+    """Admin が結果を確定できないまま強制解除した操作の、失敗のメッセージ。"""
+    return (
+        f"Admin が結果を確認できないまま操作を強制解除しました（理由: {reason}）。"
+        "Registry の状態を確認してから再実行してください。"
+    )

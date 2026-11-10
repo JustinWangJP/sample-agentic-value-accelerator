@@ -297,6 +297,34 @@ it('申請の結果確認中は再送せず、操作の照合で審査待ちに�
   expect(container.textContent).toContain('申請しました。審査待ちです。')
 })
 
+it('Admin の回復操作で確定した申請は、照会で回復結果を見せてから結果を表示する', async () => {
+  await mount([
+    savedList(), jsonResponse(200, detailOf(a2aDraft)),
+    jsonResponse(202, { operationId: 'op-submit', operationState: 'VERIFYING', message: '照合中' }),
+    jsonResponse(200, {
+      operationId: 'op-submit',
+      operationState: 'FAILED',
+      message: 'Admin が結果を確認できないまま操作を強制解除しました（理由: Registry を確認した）。',
+      recovery: {
+        mode: 'RELEASED',
+        by: { issuer: 'https://issuer', subject: 'admin-1' },
+        at: '2026-11-09T10:00:00+00:00',
+        reason: 'Registry を確認した',
+      },
+    }),
+  ])
+  await click('編集')
+  await click('保存済みの内容を申請')
+  await setValue('reason', '確認をお願いします')
+  await submit()
+  await click('処理結果を確認')
+  expect(container.textContent).toContain('Admin の回復操作で結果が確定しました。')
+  expect(container.textContent).toContain('確定できないまま強制解除')
+  expect(container.textContent).toContain('回復した主体 admin-1')
+  await click('結果を表示')
+  expect(container.textContent).toContain('申請に失敗しました。Admin が結果を確認できないまま操作を強制解除しました')
+})
+
 it('申請の通信断は成功とせず、再送を停止して一覧での確認を案内する', async () => {
   const calls = await mount([savedList(), jsonResponse(200, detailOf(a2aDraft)), new Error('通信断')])
   await click('編集')

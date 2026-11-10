@@ -28,6 +28,7 @@ from registry_portal.domain.drafts import (
     HistoryState,
     PrincipalRecord,
     is_principal,
+    is_recovery_record,
 )
 from registry_portal.errors import ApiError, ForbiddenError, RequestValidationError
 from registry_portal.operations import principal_of
@@ -92,6 +93,9 @@ def _entry(op_id: str, operation: Mapping[str, Any], *, state: HistoryState) -> 
     for key in _OPTIONAL_FIELDS:
         if isinstance(operation.get(key), str):
             entry[key] = operation[key]
+    # Admin の回復操作で確定した操作は、回復した主体・時刻・理由・方法を RESULT に持つ
+    if "recovery" in operation:
+        entry["recovery"] = operation["recovery"]
     return entry
 
 
@@ -149,6 +153,7 @@ def _check_operation(phases: set[str], operation: Mapping[str, Any]) -> None:
         or operation.get("kind") not in OPERATION_KINDS
         or not is_principal(operation.get("principal"))
         or not isinstance(operation.get("startedAt"), str)
+        or ("recovery" in operation and not is_recovery_record(operation["recovery"]))
     ):
         raise ValueError("保存された操作記録の形式が正しくありません。")
 

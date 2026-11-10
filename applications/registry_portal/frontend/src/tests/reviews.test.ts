@@ -291,6 +291,32 @@ it('結果確認中の決裁は操作照会で確定し、承認後に反映待�
   expect(container.textContent).toContain('検索への反映待ち')
 })
 
+it('Admin の回復操作で確定した決裁は、照会で回復結果を見せてから結果を表示する', async () => {
+  await mount([
+    jsonResponse(200, { items: [summary], nextToken: null }),
+    jsonResponse(200, detail),
+    jsonResponse(200, { operationId: 'decision-1', operationState: 'VERIFYING', message: '結果確認中です。' }),
+    jsonResponse(200, {
+      ...approveResult,
+      recovery: {
+        mode: 'RECONCILED',
+        by: { issuer: 'https://issuer', subject: 'admin-1' },
+        at: '2026-11-09T10:00:00+00:00',
+        reason: 'Registry を確認した',
+      },
+    }),
+  ])
+  await click('審査する')
+  await setValue('approveReason', '内容を確認した')
+  await submitForm(0)
+  await click('決裁の結果を確認')
+  expect(container.textContent).toContain('Admin の回復操作で結果が確定しました。')
+  expect(container.textContent).toContain('Registry を再取得して確定')
+  expect(container.textContent).not.toContain('公開承認しました')
+  await click('結果を表示')
+  expect(container.textContent).toContain('公開承認しました（版 2.0.0）')
+})
+
 it('結果が不明な失敗のあとは同じキーで再試行する', async () => {
   const calls = await mount([
     jsonResponse(200, { items: [summary], nextToken: null }),

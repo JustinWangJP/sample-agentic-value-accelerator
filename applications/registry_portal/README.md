@@ -200,7 +200,7 @@ Publisher は、所属する `team-*` を所有チームに指定して、フォ
 - 更新: 「処理結果を確認」で照合します。AWS のレコードが更新後の内容になっていれば `SUCCEEDED`、`UPDATING` なら確認中のまま、更新前の内容のまま処理中でもなければ、更新が AWS に届かなかったとして `FAILED` を確定し、ロックを解除します。その後、同じ内容で保存し直せます。
 - 作成（レコード ID が決まる前に失敗した場合）: 照合ではレコードを特定できないため確認中のままです。同じ入力とキーで作成を再試行すると、AWS の `clientToken` による冪等性で重複なく確定します。
 
-どちらでも確定できない操作（補助ストア障害が続く場合など）を強制解除する回復手順は、Admin の回復操作として後続チケットで扱います。DynamoDB の `LOCK` や操作情報を手作業で消して再実行しないでください。
+どちらでも確定できない操作（補助ストア障害が続く場合など）を強制解除する回復手順は、[Admin の回復操作（#12）](#回復操作12)で行います。DynamoDB の `LOCK` や操作情報を手作業で消して再実行しないでください。
 
 公開中の版より大きい semver かどうかは申請（#9）で検査し、下書きの保存では検査しません。公開中の版を補助ストアに保持するため、AWS が新しい下書きを返している間も「下書きあり」と「公開中」を併記します。申請は後述の #9、公開承認は #10 が担当します。A2A・MCP サーバー・Skill の下書きは次の節で説明します。
 
@@ -398,7 +398,7 @@ Curator は審査待ちの一覧を見て、申請のスナップショットと
 
 ### 決裁 handler と SPA
 
-決裁 handler は審査と決裁の4つの API だけを受け持ちます。補助テーブル（`SUPPLEMENT_TABLE_NAME`）がないとどの API も提供できないため、起動エラーにします（カタログを提供し続ける管理 handler とは異なります）。発見用 JWT の設定（`DISCOVERY_*`）は使いません。公開中の版は補助ストアに保持した `publishedVersion` と `PUBLISHED#版` スナップショットから読みます。
+決裁 handler は審査と決裁の4つの API と、[Admin の回復操作（#12）](#回復操作12)の2つの API だけを受け持ちます。補助テーブル（`SUPPLEMENT_TABLE_NAME`）がないとどの API も提供できないため、起動エラーにします（カタログを提供し続ける管理 handler とは異なります）。発見用 JWT の設定（`DISCOVERY_*`）は使いません。公開中の版は補助ストアに保持した `publishedVersion` と `PUBLISHED#版` スナップショットから読みます。
 
 SPA の「審査待ち」は Curator（`registry-curator` グループ）だけに表示します。一覧から審査対象を開くと、申請のスナップショット（申請理由・申請者・定義と metadata・連絡先など）と公開中の版との差分（表示名・説明・定義・metadata・連絡先・利用条件・接続先の参照・関連参照）、公開中の版を公開承認した Curator を確認できます。409では最新の申請の再読み込みを促し、結果不明の失敗では同じ `Idempotency-Key` で再試行します。ポータルで管理されていない承認待ち（ポータル外で申請されたもの）は一覧に表示しますが、決裁はできません。
 
@@ -414,7 +414,7 @@ terraform plan
 terraform apply
 ```
 
-モジュールは、借用する既存 HTTP API（`http_api_id`）に `GET /api/reviews`、`GET /api/reviews/{recordId}`、`POST /api/reviews/{recordId}/approve`、`POST /api/reviews/{recordId}/reject` の route を作り、決裁 Lambda（payload format 2.0）に統合して既存の JWT authorizer（`jwt_authorizer_id`）を適用します。HTTP API の呼び出し許可（`aws_lambda_permission`）は `/api/reviews` 以下の path に限ります。HTTP API・authorizer・CORS の設定は #5 の IaC が持ちます。CORS で `POST` と `Idempotency-Key` ヘッダーを許可してください。
+モジュールは、借用する既存 HTTP API（`http_api_id`）に `GET /api/reviews`、`GET /api/reviews/{recordId}`、`POST /api/reviews/{recordId}/approve`、`POST /api/reviews/{recordId}/reject`、`GET /api/records/{recordId}/recovery`、`POST /api/records/{recordId}/recovery` の route を作り、決裁 Lambda（payload format 2.0）に統合して既存の JWT authorizer（`jwt_authorizer_id`）を適用します。HTTP API の呼び出し許可（`aws_lambda_permission`）は `/api/reviews` 以下と `/api/records/*/recovery` の path に限ります。HTTP API・authorizer・CORS の設定は #5 の IaC が持ちます。CORS で `POST` と `Idempotency-Key` ヘッダーを許可してください。
 
 Seam 1 の Stubber と moto で、認可（Curator 以外の拒否）、AWS 正本の一覧と補助情報の結合、保存済みスナップショットから計算し直したハッシュ・Curator が見たハッシュ・内容ハッシュの照合による409、自己承認の拒否（Admin を含む）、却下済み・処理中の拒否、公開承認・却下の理由の必須化と255文字上限、申請・公開版スナップショットが読めない場合の `MISSING`、決裁操作の照会を決裁した Curator に限ること、`status` の不接受、AWS の拒否・混雑・結果不明、同じキーでの再送と操作照会による確定、AWS 成功後の補助ストア障害、公開版スナップショットと管理情報の保存を検証します。Seam 2 の Vitest で、Curator 以外の非表示、一覧と差分（定義と metadata を含む）の表示、「申請なし」と「取得できない」・「初回公開」と「未取得」の区別、書き換えられたスナップショットの決裁停止、承認・却下の本文とキー、「検索への反映待ち」、409 の再読み込み、結果不明の再試行を確認します。実 AWS への書き込みは行っていません。デプロイ後に実環境で、別ユーザーによる承認までの流れと IAM の境界を確認してください。
 
@@ -437,3 +437,21 @@ SPA では「操作と審査の履歴を表示」から開きます。Publisher 
 履歴の読み取りには補助テーブルへの `dynamodb:Query` が必要なため、[下書き用モジュールのポリシー](infrastructure/modules/management_drafts/draft-policy.json.tftpl) に追加します。ルートモジュールは既存の [`infrastructure/management`](infrastructure/management/main.tf) をそのまま使います。route（`GET /api/records/{recordId}/history`）は既存 HTTP API の管理 Lambda 統合に追加してください（#5 の IaC が持ちます）。
 
 Seam 1 の Stubber と moto で、認可（Viewer と所属チームのない Publisher の拒否、他チームの拒否、Curator と Admin の許可）、補助テーブル未設定時の503、未管理レコードの404、管理下で操作記録のないレコードの0件、作成・申請・公開承認の履歴項目（操作 ID・主体・対象ハッシュ・開始時刻・結果・AWS request ID・決裁理由。作成の対象ハッシュが作成した内容の内容ハッシュであること）、作成・申請・公開承認でアプリが送るすべての追記記録の書き込みに上書き禁止の条件式が付くこと（書き込み要求を記録して検査）と、確定済みの操作の結果を補助ストアから追記し直すと拒否され記録が変わらないこと、作成の INTENT の写しが正本から定義の全文を除いたものと一致すること、結果確認中の作成が履歴に現れること、決裁した主体が不明な項目とその後の公開承認で消えないこと、結果確認中の決裁の中身を決裁した Curator 以外に返さないこと、Query の複数ページの読み取り、形式の崩れた追記記録（ソートキー・主体・種別・開始時刻・INTENT の欠落）の 502 を検証します。Seam 2 の Vitest で、API の応答の検査（旧い値や必須の項目の欠落の拒否）、履歴項目の表示、「不明」と「結果確認中」の表示、0件と403・404・502 の区別、伏せた決裁の表示、開閉ボタンを押すまで API を呼ばないこと、カタログ詳細の導線が Curator・Admin だけに出ることとそこからの404の案内を確認します。実 AWS への書き込みは行っていません。デプロイ後に実環境で、`Query` の IAM 境界と route の追加を確認してください。
+
+## 回復操作（#12）
+
+結果確認中のまま止まった操作（決裁した Curator や下書きの Publisher が不在、補助ストア障害が続くなど）を、Admin が Registry の再取得で確定する回復操作です。判断は [ADR-0011](../../docs/adr/0011-admin-recovery-operation.md) に記録しました。ロックは期限で解除せず、確定するまで別の書き込みを409で止めます。確定できない操作のロックを外すのは、Admin が Registry の状態を確かめたうえで行う強制解除だけです。
+
+- `GET /api/records/{recordId}/recovery`（Admin）: レコードのロックを持つ操作の概要（種別・主体・開始時刻・回復できるようになる時刻 `recoverableAt`・`recoverable`。操作 ID は返しません）を返します。結果確認中の操作がなければ `operation: null` です。理由やハッシュなど、操作の中身は返しません。
+- `POST /api/records/{recordId}/recovery`（Admin、本文は `reason`（1〜255文字）と任意の `release`）: Registry を再取得して操作を確定します。下書きの操作（作成・更新・申請）も決裁の操作も、観測できる状態だけから確定し、申請 API・状態更新 API は呼び直しません（決裁 Lambda は申請の権限を持たず、決裁の再送は決裁した Curator に限るため）。確定できれば200で `SUCCEEDED` または `FAILED`、確定できなければ202の `VERIFYING` です。`release: true` を指定し、Registry を再取得できても確定できないときだけ、操作を失敗（`ADMIN_RELEASED`）として確定し、ロックを解除します。Registry を読めなければ解除せず502 `REGISTRY_UNAVAILABLE`、AWS が処理中（`CREATING`・`UPDATING`）なら解除せず409 `RECORD_STILL_PROCESSING` です。AWS が受け付け（成功応答）を返したと記録済みの決裁・申請は、反映が見えなくても AWS に届いているため解除せず409 `ACCEPTED_BY_REGISTRY` です（反映を待って照合します）。補助テーブルを読み書きできない、またはロックが指す操作がないときは502 `SUPPLEMENT_UNAVAILABLE` です。
+- 開始から5分が過ぎていない操作は、実行中の可能性があるため回復できません（409 `OPERATION_STILL_RUNNING`）。ロックを持つ操作がなければ409 `NO_RECOVERABLE_OPERATION` です。
+- 回復した主体・時刻・理由・方法（`RECONCILED` は Registry の再取得で確定、`RELEASED` は強制解除）は、確定した操作と操作記録（RESULT）に残ります。`GET /api/operations/{operationId}` と履歴（`GET /api/records/{recordId}/history`）の項目にも `recovery` として載り、強制解除された操作の失敗の message には強制解除と理由が含まれます。
+- 回復の応答に操作 ID と操作の中身は含めません（結果確認中の決裁の操作 ID は決裁した Curator 以外に返さない、ADR-0010）。
+- `clientToken` を持つ Registry 管理 API は作成（[`CreateRegistryRecord`](https://docs.aws.amazon.com/boto3/latest/reference/services/agent-registry-control/client/create_registry_record.html)）だけで、[更新](https://docs.aws.amazon.com/boto3/latest/reference/services/agent-registry-control/client/update_registry_record.html)・[申請](https://docs.aws.amazon.com/boto3/latest/reference/services/agent-registry-control/client/submit_registry_record_for_approval.html)・[状態更新](https://docs.aws.amazon.com/boto3/latest/reference/services/agent-registry-control/client/update_registry_record_status.html)にはありません（公式ドキュメントと、botocore のサービスモデル `agent-registry-control/2025-12-01` で確認）。作成は同じ操作 ID で再試行し、更新・申請・状態更新は照合で確定します。
+- Lambda を再起動しても、結果確認中の操作は補助テーブル（`LOCK` と `OP#…`）から取得できます。DynamoDB の項目を手作業で消して再実行しないでください。
+- レコード ID が決まる前に失敗した作成は、レコードのロックを持たないため回復の対象外です。同じ入力と `Idempotency-Key` で再試行します。
+- 強制解除した操作が実際には AWS に反映されていた場合、Registry の状態とポータルの記録（公開版スナップショットなど）が食い違います。強制解除の前に Registry の状態を確認してください。
+
+SPA の「回復操作」は Admin（`registry-admin` グループ）だけに表示します。Registry レコード ID から結果確認中の操作を確認し（回復できる時刻はバックエンドの `recoverableAt` を表示します）、理由を付けて「Registry を再取得して照合」を実行します。確定できず結果確認中のままの場合だけ、確認のチェックを入れてから「強制解除する」を実行できます。結果確認中・成功・失敗と回復結果（方法・主体・時刻・理由）は、取得や回復の失敗（403・409・502）とは別の表示です。Publisher と Curator の「処理結果を確認」「決裁の結果を確認」でも、回復操作で確定した操作は回復結果を表示してから結果に進み、操作と審査の履歴にも回復結果を表示します。
+
+Seam 1 の Stubber と moto で、Admin だけが実行できること（Curator・Publisher・グループなしは403）、本文の検査（`reason` の必須化と255文字上限、未知の項目の拒否）、拒否した要求が AWS もロックも変えないこと、開始直後の操作と、ロックを持つ操作がないレコードの409、結果確認中の決裁・更新を Registry の状態から確定して回復の主体と理由を操作記録に残すこと、申請 API を呼び直さないこと、確定できない操作の強制解除（Registry を再取得できないとき、AWS が受け付けを返した決裁・申請は解除しない）、操作照会と履歴への回復結果の反映（決裁した Curator と更新した Publisher）、補助ストアの異常を Registry の障害と区別する502、回復の応答に操作の中身を含めないこと、決裁と申請について AWS の403・429・5xx・503・タイムアウトで成功を記録せず、結果不明のときだけロックを残すこと、Lambda の再起動後も操作を取得して回復できることを検証します。AWS 成功後の補助ストア障害は、既存の作成・申請・決裁のテストで検証しています。Seam 2 の Vitest で、Admin 以外への非表示と API を呼ばないこと、結果確認中の操作の表示、操作なし・取得失敗・409の区別、回復できない操作の案内（`recoverableAt` の表示と、それを欠いた応答の拒否）、AWS が受け付けた操作の強制解除の拒否の表示、Publisher・Curator の照会と履歴での回復結果の表示、照合と強制解除の本文（強制解除は確認の後だけ）、確定した結果と回復結果の表示を確認します。実 AWS への書き込みは行っていません。デプロイ後に実環境で、決裁 Lambda の route の追加と、Admin による回復を確認してください。

@@ -1,5 +1,6 @@
 # 決裁 Lambda と専用の実行ロールを定義する。
-# 決裁 handler（handlers/curation.py）は審査待ちの閲覧と、公開承認・却下（状態遷移）だけを行う。
+# 決裁 handler（handlers/curation.py）は審査待ちの閲覧と、公開承認・却下（状態遷移）、
+# Admin による結果確認中の操作の回復（Registry の再取得と強制解除）だけを行う。
 # descriptor の作成・更新（CreateRegistryRecord / UpdateRegistryRecord）と申請の権限は持たない
 # （設計書「最小インフラとセキュリティ」の決裁 Lambda）。既存 Registry と補助テーブルは借用するだけ。
 locals {
@@ -62,6 +63,8 @@ locals {
     "GET /api/reviews/{recordId}",
     "POST /api/reviews/{recordId}/approve",
     "POST /api/reviews/{recordId}/reject",
+    "GET /api/records/{recordId}/recovery",
+    "POST /api/records/{recordId}/recovery",
   ]
 }
 
@@ -85,11 +88,20 @@ resource "aws_apigatewayv2_route" "decision" {
   authorizer_id      = var.jwt_authorizer_id
 }
 
-# HTTP API から決裁 Lambda を呼び出す許可。審査と決裁の path（/api/reviews 以下）だけに限る
+# HTTP API から決裁 Lambda を呼び出す許可。審査と決裁の path（/api/reviews 以下）と、
+# 回復操作の path（/api/records/{recordId}/recovery）だけに限る
 resource "aws_lambda_permission" "decision_api" {
   statement_id  = "AllowHttpApiInvokeReviews"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.decision.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/*/api/reviews*"
+}
+
+resource "aws_lambda_permission" "decision_recovery_api" {
+  statement_id  = "AllowHttpApiInvokeRecovery"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.decision.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/*/api/records/*/recovery"
 }

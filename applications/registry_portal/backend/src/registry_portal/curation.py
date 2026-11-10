@@ -365,6 +365,24 @@ class RecordCuration:
                 raise PendingApprovalNotFound() from None
             raise
 
+    def observe_record_status(self, record_id: str) -> str | None:
+        """Registry のレコードを再取得し、AWS の状態を返す。削除済み（404）は None（読めた結果）。
+
+        Admin の回復操作が、Registry の状態を見ないまま強制解除しないための確認。
+        読めなければ DecisionUnavailable（502）。
+        """
+        try:
+            record = self._registry_client.get_registry_record(
+                registryId=self.registry, recordId=record_id
+            )
+        except ClientError as error:
+            if error.response["Error"]["Code"] == "ResourceNotFoundException":
+                return None
+            raise DecisionUnavailable() from None
+        except BotoCoreError:
+            raise DecisionUnavailable() from None
+        return str(record["status"])
+
     def _check_and_pin(self, operation: DecisionOperation) -> Mapping[str, Any]:
         """現物と申請スナップショットを照合し、決裁の対象を操作に固定する。
 
@@ -436,6 +454,9 @@ class RecordCuration:
             self._send_decision(operation)
         except ClientError as error:
             return self._aws_error(operation, error)
+        # 受け付けを記録してから照合する。反映待ちのまま止まっても、AWS に届いた決裁を
+        # 再送の要否や Admin の強制解除の判断で「届いたか不明」と扱わないため
+        self.store.save_pending(operation)
         return self.settle(operation, allow_reissue=True)
 
     def _aws_error(self, operation: DecisionOperation, error: ClientError) -> DecisionResponse:

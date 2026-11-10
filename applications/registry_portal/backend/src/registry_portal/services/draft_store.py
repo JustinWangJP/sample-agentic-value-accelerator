@@ -338,6 +338,14 @@ class DraftStore:
         op_id = operation["operationId"]
         if "awsRequestId" in operation:
             outcome = {**outcome, "awsRequestId": operation["awsRequestId"]}
+        # Admin の回復操作で確定した操作は、回復した主体と理由を操作記録に残す。
+        # 成功した操作は、操作照会が保存した結果をそのまま返すため、結果にも写す
+        if "recovery" in operation:
+            recovery = operation["recovery"]
+            recorded: dict[str, Any] = {"recovery": recovery}
+            if "result" in outcome:
+                recorded["result"] = {**outcome["result"], "recovery": recovery}
+            outcome = {**outcome, **recorded}
         audit_items = [
             self._put(
                 {

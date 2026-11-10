@@ -4,7 +4,7 @@ import hashlib
 import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, TypedDict, TypeIs, cast, get_args
+from typing import Any, Literal, NotRequired, TypedDict, TypeIs, cast, get_args
 
 from registry_portal.domain.catalog import (
     AGENT_RECORD_TYPE,
@@ -170,6 +170,33 @@ class PrincipalRecord(TypedDict):
     subject: str
 
 
+RecoveryMode = Literal["RECONCILED", "RELEASED"]
+# SPA の `RECOVERY_MODES`（frontend/src/drafts/api.ts）と揃える
+RECOVERY_RECONCILED: RecoveryMode = "RECONCILED"
+RECOVERY_RELEASED: RecoveryMode = "RELEASED"
+
+
+class RecoveryRecord(TypedDict):
+    """Admin の回復操作が結果を確定した、または強制解除したときの記録（設計書「ロールと所有」）。"""
+
+    # RECONCILED: Registry を再取得した結果から確定した。RELEASED: 確定できないまま Admin が強制解除した
+    mode: RecoveryMode
+    by: PrincipalRecord
+    at: str
+    reason: str
+
+
+def is_recovery_record(value: object) -> TypeIs[RecoveryRecord]:
+    """保存された回復の記録の形式か。SPA の isRecoveryRecord（frontend/src/drafts/api.ts）と揃える。"""
+    return (
+        isinstance(value, Mapping)
+        and value.get("mode") in get_args(RecoveryMode)
+        and is_principal(value.get("by"))
+        and isinstance(value.get("at"), str)
+        and isinstance(value.get("reason"), str)
+    )
+
+
 class _OperationRequired(TypedDict):
     operationId: str
     ownerTeam: str
@@ -198,6 +225,8 @@ class OperationRecord(_OperationRequired, total=False):
     awsRequestId: str
     # 申請: 保存した申請スナップショットのハッシュ。決裁: Curator が審査したスナップショットのハッシュ
     snapshotHash: str
+    # Admin の回復操作が確定・解除した操作にだけ付く
+    recovery: RecoveryRecord
 
 
 class _DraftOperationRequired(OperationRecord):
@@ -207,7 +236,7 @@ class _DraftOperationRequired(OperationRecord):
 class DraftOperation(_DraftOperationRequired, total=False):
     """補助ストアに保存する、下書きの書き込み操作（作成・更新・申請）。"""
 
-    result: DraftResult
+    result: StoredDraftResult
     # 申請: 標準の申請 API が受け付けを返した。未設定なら、照合時に申請 API を呼び直す
     submissionAccepted: bool
 
@@ -237,6 +266,15 @@ def is_decision_operation(operation: StoredOperation) -> TypeIs[DecisionOperatio
     return operation["kind"] in DECISION_KINDS
 
 
+def aws_accepted(operation: Mapping[str, Any]) -> bool:
+    """AWS の書き込み API が受け付け（成功応答）を返したと記録済みの操作か。
+
+    受け付けた操作は、Registry に反映が見えていなくても AWS に届いている。Admin の回復操作は、
+    このような操作を「確定できない」として強制解除しない（反映を待って照合する）。
+    """
+    return bool(operation.get("decisionAccepted") or operation.get("submissionAccepted"))
+
+
 class DraftView(TypedDict):
     """API が返す下書きの詳細。"""
 
@@ -255,6 +293,13 @@ class DraftResult(DraftView):
     operationState: OperationState
 
 
+class StoredDraftResult(DraftResult, total=False):
+    """補助ストアに保存した、確定した下書きの操作の結果。操作照会はこれをそのまま返す。"""
+
+    # Admin の回復操作で確定した操作にだけ付く。補助ストアが確定時に結果へ写す（DraftStore._close）
+    recovery: RecoveryRecord
+
+
 class SubmissionResult(DraftResult):
     submissionId: str
     snapshotHash: str
@@ -266,6 +311,7 @@ class OperationStatus(TypedDict):
     operationId: str
     operationState: OperationState
     message: str
+    recovery: NotRequired[RecoveryRecord]
 
 
 def has_draft(status: str) -> bool:
