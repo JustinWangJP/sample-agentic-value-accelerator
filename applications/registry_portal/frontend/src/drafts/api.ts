@@ -44,6 +44,17 @@ export const PENDING_APPROVAL_STATUS: RecordStatus = 'PENDING_APPROVAL'
 export const PUBLISHED_STATUS: RecordStatus = 'APPROVED'
 /** 廃止済み。元に戻せない終端の状態。バックエンドの DEPRECATED_STATUS と揃える */
 export const DEPRECATED_STATUS: RecordStatus = 'DEPRECATED'
+
+/** 画面に出す AWS の状態。PENDING_APPROVAL は「審査待ち」と表示する（GLOSSARY「申請」） */
+export function recordStatusLabel(status: RecordStatus): string {
+  return status === PENDING_APPROVAL_STATUS ? '審査待ち' : status
+}
+
+/**
+ * 決裁・公開停止・廃止の理由の上限。AWS の UpdateRegistryRecordStatus の statusReason（0〜255文字）に合わせる
+ * （バックエンドの REASON_MAX_LENGTH（domain/curation.py））
+ */
+export const STATUS_REASON_MAX_LENGTH = 255
 /** 編集を受け付けない状態。バックエンドの NOT_EDITABLE_STATUSES と揃える */
 const NOT_EDITABLE_STATUSES: readonly RecordStatus[] = ['CREATING', 'UPDATING', DEPRECATED_STATUS]
 export function isEditableStatus(status: RecordStatus): boolean {

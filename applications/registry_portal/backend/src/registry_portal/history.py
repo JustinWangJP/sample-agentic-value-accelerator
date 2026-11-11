@@ -24,14 +24,13 @@ from registry_portal.domain.drafts import (
     HISTORY_UNKNOWN,
     HISTORY_VERIFYING,
     OPERATION_KINDS,
-    RECORD_ID_PATTERN,
     HistoryState,
     PrincipalRecord,
     is_principal,
     is_recovery_record,
 )
-from registry_portal.errors import ApiError, ForbiddenError, RequestValidationError
-from registry_portal.operations import principal_of
+from registry_portal.errors import ApiError, ForbiddenError
+from registry_portal.operations import check_record_id, principal_of
 from registry_portal.services.draft_store import AppendedRecord, DraftStore
 
 # 保存内容の異常（管理情報や操作記録の形式違反）は、空の結果にせず利用者に区別して伝える
@@ -168,8 +167,7 @@ class RecordHistory:
         privileged = _is_privileged(caller)
         if not privileged and Role.PUBLISHER not in caller.roles:
             raise ForbiddenError("操作履歴は Publisher・Curator・Admin が閲覧できます。")
-        if not RECORD_ID_PATTERN.fullmatch(record_id):
-            raise RequestValidationError("Registry レコード ID の形式が正しくありません。")
+        check_record_id(record_id)
         if not privileged and not caller.teams:
             raise ForbiddenError("操作履歴の閲覧には所属チームが必要です。")
         try:

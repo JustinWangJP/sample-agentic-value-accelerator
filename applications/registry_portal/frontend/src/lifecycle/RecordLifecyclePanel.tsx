@@ -6,21 +6,15 @@ import { RecordHistoryToggle } from '../drafts/RecordHistoryView'
 import {
   DEPRECATED_STATUS,
   DEPRECATION_REASON_MAX_LENGTH,
-  PENDING_APPROVAL_STATUS,
+  STATUS_REASON_MAX_LENGTH,
   isUncertainWriteError,
+  recordStatusLabel,
   settlesIdempotencyKey,
   type DeprecationRequest,
-  type RecordStatus,
 } from '../drafts/api'
 import type { DecisionOperation } from '../reviews/api'
 import { DecisionOperationCheck } from '../reviews/DecisionOperationCheck'
-import {
-  LIFECYCLE_ACTIONS,
-  LIFECYCLE_REASON_MAX_LENGTH,
-  elapsedDays,
-  type LifecycleAction,
-  type LifecycleView,
-} from './api'
+import { LIFECYCLE_ACTIONS, elapsedDays, type LifecycleAction, type LifecycleView } from './api'
 
 type Props = {
   api: ApiClient
@@ -43,11 +37,27 @@ type ActionState =
   | { kind: 'result'; operation: DecisionOperation }
   | { kind: 'declined'; request: DeprecationRequest }
 
-/** 操作ごとの画面の文言。公開停止は却下で発見できなくし、廃止は元に戻せない */
-const ACTION_COPY: Record<
-  LifecycleAction,
-  { legend: string; description: string; reasonLabel: string; submit: string; failure: string }
-> = {
+/** 元に戻せない操作の確認。1段目は確認のチェック、2段目はレコード名の入力による確定 */
+type Confirmation = {
+  /** 1段目のチェックボックスの文言 */
+  acknowledge: string
+  /** 2段目の確定のボタンの文言 */
+  submit: string
+}
+
+/** 操作ごとの画面の文言と送信。公開停止は却下で発見できなくし、廃止は元に戻せない */
+type ActionSpec = {
+  legend: string
+  description: string
+  reasonLabel: string
+  submit: string
+  failure: string
+  /** 元に戻せない操作だけが持つ二重確認。null なら確認なしで送る */
+  confirmation: Confirmation | null
+  send: (api: ApiClient, recordId: string, reason: string, key: string) => Promise<DecisionOperation>
+}
+
+const ACTION_SPECS: Record<LifecycleAction, ActionSpec> = {
   suspend: {
     legend: '公開停止',
     description:
@@ -56,6 +66,8 @@ const ACTION_COPY: Record<
     reasonLabel: '公開停止の理由（必須。Publisher と利用者への説明として記録します）',
     submit: '公開停止する',
     failure: '公開停止できませんでした。',
+    confirmation: null,
+    send: (api, recordId, reason, key) => api.suspendRecord(recordId, { reason }, key),
   },
   deprecate: {
     legend: '廃止',
@@ -65,29 +77,43 @@ const ACTION_COPY: Record<
     reasonLabel: '廃止理由（必須。判断の根拠として記録します）',
     submit: '廃止する',
     failure: '廃止できませんでした。',
+    confirmation: {
+      acknowledge: '廃止は元に戻せないことを確認しました',
+      submit: '廃止を確定する',
+    },
+    // 二重確認を終えた操作だけが送る。API も confirm: true のない廃止を拒否する
+    send: (api, recordId, reason, key) => api.deprecateRecord(recordId, { reason, confirm: true }, key),
   },
 }
 
-function statusLabel(status: RecordStatus): string {
-  return status === PENDING_APPROVAL_STATUS ? '審査待ち' : status
+type ReasonTarget = LifecycleAction | 'decline'
+
+function emptyReasons(): Record<ReasonTarget, string> {
+  return { decline: '', ...fromActions(() => '') }
 }
 
 function newKeys(): Record<LifecycleAction, string> {
-  return { suspend: crypto.randomUUID(), deprecate: crypto.randomUUID() }
+  return fromActions(() => crypto.randomUUID())
+}
+
+function fromActions<T>(value: (action: LifecycleAction) => T): Record<LifecycleAction, T> {
+  return Object.fromEntries(LIFECYCLE_ACTIONS.map((action) => [action, value(action)])) as Record<
+    LifecycleAction,
+    T
+  >
 }
 
 /**
  * Curator の公開管理。公開停止・廃止・廃止依頼の見送りを、現在の状態と実行できない理由を見ながら行う。
- * 廃止は理由の入力に加えて確認のチェック（二重確認）を必須にする（設計書「業務上の状態」）
+ * 廃止は理由の入力に加えて二重確認を必須にする（設計書「業務上の状態」）。
+ * 1段目で元に戻せないことの確認をチェックし、2段目でレコード名を入力して確定する
  */
 export function RecordLifecyclePanel({ api, recordId, onRelogin, onChanged }: Props) {
   const [state, setState] = useState<ViewState>({ kind: 'loading' })
-  const [reasons, setReasons] = useState<Record<LifecycleAction | 'decline', string>>({
-    suspend: '',
-    deprecate: '',
-    decline: '',
-  })
-  const [confirmed, setConfirmed] = useState(false)
+  const [reasons, setReasons] = useState(emptyReasons)
+  const [acknowledged, setAcknowledged] = useState<LifecycleAction | null>(null)
+  const [confirming, setConfirming] = useState<LifecycleAction | null>(null)
+  const [confirmName, setConfirmName] = useState('')
   const [keys, setKeys] = useState(newKeys)
   const [action, setAction] = useState<ActionState>({ kind: 'idle' })
   const loading = state.kind === 'loading'
@@ -114,31 +140,47 @@ export function RecordLifecyclePanel({ api, recordId, onRelogin, onChanged }: Pr
     setState({ kind: 'loading' })
   }
 
-  function setReason(target: LifecycleAction | 'decline', value: string) {
+  function setReason(target: ReasonTarget, value: string) {
     setReasons((current) => ({ ...current, [target]: value }))
+  }
+
+  function closeConfirmation() {
+    setConfirming(null)
+    setConfirmName('')
   }
 
   function settled() {
     setKeys(newKeys())
-    setReasons({ suspend: '', deprecate: '', decline: '' })
-    setConfirmed(false)
+    setReasons(emptyReasons())
+    setAcknowledged(null)
+    closeConfirmation()
     onChanged?.()
+  }
+
+  /** 送信の前に二重確認が要る操作は確認に進め、要らない操作はそのまま送る */
+  function requestAction(kind: LifecycleAction) {
+    if (!reasons[kind].trim() || busy) return
+    if (ACTION_SPECS[kind].confirmation === null) {
+      void run(kind)
+      return
+    }
+    if (acknowledged === kind) setConfirming(kind)
   }
 
   async function run(kind: LifecycleAction, retry = false) {
     const reason = reasons[kind].trim()
     if (!reason || (busy && !retry)) return
-    if (kind === 'deprecate' && !confirmed) return
+    const spec = ACTION_SPECS[kind]
+    // 二重確認が要る操作は、確定（または確定後の再試行）からだけ送る
+    if (spec.confirmation !== null && !retry && confirming !== kind) return
     setAction({ kind: 'busy' })
+    closeConfirmation()
     try {
-      const operation =
-        kind === 'suspend'
-          ? await api.suspendRecord(recordId, { reason }, keys.suspend)
-          : await api.deprecateRecord(recordId, { reason, confirm: true }, keys.deprecate)
+      const operation = await spec.send(api, recordId, reason, keys[kind])
       setAction({ kind: 'result', operation })
       if (operation.operationState !== 'VERIFYING') settled()
     } catch (failure) {
-      const error = toApiError(failure, ACTION_COPY[kind].failure)
+      const error = toApiError(failure, spec.failure)
       if (settlesIdempotencyKey(error)) setKeys((current) => ({ ...current, [kind]: crypto.randomUUID() }))
       setAction({ kind: 'error', error, retry: isUncertainWriteError(error) ? kind : null })
     }
@@ -181,7 +223,7 @@ export function RecordLifecyclePanel({ api, recordId, onRelogin, onChanged }: Pr
         {view.recordVersion}
       </p>
       <p>
-        状態 {statusLabel(view.status)} /{' '}
+        状態 {recordStatusLabel(view.status)} /{' '}
         {view.publishedVersion ? `公開中の版 ${view.publishedVersion}` : '公開中の版なし'}
       </p>
       {view.suspended && view.status !== DEPRECATED_STATUS && (
@@ -230,51 +272,80 @@ export function RecordLifecyclePanel({ api, recordId, onRelogin, onChanged }: Pr
       )}
       {LIFECYCLE_ACTIONS.map((kind) => {
         const availability = view.actions[kind]
-        const copy = ACTION_COPY[kind]
+        const spec = ACTION_SPECS[kind]
+        const { confirmation } = spec
         const blocked = !availability.allowed || busy || finished
         return (
           <form
             key={kind}
             onSubmit={(event) => {
               event.preventDefault()
-              void run(kind)
+              requestAction(kind)
             }}
           >
-            <fieldset disabled={blocked}>
-              <legend>{copy.legend}</legend>
-              <p>{copy.description}</p>
+            <fieldset disabled={blocked || confirming === kind}>
+              <legend>{spec.legend}</legend>
+              <p>{spec.description}</p>
               {!availability.allowed && availability.message && (
                 <p className="note">{availability.message}</p>
               )}
               <label>
-                {copy.reasonLabel}
+                {spec.reasonLabel}
                 <textarea
                   name={`${kind}Reason`}
                   required
-                  maxLength={LIFECYCLE_REASON_MAX_LENGTH}
+                  maxLength={STATUS_REASON_MAX_LENGTH}
                   rows={3}
                   value={reasons[kind]}
                   onChange={(event) => setReason(kind, event.target.value)}
                 />
               </label>
-              {kind === 'deprecate' && (
+              {confirmation && (
                 <label>
                   <input
                     type="checkbox"
-                    name="deprecateConfirm"
-                    checked={confirmed}
-                    onChange={(event) => setConfirmed(event.target.checked)}
+                    name={`${kind}Confirm`}
+                    checked={acknowledged === kind}
+                    onChange={(event) => setAcknowledged(event.target.checked ? kind : null)}
                   />
-                  廃止は元に戻せないことを確認しました
+                  {confirmation.acknowledge}
                 </label>
               )}
               <button
                 type="submit"
-                disabled={blocked || !reasons[kind].trim() || (kind === 'deprecate' && !confirmed)}
+                disabled={
+                  blocked || !reasons[kind].trim() || (confirmation !== null && acknowledged !== kind)
+                }
               >
-                {copy.submit}
+                {spec.submit}
               </button>
             </fieldset>
+            {confirmation && confirming === kind && (
+              <section role="alertdialog" aria-label={`${spec.legend}の最終確認`}>
+                <p>
+                  {view.displayName}（{view.name}）を{spec.legend}します。{spec.description}
+                </p>
+                <label>
+                  確認のため、レコード名 {view.name} を入力してください
+                  <input
+                    name={`${kind}ConfirmName`}
+                    autoComplete="off"
+                    value={confirmName}
+                    onChange={(event) => setConfirmName(event.target.value)}
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={busy || blocked || confirmName !== view.name}
+                  onClick={() => void run(kind)}
+                >
+                  {confirmation.submit}
+                </button>
+                <button type="button" onClick={closeConfirmation}>
+                  やめる
+                </button>
+              </section>
+            )}
           </form>
         )
       })}

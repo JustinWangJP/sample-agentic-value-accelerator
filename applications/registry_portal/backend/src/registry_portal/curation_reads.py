@@ -1,6 +1,7 @@
-"""Curator の操作（審査待ちの一覧・審査・公開管理・決裁）が共通で使う、読み取りと例外と認可。
+"""審査と公開管理の操作が共通で使う、読み取りと例外と認可。
 
-Registry と補助ストアの読み取りの失敗は、空の結果にせず 502（DecisionUnavailable）として区別する
+使うのは、審査待ちの一覧・審査・決裁・公開停止・廃止・公開管理の照会・廃止依頼の受付と見送り。
+Registry と補助ストアの読み取りの失敗は、空の結果にせず 502（RegistryUnavailable）として区別する
 （CODING_STANDARDS.md「通信や保存内容の異常を空の結果に変換しない」）。
 """
 
@@ -32,17 +33,23 @@ _STORED_MANAGEMENT_INVALID = (
 _STORED_REQUEST_INVALID = "保存された廃止依頼の形式が正しくありません。管理者に連絡してください。"
 
 
-class RegistryStatusClient(Protocol):
-    """審査と決裁が使う Registry 管理 API（agent-registry-control）の操作。"""
+class RegistryReadClient(Protocol):
+    """審査と公開管理の読み取りが使う Registry 管理 API（agent-registry-control）の操作。"""
 
     def get_registry_record(self, *, registryId: str, recordId: str) -> Mapping[str, Any]: ...
 
     def list_registry_records(self, **kwargs: Any) -> Mapping[str, Any]: ...
 
+
+class RegistryStatusClient(RegistryReadClient, Protocol):
+    """決裁・公開停止・廃止が使う Registry 管理 API。読み取りに加えて状態を更新する。"""
+
     def update_registry_record_status(self, **kwargs: Any) -> Mapping[str, Any]: ...
 
 
-class DecisionUnavailable(ApiError):
+class RegistryUnavailable(ApiError):
+    """Registry または補助ストアを読めなかった。0件や「なし」とは区別する。"""
+
     status = 502
     code = "REGISTRY_UNAVAILABLE"
     default_message = (
@@ -58,8 +65,8 @@ class PendingApprovalNotFound(ApiError):
     default_message = "審査待ちの申請が見つかりません。一覧から確認してください。"
 
 
-class CuratedRecordNotFound(ApiError):
-    """公開停止・廃止・公開管理の対象の Registry レコードが見つからない（削除済みを含む）。"""
+class RecordNotFound(ApiError):
+    """公開停止・廃止・公開管理・廃止依頼の対象の Registry レコードが見つからない（削除済みを含む）。"""
 
     status = 404
     code = "RECORD_NOT_FOUND"
@@ -88,6 +95,11 @@ def is_managed(management: Management | None) -> TypeGuard[Management]:
     return management is not None and management.is_managed
 
 
+def is_suspended(management: Management | None) -> bool:
+    """公開停止中か。管理情報がなければ公開停止もしていない。"""
+    return management is not None and management.is_suspended
+
+
 def record_state(record: Mapping[str, Any], management: Management | None) -> RecordState:
     """決裁の前提の検査に使う、レコードの現在の状態。"""
     return RecordState(
@@ -99,48 +111,63 @@ def record_state(record: Mapping[str, Any], management: Management | None) -> Re
 class CurationReads:
     """Curator の操作が使う Registry と補助ストアの読み取り。"""
 
-    def __init__(self, registry: str, store: DraftStore, client: RegistryStatusClient) -> None:
+    def __init__(self, registry: str, store: DraftStore, client: RegistryReadClient) -> None:
         self.registry = registry
         self.store = store
-        self.client = client
+        self._client = client
 
     def get_record(self, record_id: str) -> Mapping[str, Any]:
         """AWS のレコードを読む。存在しなければ RegistryRecordMissing、それ以外の AWS のエラーは呼び出し側に任せる。"""
         try:
-            return self.client.get_registry_record(registryId=self.registry, recordId=record_id)
+            return self._client.get_registry_record(registryId=self.registry, recordId=record_id)
         except ClientError as error:
             if error.response["Error"]["Code"] == "ResourceNotFoundException":
                 raise RegistryRecordMissing() from None
             raise
 
+    def require_record(self, record_id: str) -> Mapping[str, Any]:
+        """AWS のレコードを読む。存在しなければ 404（RecordNotFound）、読めなければ 502。"""
+        try:
+            return self.get_record(record_id)
+        except RegistryRecordMissing:
+            raise RecordNotFound() from None
+        except (BotoCoreError, ClientError):
+            raise RegistryUnavailable() from None
+
+    def list_records(self, **params: Any) -> Mapping[str, Any]:
+        """AWS の ListRegistryRecords。エラーは呼び出し側に任せる。"""
+        return self._client.list_registry_records(registryId=self.registry, **params)
+
     def load_management(self, record_id: str) -> Management | None:
         try:
             return self.store.get_management(record_id)
         except (BotoCoreError, ClientError):
-            raise DecisionUnavailable() from None
+            raise RegistryUnavailable() from None
         except ValueError:
-            raise DecisionUnavailable(_STORED_MANAGEMENT_INVALID) from None
+            raise RegistryUnavailable(_STORED_MANAGEMENT_INVALID) from None
 
     def get_submission(self, record_id: str, submission_id: str) -> dict[str, Any] | None:
         try:
             return self.store.get_submission(record_id, submission_id)
         except (BotoCoreError, ClientError):
-            raise DecisionUnavailable() from None
+            raise RegistryUnavailable() from None
 
-    def get_lock(self, record_id: str) -> dict[str, Any] | None:
+    def locking_operation_id(self, record_id: str) -> str | None:
+        """レコードのロックを持つ処理中の操作の ID。ロックがなければ None。"""
         try:
-            return self.store.get_lock(record_id)
+            lock = self.store.get_lock(record_id)
         except (BotoCoreError, ClientError):
-            raise DecisionUnavailable() from None
+            raise RegistryUnavailable() from None
+        return str(lock["operationId"]) if lock else None
 
     def deprecation_request(self, record_id: str) -> DeprecationRequest | None:
         """レコードの廃止依頼（解決済みを含む）。保存内容の形式の異常は 502。"""
         try:
             return self.store.get_deprecation_request(record_id)
         except (BotoCoreError, ClientError):
-            raise DecisionUnavailable() from None
+            raise RegistryUnavailable() from None
         except ValueError:
-            raise DecisionUnavailable(_STORED_REQUEST_INVALID) from None
+            raise RegistryUnavailable(_STORED_REQUEST_INVALID) from None
 
     def open_deprecation_request(self, record_id: str) -> DeprecationRequest | None:
         """未解決の廃止依頼。なければ None。"""
@@ -152,9 +179,9 @@ class CurationReads:
         try:
             requests = self.store.list_deprecation_requests()
         except (BotoCoreError, ClientError):
-            raise DecisionUnavailable() from None
+            raise RegistryUnavailable() from None
         except ValueError:
-            raise DecisionUnavailable(_STORED_REQUEST_INVALID) from None
+            raise RegistryUnavailable(_STORED_REQUEST_INVALID) from None
         return sorted(
             (request for request in requests if request.is_open),
             key=lambda request: request.requested_at,
@@ -187,21 +214,21 @@ class CurationReads:
         try:
             stored = self.store.get_published(record_id, published_version)
         except (BotoCoreError, ClientError):
-            raise DecisionUnavailable() from None
+            raise RegistryUnavailable() from None
         if stored is None:
             return ATTACHMENT_MISSING, None
         return ATTACHMENT_AVAILABLE, published_base(snapshot_fields(stored), published_version)
 
-    @staticmethod
-    def record_summary(record: Mapping[str, Any], management: Management | None) -> dict[str, Any]:
-        """一覧と公開管理に並べる、レコードの要約（種別によらず共通する項目）。"""
-        return {
-            "recordId": record["recordId"],
-            "name": record["name"],
-            "displayName": display_name(record),
-            "recordType": record["recordType"],
-            "recordVersion": record.get("recordVersion", ""),
-            "status": record["status"],
-            "managed": is_managed(management),
-            "ownerTeam": management.owner_team if management is not None else None,
-        }
+
+def record_summary(record: Mapping[str, Any], management: Management | None) -> dict[str, Any]:
+    """一覧・審査・公開管理に並べる、レコードの要約（種別によらず共通する項目）。"""
+    return {
+        "recordId": record["recordId"],
+        "name": record["name"],
+        "displayName": display_name(record),
+        "recordType": record["recordType"],
+        "recordVersion": record.get("recordVersion", ""),
+        "status": record["status"],
+        "managed": is_managed(management),
+        "ownerTeam": management.owner_team if management is not None else None,
+    }

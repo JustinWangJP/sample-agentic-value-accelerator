@@ -287,7 +287,7 @@ it('結果確認中の決裁は操作照会で確定し、承認後に反映待�
   await click('審査する')
   await setValue('approveReason', '内容を確認した')
   await submitForm(0)
-  expect(container.textContent).toContain('決裁の結果確認中')
+  expect(container.textContent).toContain('結果確認中です。確定するまで')
   await click('決裁の結果を確認')
   expect(calls[3]?.url).toBe('/api/operations/decision-1')
   expect(container.textContent).toContain('公開承認しました（版 2.0.0）')

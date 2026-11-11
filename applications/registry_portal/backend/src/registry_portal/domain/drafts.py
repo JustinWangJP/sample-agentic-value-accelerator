@@ -134,14 +134,15 @@ UPDATE_KIND: OperationKind = "UPDATE"
 SUBMIT_KIND: OperationKind = "SUBMIT"
 APPROVE_KIND: OperationKind = "APPROVE"
 REJECT_KIND: OperationKind = "REJECT"
-# 公開停止（却下で発見できなくする）と廃止（元に戻せない DEPRECATED）。決裁と同じく決裁 handler が行う
+# 公開停止（却下で発見できなくする）と廃止（元に戻せない DEPRECATED）。申請への決裁ではないが、
+# AWS の状態更新 API を呼ぶため、決裁と同じ決裁 handler が行う
 SUSPEND_KIND: OperationKind = "SUSPEND"
 DEPRECATE_KIND: OperationKind = "DEPRECATE"
 # 廃止依頼（Publisher）と、その見送り（Curator）。AWS の状態を変えず、補助テーブルへの書き込みだけで完結する。
 # 実行制御（CONTROL）やロックを残さず、1つのトランザクションで INTENT と RESULT を同時に追記する
 REQUEST_DEPRECATION_KIND: OperationKind = "REQUEST_DEPRECATION"
 DECLINE_DEPRECATION_KIND: OperationKind = "DECLINE_DEPRECATION"
-# 決裁 handler が行う操作（公開承認・却下・公開停止・廃止）。操作照会は種別ごとに参照できる主体を変える
+# 決裁 handler が行う操作（決裁である公開承認・却下と、公開停止・廃止）。操作照会は種別ごとに参照できる主体を変える
 DECISION_KINDS: frozenset[OperationKind] = frozenset(
     {APPROVE_KIND, REJECT_KIND, SUSPEND_KIND, DEPRECATE_KIND}
 )
@@ -273,15 +274,15 @@ class _DecisionOperationRequired(OperationRecord):
 
 
 class DecisionOperation(_DecisionOperationRequired, total=False):
-    """補助ストアに保存する、決裁の操作（公開承認・却下・公開停止・廃止）。"""
+    """補助ストアに保存する、決裁 handler の操作（決裁である公開承認・却下と、公開停止・廃止）。"""
 
     result: dict[str, Any]
     # 対象とした申請スナップショットの ID と、その時点のレコードの版
     submissionId: str
     recordVersion: str
-    # 決裁の対象を固定した時点の AWS の状態。照合で同じ状態が見えている間は、決裁が未反映と判断する。
+    # 操作の対象を固定した時点の AWS の状態。照合で同じ状態が見えている間は、操作が未反映と判断する。
     # 記録より前の操作（公開承認・却下だけ）では、決裁の前提である PENDING_APPROVAL とみなす
-    observedStatus: str
+    observedStatus: RecordStatus
     # AWS の状態更新 API が受け付けを返した。未設定なら、決裁 handler の再送で呼び直す
     decisionAccepted: bool
 
@@ -427,7 +428,7 @@ class Management:
         """
         if record["status"] == PUBLISHED_STATUS:
             return str(record["recordVersion"])
-        if record["status"] == DEPRECATED_STATUS or self.suspended_version is not None:
+        if record["status"] == DEPRECATED_STATUS or self.is_suspended:
             return None
         return self.last_published_version(record)
 
@@ -443,6 +444,11 @@ class Management:
         """公開停止した時点で公開中だった版。公開停止中でなければ None（再承認で消す）。"""
         version = self.item.get(SUSPENDED_VERSION_KEY)
         return version if isinstance(version, str) else None
+
+    @property
+    def is_suspended(self) -> bool:
+        """公開停止中か（公開停止の印がある）。"""
+        return self.suspended_version is not None
 
     @property
     def adopted_published_version(self) -> str | None:

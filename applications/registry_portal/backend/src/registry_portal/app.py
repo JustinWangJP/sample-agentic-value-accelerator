@@ -25,7 +25,7 @@ from registry_portal.config import (
     load_registry_settings,
 )
 from registry_portal.curation import DECISION_BODY_MAX_LENGTH, RecordCuration
-from registry_portal.curation_reads import RegistryStatusClient
+from registry_portal.curation_reads import CurationReads, RegistryStatusClient
 from registry_portal.deprecation import (
     DEPRECATION_BODY_MAX_LENGTH,
     DeprecationRequests,
@@ -265,11 +265,13 @@ def create_management_handler(
         drafts = RecordDrafts(
             discovery_settings.registry_arn, store, control_client, discovery_client
         )
-        curation = RecordCuration(
-            discovery_settings.registry_arn, store, cast(RegistryStatusClient, control_client)
-        )
+        # 管理 handler の Registry クライアントは状態更新 API を持たない（IAM でも拒否される）。
+        # 操作照会は AWS を呼び直さないため、型の上だけ決裁 handler と揃える
+        status_client = cast(RegistryStatusClient, control_client)
+        reads = CurationReads(discovery_settings.registry_arn, store, status_client)
+        curation = RecordCuration(reads, store, status_client)
         history_service = RecordHistory(store)
-        deprecation_requests = DeprecationRequests(store, control_client)
+        deprecation_requests = DeprecationRequests(reads, store)
 
     def drafts_for(caller: Caller) -> RecordDrafts:
         # 権限のない呼び出し元には、設定の状態より先に 403 を返す
@@ -391,10 +393,11 @@ def create_curation_handler(
     curation_client = registry_client or cast(
         RegistryStatusClient, boto3.client("agent-registry-control", region_name=region)
     )
-    curation = RecordCuration(registry_settings.arn, store, curation_client)
-    reviews = ReviewQueue(curation.reads)
-    lifecycle = RecordLifecycle(curation.reads)
-    deprecation_requests = DeprecationRequests(store, curation_client)
+    reads = CurationReads(registry_settings.arn, store, curation_client)
+    curation = RecordCuration(reads, store, curation_client)
+    reviews = ReviewQueue(reads)
+    lifecycle = RecordLifecycle(reads)
+    deprecation_requests = DeprecationRequests(reads, store)
 
     def list_reviews(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
         return reviews.list_reviews(caller, _query_of(event))

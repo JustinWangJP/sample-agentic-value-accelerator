@@ -142,17 +142,46 @@ it('現在の状態と未解決の廃止依頼を表示し、公開停止は理�
   expect(onChanged).toHaveBeenCalledOnce()
 })
 
-it('廃止は二重確認が必須で、確認してから confirm を付けて実行する', async () => {
+it('廃止は二重確認が必須で、確認のチェックとレコード名の入力を経てから confirm を付けて実行する', async () => {
   const calls = await mountPanel([jsonResponse(200, view), jsonResponse(200, deprecated)])
   await setValue('deprecateReason', '利用終了のため')
   expect(button('廃止する').disabled).toBe(true)
   expect(container.textContent).toContain('廃止は元に戻せません')
+  // 1段目: 元に戻せないことを確認する。まだ送らず、最終確認に進む
   await confirmDeprecation()
   expect(button('廃止する').disabled).toBe(false)
   await submit('廃止')
+  expect(calls).toHaveLength(1)
+  const dialog = container.querySelector('[role="alertdialog"]')
+  expect(dialog?.getAttribute('aria-label')).toBe('廃止の最終確認')
+  expect(dialog?.textContent).toContain('決済 Agent（payments-a2a）を廃止します。')
+  // 2段目: レコード名が一致するまで確定できない
+  expect(button('廃止を確定する').disabled).toBe(true)
+  await setValue('deprecateConfirmName', 'payments')
+  expect(button('廃止を確定する').disabled).toBe(true)
+  await setValue('deprecateConfirmName', 'payments-a2a')
+  expect(button('廃止を確定する').disabled).toBe(false)
+  await click('廃止を確定する')
   expect(calls[1]?.url).toBe('/api/records/agentABC1234/deprecate')
   expect(sentBody(calls, 1)).toEqual({ reason: '利用終了のため', confirm: true })
   expect(container.textContent).toContain('廃止しました。この操作は元に戻せません。')
+  expect(container.querySelector('[role="alertdialog"]')).toBeNull()
+})
+
+it('廃止の最終確認をやめると、送らずに入力へ戻る', async () => {
+  const calls = await mountPanel([jsonResponse(200, view)])
+  await setValue('deprecateReason', '利用終了のため')
+  await confirmDeprecation()
+  await submit('廃止')
+  await setValue('deprecateConfirmName', 'payments-a2a')
+  await click('やめる')
+  expect(container.querySelector('[role="alertdialog"]')).toBeNull()
+  expect(calls).toHaveLength(1)
+  // 理由と1段目の確認は残り、もう一度最終確認に進むときはレコード名を入力し直す
+  expect(container.querySelector<HTMLTextAreaElement>('[name="deprecateReason"]')?.value).toBe('利用終了のため')
+  await submit('廃止')
+  expect(container.querySelector<HTMLInputElement>('[name="deprecateConfirmName"]')?.value).toBe('')
+  expect(button('廃止を確定する').disabled).toBe(true)
 })
 
 it('実行できない操作は、理由を表示して送らせない', async () => {

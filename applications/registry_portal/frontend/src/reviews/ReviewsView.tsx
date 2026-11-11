@@ -4,16 +4,15 @@ import { RECORD_TYPE_LABELS } from '../api/recordType'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { RecordHistoryToggle } from '../drafts/RecordHistoryView'
 import {
-  PENDING_APPROVAL_STATUS,
   PUBLISHED_STATUS,
+  STATUS_REASON_MAX_LENGTH,
   isUncertainWriteError,
+  recordStatusLabel,
   settlesIdempotencyKey,
-  type RecordStatus,
 } from '../drafts/api'
 import { elapsedDays } from '../lifecycle/api'
 import { RecordLifecycleToggle } from '../lifecycle/RecordLifecyclePanel'
 import {
-  DECISION_REASON_MAX_LENGTH,
   type DecisionKind,
   type DecisionOperation,
   type DeprecationRequestSummary,
@@ -52,11 +51,6 @@ const DECISION_COPY: Record<
     failure: '却下できませんでした。',
     field: 'rejectReason',
   },
-}
-
-/** 画面に出す AWS の状態。PENDING_APPROVAL は「審査待ち」と表示する（GLOSSARY「申請」） */
-function statusLabel(status: RecordStatus): string {
-  return status === PENDING_APPROVAL_STATUS ? '審査待ち' : status
 }
 
 function formatReferences(references: RecordReference[]): string {
@@ -164,7 +158,7 @@ export function ReviewsView({ api, roles, onRelogin }: Props) {
                     廃止依頼: {item.reason}（依頼者 {item.requestedBy.subject}）
                   </p>
                   <p>
-                    状態 {statusLabel(item.status)} / {requestProgress(item)}
+                    状態 {recordStatusLabel(item.status)} / {requestProgress(item)}
                     {item.operationId && ' / 結果確認中'}
                   </p>
                   {!item.managed && <p>ポータルで管理されていないため、ここでは対応できません。</p>}
@@ -187,7 +181,7 @@ export function ReviewsView({ api, roles, onRelogin }: Props) {
                     {item.submittedBy && `（申請者 ${item.submittedBy.subject}）`}
                   </p>
                   <p>
-                    状態 {statusLabel(item.status)}
+                    状態 {recordStatusLabel(item.status)}
                     {item.operationId && ' / 結果確認中'}
                   </p>
                   {!item.managed && (
@@ -385,7 +379,7 @@ function ReviewDetailView({
                   <textarea
                     name={DECISION_COPY[kind].field}
                     required
-                    maxLength={DECISION_REASON_MAX_LENGTH}
+                    maxLength={STATUS_REASON_MAX_LENGTH}
                     rows={3}
                     value={reasons[kind]}
                     onChange={(event) =>

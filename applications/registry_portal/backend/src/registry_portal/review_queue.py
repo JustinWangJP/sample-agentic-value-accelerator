@@ -14,18 +14,19 @@ from botocore.exceptions import BotoCoreError, ClientError
 from registry_portal.auth import Caller
 from registry_portal.curation_reads import (
     CurationReads,
-    DecisionUnavailable,
     PendingApprovalNotFound,
     RegistryRecordMissing,
-    display_name,
-    is_managed,
+    RegistryUnavailable,
+    is_suspended,
+    record_summary,
     require_curator,
 )
 from registry_portal.domain.curation import REVIEW_DEPRECATION_REQUEST, REVIEW_SUBMISSION
 from registry_portal.domain.deprecation import DeprecationRequest
-from registry_portal.domain.drafts import PENDING_APPROVAL_STATUS, RECORD_ID_PATTERN
+from registry_portal.domain.drafts import PENDING_APPROVAL_STATUS
 from registry_portal.domain.submissions import recompute_snapshot_hash, snapshot_fields
 from registry_portal.errors import RequestValidationError
+from registry_portal.operations import check_record_id
 
 # 1ページに並べる申請の上限（AWS の ListRegistryRecords の maxResults）
 REVIEW_PAGE_SIZE = 20
@@ -59,30 +60,28 @@ class ReviewQueue:
                 "ページの指定が正しくありません。最初から表示してください。"
             )
         params: dict[str, Any] = {
-            "registryId": self.reads.registry,
             "maxResults": REVIEW_PAGE_SIZE,
             "filters": [{"name": "status", "values": [PENDING_APPROVAL_STATUS]}],
         }
         if token is not None:
             params["nextToken"] = token
         try:
-            response = self.reads.client.list_registry_records(**params)
+            response = self.reads.list_records(**params)
             items = [self._submission_item(record) for record in response["registryRecords"]]
             if token is None:
                 items = [*self._deprecation_request_items(), *items]
             return 200, {"items": items, "nextToken": response.get("nextToken")}
         except (BotoCoreError, ClientError):
-            raise DecisionUnavailable() from None
+            raise RegistryUnavailable() from None
 
     def _submission_item(self, record: Mapping[str, Any]) -> dict[str, Any]:
         """AWS の承認待ちレコード1件に、申請の補助情報を結合する。"""
         record_id = str(record["recordId"])
         management = self.reads.load_management(record_id)
-        lock = self.reads.get_lock(record_id)
         state, submission_id, submission = self.reads.active_submission(record_id, management)
         return {
             "reviewKind": REVIEW_SUBMISSION,
-            **self.reads.record_summary(record, management),
+            **record_summary(record, management),
             "submissionState": state,
             "submissionId": submission_id,
             "snapshotHash": submission.get("snapshotHash") if submission else None,
@@ -90,7 +89,7 @@ class ReviewQueue:
             "submittedAt": submission.get("submittedAt") if submission else None,
             "submittedBy": submission.get("submittedBy") if submission else None,
             "invalidated": bool(submission.get("invalidated")) if submission else False,
-            "operationId": lock["operationId"] if lock else None,
+            "operationId": self.reads.locking_operation_id(record_id),
         }
 
     def _deprecation_request_items(self) -> list[dict[str, Any]]:
@@ -108,17 +107,16 @@ class ReviewQueue:
         self, record: Mapping[str, Any], request: DeprecationRequest
     ) -> dict[str, Any]:
         management = self.reads.load_management(request.record_id)
-        lock = self.reads.get_lock(request.record_id)
         return {
             "reviewKind": REVIEW_DEPRECATION_REQUEST,
-            **self.reads.record_summary(record, management),
+            **record_summary(record, management),
             "requestId": request.request_id,
             "reason": request.reason,
             "requestedAt": request.requested_at,
             "requestedBy": dict(request.requested_by),
             # 公開停止済みで、廃止するか見送るかの判断を待っている
-            "suspended": bool(management and management.suspended_version is not None),
-            "operationId": lock["operationId"] if lock else None,
+            "suspended": is_suspended(management),
+            "operationId": self.reads.locking_operation_id(request.record_id),
         }
 
     def review(self, caller: Caller, record_id: str) -> tuple[int, dict[str, Any]]:
@@ -127,14 +125,13 @@ class ReviewQueue:
         未解決の廃止依頼があれば添える。依頼を出した Publisher が再申請した場合の見落としを防ぐ。
         """
         require_curator(caller)
-        if not RECORD_ID_PATTERN.fullmatch(record_id):
-            raise RequestValidationError("Registry レコード ID の形式が正しくありません。")
+        check_record_id(record_id)
         try:
             record = self.reads.get_record(record_id)
         except RegistryRecordMissing:
             raise PendingApprovalNotFound() from None
         except (BotoCoreError, ClientError):
-            raise DecisionUnavailable() from None
+            raise RegistryUnavailable() from None
         if record["status"] != PENDING_APPROVAL_STATUS:
             raise PendingApprovalNotFound()
         management = self.reads.load_management(record_id)
@@ -142,15 +139,8 @@ class ReviewQueue:
         published_state, published = self.reads.published_snapshot(record_id, management, record)
         request = self.reads.open_deprecation_request(record_id)
         return 200, {
-            "recordId": record_id,
-            "name": record["name"],
-            "displayName": display_name(record),
+            **record_summary(record, management),
             "description": record.get("description", ""),
-            "recordType": record["recordType"],
-            "recordVersion": record.get("recordVersion", ""),
-            "ownerTeam": management.owner_team if management else None,
-            "status": record["status"],
-            "managed": is_managed(management),
             "publishedVersion": management.published_version(record) if management else None,
             "submissionState": state,
             "submissionId": submission_id,
