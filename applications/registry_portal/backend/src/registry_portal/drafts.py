@@ -563,10 +563,11 @@ class RecordDrafts:
         draft = self._read_draft(record, management)
         check_a2a_metadata(record, request.references)
         published = self._discovery.get_record(record_id)
+        # 公開停止中も、最後に公開承認された版を semver の下限にする（公開版スナップショットを上書きしない）
         published_version = check_newer_than_published(
             str(record["recordVersion"]),
             [
-                management.published_version(record),
+                management.last_published_version(record),
                 published.item.record_version if published else None,
             ],
         )

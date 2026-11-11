@@ -60,7 +60,10 @@ def missing_published(record_id=RECORD_ID):
 
 
 def setup_pending(stub, registry, db, *, editor="alice", submitter="bob"):
-    """下書きを作成して申請し、審査待ちの状態を作る。管理 handler と決裁 handler を返す。"""
+    """下書きを作成して申請し、審査待ちの状態を作る。管理 handler と決裁 handler を返す。
+
+    transport は発見 API の偽物。再申請を試すテストは、発見 API の応答をここに積み足す。
+    """
     transport = FakeTransport(registry=deque([missing_published()]))
     management = create_management_handler(
         {**ENV, "SUPPLEMENT_TABLE_NAME": SUPPLEMENT_TABLE},
@@ -97,6 +100,7 @@ def setup_pending(stub, registry, db, *, editor="alice", submitter="bob"):
         "decision": decision,
         "submitted": submitted,
         "snapshot": snapshot,
+        "transport": transport,
     }
 
 

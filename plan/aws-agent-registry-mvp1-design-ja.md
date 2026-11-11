@@ -167,7 +167,7 @@ MVP1 の承認は1段とし、申請者と最終編集者以外の Curator が1�
 |---|---|---|
 | Viewer | ログインした全員（グループなし） | カタログの閲覧・検索 |
 | Publisher | Cognito グループ `registry-publisher`。書き込みには、チームグループ（例: `team-payments`）による所属チームも必要 | 所属チームが所有チームである Registry レコードの下書き作成・編集・申請・廃止依頼 |
-| Curator | `registry-curator` | 審査待ちの閲覧、決裁、公開停止、廃止 |
+| Curator | `registry-curator` | 審査待ちの閲覧、決裁、公開停止、廃止、廃止依頼の見送り |
 | Admin | `registry-admin` | 未管理レコードの取り込み、所有チームの変更、回復操作 |
 | サービス主体 | CI 専用 M2M client。設定で1つの所有チームに紐付ける | 下書きの作成・更新・申請のみ。決裁はできない |
 
@@ -206,8 +206,9 @@ MVP1 の承認は1段とし、申請者と最終編集者以外の Curator が1�
 | `PENDING_APPROVAL` | Curator が公開承認すると `APPROVED`、理由を付けて却下すると `REJECTED` |
 | `REJECTED` | Publisher が編集すると `DRAFT` に戻る。その後、再申請する |
 | `APPROVED` | 編集すると新しい下書きができる。旧版はカタログ項目として公開されたまま |
-| 公開停止 | Curator が理由を付けて却下し、発見できなくする。再公開には編集と再申請が必要 |
-| 廃止 | Publisher の廃止依頼、または Curator の判断で、理由の入力と二重確認を経て `DEPRECATED` にする。元に戻せない |
+| 公開停止 | Curator が理由を付けて却下し、発見できなくする。再公開には編集と再申請が必要。廃止依頼は閉じない（廃止するか見送るかの判断を残す）。最新の版が公開中のときだけ行う（二重リビジョンの挙動は未確認） |
+| 廃止 | Publisher の廃止依頼、または Curator の判断で、理由の入力と二重確認を経て `DEPRECATED` にする。元に戻せない。未解決の廃止依頼は廃止で解決する |
+| 廃止依頼の見送り | Curator が理由を付けて廃止依頼を閉じる。レコードの状態は変えない。廃止依頼の終わり方は、廃止と見送りの2つだけ |
 
 AWS 自体は却下済みからの直接承認を許すが、ポータルでは再申請を必須にする。承認待ちの最中に編集すると新しい下書きになり、元の申請は無効になる。管理 API は最新版を、発見 API は承認済みの版を返すので、画面上で「下書きあり」と「公開中」が同時に成り立つことがある。[ライフサイクルと二重リビジョン](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-record-lifecycle.html)
 
@@ -252,6 +253,7 @@ Registry が EventBridge の default バスに送るイベントを、ルール1
 |---|---|
 | `Registry Record State changed to Pending Approval` と、廃止依頼（アプリ内で発生） | Curator 全員 |
 | `... to Approved`、`... to Rejected`、`... to Deprecated` | 所有チームの Publisher 全員 |
+| 廃止依頼の見送り（アプリ内で発生。AWS の状態を変えないためイベントは出ない） | 所有チームの Publisher 全員 |
 | 参照先の Skill・MCP サーバーの廃止・公開停止 | その参照先を使う Agent の所有チーム |
 | 操作記録と照合できない状態変化（ポータル外の変更） | Admin 全員 |
 
@@ -269,7 +271,7 @@ Registry が EventBridge の default バスに送るイベントを、ルール1
 | SPA 認証 | 既存 Cognito User Pool の人間用公開 client で、Authorization Code + PKCE。secret は持たない。M2M client とは分ける |
 | API の入口 | HTTP API の JWT authorizer で、issuer、audience（client_id）、有効期限、route ごとの scope を検証する。業務ロールと所有チームは Lambda で検査する |
 | 管理 Lambda | 発見の代理、Registry レコードの取得・作成・更新・申請、廃止依頼、通知 API。Registry の状態を変更する権限は持たない |
-| 決裁 Lambda | 公開承認、却下、公開停止、廃止、取り込み、操作の回復。descriptor の作成・更新権限は持たない |
+| 決裁 Lambda | 公開承認、却下、公開停止、廃止、廃止依頼の見送り、取り込み、操作の回復。descriptor の作成・更新権限は持たない |
 | イベント処理 Lambda | EventBridge から起動される。Registry の読み取りと、補助テーブルの通知への書き込みだけを行う |
 | 補助 DynamoDB | 1テーブル、オンデマンド、暗号化、PITR、削除保護 |
 | Secrets Manager | 既存の発見用 M2M secret の ARN を参照する。取得できるのは管理 Lambda だけ。トークンは有効期限を考慮してメモリー上で再利用し、401 時の再取得は回数を制限する |
@@ -332,8 +334,10 @@ ADR-0004 に従い、GitHub Actions では AWS への反映を一切行わない
 | `GET /api/reviews` | AWS の承認待ちと廃止依頼に補助情報を結合して返す。状態は AWS を正本とする | Curator |
 | `POST /api/reviews/{id}/approve` | 理由とスナップショットのハッシュを検査して公開承認する | Curator |
 | `POST /api/reviews/{id}/reject` | 理由を必須にして却下する | Curator |
-| `POST /api/records/{id}/suspend` | 公開停止。却下による非公開化であることを明示する | Curator |
+| `POST /api/records/{id}/suspend` | 公開停止。却下で発見できなくすることを明示する | Curator |
 | `POST /api/records/{id}/deprecate` | 元に戻せない廃止であることを明示し、二重確認を経て実行する | Curator |
+| `GET /api/records/{id}/lifecycle` | 公開管理の照会。状態・公開中の版・未解決の廃止依頼・実行できる操作（できない理由）を返す。決裁 Lambda が処理する | Curator |
+| `POST /api/records/{id}/deprecation-requests/decline` | 廃止依頼の見送り。理由を必須にし、レコードの状態は変えない。決裁 Lambda が処理する | Curator |
 | `POST /api/records/{id}/adopt` | 未管理レコードの取り込みと所有チームの割り当て | Admin |
 | `GET /api/operations/{id}` | 操作結果、結果確認中の状態、回復結果 | 人間 |
 | `GET /api/records/{id}/recovery` | ロックを持つ未確定の操作の概要（種別・主体・開始時刻・回復できるようになる時刻）。決裁 Lambda が処理する | Admin |

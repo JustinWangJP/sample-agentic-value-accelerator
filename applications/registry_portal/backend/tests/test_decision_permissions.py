@@ -41,8 +41,15 @@ def test_decision_policy_only_grants_status_transitions_reads_and_supplement_wri
     assert statements["DecisionSupplement"] == {
         "Sid": "DecisionSupplement",
         "Effect": "Allow",
-        # Query は審査待ちの一覧が未解決の廃止依頼（#13）を読むために使う
-        "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query"],
+        # Query は審査待ちの一覧が未解決の廃止依頼（#13）を読むために使う。ConditionCheckItem は
+        # 廃止依頼の見送りが、ロックがないことをトランザクションの中で確かめるために使う
+        "Action": [
+            "dynamodb:GetItem",
+            "dynamodb:PutItem",
+            "dynamodb:DeleteItem",
+            "dynamodb:Query",
+            "dynamodb:ConditionCheckItem",
+        ],
         "Resource": TABLE_ARN,
     }
     assert statements["DecisionLogs"]["Resource"] == f"{LOG_GROUP_ARN}:*"
@@ -73,7 +80,7 @@ def test_module_creates_the_decision_lambda_with_its_own_role_and_log_group():
         "aws_lambda_function",
         "aws_apigatewayv2_integration",
         "aws_apigatewayv2_route",
-        "aws_lambda_permission",
+        # 審査と決裁、Curator のレコード単位の path（for_each）、回復の path
         "aws_lambda_permission",
         "aws_lambda_permission",
         "aws_lambda_permission",
@@ -88,8 +95,11 @@ def test_module_creates_the_decision_lambda_with_its_own_role_and_log_group():
     assert "DISCOVERY_TOKEN_URL" not in main
 
 
-def test_module_routes_only_review_and_recovery_apis_to_the_decision_lambda():
-    """決裁の4つと Admin の回復の2つの route だけを決裁 Lambda に割り当て、既存 JWT authorizer を適用する。"""
+def test_module_routes_only_curator_and_recovery_apis_to_the_decision_lambda():
+    """審査・決裁・公開管理・見送りの route と Admin の回復の route だけを決裁 Lambda に割り当てる。
+
+    既存の JWT authorizer を適用し、HTTP API と authorizer は作らない。
+    """
     main = (MODULE / "main.tf").read_text()
     (routes,) = re.findall(r"routes = \[(.*?)\]", main, re.DOTALL)
     assert re.findall(r'"([^"]+)"', routes) == [
@@ -99,6 +109,8 @@ def test_module_routes_only_review_and_recovery_apis_to_the_decision_lambda():
         "POST /api/reviews/{recordId}/reject",
         "POST /api/records/{recordId}/suspend",
         "POST /api/records/{recordId}/deprecate",
+        "GET /api/records/{recordId}/lifecycle",
+        "POST /api/records/{recordId}/deprecation-requests/decline",
         "GET /api/records/{recordId}/recovery",
         "POST /api/records/{recordId}/recovery",
     ]
@@ -108,13 +120,19 @@ def test_module_routes_only_review_and_recovery_apis_to_the_decision_lambda():
     # HTTP API と authorizer は借用し、作成しない
     assert 'resource "aws_apigatewayv2_api"' not in main
     assert 'resource "aws_apigatewayv2_authorizer"' not in main
-    # 呼び出し許可は審査と決裁、回復の path だけに限る
+    # 呼び出し許可は審査と決裁、Curator のレコード単位の path、回復の path だけに限る
     source_arns = re.findall(r"source_arn\s*=\s*\"([^\"]+)\"", main)
     assert [arn.split("/*/*")[1] for arn in source_arns] == [
         "/api/reviews*",
-        "/api/records/*/suspend",
-        "/api/records/*/deprecate",
+        "/api/records/*/${each.value.path}",
         "/api/records/*/recovery",
+    ]
+    (paths,) = re.findall(r"curator_record_paths = \{(.*?)\n  \}\n", main, re.DOTALL)
+    assert re.findall(r'path\s*=\s*"([^"]+)"', paths) == [
+        "suspend",
+        "deprecate",
+        "lifecycle",
+        "deprecation-requests/decline",
     ]
 
 

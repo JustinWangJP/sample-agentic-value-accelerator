@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ApiClient, ApiError, CatalogDetail, CatalogItem } from '../api/client'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { RecordHistoryToggle } from '../drafts/RecordHistoryView'
+import { RecordLifecycleToggle } from '../lifecycle/RecordLifecyclePanel'
 import { catalogTypeLabel } from './recordTypes'
 import { settleWhileActive } from './requests'
 
@@ -15,11 +16,20 @@ type Props = {
   item: CatalogItem
   /** 所有チームによらず操作履歴を読める業務ロール（Curator・Admin）か */
   canViewHistory: boolean
+  /** 公開停止・廃止を行える業務ロール（Curator）か。緊急時はカタログから見つけてすぐに止める */
+  canManageLifecycle?: boolean
   onRelogin: () => void
   onClose: () => void
 }
 
-export function CatalogDetailView({ api, item, canViewHistory, onRelogin, onClose }: Props) {
+export function CatalogDetailView({
+  api,
+  item,
+  canViewHistory,
+  canManageLifecycle = false,
+  onRelogin,
+  onClose,
+}: Props) {
   const [view, setView] = useState<DetailView>({ status: 'loading' })
   const heading = useRef<HTMLHeadingElement>(null)
   const { recordId } = item
@@ -58,6 +68,9 @@ export function CatalogDetailView({ api, item, canViewHistory, onRelogin, onClos
         />
       ) : (
         <DetailContents detail={view.detail} />
+      )}
+      {canManageLifecycle && (
+        <RecordLifecycleToggle api={api} recordId={recordId} onRelogin={onRelogin} />
       )}
       {canViewHistory && <RecordHistoryToggle api={api} recordId={recordId} onRelogin={onRelogin} />}
     </section>

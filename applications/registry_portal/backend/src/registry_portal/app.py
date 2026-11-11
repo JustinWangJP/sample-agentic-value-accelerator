@@ -24,20 +24,16 @@ from registry_portal.config import (
     load_discovery_settings,
     load_registry_settings,
 )
-from registry_portal.curation import (
-    DECISION_BODY_MAX_LENGTH,
-    RecordCuration,
-    RegistryStatusClient,
-)
+from registry_portal.curation import DECISION_BODY_MAX_LENGTH, RecordCuration
+from registry_portal.curation_reads import RegistryStatusClient
 from registry_portal.deprecation import (
     DEPRECATION_BODY_MAX_LENGTH,
     DeprecationRequests,
 )
+from registry_portal.domain.curation import LIFECYCLE_ACTIONS
 from registry_portal.domain.drafts import (
     APPROVE_KIND,
-    DEPRECATE_KIND,
     REJECT_KIND,
-    SUSPEND_KIND,
     OperationKind,
     is_decision_operation,
 )
@@ -50,7 +46,9 @@ from registry_portal.drafts import (
     require_publisher,
 )
 from registry_portal.history import RecordHistory
+from registry_portal.lifecycle import RecordLifecycle
 from registry_portal.recovery import RECOVERY_BODY_MAX_LENGTH, OperationRecovery
+from registry_portal.review_queue import ReviewQueue
 from registry_portal.services.catalog_supplement import CatalogSupplement, SupplementClient
 from registry_portal.services.discovery import DiscoveryDependencies, create_discovery_client
 from registry_portal.services.draft_store import DraftStore, DraftStoreClient
@@ -106,8 +104,16 @@ _PARAMETERIZED_ROUTES = (
         "/deprecation-requests",
         "POST /api/records/{recordId}/deprecation-requests",
     ),
-    ("POST /api/records/", "/suspend", "POST /api/records/{recordId}/suspend"),
-    ("POST /api/records/", "/deprecate", "POST /api/records/{recordId}/deprecate"),
+    (
+        "POST /api/records/",
+        "/deprecation-requests/decline",
+        "POST /api/records/{recordId}/deprecation-requests/decline",
+    ),
+    *(
+        ("POST /api/records/", f"/{action}", f"POST /api/records/{{recordId}}/{action}")
+        for action in LIFECYCLE_ACTIONS
+    ),
+    ("GET /api/records/", "/lifecycle", "GET /api/records/{recordId}/lifecycle"),
     ("GET /api/records/", "/recovery", "GET /api/records/{recordId}/recovery"),
     ("POST /api/records/", "/recovery", "POST /api/records/{recordId}/recovery"),
     ("GET /api/operations/", "", "GET /api/operations/{operationId}"),
@@ -365,7 +371,8 @@ def create_curation_handler(
 ) -> Handler:
     """決裁 handler を作る。認証設定と補助テーブルが不足していれば、ここで起動エラーにする。
 
-    決裁 handler は審査待ちの一覧・詳細と、公開承認・却下だけを受け持つ。
+    決裁 handler は審査待ちの一覧・詳細、公開承認・却下・公開停止・廃止、公開管理の照会、
+    廃止依頼の見送り、Admin の回復操作を受け持つ。
     発見（JWT）の設定は使わないため、Registry の ARN とリージョンだけを読む。
     AWS クライアントはテストで差し替える。通信は最初のリクエストまで行わない。
     """
@@ -385,14 +392,27 @@ def create_curation_handler(
         RegistryStatusClient, boto3.client("agent-registry-control", region_name=region)
     )
     curation = RecordCuration(registry_settings.arn, store, curation_client)
+    reviews = ReviewQueue(curation.reads)
+    lifecycle = RecordLifecycle(curation.reads)
+    deprecation_requests = DeprecationRequests(store, curation_client)
 
     def list_reviews(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        return curation.list_reviews(caller, _query_of(event))
+        return reviews.list_reviews(caller, _query_of(event))
 
     def get_review(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
         if _query_of(event):
             raise RequestValidationError("審査詳細にクエリパラメーターは指定できません。")
-        return curation.review(caller, _path_parameter(event))
+        return reviews.review(caller, _path_parameter(event))
+
+    def get_lifecycle(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        if _query_of(event):
+            raise RequestValidationError("公開管理の照会にクエリパラメーターは指定できません。")
+        return lifecycle.inspect(caller, _path_parameter(event))
+
+    def decline_deprecation(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        return deprecation_requests.decline(
+            caller, _path_parameter(event), _json_body(event, DEPRECATION_BODY_MAX_LENGTH)
+        )
 
     # 回復は Registry の観測だけで下書きの操作を確定する。申請 API の権限と発見の設定は使わない
     recovery = OperationRecovery(
@@ -429,8 +449,12 @@ def create_curation_handler(
         "POST /api/reviews/{recordId}/approve": decision_route(APPROVE_KIND),
         "POST /api/reviews/{recordId}/reject": decision_route(REJECT_KIND),
         # 公開停止と廃止も決裁 handler が行う（UpdateRegistryRecordStatus は決裁 Lambda の権限）
-        "POST /api/records/{recordId}/suspend": decision_route(SUSPEND_KIND),
-        "POST /api/records/{recordId}/deprecate": decision_route(DEPRECATE_KIND),
+        **{
+            f"POST /api/records/{{recordId}}/{action}": decision_route(kind)
+            for action, kind in LIFECYCLE_ACTIONS.items()
+        },
+        "GET /api/records/{recordId}/lifecycle": get_lifecycle,
+        "POST /api/records/{recordId}/deprecation-requests/decline": decline_deprecation,
         "GET /api/records/{recordId}/recovery": get_recovery,
         "POST /api/records/{recordId}/recovery": recover_operation,
     }

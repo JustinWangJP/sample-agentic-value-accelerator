@@ -98,7 +98,7 @@ PENDING_APPROVAL_STATUS: RecordStatus = "PENDING_APPROVAL"
 # 公開承認済みで、AWS が公開中の版を返している状態
 PUBLISHED_STATUS: RecordStatus = "APPROVED"
 REJECTED_STATUS: RecordStatus = "REJECTED"
-# 廃止済み。元に戻せない状態（公開停止・廃止は #13）
+# 廃止済み。どの状態からも遷移でき、元に戻せない終端の状態（README「公開停止・廃止・廃止依頼」）
 DEPRECATED_STATUS: RecordStatus = "DEPRECATED"
 # 申請が AWS に受け付けられた後にだけ取りうる状態（審査待ち、または審査で決裁済み）
 SUBMITTED_STATUSES: frozenset[RecordStatus] = frozenset(
@@ -109,23 +109,38 @@ IN_FLIGHT_STATUSES: frozenset[RecordStatus] = frozenset({"CREATING", "UPDATING"}
 # AWS が書き込みの失敗を確定した状態
 AWS_FAILED_STATUSES: frozenset[RecordStatus] = frozenset({"CREATE_FAILED", "UPDATE_FAILED"})
 # 公開版だけがあり、下書きを持たない状態
-NO_DRAFT_STATUSES: frozenset[RecordStatus] = frozenset({PUBLISHED_STATUS, "DEPRECATED"})
+NO_DRAFT_STATUSES: frozenset[RecordStatus] = frozenset({PUBLISHED_STATUS, DEPRECATED_STATUS})
 # 編集を受け付けない状態
-NOT_EDITABLE_STATUSES: frozenset[RecordStatus] = IN_FLIGHT_STATUSES | {"DEPRECATED"}
+NOT_EDITABLE_STATUSES: frozenset[RecordStatus] = IN_FLIGHT_STATUSES | {DEPRECATED_STATUS}
 
 # ポータルの書き込み操作の状態。API が返すのは IN_PROGRESS 以外の3つで、
 # SPA の `OPERATION_STATES`（frontend/src/drafts/api.ts）と揃える
 OperationState = Literal["IN_PROGRESS", "VERIFYING", "FAILED", "SUCCEEDED"]
-OperationKind = Literal["CREATE", "UPDATE", "SUBMIT", "APPROVE", "REJECT", "SUSPEND", "DEPRECATE"]
+# SPA の `OPERATION_KINDS`（frontend/src/drafts/api.ts）と揃える
+OperationKind = Literal[
+    "CREATE",
+    "UPDATE",
+    "SUBMIT",
+    "APPROVE",
+    "REJECT",
+    "SUSPEND",
+    "DEPRECATE",
+    "REQUEST_DEPRECATION",
+    "DECLINE_DEPRECATION",
+]
 OPERATION_KINDS: tuple[OperationKind, ...] = get_args(OperationKind)
 CREATE_KIND: OperationKind = "CREATE"
 UPDATE_KIND: OperationKind = "UPDATE"
 SUBMIT_KIND: OperationKind = "SUBMIT"
 APPROVE_KIND: OperationKind = "APPROVE"
 REJECT_KIND: OperationKind = "REJECT"
-# 公開停止（却下による非公開化）と廃止（元に戻せない DEPRECATED）。決裁と同じく決裁 handler が行う
+# 公開停止（却下で発見できなくする）と廃止（元に戻せない DEPRECATED）。決裁と同じく決裁 handler が行う
 SUSPEND_KIND: OperationKind = "SUSPEND"
 DEPRECATE_KIND: OperationKind = "DEPRECATE"
+# 廃止依頼（Publisher）と、その見送り（Curator）。AWS の状態を変えず、補助テーブルへの書き込みだけで完結する。
+# 実行制御（CONTROL）やロックを残さず、1つのトランザクションで INTENT と RESULT を同時に追記する
+REQUEST_DEPRECATION_KIND: OperationKind = "REQUEST_DEPRECATION"
+DECLINE_DEPRECATION_KIND: OperationKind = "DECLINE_DEPRECATION"
 # 決裁 handler が行う操作（公開承認・却下・公開停止・廃止）。操作照会は種別ごとに参照できる主体を変える
 DECISION_KINDS: frozenset[OperationKind] = frozenset(
     {APPROVE_KIND, REJECT_KIND, SUSPEND_KIND, DEPRECATE_KIND}
@@ -166,6 +181,10 @@ def parse_audit_sk(sk: object) -> tuple[str, AuditPhase]:
 # （frontend/src/drafts/api.ts）と揃える
 RECORD_ID_LENGTH = 12
 RECORD_ID_PATTERN = re.compile(rf"[A-Za-z0-9]{{{RECORD_ID_LENGTH}}}")
+
+# 公開停止中であることを示す管理情報（MANAGEMENT）の項目。値は公開停止した時点の公開中の版で、
+# 公開停止の成功で書き込み、公開承認の成功で消す（README「公開停止・廃止・廃止依頼」）
+SUSPENDED_VERSION_KEY = "suspendedVersion"
 
 # 確定した操作（実行制御の項目）を補助テーブルの TTL で削除するまでの秒数（設計書「補助テーブルに保存するもの」）。
 # この間は同じ Idempotency-Key に同じ結果を返す。未確定の操作とロックには TTL を付けない
@@ -254,12 +273,15 @@ class _DecisionOperationRequired(OperationRecord):
 
 
 class DecisionOperation(_DecisionOperationRequired, total=False):
-    """補助ストアに保存する、決裁の操作（公開承認・却下）。"""
+    """補助ストアに保存する、決裁の操作（公開承認・却下・公開停止・廃止）。"""
 
     result: dict[str, Any]
     # 対象とした申請スナップショットの ID と、その時点のレコードの版
     submissionId: str
     recordVersion: str
+    # 決裁の対象を固定した時点の AWS の状態。照合で同じ状態が見えている間は、決裁が未反映と判断する。
+    # 記録より前の操作（公開承認・却下だけ）では、決裁の前提である PENDING_APPROVAL とみなす
+    observedStatus: str
     # AWS の状態更新 API が受け付けを返した。未設定なら、決裁 handler の再送で呼び直す
     decisionAccepted: bool
 
@@ -355,7 +377,7 @@ class Management:
             or any(key in item and not isinstance(item[key], str) for key in ALL_SUPPLEMENT_FIELDS)
             or any(
                 item.get(key) is not None and not isinstance(item[key], str)
-                for key in ("publishedVersion", "adoptedPublishedVersion")
+                for key in ("publishedVersion", "adoptedPublishedVersion", SUSPENDED_VERSION_KEY)
             )
             or ("lastEditedBy" in item and not is_principal(item["lastEditedBy"]))
         ):
@@ -398,10 +420,28 @@ class Management:
         return self.is_managed and self.owner_team in teams
 
     def published_version(self, record: Mapping[str, Any]) -> str | None:
-        """公開中の版。AWS が新しい下書きを返している間は、補助ストアに保持した版を返す。"""
+        """公開中の版。AWS が新しい下書きを返している間は、補助ストアに保持した版を返す。
+
+        公開停止中（再承認まで）と廃止済みのレコードには、発見できる版がないため None を返す。
+        「新しい版の却下で、旧版は公開中」の場合と区別するため、公開停止は管理情報の印で判断する。
+        """
+        if record["status"] == PUBLISHED_STATUS:
+            return str(record["recordVersion"])
+        if record["status"] == DEPRECATED_STATUS or self.suspended_version is not None:
+            return None
+        return self.last_published_version(record)
+
+    def last_published_version(self, record: Mapping[str, Any]) -> str | None:
+        """最後に公開承認された版。公開停止中でも保持し、再申請の semver の下限に使う。"""
         if record["status"] == PUBLISHED_STATUS:
             return str(record["recordVersion"])
         version = self.item.get("publishedVersion")
+        return version if isinstance(version, str) else None
+
+    @property
+    def suspended_version(self) -> str | None:
+        """公開停止した時点で公開中だった版。公開停止中でなければ None（再承認で消す）。"""
+        version = self.item.get(SUSPENDED_VERSION_KEY)
         return version if isinstance(version, str) else None
 
     @property

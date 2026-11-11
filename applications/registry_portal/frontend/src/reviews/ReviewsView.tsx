@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { toApiError, type ApiClient, type ApiError } from '../api/client'
 import { RECORD_TYPE_LABELS } from '../api/recordType'
-import { RecoveredOperationNotice } from '../components/RecoveryDetails'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { RecordHistoryToggle } from '../drafts/RecordHistoryView'
 import {
@@ -11,18 +10,22 @@ import {
   settlesIdempotencyKey,
   type RecordStatus,
 } from '../drafts/api'
+import { elapsedDays } from '../lifecycle/api'
+import { RecordLifecycleToggle } from '../lifecycle/RecordLifecyclePanel'
 import {
   DECISION_REASON_MAX_LENGTH,
   type DecisionKind,
   type DecisionOperation,
+  type DeprecationRequestSummary,
   type PendingDetail,
   type PendingPage,
-  type PendingSummary,
   type Principal,
   type PublishedBase,
   type RecordReference,
   type SubmissionSnapshot,
+  type SubmissionSummary,
 } from './api'
+import { DecisionOperationCheck } from './DecisionOperationCheck'
 
 type Props = { api: ApiClient; roles: string[]; onRelogin: () => void }
 type ListState =
@@ -68,14 +71,21 @@ function principalLabel(principal: Principal | null): string {
 }
 
 /** 一覧の申請理由。申請がない場合と、申請はあるはずなのに読めない場合を区別する */
-function submissionLine(item: PendingSummary): string {
+function submissionLine(item: SubmissionSummary): string {
   if (item.submissionState === 'MISSING')
     return '申請スナップショットを取得できません（管理者に連絡してください）'
   if (item.submissionState === 'NONE' || item.reason === null) return 'ポータル経由の申請なし'
   return item.reason
 }
 
-/** Curator の審査待ちの一覧と、申請のスナップショットに基づく公開承認・却下 */
+/** 廃止依頼の項目の状況。公開停止済みなら、廃止するか見送るかの判断待ち */
+function requestProgress(item: DeprecationRequestSummary): string {
+  const days = elapsedDays(item.requestedAt)
+  const elapsed = days === null ? '' : `・${days} 日経過`
+  return item.suspended ? `公開停止済み・廃止の判断待ち${elapsed}` : `未対応${elapsed}`
+}
+
+/** Curator の審査待ちの一覧と、申請のスナップショットに基づく公開承認・却下、廃止依頼への対応 */
 export function ReviewsView({ api, roles, onRelogin }: Props) {
   const [list, setList] = useState<ListState>({ kind: 'loading' })
   const [token, setToken] = useState<string | undefined>()
@@ -124,6 +134,9 @@ export function ReviewsView({ api, roles, onRelogin }: Props) {
         AWS の承認待ち（PENDING_APPROVAL）を正本として表示します。申請のスナップショットを確認してから
         公開承認または却下を行ってください。公開承認は実行の許可ではありません。
       </p>
+      <p>
+        未解決の廃止依頼は、最初のページに古い順で表示します。公開停止で止めてから、廃止するか見送るかを判断できます。
+      </p>
       {list.kind === 'loading' ? (
         <p role="status">一覧を読み込んでいます…</p>
       ) : list.kind === 'error' ? (
@@ -148,16 +161,18 @@ export function ReviewsView({ api, roles, onRelogin }: Props) {
                     {item.ownerTeam ?? '所有チーム不明'}・版 {item.recordVersion}
                   </p>
                   <p>
-                    廃止依頼: {item.reason ?? '（理由なし）'}（依頼者{' '}
-                    {item.requestedBy ? item.requestedBy.subject : '不明'}）
+                    廃止依頼: {item.reason}（依頼者 {item.requestedBy.subject}）
                   </p>
-                  <p>状態 {statusLabel(item.status)}</p>
+                  <p>
+                    状態 {statusLabel(item.status)} / {requestProgress(item)}
+                    {item.operationId && ' / 結果確認中'}
+                  </p>
                   {!item.managed && <p>ポータルで管理されていないため、ここでは対応できません。</p>}
-                  <DeprecationRequestActions
+                  <RecordLifecycleToggle
                     api={api}
-                    item={item}
+                    recordId={item.recordId}
                     onRelogin={onRelogin}
-                    onDone={back}
+                    label="対応する"
                   />
                 </li>
               ) : (
@@ -310,6 +325,12 @@ function ReviewDetailView({
         所有チーム {detail.ownerTeam ?? '不明'} /{' '}
         {detail.publishedVersion ? `公開中の版 ${detail.publishedVersion}` : '公開版なし（初回公開）'}
       </p>
+      {detail.deprecationRequest && (
+        <p role="alert">
+          このレコードには未解決の廃止依頼があります（理由: {detail.deprecationRequest.reason}・依頼者{' '}
+          {detail.deprecationRequest.requestedBy.subject}）。依頼者の意図を確認してから決裁してください。
+        </p>
+      )}
       {!snapshot ? (
         <p role="alert">
           {detail.submissionState === 'MISSING'
@@ -509,207 +530,5 @@ function DiffTable({ next, published }: { next: DiffFields; published: Published
         ))}
       </tbody>
     </table>
-  )
-}
-
-function DecisionOperationCheck({
-  api,
-  operationId,
-  onDone,
-  onRelogin,
-}: {
-  api: ApiClient
-  operationId: string
-  onDone: (operation: DecisionOperation) => void
-  onRelogin: () => void
-}) {
-  const [message, setMessage] = useState('決裁の結果確認中です。確定するまでこのレコードへの書き込みを停止しています。')
-  const [error, setError] = useState<ApiError | null>(null)
-  const [busy, setBusy] = useState(false)
-  // Admin の回復操作で確定した決裁は、回復結果を見せてから結果の表示へ進む
-  const [recovered, setRecovered] = useState<DecisionOperation | null>(null)
-  async function check() {
-    setBusy(true)
-    setError(null)
-    try {
-      const result = await api.getDecisionOperation(operationId)
-      if (result.operationState === 'VERIFYING') setMessage(result.message)
-      else if (result.recovery) setRecovered(result)
-      else onDone(result)
-    } catch (failure) {
-      setError(toApiError(failure, '決裁の結果を取得できませんでした。'))
-    } finally {
-      setBusy(false)
-    }
-  }
-  if (recovered?.recovery) {
-    return (
-      <RecoveredOperationNotice
-        recovery={recovered.recovery}
-        onContinue={() => onDone(recovered)}
-      />
-    )
-  }
-  return (
-    <div>
-      <p role="status">{message}</p>
-      <button type="button" disabled={busy} onClick={() => void check()}>
-        決裁の結果を確認
-      </button>
-      {error && <RequestErrorAlert error={error} onRelogin={onRelogin} />}
-    </div>
-  )
-}
-
-type LifecycleState =
-  | { kind: 'idle' }
-  | { kind: 'busy' }
-  | { kind: 'error'; error: ApiError }
-  | { kind: 'result'; operation: DecisionOperation }
-
-/**
- * 廃止依頼への対応。Curator が公開停止（却下による非公開化）または廃止（元に戻せない）を行う。
- * 廃止は理由の入力に加えて、確認のチェック（二重確認）を必須にする（設計書「業務上の状態」）
- */
-function DeprecationRequestActions({
-  api,
-  item,
-  onRelogin,
-  onDone,
-}: {
-  api: ApiClient
-  item: PendingSummary
-  onRelogin: () => void
-  onDone: () => void
-}) {
-  const [reason, setReason] = useState('')
-  const [confirmed, setConfirmed] = useState(false)
-  const [state, setState] = useState<LifecycleState>({ kind: 'idle' })
-  const busy = state.kind === 'busy'
-
-  async function run(kind: 'suspend' | 'deprecate') {
-    const trimmed = reason.trim()
-    if (!trimmed) return
-    if (kind === 'deprecate' && !confirmed) return
-    setState({ kind: 'busy' })
-    try {
-      const operation =
-        kind === 'suspend'
-          ? await api.suspendRecord(item.recordId, { reason: trimmed }, crypto.randomUUID())
-          : await api.deprecateRecord(
-              item.recordId,
-              { reason: trimmed, confirm: true },
-              crypto.randomUUID(),
-            )
-      setState({ kind: 'result', operation })
-    } catch (failure) {
-      setState({
-        kind: 'error',
-        error: toApiError(
-          failure,
-          kind === 'suspend' ? '公開停止できませんでした。' : '廃止できませんでした。',
-        ),
-      })
-    }
-  }
-
-  return (
-    <section aria-label={`${item.displayName} の廃止依頼への対応`}>
-      <form
-        onSubmit={(event) => {
-          event.preventDefault()
-          void run('suspend')
-        }}
-      >
-        <fieldset disabled={busy || !item.managed}>
-          <legend>公開停止</legend>
-          <p>
-            問題が見つかったものを理由付きで発見できなくします。これは却下による非公開化のため、
-            再公開には Publisher による編集と再申請が必要です。
-          </p>
-          <label>
-            公開停止の理由（必須）
-            <textarea
-              name="suspendReason"
-              required
-              maxLength={DECISION_REASON_MAX_LENGTH}
-              rows={3}
-              value={reason}
-              onChange={(event) => setReason(event.target.value)}
-            />
-          </label>
-          <button type="submit" disabled={busy || !reason.trim()}>
-            公開停止する
-          </button>
-        </fieldset>
-      </form>
-      <form
-        onSubmit={(event) => {
-          event.preventDefault()
-          void run('deprecate')
-        }}
-      >
-        <fieldset disabled={busy || !item.managed}>
-          <legend>廃止</legend>
-          <p>廃止は元に戻せません。レコードは DEPRECATED になり、再公開には新規の登録が必要です。</p>
-          <label>
-            廃止理由（必須）
-            <textarea
-              name="deprecateReason"
-              required
-              maxLength={DECISION_REASON_MAX_LENGTH}
-              rows={3}
-              value={reason}
-              onChange={(event) => setReason(event.target.value)}
-            />
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              name="deprecateConfirm"
-              checked={confirmed}
-              onChange={(event) => setConfirmed(event.target.checked)}
-            />
-            廃止は元に戻せないことを確認しました
-          </label>
-          <button type="submit" disabled={busy || !reason.trim() || !confirmed}>
-            廃止する
-          </button>
-        </fieldset>
-      </form>
-      {state.kind === 'busy' && <p role="status">実行しています…</p>}
-      {state.kind === 'error' && (
-        <>
-          <RequestErrorAlert error={state.error} onRelogin={onRelogin} />
-          {state.error.status === 409 && (
-            <p>レコードの状態が変わっています。一覧を再読み込みして最新の状態を確認してください。</p>
-          )}
-        </>
-      )}
-      {state.kind === 'result' && state.operation.operationState === 'SUCCEEDED' && (
-        <p role="status">
-          {state.operation.status === 'DEPRECATED'
-            ? '廃止しました。この操作は元に戻せません。'
-            : '公開停止しました。再公開には Publisher による編集と再申請が必要です。'}
-        </p>
-      )}
-      {state.kind === 'result' && state.operation.operationState === 'VERIFYING' && (
-        <DecisionOperationCheck
-          api={api}
-          operationId={state.operation.operationId}
-          onDone={(operation) => setState({ kind: 'result', operation })}
-          onRelogin={onRelogin}
-        />
-      )}
-      {state.kind === 'result' && state.operation.operationState === 'FAILED' && (
-        <p role="alert">{state.operation.message}</p>
-      )}
-      {state.kind === 'idle' && item.status === 'DEPRECATED' && (
-        <p>このレコードはすでに廃止されています。一覧を再読み込みしてください。</p>
-      )}
-      <button type="button" onClick={onDone} disabled={busy}>
-        一覧を再読み込み
-      </button>
-    </section>
   )
 }

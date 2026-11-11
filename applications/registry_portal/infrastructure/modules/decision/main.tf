@@ -65,9 +65,32 @@ locals {
     "POST /api/reviews/{recordId}/reject",
     "POST /api/records/{recordId}/suspend",
     "POST /api/records/{recordId}/deprecate",
+    "GET /api/records/{recordId}/lifecycle",
+    "POST /api/records/{recordId}/deprecation-requests/decline",
     "GET /api/records/{recordId}/recovery",
     "POST /api/records/{recordId}/recovery",
   ]
+
+  # 決裁 Lambda を呼び出せる /api/records/{recordId} 以下の path の末尾と、Lambda の呼び出し許可の ID。
+  # 公開停止・廃止・公開管理の照会・廃止依頼の見送り（#13）。回復操作の許可は下の decision_recovery_api
+  curator_record_paths = {
+    suspend = {
+      statement_id = "AllowHttpApiInvokeSuspend"
+      path         = "suspend"
+    }
+    deprecate = {
+      statement_id = "AllowHttpApiInvokeDeprecate"
+      path         = "deprecate"
+    }
+    lifecycle = {
+      statement_id = "AllowHttpApiInvokeLifecycle"
+      path         = "lifecycle"
+    }
+    decline = {
+      statement_id = "AllowHttpApiInvokeDeclineDeprecation"
+      path         = "deprecation-requests/decline"
+    }
+  }
 }
 
 data "aws_apigatewayv2_api" "portal" {
@@ -90,8 +113,8 @@ resource "aws_apigatewayv2_route" "decision" {
   authorizer_id      = var.jwt_authorizer_id
 }
 
-# HTTP API から決裁 Lambda を呼び出す許可。審査と決裁の path（/api/reviews 以下）、公開停止・廃止の
-# path（/api/records/{recordId}/suspend・/deprecate）、回復操作の path（/api/records/{recordId}/recovery）だけに限る
+# HTTP API から決裁 Lambda を呼び出す許可。審査と決裁の path（/api/reviews 以下）、Curator の
+# レコード単位の path（local.curator_record_paths）、回復操作の path（/api/records/{recordId}/recovery）だけに限る
 resource "aws_lambda_permission" "decision_api" {
   statement_id  = "AllowHttpApiInvokeReviews"
   action        = "lambda:InvokeFunction"
@@ -100,20 +123,13 @@ resource "aws_lambda_permission" "decision_api" {
   source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/*/api/reviews*"
 }
 
-resource "aws_lambda_permission" "decision_lifecycle_api" {
-  statement_id  = "AllowHttpApiInvokeLifecycle"
+resource "aws_lambda_permission" "decision_curator_record_api" {
+  for_each      = local.curator_record_paths
+  statement_id  = each.value.statement_id
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.decision.function_name
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/*/api/records/*/suspend"
-}
-
-resource "aws_lambda_permission" "decision_deprecate_api" {
-  statement_id  = "AllowHttpApiInvokeDeprecate"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.decision.function_name
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/*/api/records/*/deprecate"
+  source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/*/api/records/*/${each.value.path}"
 }
 
 resource "aws_lambda_permission" "decision_recovery_api" {

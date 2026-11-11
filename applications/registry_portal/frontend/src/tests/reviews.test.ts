@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 // 審査と決裁（Seam 2: SPA の fetch 境界）。Curator の一覧・スナップショットの差分・
-// 公開承認・却下の本文と結果の表示（検索への反映待ち、409 の再読み込み）を確認する。
+// 公開承認・却下の本文と結果の表示（検索への反映待ち、409 の再読み込み）と、
+// 廃止依頼の項目（経過日数・公開停止済みの判断待ち・公開管理の入口）を確認する。
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -13,9 +14,6 @@ const submittedBy = { issuer: 'https://cognito-idp.us-east-1.amazonaws.com/us-ea
 const lastEditedBy = { ...submittedBy, subject: 'publisher-2' }
 const summary = {
   reviewKind: 'SUBMISSION',
-  requestId: null,
-  requestedAt: null,
-  requestedBy: null,
   recordId: 'agentABC1234',
   name: 'payments-a2a',
   displayName: '決済 Agent',
@@ -85,6 +83,7 @@ const detail = {
     record: { ...snapshot.record, description: '残高を調べる', recordVersion: '1.0.0' },
     approvedBy: { ...submittedBy, subject: 'curator-1' },
   },
+  deprecationRequest: null,
 }
 const approveResult = {
   recordId: 'agentABC1234',
@@ -391,82 +390,105 @@ it('状態が AWS の値の一覧にない応答は不正な応答として扱�
   expect(container.querySelector('[role="alert"]')).not.toBeNull()
 })
 
+/** 未解決の廃止依頼の項目。申請の項目（summary）とは形が異なる（バックエンドの ReviewQueue と揃える） */
 const deprecationRequest = {
-  ...summary,
   reviewKind: 'DEPRECATION_REQUEST',
+  recordId: 'agentABC1234',
+  name: 'payments-a2a',
+  displayName: '決済 Agent',
+  recordType: 'AGENT',
+  recordVersion: '1.0.0',
   status: 'APPROVED',
-  submissionState: 'NONE',
-  submissionId: null,
-  snapshotHash: null,
-  reason: '利用が終わったため',
-  submittedAt: null,
-  submittedBy: null,
+  managed: true,
+  ownerTeam: 'team-payments',
   requestId: 'request-1',
-  requestedAt: '2026-11-09T01:00:00+00:00',
+  reason: '利用が終わったため',
+  requestedAt: '2026-11-01T01:00:00+00:00',
   requestedBy: { ...submittedBy, subject: 'publisher-1' },
+  suspended: false,
+  operationId: null,
 }
-const suspendResult = {
-  ...approveResult,
-  status: 'REJECTED',
+const lifecycleView = {
+  recordId: 'agentABC1234',
+  name: 'payments-a2a',
+  displayName: '決済 Agent',
+  recordType: 'AGENT',
+  recordVersion: '1.0.0',
+  status: 'APPROVED',
+  managed: true,
+  ownerTeam: 'team-payments',
   publishedVersion: '1.0.0',
-  submissionId: null,
-  snapshotHash: null,
-}
-const deprecateResult = {
-  ...approveResult,
-  status: 'DEPRECATED',
-  publishedVersion: '1.0.0',
-  submissionId: null,
-  snapshotHash: null,
+  suspended: false,
+  operationId: null,
+  deprecationRequest: {
+    requestId: 'request-1',
+    recordId: 'agentABC1234',
+    reason: '利用が終わったため',
+    requestedBy: { ...submittedBy, subject: 'publisher-1' },
+    requestedAt: '2026-11-01T01:00:00+00:00',
+    state: 'OPEN',
+    resolution: null,
+    resolutionReason: null,
+    resolvedBy: null,
+    resolvedAt: null,
+  },
+  actions: {
+    suspend: { allowed: true, message: null },
+    deprecate: { allowed: true, message: null },
+  },
 }
 
-it('廃止依頼を申請と並べて一覧に表示し、依頼者と理由を確認できる', async () => {
+it('廃止依頼を申請と並べて一覧に表示し、経過日数と判断待ちの状況を確認できる', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-11-11T00:00:00+00:00'))
   await mount([
-    jsonResponse(200, { items: [summary, deprecationRequest], nextToken: null }),
+    jsonResponse(200, {
+      items: [deprecationRequest, { ...deprecationRequest, recordId: 'mcpEFGH5678I', suspended: true }, summary],
+      nextToken: null,
+    }),
   ])
+  vi.useRealTimers()
   expect(container.textContent).toContain('廃止依頼: 利用が終わったため（依頼者 publisher-1）')
+  expect(container.textContent).toContain('未対応・9 日経過')
+  expect(container.textContent).toContain('公開停止済み・廃止の判断待ち・9 日経過')
   // 申請の審査と廃止依頼への対応を同じ一覧で行う
   expect(container.textContent).toContain('申請理由: 利用者向けに公開する')
   expect(button('審査する').disabled).toBe(false)
 })
 
-it('公開停止は理由を本文に載せて、却下による非公開化として実行する', async () => {
+it('廃止依頼の「対応する」で、同じレコードの公開管理を開く', async () => {
   const calls = await mount([
     jsonResponse(200, { items: [deprecationRequest], nextToken: null }),
-    jsonResponse(200, suspendResult),
+    jsonResponse(200, lifecycleView),
   ])
-  await setValue('suspendReason', '問題が見つかったため')
-  await submitForm(0)
-  expect(calls[1]?.url).toBe('/api/records/agentABC1234/suspend')
-  expect(sentBody(calls, 1)).toEqual({ reason: '問題が見つかったため' })
-  expect(idempotencyKey(calls, 1)).toMatch(/^[A-Za-z0-9_-]+$/)
-  expect(container.textContent).toContain(
-    '公開停止しました。再公開には Publisher による編集と再申請が必要です。',
-  )
+  await click('対応する')
+  expect(calls[1]?.url).toBe('/api/records/agentABC1234/lifecycle')
+  expect(container.textContent).toContain('公開管理: 決済 Agent')
+  expect(container.textContent).toContain('未解決の廃止依頼')
+  expect(button('公開停止する')).toBeTruthy()
 })
 
-it('廃止は二重確認が必須で、確認してから confirm を付けて実行する', async () => {
-  const calls = await mount([
-    jsonResponse(200, { items: [deprecationRequest], nextToken: null }),
-    jsonResponse(200, deprecateResult),
+it('審査の詳細は、未解決の廃止依頼があれば決裁の前に警告する', async () => {
+  await mount([
+    jsonResponse(200, { items: [summary], nextToken: null }),
+    jsonResponse(200, { ...detail, deprecationRequest: lifecycleView.deprecationRequest }),
   ])
-  await setValue('deprecateReason', '利用終了のため')
-  // 確認のチェック（二重確認）がないときは廃止を実行できない
-  expect(button('廃止する').disabled).toBe(true)
-  expect(container.textContent).toContain('廃止は元に戻せません')
-  const checkbox = container.querySelector<HTMLInputElement>('[name="deprecateConfirm"]')
-  if (!checkbox) throw new Error('確認のチェックボックスがありません')
-  await act(() => checkbox.click())
-  expect(button('廃止する').disabled).toBe(false)
-  await submitForm(1)
-  expect(calls[1]?.url).toBe('/api/records/agentABC1234/deprecate')
-  expect(sentBody(calls, 1)).toEqual({ reason: '利用終了のため', confirm: true })
-  expect(container.textContent).toContain('廃止しました。この操作は元に戻せません。')
+  await click('審査する')
+  expect(container.textContent).toContain('このレコードには未解決の廃止依頼があります（理由: 利用が終わったため')
 })
 
-it('一覧の応答に審査待ちの種別がなければ拒否する', async () => {
-  const withoutKind = { ...summary }
-  delete (withoutKind as Record<string, unknown>).reviewKind
-  await mount([jsonResponse(200, { items: [withoutKind], nextToken: null })])
-  expect(container.textContent).toContain('API から想定外の応答が返されました。')
+it('一覧の項目は種別ごとの必須の項目を検査し、欠けていれば拒否する', async () => {
+  const withoutKind: Record<string, unknown> = { ...summary }
+  delete withoutKind.reviewKind
+  const requestWithoutSuspended: Record<string, unknown> = { ...deprecationRequest }
+  delete requestWithoutSuspended.suspended
+  // 申請の項目の形で返った廃止依頼（以前の不整合）も拒否する
+  const requestShapedAsSubmission = { ...summary, reviewKind: 'DEPRECATION_REQUEST' }
+  for (const item of [withoutKind, requestWithoutSuspended, requestShapedAsSubmission]) {
+    await mount([jsonResponse(200, { items: [item], nextToken: null })])
+    expect(container.textContent).toContain('API から想定外の応答が返されました。')
+    // 前の項目の表示を引き継がないよう、項目ごとに描画し直す
+    await act(() => root.unmount())
+    root = createRoot(container)
+  }
 })

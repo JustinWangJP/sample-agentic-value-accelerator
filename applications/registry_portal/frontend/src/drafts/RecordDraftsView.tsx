@@ -9,6 +9,7 @@ import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { CATALOG_RECORD_TYPES, RECORD_TYPE_LABELS } from '../api/recordType'
 import {
   DEFAULT_DRAFT_ENVIRONMENT,
+  DEPRECATED_STATUS,
   isEditableStatus,
   isUncertainWriteError,
   settlesIdempotencyKey,
@@ -605,7 +606,7 @@ function DraftEditor({
           </button>
         </>
       )}
-      {initial.kind === 'edit' && initial.detail.status !== 'DEPRECATED' && (
+      {initial.kind === 'edit' && initial.detail.status !== DEPRECATED_STATUS && (
         <DeprecationRequestForm
           api={api}
           recordId={initial.detail.recordId}

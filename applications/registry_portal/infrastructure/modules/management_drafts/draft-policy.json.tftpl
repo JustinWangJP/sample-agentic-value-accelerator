@@ -17,7 +17,13 @@
     {
       "Sid": "DraftSupplement",
       "Effect": "Allow",
-      "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query"],
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:Query",
+        "dynamodb:ConditionCheckItem"
+      ],
       "Resource": "${supplement_table_arn}"
     }
   ]

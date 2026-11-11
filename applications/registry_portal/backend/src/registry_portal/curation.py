@@ -1,54 +1,64 @@
-"""審査待ちの一覧と、Curator の決裁（公開承認・却下）。
+"""Curator の決裁（公開承認・却下・公開停止・廃止）の実行。
 
 決裁は決裁 handler だけで行う。クライアントから AWS の status は受け取らず、
-API ごと（approve / reject）に遷移先を決める。手順は設計書「内容を確認してから決裁する」に従う。
+API ごと（approve / reject / suspend / deprecate）に遷移先を決める。手順は設計書「内容を確認してから決裁する」に従う。
 
 1. レコード単位のロックを取り、決裁の意図を記録する
-2. 現物と申請スナップショットを照合する（状態・スナップショットのハッシュ・内容ハッシュ・自己承認）
+2. 現物を照合する（公開承認・却下は申請スナップショットのハッシュ・内容ハッシュ・自己承認、
+   公開停止・廃止は状態と内容ハッシュ）
 3. AWS の UpdateRegistryRecordStatus を呼ぶ
-4. 再取得して確認してから成功を記録する。AWS が失敗したら承認済みと表示しない
+4. 再取得して確認してから成功を記録する。AWS が失敗したら反映済みと表示しない
+
+審査待ちの一覧と審査の詳細は review_queue.py、公開管理の照会は lifecycle.py が受け持つ。
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Protocol, TypeGuard
+from typing import Any
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from registry_portal.auth import Caller, Role
+from registry_portal.auth import Caller
+from registry_portal.curation_reads import (
+    CuratedRecordNotFound,
+    CurationReads,
+    DecisionUnavailable,
+    PendingApprovalNotFound,
+    RegistryRecordMissing,
+    RegistryStatusClient,
+    display_name,
+    is_managed,
+    record_state,
+    require_curator,
+)
 from registry_portal.domain.curation import (
     ATTACHMENT_AVAILABLE,
-    ATTACHMENT_MISSING,
-    ATTACHMENT_NONE,
+    DECISION_PRECONDITIONS,
     DECISION_TARGETS,
     LIFECYCLE_KINDS,
-    AttachmentState,
     DecisionInput,
     LifecycleInput,
     SelfApprovalError,
-    check_deprecatable,
-    check_decidable,
     check_not_self_approval,
-    check_suspendable,
-    published_base,
     published_item,
 )
+from registry_portal.domain.deprecation import RESOLUTION_DEPRECATED, DeprecationRequest
 from registry_portal.domain.drafts import (
     APPROVE_KIND,
     DEPRECATE_KIND,
-    SUSPEND_KIND,
     IN_FLIGHT_STATUSES,
     PENDING_APPROVAL_STATUS,
     RECORD_ID_PATTERN,
+    SUSPEND_KIND,
+    SUSPENDED_VERSION_KEY,
     DecisionOperation,
     Management,
     OperationKind,
     content_hash,
     digest,
 )
-from registry_portal.domain.submissions import recompute_snapshot_hash, snapshot_fields
-from registry_portal.deprecation import deprecation_request_view
+from registry_portal.domain.submissions import recompute_snapshot_hash
 from registry_portal.errors import ApiError, ForbiddenError, RequestValidationError
 from registry_portal.operations import (
     AWS_REJECTED_ERRORS,
@@ -70,30 +80,12 @@ _SUBMISSION_UNCONFIRMED = (
 )
 
 
-class RegistryStatusClient(Protocol):
-    """審査と決裁が使う Registry 管理 API（agent-registry-control）の操作。"""
-
-    def get_registry_record(self, *, registryId: str, recordId: str) -> Mapping[str, Any]: ...
-
-    def list_registry_records(self, **kwargs: Any) -> Mapping[str, Any]: ...
-
-    def update_registry_record_status(self, **kwargs: Any) -> Mapping[str, Any]: ...
-
-
 class DecisionConflict(ApiError):
     """審査対象が変わったか、決裁できる状態ではない。再読み込みして確認する。"""
 
     status = 409
     code = "CONTENT_CONFLICT"
     default_message = "審査対象が変更されたか、別の操作が処理中です。最新の内容を確認してください。"
-
-
-class DecisionUnavailable(ApiError):
-    status = 502
-    code = "REGISTRY_UNAVAILABLE"
-    default_message = (
-        "Registry または補助情報を取得できませんでした。時間をおいて再度お試しください。"
-    )
 
 
 class DecisionThrottled(ApiError):
@@ -104,20 +96,6 @@ class DecisionThrottled(ApiError):
     default_message = (
         "Registry が混み合っているため決裁できませんでした。時間をおいて再度実行してください。"
     )
-
-
-class PendingApprovalNotFound(ApiError):
-    """審査待ち（AWS の PENDING_APPROVAL）の Registry レコードが見つからない。"""
-
-    status = 404
-    code = "PENDING_APPROVAL_NOT_FOUND"
-    default_message = "審査待ちの申請が見つかりません。一覧から確認してください。"
-
-
-def require_curator(caller: Caller) -> None:
-    """審査と決裁は Curator の業務ロールだけが行える（設計書「ロールと所有」）。"""
-    if Role.CURATOR not in caller.roles:
-        raise ForbiddenError("審査と決裁は Curator のみ行えます。")
 
 
 def _pending(operation: Mapping[str, Any]) -> DecisionResponse:
@@ -134,196 +112,14 @@ def _failed(operation: Mapping[str, Any]) -> DecisionResponse:
     )
 
 
-def _display_name(record: Mapping[str, Any]) -> str:
-    """表示名。AWS が displayName を返さないレコードは名前で代用する。"""
-    return str(record.get("displayName", record["name"]))
-
-
-def _is_managed(management: Management | None) -> TypeGuard[Management]:
-    """ポータルの管理下にあるか。未管理（取り込み前）のレコードは決裁できない。"""
-    return management is not None and management.is_managed
-
-
-def _snapshot_view(submission: Mapping[str, Any]) -> dict[str, Any]:
-    """画面に返す申請スナップショット。保存用のキーを除き、ハッシュを添える。"""
-    return {**snapshot_fields(submission), "snapshotHash": submission.get("snapshotHash")}
-
-
 class RecordCuration:
-    """審査待ちの一覧・詳細と、公開承認・却下の決裁。"""
+    """公開承認・却下・公開停止・廃止の決裁の実行と、その結果の確定。"""
 
     def __init__(self, registry: str, store: DraftStore, client: RegistryStatusClient) -> None:
         self.registry = registry
         self.store = store
+        self.reads = CurationReads(registry, store, client)
         self._registry_client = client
-
-    def list_reviews(self, caller: Caller, query: Mapping[str, str]) -> tuple[int, dict[str, Any]]:
-        """審査待ちの一覧。AWS の承認待ちを正本とし、そこに補助情報を結合する。"""
-        require_curator(caller)
-        if set(query) - {"nextToken"}:
-            raise RequestValidationError("一覧には nextToken のみ指定できます。")
-        token = query.get("nextToken")
-        if token is not None and (
-            not token or len(token) > 2048 or any(char.isspace() for char in token)
-        ):
-            raise RequestValidationError(
-                "ページの指定が正しくありません。最初から表示してください。"
-            )
-        params: dict[str, Any] = {
-            "registryId": self.registry,
-            "maxResults": 20,
-            "filters": [{"name": "status", "values": [PENDING_APPROVAL_STATUS]}],
-        }
-        if token is not None:
-            params["nextToken"] = token
-        try:
-            response = self._registry_client.list_registry_records(**params)
-            items = [
-                {"reviewKind": "SUBMISSION", **self._summary(record)}
-                for record in response["registryRecords"]
-            ]
-            items.extend(self._deprecation_requests())
-            return 200, {"items": items, "nextToken": response.get("nextToken")}
-        except (BotoCoreError, ClientError):
-            raise DecisionUnavailable() from None
-
-    def _deprecation_requests(self) -> list[dict[str, Any]]:
-        """未解決の廃止依頼を、申請と並べて審査待ちの一覧に加える（設計書「API」）。
-
-        AWS の承認待ちとは別に補助テーブルが正本のため、nextToken のページの後に毎回並べる。
-        依頼の対象のレコードが削除済みなら、その依頼は表示しない（解決もできないため）。
-        """
-        try:
-            requests = self.store.list_deprecation_requests()
-        except (BotoCoreError, ClientError):
-            raise DecisionUnavailable() from None
-        except ValueError:
-            raise DecisionUnavailable(
-                "保存された廃止依頼の形式が正しくありません。管理者に連絡してください。"
-            ) from None
-        items: list[dict[str, Any]] = []
-        for request in requests:
-            if request.get("state") != "OPEN":
-                continue
-            record_id = str(request["recordId"])
-            try:
-                record = self._get_record(record_id)
-            except PendingApprovalNotFound:
-                continue
-            management = self._load_management(record_id)
-            items.append(
-                {
-                    "reviewKind": "DEPRECATION_REQUEST",
-                    **self._record_summary(record, management),
-                    **deprecation_request_view(request),
-                }
-            )
-        return items
-
-    def _record_summary(
-        self, record: Mapping[str, Any], management: Management | None
-    ) -> dict[str, Any]:
-        """審査待ちの一覧に並べる、レコードの要約（申請と廃止依頼で共通する項目）。"""
-        return {
-            "recordId": record["recordId"],
-            "name": record["name"],
-            "displayName": _display_name(record),
-            "recordType": record["recordType"],
-            "recordVersion": record.get("recordVersion", ""),
-            "status": record["status"],
-            "managed": _is_managed(management),
-            "ownerTeam": management.owner_team if management is not None else None,
-        }
-
-    def _summary(self, record: Mapping[str, Any]) -> dict[str, Any]:
-        """AWS の承認待ちレコード1件に、申請の補助情報を結合する。"""
-        record_id = str(record["recordId"])
-        management = self._load_management(record_id)
-        lock = self._get_lock(record_id)
-        state, submission_id, submission = self._active_submission(record_id, management)
-        return {
-            **self._record_summary(record, management),
-            "submissionState": state,
-            "submissionId": submission_id,
-            "snapshotHash": submission.get("snapshotHash") if submission else None,
-            "reason": submission.get("reason") if submission else None,
-            "submittedAt": submission.get("submittedAt") if submission else None,
-            "submittedBy": submission.get("submittedBy") if submission else None,
-            "invalidated": bool(submission.get("invalidated")) if submission else False,
-            "operationId": lock["operationId"] if lock else None,
-        }
-
-    def _active_submission(
-        self, record_id: str, management: Management | None
-    ) -> tuple[AttachmentState, str | None, dict[str, Any] | None]:
-        """管理情報が指す現在の申請。指しているのに読めなければ MISSING とし、「申請なし」と区別する。"""
-        if not _is_managed(management):
-            return ATTACHMENT_NONE, None, None
-        submission_id = management.item.get("activeSubmissionId")
-        if not isinstance(submission_id, str) or not submission_id:
-            return ATTACHMENT_NONE, None, None
-        submission = self._get_submission(record_id, submission_id)
-        if submission is None:
-            return ATTACHMENT_MISSING, submission_id, None
-        return ATTACHMENT_AVAILABLE, submission_id, submission
-
-    def review(self, caller: Caller, record_id: str) -> tuple[int, dict[str, Any]]:
-        """審査対象の詳細。申請のスナップショットと、差分の比較対象（公開中の版）を返す。"""
-        require_curator(caller)
-        if not RECORD_ID_PATTERN.fullmatch(record_id):
-            raise RequestValidationError("Registry レコード ID の形式が正しくありません。")
-        try:
-            record = self._get_record(record_id)
-        except (BotoCoreError, ClientError):
-            raise DecisionUnavailable() from None
-        if record["status"] != PENDING_APPROVAL_STATUS:
-            raise PendingApprovalNotFound()
-        management = self._load_management(record_id)
-        state, submission_id, submission = self._active_submission(record_id, management)
-        published_state, published = self._published_snapshot(record_id, management, record)
-        return 200, {
-            "recordId": record_id,
-            "name": record["name"],
-            "displayName": _display_name(record),
-            "description": record.get("description", ""),
-            "recordType": record["recordType"],
-            "recordVersion": record.get("recordVersion", ""),
-            "ownerTeam": management.owner_team if management else None,
-            "status": record["status"],
-            "managed": _is_managed(management),
-            "publishedVersion": management.published_version(record) if management else None,
-            "submissionState": state,
-            "submissionId": submission_id,
-            "snapshotHash": submission.get("snapshotHash") if submission else None,
-            # 保存後にスナップショットが書き換えられていれば偽。決裁は 409 で拒否される
-            "snapshotIntact": (
-                recompute_snapshot_hash(submission) == submission.get("snapshotHash")
-                if submission
-                else False
-            ),
-            "invalidated": bool(submission.get("invalidated")) if submission else False,
-            "snapshot": _snapshot_view(submission) if submission else None,
-            "publishedState": published_state,
-            "published": published,
-        }
-
-    def _published_snapshot(
-        self, record_id: str, management: Management | None, record: Mapping[str, Any]
-    ) -> tuple[AttachmentState, dict[str, Any] | None]:
-        """差分の比較対象として、公開中の版のスナップショットを返す。
-
-        公開中の版があるのにスナップショットが読めなければ MISSING とし、「初回公開」と区別する（ADR-0007）。
-        """
-        published_version = management.published_version(record) if management else None
-        if published_version is None:
-            return ATTACHMENT_NONE, None
-        try:
-            stored = self.store.get_published(record_id, published_version)
-        except (BotoCoreError, ClientError):
-            raise DecisionUnavailable() from None
-        if stored is None:
-            return ATTACHMENT_MISSING, None
-        return ATTACHMENT_AVAILABLE, published_base(snapshot_fields(stored), published_version)
 
     def decide(
         self,
@@ -352,8 +148,8 @@ class RecordCuration:
             raise RequestValidationError(str(error)) from None
         if not RECORD_ID_PATTERN.fullmatch(record_id):
             raise RequestValidationError("Registry レコード ID の形式が正しくありません。")
-        management = self._load_management(record_id)
-        if not _is_managed(management):
+        management = self.reads.load_management(record_id)
+        if not is_managed(management):
             raise DecisionConflict(
                 "ポータルで管理されていないレコードは決裁できません。管理者に連絡してください。"
             )
@@ -416,16 +212,14 @@ class RecordCuration:
                 return _pending(existing)
         return self.settle(existing, allow_reissue=True)
 
-    def _get_record(self, record_id: str) -> Mapping[str, Any]:
-        """AWS のレコードを読む。存在しなければ 404、それ以外の AWS のエラーは呼び出し側に任せる。"""
+    def _get_record(self, operation: DecisionOperation) -> Mapping[str, Any]:
+        """決裁の対象のレコードを読む。存在しなければ 404（公開承認・却下は審査待ちが見つからない）。"""
         try:
-            return self._registry_client.get_registry_record(
-                registryId=self.registry, recordId=record_id
-            )
-        except ClientError as error:
-            if error.response["Error"]["Code"] == "ResourceNotFoundException":
-                raise PendingApprovalNotFound() from None
-            raise
+            return self.reads.get_record(operation["recordId"])
+        except RegistryRecordMissing:
+            if operation["kind"] in LIFECYCLE_KINDS:
+                raise CuratedRecordNotFound() from None
+            raise PendingApprovalNotFound() from None
 
     def observe_record_status(self, record_id: str) -> str | None:
         """Registry のレコードを再取得し、AWS の状態を返す。削除済み（404）は None（読めた結果）。
@@ -451,27 +245,22 @@ class RecordCuration:
         Curator が見たスナップショットのハッシュが、保存済みスナップショットから計算し直したハッシュと
         一致し、現物から計算し直した内容ハッシュも申請時と一致しなければ、決裁しない
         （設計書「内容を確認してから決裁する」）。公開停止・廃止は申請を対象としないため、現物の状態と
-        内容ハッシュだけを固定する。
+        内容ハッシュだけを固定する。固定した時点の状態は、照合で決裁が未反映かを見分けるために残す。
         """
         record_id = operation["recordId"]
-        record = self._get_record(record_id)
+        record = self._get_record(operation)
+        management = Management(operation["management"])
         try:
-            if operation["kind"] in LIFECYCLE_KINDS:
-                check = (
-                    check_suspendable if operation["kind"] == SUSPEND_KIND else check_deprecatable
-                )
-                check(str(record["status"]))
-            else:
-                check_decidable(str(record["status"]))
+            DECISION_PRECONDITIONS[operation["kind"]](record_state(record, management))
         except ValueError as error:
             raise DecisionConflict(str(error)) from None
-        management = Management(operation["management"])
+        operation["observedStatus"] = str(record["status"])
         if operation["kind"] in LIFECYCLE_KINDS:
-            # 公開停止・廃止の対象は公開中の現物。内容ハッシュで固定し、決裁の照合に使う
+            # 公開停止・廃止の対象は現物。内容ハッシュで固定し、決裁の照合に使う
             operation["expectedContentHash"] = content_hash(record, management)
             operation["recordVersion"] = str(record["recordVersion"])
             return record
-        state, submission_id, submission = self._active_submission(record_id, management)
+        state, submission_id, submission = self.reads.active_submission(record_id, management)
         if state != ATTACHMENT_AVAILABLE or submission is None or submission_id is None:
             raise DecisionConflict(_SUBMISSION_UNCONFIRMED)
         if submission.get("invalidated"):
@@ -583,9 +372,11 @@ class RecordCuration:
         """
         if "expectedContentHash" not in operation:
             return _pending(operation)
-        record = self._get_record(operation["recordId"])
+        # 決裁の対象を固定した時点の状態。記録より前の操作（公開承認・却下だけ）は承認待ちだった
+        observed = operation.get("observedStatus", PENDING_APPROVAL_STATUS)
+        record = self._get_record(operation)
         status = str(record["status"])
-        if status == PENDING_APPROVAL_STATUS and not operation.get("decisionAccepted"):
+        if status == observed and not operation.get("decisionAccepted"):
             if not allow_reissue:
                 # 管理 handler の操作照会は決裁の権限を持たないため、AWS を呼び直さない
                 return _pending(operation)
@@ -595,12 +386,13 @@ class RecordCuration:
                 # 先の呼び出しが届いていた可能性があるため、失敗とは確定しない
                 pass
             self.store.save_pending(operation)
-            record = self._get_record(operation["recordId"])
+            record = self._get_record(operation)
             status = str(record["status"])
         if status in IN_FLIGHT_STATUSES:
             return _pending(operation)
-        if status == PENDING_APPROVAL_STATUS:
-            # AWS の受け付けを確認した後も承認待ちが見えるときは、反映を待っている
+        if status == observed:
+            # AWS の受け付けを確認した後も決裁前の状態が見えるときは、反映を待っている。
+            # 失敗とは確定せず、ロックも解除しない（ADR-0010。確定できなければ ADR-0011 の回復操作）
             return _pending(operation)
         target = DECISION_TARGETS[operation["kind"]]
         management = Management(operation["management"])
@@ -617,26 +409,34 @@ class RecordCuration:
     def _finish(
         self, operation: DecisionOperation, record: Mapping[str, Any], management: Management
     ) -> DecisionResponse:
-        """決裁の成功を確定する。公開承認では、Curator が確認した内容を公開版として保存する。"""
+        """決裁の成功を確定する。
+
+        公開承認では、Curator が確認した内容を公開版として保存し、公開停止の印を消す。
+        公開停止では公開停止の印（公開中だった版）を管理情報に残す。公開版スナップショットと
+        publishedVersion は書き換えず、再申請の semver の下限として保持する。
+        廃止では、未解決の廃止依頼を同じトランザクションで解決済みにする。
+        """
         published: Mapping[str, Any] | None = None
         management_item = {**management.item, "activeSubmissionId": None}
-        resolution: dict[str, Any] | None = None
         kind = operation["kind"]
         if kind == APPROVE_KIND:
-            submission = self._get_submission(operation["recordId"], str(operation["submissionId"]))
+            submission = self.reads.get_submission(
+                operation["recordId"], str(operation["submissionId"])
+            )
             if submission is None:
                 raise DecisionUnavailable("申請スナップショットを読み取れません。")
             published = published_item(submission, operation["principal"], now())
             management_item["publishedVersion"] = operation["recordVersion"]
-        elif kind in LIFECYCLE_KINDS:
-            # 公開停止・廃止で未解決の廃止依頼があれば、この決裁で解決済みにする
-            resolution = self._deprecation_resolution(operation)
+            management_item[SUSPENDED_VERSION_KEY] = None
+        elif kind == SUSPEND_KIND:
+            management_item[SUSPENDED_VERSION_KEY] = operation["recordVersion"]
+        resolved_request = self._resolved_request(operation)
         after = Management(management_item)
         lifecycle = kind in LIFECYCLE_KINDS
         result: dict[str, Any] = {
             "recordId": operation["recordId"],
             "name": record["name"],
-            "displayName": _display_name(record),
+            "displayName": display_name(record),
             "recordType": record["recordType"],
             "recordVersion": record["recordVersion"],
             "status": record["status"],
@@ -648,34 +448,22 @@ class RecordCuration:
             "submissionId": None if lifecycle else operation["submissionId"],
             "snapshotHash": None if lifecycle else operation["snapshotHash"],
         }
-        self.store.finish_decision(operation, result, after, published, resolution)
+        self.store.finish_decision(operation, result, after, published, resolved_request)
         return 200, result
 
-    def _deprecation_resolution(self, operation: DecisionOperation) -> dict[str, Any] | None:
-        """この決裁で解決できる未解決の廃止依頼。なければ None（トランザクションに入れない）。
+    def _resolved_request(self, operation: DecisionOperation) -> DeprecationRequest | None:
+        """廃止で解決する未解決の廃止依頼。なければ None（トランザクションに入れない）。
 
-        依頼が保存されていなければ解決しない。保存内容の形式の異常は 502 として扱う。
+        公開停止は依頼を閉じない。廃止するか見送るかの判断が残るよう、依頼は審査待ちの一覧に残す。
         """
-        try:
-            request = self.store.get_deprecation_request(operation["recordId"])
-        except (BotoCoreError, ClientError):
-            raise DecisionUnavailable() from None
-        except ValueError:
-            raise DecisionUnavailable(
-                "保存された廃止依頼の形式が正しくありません。管理者に連絡してください。"
-            ) from None
-        if request is None or request.get("state") != "OPEN":
+        if operation["kind"] != DEPRECATE_KIND:
             return None
-        return {
-            **{
-                key: request[key]
-                for key in ("requestId", "recordId", "reason", "requestedBy", "requestedAt")
-            },
-            "state": "RESOLVED",
-            "resolution": "DEPRECATED" if operation["kind"] == DEPRECATE_KIND else "SUSPENDED",
-            "resolvedBy": operation["principal"],
-            "resolvedAt": now(),
-        }
+        request = self.reads.open_deprecation_request(operation["recordId"])
+        if request is None:
+            return None
+        return request.resolve(
+            RESOLUTION_DEPRECATED, operation["reason"], operation["principal"], now()
+        )
 
     def _abort_quietly(self, operation: DecisionOperation, code: str) -> None:
         try:
@@ -683,25 +471,3 @@ class RecordCuration:
         except (BotoCoreError, ClientError, StoreConflict):
             # 失敗を確定できなければロックは残り、結果確認中として扱われる
             pass
-
-    def _load_management(self, record_id: str) -> Management | None:
-        try:
-            return self.store.get_management(record_id)
-        except (BotoCoreError, ClientError):
-            raise DecisionUnavailable() from None
-        except ValueError:
-            raise DecisionUnavailable(
-                "保存された管理情報の形式が正しくありません。管理者に連絡してください。"
-            ) from None
-
-    def _get_submission(self, record_id: str, submission_id: str) -> dict[str, Any] | None:
-        try:
-            return self.store.get_submission(record_id, submission_id)
-        except (BotoCoreError, ClientError):
-            raise DecisionUnavailable() from None
-
-    def _get_lock(self, record_id: str) -> dict[str, Any] | None:
-        try:
-            return self.store.get_lock(record_id)
-        except (BotoCoreError, ClientError):
-            raise DecisionUnavailable() from None

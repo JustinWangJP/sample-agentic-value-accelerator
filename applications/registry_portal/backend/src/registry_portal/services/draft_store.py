@@ -8,6 +8,11 @@ from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 
 from registry_portal.domain.catalog import published_snapshot_sk
+from registry_portal.domain.deprecation import (
+    DEPRECATION_OPEN,
+    DEPRECATION_RESOLVED,
+    DeprecationRequest,
+)
 from registry_portal.domain.drafts import (
     AUDIT_INTENT,
     AUDIT_RESULT,
@@ -19,19 +24,16 @@ from registry_portal.domain.drafts import (
     DraftOperation,
     DraftResult,
     Management,
+    OperationKind,
     OperationRecord,
     OperationState,
+    PrincipalRecord,
     StoredOperation,
     AuditPhase,
     audit_sk,
     is_decision_operation,
-    is_principal,
     parse_audit_sk,
 )
-
-# 廃止依頼の状態。SPA の DEPRECATION_REQUEST_STATES（frontend/src/drafts/api.ts）と揃える
-DEPRECATION_OPEN = "OPEN"
-DEPRECATION_RESOLVED = "RESOLVED"
 
 # 補助テーブルの TTL 属性名。テーブルの TTL 設定でこの属性を指定する（README「custom Agent の下書き」）
 TTL_ATTRIBUTE = "expiresAt"
@@ -78,26 +80,30 @@ class AppendedRecord(NamedTuple):
 
 
 class StoreConflict(Exception):
-    """別の操作が排他権を持つか、同じキーの操作が既にある。"""
+    """別の操作が排他権を持つか、同じキーの操作が既にある。
 
-
-def parse_deprecation_request(item: Mapping[str, Any]) -> dict[str, Any]:
-    """保存された廃止依頼を検査する。型が契約と異なれば ValueError。
-
-    依頼の正本（主体・理由・日時）は解決済みでも書き換えない。解決の記録は Curator の操作側が持つ。
+    failed は、条件を満たさなかったトランザクションの項目の位置。呼び出し側が理由を区別するのに使う。
     """
-    if (
-        not isinstance(item.get("reason"), str)
-        or not isinstance(item.get("requestedAt"), str)
-        or not is_principal(item.get("requestedBy"))
-        or item.get("state")
-        not in (
-            DEPRECATION_OPEN,
-            DEPRECATION_RESOLVED,
-        )
-    ):
-        raise ValueError("保存された廃止依頼の形式が正しくありません。")
-    return dict(item)
+
+    def __init__(self, failed: tuple[int, ...] = ()) -> None:
+        super().__init__()
+        self.failed = failed
+
+
+class InstantOperation(TypedDict):
+    """補助テーブルへの書き込みだけで完結する操作（廃止依頼・見送り）の操作記録。
+
+    実行制御（CONTROL）とロックを持たず、INTENT と RESULT を1つのトランザクションで追記する。
+    履歴 API（history.py）は、ほかの操作と同じく INTENT と RESULT の組として読む。
+    """
+
+    operationId: str
+    kind: OperationKind
+    principal: PrincipalRecord
+    startedAt: str
+    ownerTeam: str
+    recordId: str
+    reason: str
 
 
 class DraftStore:
@@ -139,13 +145,13 @@ class DraftStore:
     def _key(self, pk: str, sk: str) -> dict[str, Any]:
         return {"pk": {"S": pk}, "sk": {"S": sk}}
 
-    def get_deprecation_request(self, record_id: str) -> dict[str, Any] | None:
+    def get_deprecation_request(self, record_id: str) -> DeprecationRequest | None:
         """廃止依頼1件を読む。保存内容の型が契約と異なれば ValueError。"""
         item = self.get(self.deprecation_pk(), record_id)
-        return None if item is None else parse_deprecation_request(item)
+        return None if item is None else DeprecationRequest.parse(item)
 
-    def list_deprecation_requests(self) -> list[dict[str, Any]]:
-        """廃止依頼をすべて読む。審査待ちの一覧が OPEN の依頼だけを遡って表示する。
+    def list_deprecation_requests(self) -> list[DeprecationRequest]:
+        """廃止依頼をすべて読む。審査待ちの一覧が未解決の依頼だけを表示する。
 
         Query は1回の応答が 1MB までのため、LastEvaluatedKey がなくなるまで続きを読む。
         保存内容の型が契約と異なれば ValueError。
@@ -155,40 +161,80 @@ class DraftStore:
             "KeyConditionExpression": "pk = :pk",
             "ExpressionAttributeValues": {":pk": {"S": self.deprecation_pk()}},
         }
-        requests: list[dict[str, Any]] = []
+        requests: list[DeprecationRequest] = []
         while True:
             response = self._client.query(**params)
             for raw in response.get("Items", []):
-                requests.append(parse_deprecation_request(_deserialize(raw)))
+                requests.append(DeprecationRequest.parse(_deserialize(raw)))
             last_key = response.get("LastEvaluatedKey")
             if not last_key:
                 return requests
             params["ExclusiveStartKey"] = last_key
 
-    def save_deprecation_request(self, record_id: str, request: Mapping[str, Any]) -> None:
-        """廃止依頼を保存する。未解決の依頼がすでにあれば StoreConflict。
+    def save_deprecation_request(
+        self, request: DeprecationRequest, audit: InstantOperation
+    ) -> None:
+        """廃止依頼を保存し、操作記録を追記する。
 
+        失敗の位置（StoreConflict.failed）: 0 は未解決の依頼がすでにある、1 は別の操作がロックを持つ。
         解決済みの依頼は新しい依頼で上書きする（レコードごとに依頼は1件だけ残る）。
         """
-        put = self._put(
-            {**request, "pk": self.deprecation_pk(), "sk": record_id},
-            "attribute_not_exists(pk) OR #state = :resolved",
-            {":resolved": DEPRECATION_RESOLVED},
+        self._transact(
+            [
+                self._put(
+                    {**request.to_item(), "pk": self.deprecation_pk(), "sk": request.record_id},
+                    "attribute_not_exists(pk) OR #state = :resolved",
+                    {":resolved": DEPRECATION_RESOLVED},
+                    names={"#state": "state"},
+                ),
+                self._no_lock(request.record_id),
+                *self._instant_audit(audit),
+            ]
         )
-        put["Put"]["ExpressionAttributeNames"] = {"#state": "state"}
-        self._transact([put])
 
-    def resolve_deprecation_request_item(
-        self, record_id: str, resolution: Mapping[str, Any]
-    ) -> dict[str, Any]:
-        """未解決の廃止依頼を解決済みにする、トランザクションの項目。未解決の依頼がなければ失敗する。"""
-        put = self._put(
-            {**resolution, "pk": self.deprecation_pk(), "sk": record_id},
-            "#state = :open",
-            {":open": DEPRECATION_OPEN},
+    def decline_deprecation_request(
+        self, declined: DeprecationRequest, audit: InstantOperation
+    ) -> None:
+        """未解決の廃止依頼を見送りとして解決し、操作記録を追記する。
+
+        失敗の位置（StoreConflict.failed）: 0 は依頼が未解決でないか別の依頼に置き換わった、
+        1 は別の操作がロックを持つ（公開停止・廃止の処理中など）。
+        """
+        self._transact(
+            [
+                self._resolve_deprecation_request(declined),
+                self._no_lock(declined.record_id),
+                *self._instant_audit(audit),
+            ]
         )
-        put["Put"]["ExpressionAttributeNames"] = {"#state": "state"}
-        return put
+
+    def _resolve_deprecation_request(self, resolved: DeprecationRequest) -> dict[str, Any]:
+        """未解決の同じ依頼（依頼 ID が一致）を解決済みにする項目。条件を満たさなければ失敗する。"""
+        return self._put(
+            {**resolved.to_item(), "pk": self.deprecation_pk(), "sk": resolved.record_id},
+            "#state = :open AND requestId = :request",
+            {":open": DEPRECATION_OPEN, ":request": resolved.request_id},
+            names={"#state": "state"},
+        )
+
+    def _no_lock(self, record_id: str) -> dict[str, Any]:
+        """レコードのロックがないことを確かめる項目。すべての書き込みは共通のロックの外で行わない。"""
+        return {
+            "ConditionCheck": {
+                "TableName": self.table,
+                "Key": self._key(self.record_pk(record_id), "LOCK"),
+                "ConditionExpression": "attribute_not_exists(pk)",
+            }
+        }
+
+    def _instant_audit(self, audit: InstantOperation) -> list[dict[str, Any]]:
+        """INTENT と RESULT を同時に追記する項目。結果は書き込みの成功そのものなので、RESULT は空の結果を持つ。"""
+        pk = self.record_pk(audit["recordId"])
+        op_id = audit["operationId"]
+        return [
+            self._put({**audit, "pk": pk, "sk": audit_sk(op_id, AUDIT_INTENT)}),
+            self._put({"operationId": op_id, "pk": pk, "sk": audit_sk(op_id, AUDIT_RESULT)}),
+        ]
 
     def get(self, pk: str, sk: str) -> dict[str, Any] | None:
         item = self._client.get_item(
@@ -270,7 +316,10 @@ class DraftStore:
         item: Mapping[str, Any],
         condition: str = "attribute_not_exists(pk)",
         values: Mapping[str, str] | None = None,
+        *,
+        names: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
+        """条件付きの Put の項目。names は条件式で予約語（state など）を置き換える属性名。"""
         put: dict[str, Any] = {
             "TableName": self.table,
             "Item": {key: TypeSerializer().serialize(value) for key, value in item.items()},
@@ -280,6 +329,8 @@ class DraftStore:
             put["ExpressionAttributeValues"] = {
                 name: {"S": value} for name, value in values.items()
             }
+        if names:
+            put["ExpressionAttributeNames"] = dict(names)
         return {"Put": put}
 
     def _put_control(
@@ -294,14 +345,13 @@ class DraftStore:
         """
         op_id = operation["operationId"]
         names = ", ".join(allowed_states)
-        control = self._put(
+        # state は DynamoDB の予約語のため、属性名を置き換える
+        return self._put(
             {**operation, "pk": self._operation_pk(op_id), "sk": "CONTROL", "state": state},
             f"operationId = :op AND #state IN ({names})",
             {":op": op_id, **allowed_states},
+            names={"#state": "state"},
         )
-        # state は DynamoDB の予約語のため、属性名を置き換える
-        control["Put"]["ExpressionAttributeNames"] = {"#state": "state"}
-        return control
 
     def _release_lock(self, pk: str, op_id: str) -> dict[str, Any]:
         return {
@@ -327,11 +377,14 @@ class DraftStore:
         try:
             self._client.transact_write_items(TransactItems=items)
         except ClientError as error:
-            if error.response["Error"]["Code"] == "TransactionCanceledException" and any(
-                reason.get("Code") == "ConditionalCheckFailed"
-                for reason in error.response.get("CancellationReasons", [])
-            ):
-                raise StoreConflict() from None
+            reasons = error.response.get("CancellationReasons", [])
+            failed = tuple(
+                index
+                for index, reason in enumerate(reasons)
+                if reason.get("Code") == "ConditionalCheckFailed"
+            )
+            if error.response["Error"]["Code"] == "TransactionCanceledException" and failed:
+                raise StoreConflict(failed) from None
             raise
 
     def begin(self, operation: OperationRecord) -> None:
@@ -491,14 +544,14 @@ class DraftStore:
         result: Mapping[str, Any],
         management: Management,
         published: Mapping[str, Any] | None,
-        deprecation_resolution: Mapping[str, Any] | None = None,
+        resolved_request: DeprecationRequest | None = None,
     ) -> None:
         """決裁の成功を確定する。公開承認では Curator が確認した内容を公開版スナップショットに保存する。
 
         published は公開承認のときだけ指定し、決裁の対象とした版（operation の recordVersion）の
         公開版スナップショットとして保存する。項目は申請スナップショットの値を写し、
         決裁のたびに新しく作る（版は公開中の版より大きいため、上書きされない）。
-        公開停止・廃止では、未解決の廃止依頼があれば deprecation_resolution で解決済みにする。
+        廃止では、未解決の廃止依頼があれば resolved_request で同じトランザクションの中で解決済みにする。
         """
         record_pk = self.record_pk(operation["recordId"])
         owner = self._put(
@@ -520,8 +573,6 @@ class DraftStore:
                     }
                 )
             )
-        if deprecation_resolution is not None:
-            items.append(
-                self.resolve_deprecation_request_item(operation["recordId"], deprecation_resolution)
-            )
+        if resolved_request is not None:
+            items.append(self._resolve_deprecation_request(resolved_request))
         self._transact(items)

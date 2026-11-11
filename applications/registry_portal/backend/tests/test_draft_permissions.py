@@ -40,6 +40,8 @@ def test_draft_policy_only_grants_record_writes_and_supplement_transactions():
                 "dynamodb:PutItem",
                 "dynamodb:DeleteItem",
                 "dynamodb:Query",
+                # 廃止依頼の保存が、ロックがないことをトランザクションの中で確かめるために使う
+                "dynamodb:ConditionCheckItem",
             ],
             "Resource": TABLE_ARN,
         },
