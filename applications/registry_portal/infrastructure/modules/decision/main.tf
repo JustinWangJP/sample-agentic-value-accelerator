@@ -1,5 +1,6 @@
 # 決裁 Lambda と専用の実行ロールを定義する。
-# 決裁 handler（handlers/curation.py）は審査待ちの閲覧と、公開承認・却下（状態遷移）、
+# 決裁 handler（handlers/curation.py）は審査待ちの閲覧と、決裁（公開承認・却下）・公開停止・廃止（状態遷移）、
+# 公開管理の照会と廃止依頼の見送り、
 # Admin による結果確認中の操作の回復（Registry の再取得と強制解除）だけを行う。
 # descriptor の作成・更新（CreateRegistryRecord / UpdateRegistryRecord）と申請の権限は持たない
 # （設計書「最小インフラとセキュリティ」の決裁 Lambda）。既存 Registry と補助テーブルは借用するだけ。

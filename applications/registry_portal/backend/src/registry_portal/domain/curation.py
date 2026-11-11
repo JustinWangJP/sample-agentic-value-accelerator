@@ -1,4 +1,4 @@
-"""決裁入力、決裁の規則、公開版スナップショットの書き出しと読み取り。"""
+"""決裁と公開停止・廃止の入力と規則、公開版スナップショットの書き出しと読み取り。"""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from registry_portal.domain.secrets import scan_text
 # 決裁理由の上限。AWS の UpdateRegistryRecordStatus の statusReason が 0〜255 文字のため、
 # ポータルも同じ上限にして、記録した理由をそのまま AWS に送れるようにする
 REASON_MAX_LENGTH = 255
-# 決裁の種別ごとの AWS の遷移先。クライアントから status は受け取らず、API の種別だけで決める
+# 決裁 handler の操作（決裁・公開停止・廃止）ごとの AWS の遷移先。クライアントから status は受け取らず、API の種別だけで決める
 DECISION_TARGETS: Mapping[OperationKind, RecordStatus] = {
     APPROVE_KIND: PUBLISHED_STATUS,
     REJECT_KIND: REJECTED_STATUS,
@@ -44,7 +44,8 @@ LIFECYCLE_ACTIONS: Mapping[str, OperationKind] = {
     "suspend": SUSPEND_KIND,
     "deprecate": DEPRECATE_KIND,
 }
-LIFECYCLE_KINDS: frozenset[OperationKind] = frozenset(LIFECYCLE_ACTIONS.values())
+# 元に戻せないため、確認（confirm: true）を本文に必須にする操作（設計書「業務上の状態」）
+_CONFIRM_REQUIRED: frozenset[OperationKind] = frozenset({DEPRECATE_KIND})
 
 # 審査待ちの一覧の項目の種別。申請（AWS の承認待ち）と廃止依頼（ポータル内で発生）を並べる。
 # SPA の `REVIEW_KINDS`（frontend/src/reviews/api.ts）と揃える
@@ -130,18 +131,15 @@ class LifecycleInput:
 
     @classmethod
     def parse(cls, body: Mapping[str, Any], kind: OperationKind) -> LifecycleInput:
-        keys = {"reason"} if kind == SUSPEND_KIND else {"reason", "confirm"}
+        confirm_required = kind in _CONFIRM_REQUIRED
+        keys = {"reason", "confirm"} if confirm_required else {"reason"}
         if set(body) != keys:
-            if kind == DEPRECATE_KIND:
-                raise ValueError(
-                    "reason と confirm を指定してください。"
-                    "ステータスは API ごとに決まるため指定できません。"
-                )
             raise ValueError(
-                "reason を指定してください。ステータスは API ごとに決まるため指定できません。"
+                f"{'reason と confirm' if confirm_required else 'reason'} を指定してください。"
+                "ステータスは API ごとに決まるため指定できません。"
             )
         reason = parse_reason(body["reason"], required=_REASON_REQUIRED[kind])
-        if kind == DEPRECATE_KIND and body["confirm"] is not True:
+        if confirm_required and body["confirm"] is not True:
             raise ValueError(
                 "廃止は元に戻せません。確認した場合だけ confirm に true を指定してください。"
             )
@@ -150,7 +148,7 @@ class LifecycleInput:
 
 @dataclass(frozen=True)
 class RecordState:
-    """決裁の前提を検査するときの、Registry レコードの現在の状態。
+    """決裁・公開停止・廃止の前提を検査するときの、Registry レコードの現在の状態。
 
     status は AWS の状態（管理 API が返す最新版）、published_version は発見できる版（なければ None）。
     """
@@ -225,7 +223,7 @@ def check_decidable(state: RecordState) -> None:
     raise ValueError("審査待ちの申請ではないため決裁できません。一覧から確認してください。")
 
 
-# 決裁の種別ごとの前提の検査。満たさなければ ValueError（利用者に見せる理由）
+# 決裁 handler の操作ごとの前提の検査。満たさなければ ValueError（利用者に見せる理由）
 DECISION_PRECONDITIONS: Mapping[OperationKind, Callable[[RecordState], None]] = {
     APPROVE_KIND: check_decidable,
     REJECT_KIND: check_decidable,
@@ -235,7 +233,7 @@ DECISION_PRECONDITIONS: Mapping[OperationKind, Callable[[RecordState], None]] = 
 
 
 def precondition_failure(kind: OperationKind, state: RecordState) -> str | None:
-    """決裁の前提を満たさない理由。満たしていれば None。公開管理の画面に実行できない理由を示すために使う。"""
+    """操作の前提を満たさない理由。満たしていれば None。公開管理の画面に実行できない理由を示すために使う。"""
     try:
         DECISION_PRECONDITIONS[kind](state)
     except ValueError as error:

@@ -90,6 +90,10 @@ class StoreConflict(Exception):
         self.failed = failed
 
 
+class RecordLocked(StoreConflict):
+    """別の操作（公開停止・廃止の処理中など）がレコードのロックを持つため、書き込めなかった。"""
+
+
 class InstantOperation(TypedDict):
     """補助テーブルへの書き込みだけで完結する操作（廃止依頼・見送り）の操作記録。
 
@@ -107,8 +111,11 @@ class InstantOperation(TypedDict):
 
 
 class DraftStore:
-    """補助 DynamoDB テーブルの下書き用の項目（管理情報・ロック・操作・追記記録）を扱う。
+    """補助 DynamoDB テーブルの項目を扱う。
 
+    扱う項目は、管理情報・ロック・操作・追記記録・申請スナップショット・公開版スナップショット・廃止依頼。
+    名前は下書きの操作から始まった経緯による。ポータルの書き込みはすべて同じロックで排他するため、
+    廃止依頼もロックを確かめる同じトランザクションの中で扱い、別のストアに分けない。
     キーの組み立てはこのクラスに閉じ込め、呼び出し側には操作 ID や Registry レコード ID だけを渡させる。
     """
 
@@ -176,20 +183,17 @@ class DraftStore:
     ) -> None:
         """廃止依頼を保存し、操作記録を追記する。
 
-        失敗の位置（StoreConflict.failed）: 0 は未解決の依頼がすでにある、1 は別の操作がロックを持つ。
+        別の操作がロックを持てば RecordLocked、未解決の依頼がすでにあれば StoreConflict。
         解決済みの依頼は新しい依頼で上書きする（レコードごとに依頼は1件だけ残る）。
         """
-        self._transact(
-            [
-                self._put(
-                    {**request.to_item(), "pk": self.deprecation_pk(), "sk": request.record_id},
-                    "attribute_not_exists(pk) OR #state = :resolved",
-                    {":resolved": DEPRECATION_RESOLVED},
-                    names={"#state": "state"},
-                ),
-                self._no_lock(request.record_id),
-                *self._instant_audit(audit),
-            ]
+        self._transact_unlocked(
+            self._put(
+                {**request.to_item(), "pk": self.deprecation_pk(), "sk": request.record_id},
+                "attribute_not_exists(pk) OR #state = :resolved",
+                {":resolved": DEPRECATION_RESOLVED},
+                names={"#state": "state"},
+            ),
+            audit,
         )
 
     def decline_deprecation_request(
@@ -197,16 +201,24 @@ class DraftStore:
     ) -> None:
         """未解決の廃止依頼を見送りとして解決し、操作記録を追記する。
 
-        失敗の位置（StoreConflict.failed）: 0 は依頼が未解決でないか別の依頼に置き換わった、
-        1 は別の操作がロックを持つ（公開停止・廃止の処理中など）。
+        別の操作がロックを持てば RecordLocked（公開停止・廃止の処理中など）、
+        依頼が未解決でないか別の依頼に置き換わっていれば StoreConflict。
         """
-        self._transact(
-            [
-                self._resolve_deprecation_request(declined),
-                self._no_lock(declined.record_id),
-                *self._instant_audit(audit),
-            ]
-        )
+        self._transact_unlocked(self._resolve_deprecation_request(declined), audit)
+
+    def _transact_unlocked(self, write: dict[str, Any], audit: InstantOperation) -> None:
+        """レコードのロックがないことを確かめながら、1件の書き込みと操作記録の追記を行う。
+
+        トランザクションの項目の位置はこのメソッドの中だけで扱い、呼び出し側には例外の種類で伝える。
+        """
+        lock_check = self._no_lock(audit["recordId"])
+        items = [write, lock_check, *self._instant_audit(audit)]
+        try:
+            self._transact(items)
+        except StoreConflict as conflict:
+            if items.index(lock_check) in conflict.failed:
+                raise RecordLocked(conflict.failed) from None
+            raise
 
     def _resolve_deprecation_request(self, resolved: DeprecationRequest) -> dict[str, Any]:
         """未解決の同じ依頼（依頼 ID が一致）を解決済みにする項目。条件を満たさなければ失敗する。"""

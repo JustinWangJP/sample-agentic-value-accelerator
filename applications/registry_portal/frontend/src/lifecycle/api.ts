@@ -18,9 +18,6 @@ import { isDecisionOperation, type DecisionOperation } from '../reviews/api'
 export const LIFECYCLE_ACTIONS = ['suspend', 'deprecate'] as const
 export type LifecycleAction = (typeof LIFECYCLE_ACTIONS)[number]
 
-/** 公開停止・廃止の理由の上限。AWS の statusReason（0〜255文字）に合わせる（バックエンドの REASON_MAX_LENGTH） */
-export const LIFECYCLE_REASON_MAX_LENGTH = 255
-
 /** いま実行できるか。できなければ、その理由（利用者に見せる文言）を持つ */
 export type ActionAvailability = { allowed: boolean; message: string | null }
 

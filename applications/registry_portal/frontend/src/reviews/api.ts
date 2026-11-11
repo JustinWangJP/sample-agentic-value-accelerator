@@ -16,9 +16,6 @@ import {
   type UnsettledOperationState,
 } from '../drafts/api'
 
-/** 決裁理由の上限。AWS の statusReason（0〜255文字）に合わせる（バックエンドの REASON_MAX_LENGTH） */
-export const DECISION_REASON_MAX_LENGTH = 255
-
 /** 決裁の種別。API の path（/approve・/reject）で AWS の遷移先が決まる（バックエンドの DECISION_TARGETS） */
 export const DECISION_KINDS = ['approve', 'reject'] as const
 export type DecisionKind = (typeof DECISION_KINDS)[number]
@@ -290,7 +287,7 @@ function isDetail(value: unknown): value is PendingDetail {
     (value.deprecationRequest === null || isDeprecationRequest(value.deprecationRequest))
   )
 }
-/** 決裁の操作の応答。公開停止・廃止（lifecycle/api.ts）も同じ形で返る */
+/** 決裁 handler の操作の応答。決裁と公開停止・廃止（lifecycle/api.ts）で同じ形で返る */
 export function isDecisionOperation(value: unknown): value is DecisionOperation {
   return (
     isObject(value) &&

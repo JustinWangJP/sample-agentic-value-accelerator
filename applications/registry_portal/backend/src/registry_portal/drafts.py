@@ -15,7 +15,6 @@ from registry_portal.domain.drafts import (
     DRAFT_STATUS,
     IN_FLIGHT_STATUSES,
     NOT_EDITABLE_STATUSES,
-    RECORD_ID_PATTERN,
     SUBMIT_KIND,
     SUBMITTED_STATUSES,
     UPDATE_KIND,
@@ -46,6 +45,7 @@ from registry_portal.operations import (
     AWS_REJECTED_ERRORS as _AWS_REJECTED_ERRORS,
     AWS_THROTTLED_ERRORS,
     check_idempotency_key,
+    check_record_id,
     now,
     operation_status,
     principal_of,
@@ -386,8 +386,7 @@ class RecordDrafts:
 
     def _management(self, caller: Caller, record_id: str) -> Management:
         require_publisher(caller)
-        if not RECORD_ID_PATTERN.fullmatch(record_id):
-            raise RequestValidationError("Registry レコード ID の形式が正しくありません。")
+        check_record_id(record_id)
         management = self._load_management(record_id)
         if management is None or not management.is_owned_by(caller.teams):
             raise ForbiddenError()
