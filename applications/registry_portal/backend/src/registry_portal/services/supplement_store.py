@@ -59,7 +59,7 @@ class QueryParams(TypedDict):
     ExclusiveStartKey: NotRequired[dict[str, Any]]
 
 
-class DraftStoreClient(Protocol):
+class SupplementStoreClient(Protocol):
     """下書きの補助ストアが使う DynamoDB クライアントの操作。"""
 
     def get_item(
@@ -110,16 +110,16 @@ class InstantOperation(TypedDict):
     reason: str
 
 
-class DraftStore:
+class SupplementStore:
     """補助 DynamoDB テーブルの項目を扱う。
 
     扱う項目は、管理情報・ロック・操作・追記記録・申請スナップショット・公開版スナップショット・廃止依頼。
-    名前は下書きの操作から始まった経緯による。ポータルの書き込みはすべて同じロックで排他するため、
+    ポータルの書き込みはすべて同じロックで排他するため、
     廃止依頼もロックを確かめる同じトランザクションの中で扱い、別のストアに分けない。
     キーの組み立てはこのクラスに閉じ込め、呼び出し側には操作 ID や Registry レコード ID だけを渡させる。
     """
 
-    def __init__(self, table: str, registry: str, client: DraftStoreClient) -> None:
+    def __init__(self, table: str, registry: str, client: SupplementStoreClient) -> None:
         self.table = table
         self.registry = registry
         self._client = client

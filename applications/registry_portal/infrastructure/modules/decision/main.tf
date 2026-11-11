@@ -59,39 +59,45 @@ resource "aws_lambda_function" "decision" {
 # 決裁 handler の route を、借用する既存 HTTP API（#5 の IaC が持つ）に割り当てる。
 # HTTP API と JWT authorizer は作らず ID で受け取る。route はここで定義し、決裁 Lambda だけを統合先にする
 locals {
-  routes = [
-    "GET /api/reviews",
-    "GET /api/reviews/{recordId}",
-    "POST /api/reviews/{recordId}/approve",
-    "POST /api/reviews/{recordId}/reject",
-    "POST /api/records/{recordId}/suspend",
-    "POST /api/records/{recordId}/deprecate",
-    "GET /api/records/{recordId}/lifecycle",
-    "POST /api/records/{recordId}/deprecation-requests/decline",
-    "GET /api/records/{recordId}/recovery",
-    "POST /api/records/{recordId}/recovery",
-  ]
-
-  # 決裁 Lambda を呼び出せる /api/records/{recordId} 以下の path の末尾と、Lambda の呼び出し許可の ID。
-  # 公開停止・廃止・公開管理の照会・廃止依頼の見送り（#13）。回復操作の許可は下の decision_recovery_api
+  # 決裁 Lambda を呼び出せる /api/records/{recordId} 以下の path の末尾と、そのメソッド、Lambda の呼び出し許可の ID。
+  # 公開停止・廃止・公開管理の照会・廃止依頼の見送り（#13）。route と呼び出し許可の両方をこの定義から作る。
+  # 回復操作の許可は下の decision_recovery_api
   curator_record_paths = {
     suspend = {
-      statement_id = "AllowHttpApiInvokeSuspend"
+      method       = "POST"
       path         = "suspend"
+      statement_id = "AllowHttpApiInvokeSuspend"
     }
     deprecate = {
-      statement_id = "AllowHttpApiInvokeDeprecate"
+      method       = "POST"
       path         = "deprecate"
+      statement_id = "AllowHttpApiInvokeDeprecate"
     }
-    lifecycle = {
-      statement_id = "AllowHttpApiInvokeLifecycle"
-      path         = "lifecycle"
+    publication = {
+      method       = "GET"
+      path         = "publication"
+      statement_id = "AllowHttpApiInvokePublication"
     }
     decline = {
-      statement_id = "AllowHttpApiInvokeDeclineDeprecation"
+      method       = "POST"
       path         = "deprecation-requests/decline"
+      statement_id = "AllowHttpApiInvokeDeclineDeprecation"
     }
   }
+
+  routes = concat(
+    [
+      "GET /api/reviews",
+      "GET /api/reviews/{recordId}",
+      "POST /api/reviews/{recordId}/approve",
+      "POST /api/reviews/{recordId}/reject",
+    ],
+    [for entry in values(local.curator_record_paths) : "${entry.method} /api/records/{recordId}/${entry.path}"],
+    [
+      "GET /api/records/{recordId}/recovery",
+      "POST /api/records/{recordId}/recovery",
+    ],
+  )
 }
 
 data "aws_apigatewayv2_api" "portal" {

@@ -115,7 +115,7 @@ class ReviewQueue:
             "requestedAt": request.requested_at,
             "requestedBy": dict(request.requested_by),
             # 公開停止済みで、廃止するか見送るかの判断を待っている
-            "suspended": is_suspended(management),
+            "suspended": is_suspended(management, record),
             "operationId": self.reads.locking_operation_id(request.record_id),
         }
 

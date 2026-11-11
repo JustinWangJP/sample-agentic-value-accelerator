@@ -1,5 +1,5 @@
 // 公開管理（Seam 2: SPA の fetch 境界）。Curator の公開停止・廃止・廃止依頼の見送りと、その判断に使う照会。
-// バックエンドの lifecycle.py・curation.py・deprecation.py と契約を揃える。クライアントから AWS の status は送らない。
+// バックエンドの publication.py・curation.py・deprecation.py と契約を揃える。クライアントから AWS の status は送らない。
 import { hasStrings, isObject } from '../api/guards'
 import { isCatalogRecordType, type CatalogRecordType } from '../api/recordType'
 import { createResponseChecker, type ApiRequest } from '../api/request'
@@ -13,16 +13,16 @@ import { isDecisionOperation, type DecisionOperation } from '../reviews/api'
 
 /**
  * 公開停止・廃止。API の path（/api/records/{recordId}/suspend・/deprecate）と、照会の actions のキー。
- * バックエンドの LIFECYCLE_ACTIONS（domain/curation.py）と揃える
+ * バックエンドの PUBLICATION_ACTIONS（domain/curation.py）と揃える
  */
-export const LIFECYCLE_ACTIONS = ['suspend', 'deprecate'] as const
-export type LifecycleAction = (typeof LIFECYCLE_ACTIONS)[number]
+export const PUBLICATION_ACTIONS = ['suspend', 'deprecate'] as const
+export type PublicationAction = (typeof PUBLICATION_ACTIONS)[number]
 
 /** いま実行できるか。できなければ、その理由（利用者に見せる文言）を持つ */
 export type ActionAvailability = { allowed: boolean; message: string | null }
 
 /** 公開管理の照会の結果。公開停止・廃止・見送りを判断する前に確認する状態 */
-export type LifecycleView = {
+export type PublicationView = {
   recordId: string
   name: string
   displayName: string
@@ -39,18 +39,18 @@ export type LifecycleView = {
   operationId: string | null
   /** 未解決の廃止依頼 */
   deprecationRequest: DeprecationRequest | null
-  actions: Record<LifecycleAction, ActionAvailability>
+  actions: Record<PublicationAction, ActionAvailability>
 }
 
-/** 公開停止の入力。バックエンドの LifecycleInput（SUSPEND）と揃える */
+/** 公開停止の入力。バックエンドの PublicationInput（SUSPEND）と揃える */
 export type SuspendInput = { reason: string }
-/** 廃止の入力。元に戻せないため確認（confirm）が必須（バックエンドの LifecycleInput（DEPRECATE）） */
+/** 廃止の入力。元に戻せないため確認（confirm）が必須（バックエンドの PublicationInput（DEPRECATE）） */
 export type DeprecateInput = { reason: string; confirm: true }
 /** 見送りの入力。画面で確認した依頼（requestId）と一致するときだけ見送る */
 export type DeclineInput = { requestId: string; reason: string }
 
-export type LifecycleApi = {
-  getLifecycle: (recordId: string) => Promise<LifecycleView>
+export type PublicationApi = {
+  getPublication: (recordId: string) => Promise<PublicationView>
   suspendRecord: (
     recordId: string,
     input: SuspendInput,
@@ -72,7 +72,7 @@ function isAvailability(value: unknown): value is ActionAvailability {
   )
 }
 
-function isLifecycleView(value: unknown): value is LifecycleView {
+function isPublicationView(value: unknown): value is PublicationView {
   return (
     isObject(value) &&
     hasStrings(value, ['recordId', 'name', 'displayName', 'recordVersion']) &&
@@ -85,32 +85,25 @@ function isLifecycleView(value: unknown): value is LifecycleView {
     (value.operationId === null || typeof value.operationId === 'string') &&
     (value.deprecationRequest === null || isDeprecationRequest(value.deprecationRequest)) &&
     isObject(value.actions) &&
-    LIFECYCLE_ACTIONS.every((action) => isAvailability((value.actions as Record<string, unknown>)[action]))
+    PUBLICATION_ACTIONS.every((action) => isAvailability((value.actions as Record<string, unknown>)[action]))
   )
 }
 
-/** 滞留している依頼を見分けるための、依頼からの経過日数（切り捨て）。日時が読めなければ null */
-export function elapsedDays(since: string, now: Date = new Date()): number | null {
-  const started = Date.parse(since)
-  if (Number.isNaN(started)) return null
-  return Math.max(0, Math.floor((now.getTime() - started) / 86_400_000))
-}
-
-export function createLifecycleApi(request: ApiRequest, invalidResponse: () => Error): LifecycleApi {
+export function createPublicationApi(request: ApiRequest, invalidResponse: () => Error): PublicationApi {
   const checked = createResponseChecker(invalidResponse)
   const recordPath = (id: string) => `/api/records/${encodeURIComponent(id)}`
+  // 公開停止・廃止の path は PUBLICATION_ACTIONS の値から組み立て、値の定義を一か所に保つ
+  const sendAction =
+    (action: PublicationAction) =>
+    (id: string, input: SuspendInput | DeprecateInput, key: string) =>
+      checked(
+        request('POST', `${recordPath(id)}/${action}`, input, { 'idempotency-key': key }),
+        isDecisionOperation,
+      )
   return {
-    getLifecycle: (id) => checked(request('GET', `${recordPath(id)}/lifecycle`), isLifecycleView),
-    suspendRecord: (id, input, key) =>
-      checked(
-        request('POST', `${recordPath(id)}/suspend`, input, { 'idempotency-key': key }),
-        isDecisionOperation,
-      ),
-    deprecateRecord: (id, input, key) =>
-      checked(
-        request('POST', `${recordPath(id)}/deprecate`, input, { 'idempotency-key': key }),
-        isDecisionOperation,
-      ),
+    getPublication: (id) => checked(request('GET', `${recordPath(id)}/publication`), isPublicationView),
+    suspendRecord: sendAction('suspend'),
+    deprecateRecord: sendAction('deprecate'),
     declineDeprecationRequest: (id, input) =>
       checked(
         request('POST', `${recordPath(id)}/deprecation-requests/decline`, input),

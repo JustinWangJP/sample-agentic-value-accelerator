@@ -39,8 +39,8 @@ DECISION_TARGETS: Mapping[OperationKind, RecordStatus] = {
 }
 # 公開停止・廃止の操作。申請のスナップショットではなく、公開中の現物を対象にする。
 # キーは API の path（/api/records/{recordId}/suspend・/deprecate）と公開管理の照会の actions のキー。
-# SPA の `LIFECYCLE_ACTIONS`（frontend/src/lifecycle/api.ts）と揃える
-LIFECYCLE_ACTIONS: Mapping[str, OperationKind] = {
+# SPA の `PUBLICATION_ACTIONS`（frontend/src/publication/api.ts）と揃える
+PUBLICATION_ACTIONS: Mapping[str, OperationKind] = {
     "suspend": SUSPEND_KIND,
     "deprecate": DEPRECATE_KIND,
 }
@@ -121,7 +121,7 @@ _REASON_REQUIRED: Mapping[OperationKind, str] = {
 
 
 @dataclass(frozen=True)
-class LifecycleInput:
+class PublicationInput:
     """Curator が送る公開停止・廃止の入力。AWS の status は本文から受け取らない。
 
     廃止は元に戻せないため、確認（confirm: true）を必須にする（設計書「業務上の状態」）。
@@ -130,7 +130,7 @@ class LifecycleInput:
     reason: str
 
     @classmethod
-    def parse(cls, body: Mapping[str, Any], kind: OperationKind) -> LifecycleInput:
+    def parse(cls, body: Mapping[str, Any], kind: OperationKind) -> PublicationInput:
         confirm_required = kind in _CONFIRM_REQUIRED
         keys = {"reason", "confirm"} if confirm_required else {"reason"}
         if set(body) != keys:
@@ -153,14 +153,14 @@ class RecordState:
     status は AWS の状態（管理 API が返す最新版）、published_version は発見できる版（なければ None）。
     """
 
-    status: str
+    status: RecordStatus
     published_version: str | None
 
 
 # 公開中の版を残したまま新しい版が下書き・審査待ち・却下済みになっている状態（二重リビジョン）。
 # この状態で却下したときに旧版が発見されなくなるかは AWS の文書になく、実環境でも未確認のため、
 # 公開停止を受け付けない（README「公開停止・廃止・廃止依頼」）
-DUAL_REVISION_STATUSES: frozenset[str] = frozenset(
+DUAL_REVISION_STATUSES: frozenset[RecordStatus] = frozenset(
     {DRAFT_STATUS, PENDING_APPROVAL_STATUS, REJECTED_STATUS}
 )
 
@@ -176,6 +176,12 @@ def check_suspendable(state: RecordState) -> None:
         )
     if status == DEPRECATED_STATUS:
         raise ValueError("廃止済みのレコードは公開停止できません。")
+    if status in AWS_FAILED_STATUSES:
+        # 公開中の版が残っていても、失敗した版を却下したときの挙動は確認できていないため受け付けない
+        raise ValueError(
+            "AWS での作成・更新が失敗した状態のため公開停止できません。"
+            "Publisher に修正を依頼し、状態が確定してから確認してください。"
+        )
     if status in DUAL_REVISION_STATUSES and state.published_version is not None:
         raise ValueError(
             f"公開中の版 {state.published_version} に加えて新しい版があるため、公開停止できません。"

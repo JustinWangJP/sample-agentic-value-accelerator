@@ -237,7 +237,7 @@ class _OperationRequired(TypedDict):
 class OperationRecord(_OperationRequired, total=False):
     """補助ストアに保存する書き込み操作のうち、下書きの操作と決裁の操作に共通する項目。
 
-    補助ストア（DraftStore）のロック・確定・追記記録は、この項目だけを使う。
+    補助ストア（SupplementStore）のロック・確定・追記記録は、この項目だけを使う。
     """
 
     # 同じ Idempotency-Key に異なる内容が来たことを検出する
@@ -326,7 +326,7 @@ class DraftResult(DraftView):
 class StoredDraftResult(DraftResult, total=False):
     """補助ストアに保存した、確定した下書きの操作の結果。操作照会はこれをそのまま返す。"""
 
-    # Admin の回復操作で確定した操作にだけ付く。補助ストアが確定時に結果へ写す（DraftStore._close）
+    # Admin の回復操作で確定した操作にだけ付く。補助ストアが確定時に結果へ写す（SupplementStore._close）
     recovery: RecoveryRecord
 
 

@@ -8,7 +8,7 @@ Registry と補助ストアの読み取りの失敗は、空の結果にせず 5
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Protocol, TypeGuard
+from typing import Any, Protocol, TypeGuard, cast
 
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -22,11 +22,13 @@ from registry_portal.domain.curation import (
     published_base,
 )
 from registry_portal.domain.deprecation import DeprecationRequest
-from registry_portal.domain.drafts import Management
+from registry_portal.domain.drafts import PUBLISHED_STATUS, Management, RecordStatus
 from registry_portal.domain.submissions import snapshot_fields
 from registry_portal.errors import ApiError, ForbiddenError
-from registry_portal.services.draft_store import DraftStore
+from registry_portal.services.supplement_store import SupplementStore
 
+# 別の操作がレコードのロックを持っているときの理由。公開管理の照会・廃止依頼の受付と見送りで共通
+RECORD_BUSY = "別の操作が処理中です。結果が確定してから操作してください。"
 _STORED_MANAGEMENT_INVALID = (
     "保存された管理情報の形式が正しくありません。管理者に連絡してください。"
 )
@@ -80,9 +82,9 @@ class RegistryRecordMissing(Exception):
 
 
 def require_curator(caller: Caller) -> None:
-    """審査と決裁は Curator の業務ロールだけが行える（設計書「ロールと所有」）。"""
+    """審査・決裁と公開管理は Curator の業務ロールだけが行える（設計書「ロールと所有」）。"""
     if Role.CURATOR not in caller.roles:
-        raise ForbiddenError("審査と決裁は Curator のみ行えます。")
+        raise ForbiddenError("審査・決裁と公開管理は Curator のみ行えます。")
 
 
 def display_name(record: Mapping[str, Any]) -> str:
@@ -95,15 +97,21 @@ def is_managed(management: Management | None) -> TypeGuard[Management]:
     return management is not None and management.is_managed
 
 
-def is_suspended(management: Management | None) -> bool:
-    """公開停止中か。管理情報がなければ公開停止もしていない。"""
-    return management is not None and management.is_suspended
+def is_suspended(management: Management | None, record: Mapping[str, Any]) -> bool:
+    """公開停止中か。管理情報がなければ公開停止もしていない。
+
+    AWS が公開中（APPROVED）を返すなら、公開停止の印が残っていても公開停止中ではない
+    （ポータルの外で再承認された場合。印はポータルの公開承認でしか消えない）。
+    """
+    return (
+        management is not None and management.is_suspended and record["status"] != PUBLISHED_STATUS
+    )
 
 
 def record_state(record: Mapping[str, Any], management: Management | None) -> RecordState:
-    """決裁の前提の検査に使う、レコードの現在の状態。"""
+    """決裁・公開停止・廃止・廃止依頼の前提の検査に使う、レコードの現在の状態。"""
     return RecordState(
-        status=str(record["status"]),
+        status=cast(RecordStatus, str(record["status"])),
         published_version=management.published_version(record) if management else None,
     )
 
@@ -111,7 +119,7 @@ def record_state(record: Mapping[str, Any], management: Management | None) -> Re
 class CurationReads:
     """Curator の操作が使う Registry と補助ストアの読み取り。"""
 
-    def __init__(self, registry: str, store: DraftStore, client: RegistryReadClient) -> None:
+    def __init__(self, registry: str, store: SupplementStore, client: RegistryReadClient) -> None:
         self.registry = registry
         self.store = store
         self._client = client

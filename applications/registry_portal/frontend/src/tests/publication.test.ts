@@ -6,8 +6,8 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createApiClient, type CatalogItem } from '../api/client'
 import { CatalogDetailView } from '../catalog/CatalogDetailView'
-import { RecordLifecyclePanel } from '../lifecycle/RecordLifecyclePanel'
-import { RecordLifecycleView } from '../lifecycle/RecordLifecycleView'
+import { RecordPublicationPanel } from '../publication/RecordPublicationPanel'
+import { RecordPublicationView } from '../publication/RecordPublicationView'
 import { fakeFetch, jsonResponse } from './helpers'
 
 const requestedBy = {
@@ -113,7 +113,7 @@ async function mountPanel(responses: (Response | Error)[], onChanged = vi.fn()) 
   const { api, calls } = apiFor(responses)
   await act(() =>
     root.render(
-      createElement(RecordLifecyclePanel, { api, recordId: 'agentABC1234', onRelogin: vi.fn(), onChanged }),
+      createElement(RecordPublicationPanel, { api, recordId: 'agentABC1234', onRelogin: vi.fn(), onChanged }),
     ),
   )
   return calls
@@ -128,7 +128,7 @@ function idempotencyKey(calls: { init?: RequestInit }[], index: number) {
 it('現在の状態と未解決の廃止依頼を表示し、公開停止は理由を本文に載せて送る', async () => {
   const onChanged = vi.fn()
   const calls = await mountPanel([jsonResponse(200, view), jsonResponse(200, suspended)], onChanged)
-  expect(calls[0]?.url).toBe('/api/records/agentABC1234/lifecycle')
+  expect(calls[0]?.url).toBe('/api/records/agentABC1234/publication')
   expect(container.textContent).toContain('公開中の版 1.0.0')
   expect(container.textContent).toContain('理由: 利用が終わったため（依頼者 publisher-1')
   await setValue('suspendReason', '問題が見つかったため')
@@ -238,7 +238,7 @@ it('409 は状態の変化を伝え、最新の状態を読み込み直せる', 
   expect(container.querySelector('[role="alert"]')?.textContent).toContain('別の操作が処理中です。')
   expect(container.textContent).toContain('最新の状態を読み込んでから判断してください')
   await click('最新の状態を読み込む')
-  expect(calls[2]?.url).toBe('/api/records/agentABC1234/lifecycle')
+  expect(calls[2]?.url).toBe('/api/records/agentABC1234/publication')
   expect(container.textContent).toContain('別の操作が結果確認中です')
 })
 
@@ -284,17 +284,17 @@ it('照会の応答に操作の可否がなければ、不正な応答として�
 it('Curator はレコード ID を指定して公開管理を開ける。Curator 以外には表示しない', async () => {
   const { api, calls } = apiFor([jsonResponse(200, { ...view, deprecationRequest: null })])
   await act(() =>
-    root.render(createElement(RecordLifecycleView, { api, roles: ['Publisher'], onRelogin: vi.fn() })),
+    root.render(createElement(RecordPublicationView, { api, roles: ['Publisher'], onRelogin: vi.fn() })),
   )
   expect(container.textContent).toBe('')
   await act(() =>
-    root.render(createElement(RecordLifecycleView, { api, roles: ['Curator'], onRelogin: vi.fn() })),
+    root.render(createElement(RecordPublicationView, { api, roles: ['Curator'], onRelogin: vi.fn() })),
   )
   expect(button('公開管理を開く').disabled).toBe(true)
-  await setValue('lifecycleRecordId', 'agentABC1234')
+  await setValue('publicationRecordId', 'agentABC1234')
   const form = container.querySelector('form')
   await act(() => form?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
-  expect(calls[0]?.url).toBe('/api/records/agentABC1234/lifecycle')
+  expect(calls[0]?.url).toBe('/api/records/agentABC1234/publication')
   expect(container.textContent).toContain('公開管理: 決済 Agent')
 })
 
@@ -313,7 +313,7 @@ it('カタログの詳細は、Curator にだけ公開管理の入口を表示�
   const failure = jsonResponse(502, {
     error: { code: 'DISCOVERY_UNAVAILABLE', message: '取得できませんでした。', requestId: 'r-1' },
   })
-  for (const canManageLifecycle of [false, true]) {
+  for (const canManagePublication of [false, true]) {
     const { api } = apiFor([failure.clone()])
     await act(() =>
       root.render(
@@ -321,7 +321,7 @@ it('カタログの詳細は、Curator にだけ公開管理の入口を表示�
           api,
           item,
           canViewHistory: false,
-          canManageLifecycle,
+          canManagePublication,
           onRelogin: vi.fn(),
           onClose: vi.fn(),
         }),
@@ -330,7 +330,7 @@ it('カタログの詳細は、Curator にだけ公開管理の入口を表示�
     const entry = [...container.querySelectorAll('button')].some(
       (element) => element.textContent === '公開管理を開く',
     )
-    expect(entry).toBe(canManageLifecycle)
+    expect(entry).toBe(canManagePublication)
     await act(() => root.unmount())
     root = createRoot(container)
   }

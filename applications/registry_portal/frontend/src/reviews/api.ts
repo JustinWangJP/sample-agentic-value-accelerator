@@ -1,6 +1,6 @@
 // 審査と決裁（Seam 2: SPA の fetch 境界）。Curator が審査待ちの一覧と詳細を見て、公開承認・却下を行う。
 // バックエンドの review_queue.py と curation.py と契約を揃える。クライアントから AWS の status は送らない。
-// 公開停止・廃止・廃止依頼の見送りは lifecycle/api.ts が受け持つ。
+// 公開停止・廃止・廃止依頼の見送りは publication/api.ts が受け持つ。
 import { hasStrings, isObject, isPrincipal, type Principal } from '../api/guards'
 import { isCatalogRecordType, type CatalogRecordType } from '../api/recordType'
 import { createResponseChecker, type ApiRequest } from '../api/request'
@@ -287,7 +287,7 @@ function isDetail(value: unknown): value is PendingDetail {
     (value.deprecationRequest === null || isDeprecationRequest(value.deprecationRequest))
   )
 }
-/** 決裁 handler の操作の応答。決裁と公開停止・廃止（lifecycle/api.ts）で同じ形で返る */
+/** 決裁 handler の操作の応答。決裁と公開停止・廃止（publication/api.ts）で同じ形で返る */
 export function isDecisionOperation(value: unknown): value is DecisionOperation {
   return (
     isObject(value) &&

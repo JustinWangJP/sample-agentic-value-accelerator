@@ -373,7 +373,7 @@ def test_approve_writes_related_references_from_the_submission_snapshot():
         management = create_management_handler(
             {**ENV, "SUPPLEMENT_TABLE_NAME": SUPPLEMENT_TABLE},
             registry_client=registry,
-            draft_store_client=db,
+            supplement_store_client=db,
             discovery=DiscoveryDependencies(
                 transport=transport, secrets_client=FakeSecrets().client
             ),

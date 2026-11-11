@@ -408,7 +408,7 @@ const deprecationRequest = {
   suspended: false,
   operationId: null,
 }
-const lifecycleView = {
+const publicationView = {
   recordId: 'agentABC1234',
   name: 'payments-a2a',
   displayName: '決済 Agent',
@@ -459,10 +459,10 @@ it('廃止依頼を申請と並べて一覧に表示し、経過日数と判断�
 it('廃止依頼の「対応する」で、同じレコードの公開管理を開く', async () => {
   const calls = await mount([
     jsonResponse(200, { items: [deprecationRequest], nextToken: null }),
-    jsonResponse(200, lifecycleView),
+    jsonResponse(200, publicationView),
   ])
   await click('対応する')
-  expect(calls[1]?.url).toBe('/api/records/agentABC1234/lifecycle')
+  expect(calls[1]?.url).toBe('/api/records/agentABC1234/publication')
   expect(container.textContent).toContain('公開管理: 決済 Agent')
   expect(container.textContent).toContain('未解決の廃止依頼')
   expect(button('公開停止する')).toBeTruthy()
@@ -471,7 +471,7 @@ it('廃止依頼の「対応する」で、同じレコードの公開管理を�
 it('審査の詳細は、未解決の廃止依頼があれば決裁の前に警告する', async () => {
   await mount([
     jsonResponse(200, { items: [summary], nextToken: null }),
-    jsonResponse(200, { ...detail, deprecationRequest: lifecycleView.deprecationRequest }),
+    jsonResponse(200, { ...detail, deprecationRequest: publicationView.deprecationRequest }),
   ])
   await click('審査する')
   expect(container.textContent).toContain('このレコードには未解決の廃止依頼があります（理由: 利用が終わったため')

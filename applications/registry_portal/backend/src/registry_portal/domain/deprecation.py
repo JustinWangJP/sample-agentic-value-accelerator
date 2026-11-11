@@ -54,6 +54,53 @@ def parse_decline_reason(value: object) -> str:
     )
 
 
+# 未解決の依頼が API で返す解決の項目。保存する項目には含めない
+_UNRESOLVED_FIELDS: Mapping[str, None] = {
+    "resolution": None,
+    "resolutionReason": None,
+    "resolvedBy": None,
+    "resolvedAt": None,
+}
+
+
+@dataclass(frozen=True)
+class RequestResolution:
+    """廃止依頼の解決の記録。終わり方・理由・主体・日時は常にそろって記録する。"""
+
+    resolution: DeprecationResolution
+    # 見送りでは見送りの理由、廃止では廃止の理由（Curator が入力したもの）
+    reason: str
+    resolved_by: PrincipalRecord
+    resolved_at: str
+
+    @classmethod
+    def parse(cls, item: Mapping[str, Any]) -> RequestResolution:
+        """保存された解決の項目を検査する。そろっていなければ ValueError。"""
+        resolution = item.get("resolution")
+        resolved_by = item.get("resolvedBy")
+        if (
+            resolution not in DEPRECATION_RESOLUTIONS
+            or not is_principal(resolved_by)
+            or any(not isinstance(item.get(key), str) for key in ("resolutionReason", "resolvedAt"))
+        ):
+            raise ValueError(_STORED_INVALID)
+        return cls(
+            resolution=cast(DeprecationResolution, resolution),
+            reason=str(item["resolutionReason"]),
+            resolved_by=cast(PrincipalRecord, dict(resolved_by)),
+            resolved_at=str(item["resolvedAt"]),
+        )
+
+    def fields(self) -> dict[str, Any]:
+        """保存と API で共通の解決の項目。"""
+        return {
+            "resolution": self.resolution,
+            "resolutionReason": self.reason,
+            "resolvedBy": dict(self.resolved_by),
+            "resolvedAt": self.resolved_at,
+        }
+
+
 @dataclass(frozen=True)
 class DeprecationRequest:
     """補助テーブルに保存する廃止依頼1件。依頼の正本（主体・理由・日時）は解決後も書き換えない。"""
@@ -63,23 +110,21 @@ class DeprecationRequest:
     reason: str
     requested_by: PrincipalRecord
     requested_at: str
-    state: DeprecationRequestState = DEPRECATION_OPEN
-    resolution: DeprecationResolution | None = None
-    # 見送りでは見送りの理由、廃止では廃止の理由（Curator が入力したもの）
-    resolution_reason: str | None = None
-    resolved_by: PrincipalRecord | None = None
-    resolved_at: str | None = None
+    # 解決の記録。未解決なら None
+    resolved: RequestResolution | None = None
 
     @property
     def is_open(self) -> bool:
-        return self.state == DEPRECATION_OPEN
+        return self.resolved is None
+
+    @property
+    def state(self) -> DeprecationRequestState:
+        return DEPRECATION_OPEN if self.is_open else DEPRECATION_RESOLVED
 
     @classmethod
     def parse(cls, item: Mapping[str, Any]) -> DeprecationRequest:
         """保存された廃止依頼を検査する。型が契約と異なれば ValueError。"""
         state = item.get("state")
-        resolution = item.get("resolution")
-        resolved_by = item.get("resolvedBy")
         if (
             any(
                 not isinstance(item.get(key), str)
@@ -87,13 +132,6 @@ class DeprecationRequest:
             )
             or not is_principal(item.get("requestedBy"))
             or state not in DEPRECATION_REQUEST_STATES
-            or (resolution is not None and resolution not in DEPRECATION_RESOLUTIONS)
-            or (resolved_by is not None and not is_principal(resolved_by))
-            or (state == DEPRECATION_RESOLVED and resolution is None)
-            or any(
-                item.get(key) is not None and not isinstance(item[key], str)
-                for key in ("resolutionReason", "resolvedAt")
-            )
         ):
             raise ValueError(_STORED_INVALID)
         return cls(
@@ -102,11 +140,7 @@ class DeprecationRequest:
             reason=str(item["reason"]),
             requested_by=cast(PrincipalRecord, dict(item["requestedBy"])),
             requested_at=str(item["requestedAt"]),
-            state=cast(DeprecationRequestState, state),
-            resolution=cast("DeprecationResolution | None", resolution),
-            resolution_reason=item.get("resolutionReason"),
-            resolved_by=cast("PrincipalRecord | None", dict(resolved_by) if resolved_by else None),
-            resolved_at=item.get("resolvedAt"),
+            resolved=RequestResolution.parse(item) if state == DEPRECATION_RESOLVED else None,
         )
 
     def resolve(
@@ -117,38 +151,9 @@ class DeprecationRequest:
         at: str,
     ) -> DeprecationRequest:
         """解決済みにした依頼。依頼の正本はそのまま残し、解決の記録だけを加える。"""
-        return dataclasses.replace(
-            self,
-            state=DEPRECATION_RESOLVED,
-            resolution=resolution,
-            resolution_reason=reason,
-            resolved_by=by,
-            resolved_at=at,
-        )
+        return dataclasses.replace(self, resolved=RequestResolution(resolution, reason, by, at))
 
-    def to_item(self) -> dict[str, Any]:
-        """補助テーブルに保存する項目（キーを除く）。未解決の依頼は解決の項目を持たない。"""
-        item: dict[str, Any] = {
-            "requestId": self.request_id,
-            "recordId": self.record_id,
-            "reason": self.reason,
-            "requestedBy": dict(self.requested_by),
-            "requestedAt": self.requested_at,
-            "state": self.state,
-        }
-        if not self.is_open:
-            item.update(
-                {
-                    "resolution": self.resolution,
-                    "resolutionReason": self.resolution_reason,
-                    "resolvedBy": dict(self.resolved_by) if self.resolved_by else None,
-                    "resolvedAt": self.resolved_at,
-                }
-            )
-        return item
-
-    def view(self) -> dict[str, Any]:
-        """API が返す依頼。SPA の isDeprecationRequest（frontend/src/drafts/api.ts）と揃える。"""
+    def _request_fields(self) -> dict[str, Any]:
         return {
             "requestId": self.request_id,
             "recordId": self.record_id,
@@ -156,8 +161,15 @@ class DeprecationRequest:
             "requestedBy": dict(self.requested_by),
             "requestedAt": self.requested_at,
             "state": self.state,
-            "resolution": self.resolution,
-            "resolutionReason": self.resolution_reason,
-            "resolvedBy": dict(self.resolved_by) if self.resolved_by else None,
-            "resolvedAt": self.resolved_at,
+        }
+
+    def to_item(self) -> dict[str, Any]:
+        """補助テーブルに保存する項目（キーを除く）。未解決の依頼は解決の項目を持たない。"""
+        return {**self._request_fields(), **(self.resolved.fields() if self.resolved else {})}
+
+    def view(self) -> dict[str, Any]:
+        """API が返す依頼。SPA の isDeprecationRequest（frontend/src/drafts/api.ts）と揃える。"""
+        return {
+            **self._request_fields(),
+            **(self.resolved.fields() if self.resolved else _UNRESOLVED_FIELDS),
         }

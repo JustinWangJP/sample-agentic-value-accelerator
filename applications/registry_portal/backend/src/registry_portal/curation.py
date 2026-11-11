@@ -10,12 +10,13 @@
 3. AWS の UpdateRegistryRecordStatus を呼ぶ
 4. 再取得して確認してから成功を記録する。AWS が失敗したら反映済みと表示しない
 
-審査待ちの一覧と審査の詳細は review_queue.py、公開管理の照会は lifecycle.py が受け持つ。
+審査待ちの一覧と審査の詳細は review_queue.py、公開管理の照会は publication.py が受け持つ。
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -28,9 +29,9 @@ from registry_portal.curation_reads import (
     RegistryRecordMissing,
     RegistryStatusClient,
     RegistryUnavailable,
-    display_name,
     is_managed,
     record_state,
+    record_summary,
     require_curator,
 )
 from registry_portal.domain.curation import (
@@ -38,7 +39,7 @@ from registry_portal.domain.curation import (
     DECISION_PRECONDITIONS,
     DECISION_TARGETS,
     DecisionInput,
-    LifecycleInput,
+    PublicationInput,
     SelfApprovalError,
     check_not_self_approval,
     published_item,
@@ -71,7 +72,7 @@ from registry_portal.operations import (
     principal_of,
     record_request_id,
 )
-from registry_portal.services.draft_store import DraftStore, StoreConflict
+from registry_portal.services.supplement_store import SupplementStore, StoreConflict
 
 # 決裁の本文の上限。スナップショットのハッシュ（64文字）と決裁理由（255文字）に余裕を持たせる
 DECISION_BODY_MAX_LENGTH = 2048
@@ -100,11 +101,23 @@ class DecisionThrottled(ApiError):
     )
 
 
+@dataclass(frozen=True)
+class _Outcome:
+    """操作の成功を確定するときに補助テーブルへ書く、種別ごとの変更。"""
+
+    # 管理情報に重ねる項目
+    management: Mapping[str, Any] = field(default_factory=dict)
+    # 公開承認で保存する公開版スナップショット
+    published: Mapping[str, Any] | None = None
+    # 廃止で解決済みにする廃止依頼
+    resolved_request: DeprecationRequest | None = None
+
+
 class _DecisionSubject(Protocol):
     """決裁 handler の操作の対象。決裁は申請スナップショット、公開停止・廃止は公開中の現物を対象にする。
 
-    種別ごとに異なるのは、本文の検査・現物との照合と固定・見つからないときのエラー・結果の申請の項目だけで、
-    ロック・意図の記録・AWS の呼び出し・照合による確定の手順は共通にする。
+    種別ごとに異なるのは、本文の検査・現物との照合と固定・見つからないときのエラー・結果の申請の項目・
+    成功で補助テーブルに書く変更だけで、ロック・意図の記録・AWS の呼び出し・照合による確定の手順は共通にする。
     """
 
     def parse(self, body: Mapping[str, Any], kind: OperationKind) -> tuple[str, str | None]:
@@ -129,9 +142,13 @@ class _DecisionSubject(Protocol):
         """結果に載せる申請の項目。"""
         ...
 
+    def outcome(self, reads: CurationReads, operation: DecisionOperation) -> _Outcome:
+        """成功の確定で補助テーブルに書く変更。"""
+        ...
+
 
 class _SubmissionSubject:
-    """決裁（公開承認・却下）。Curator が審査した申請スナップショットを対象にする。"""
+    """決裁（公開承認・却下）。Curator が審査した申請スナップショットを対象にする。却下は補助情報を変えない。"""
 
     def parse(self, body: Mapping[str, Any], kind: OperationKind) -> tuple[str, str | None]:
         decision = DecisionInput.parse(body, kind)
@@ -194,12 +211,31 @@ class _SubmissionSubject:
             "snapshotHash": operation["snapshotHash"],
         }
 
+    def outcome(self, reads: CurationReads, operation: DecisionOperation) -> _Outcome:
+        return _Outcome()
+
+
+class _Approval(_SubmissionSubject):
+    """公開承認。Curator が確認した内容を公開版として保存し、公開停止の印を消す。"""
+
+    def outcome(self, reads: CurationReads, operation: DecisionOperation) -> _Outcome:
+        submission = reads.get_submission(operation["recordId"], str(operation["submissionId"]))
+        if submission is None:
+            raise RegistryUnavailable("申請スナップショットを読み取れません。")
+        return _Outcome(
+            management={
+                "publishedVersion": operation["recordVersion"],
+                SUSPENDED_VERSION_KEY: None,
+            },
+            published=published_item(submission, operation["principal"], now()),
+        )
+
 
 class _LiveRecordSubject:
     """公開停止・廃止。申請ではなく公開中の現物を対象にし、内容ハッシュと版で固定する。"""
 
     def parse(self, body: Mapping[str, Any], kind: OperationKind) -> tuple[str, str | None]:
-        return LifecycleInput.parse(body, kind).reason, None
+        return PublicationInput.parse(body, kind).reason, None
 
     def pin(
         self,
@@ -219,13 +255,39 @@ class _LiveRecordSubject:
         return {"submissionId": None, "snapshotHash": None}
 
 
-_SUBMISSION_SUBJECT = _SubmissionSubject()
-_LIVE_RECORD_SUBJECT = _LiveRecordSubject()
+class _Suspension(_LiveRecordSubject):
+    """公開停止。公開停止の印（公開中だった版）を管理情報に残す。
+
+    公開版スナップショットと publishedVersion は書き換えず、再申請の semver の下限として保持する。
+    """
+
+    def outcome(self, reads: CurationReads, operation: DecisionOperation) -> _Outcome:
+        return _Outcome(management={SUSPENDED_VERSION_KEY: operation["recordVersion"]})
+
+
+class _Deprecation(_LiveRecordSubject):
+    """廃止。未解決の廃止依頼を同じトランザクションで解決済みにする。
+
+    公開停止は依頼を閉じない。廃止するか見送るかの判断が残るよう、依頼は審査待ちの一覧に残す。
+    """
+
+    def outcome(self, reads: CurationReads, operation: DecisionOperation) -> _Outcome:
+        request = reads.open_deprecation_request(operation["recordId"])
+        if request is None:
+            # 依頼がなければトランザクションに入れない
+            return _Outcome()
+        return _Outcome(
+            resolved_request=request.resolve(
+                RESOLUTION_DEPRECATED, operation["reason"], operation["principal"], now()
+            )
+        )
+
+
 _SUBJECTS: Mapping[OperationKind, _DecisionSubject] = {
-    APPROVE_KIND: _SUBMISSION_SUBJECT,
-    REJECT_KIND: _SUBMISSION_SUBJECT,
-    SUSPEND_KIND: _LIVE_RECORD_SUBJECT,
-    DEPRECATE_KIND: _LIVE_RECORD_SUBJECT,
+    APPROVE_KIND: _Approval(),
+    REJECT_KIND: _SubmissionSubject(),
+    SUSPEND_KIND: _Suspension(),
+    DEPRECATE_KIND: _Deprecation(),
 }
 
 
@@ -247,7 +309,7 @@ class RecordCuration:
     """決裁（公開承認・却下）と公開停止・廃止の実行と、その結果の確定。"""
 
     def __init__(
-        self, reads: CurationReads, store: DraftStore, client: RegistryStatusClient
+        self, reads: CurationReads, store: SupplementStore, client: RegistryStatusClient
     ) -> None:
         self.registry = reads.registry
         self.store = store
@@ -491,58 +553,21 @@ class RecordCuration:
     def _finish(
         self, operation: DecisionOperation, record: Mapping[str, Any], management: Management
     ) -> DecisionResponse:
-        """決裁・公開停止・廃止の成功を確定する。
-
-        公開承認では、Curator が確認した内容を公開版として保存し、公開停止の印を消す。
-        公開停止では公開停止の印（公開中だった版）を管理情報に残す。公開版スナップショットと
-        publishedVersion は書き換えず、再申請の semver の下限として保持する。
-        廃止では、未解決の廃止依頼を同じトランザクションで解決済みにする。
-        """
-        published: Mapping[str, Any] | None = None
-        management_item = {**management.item, "activeSubmissionId": None}
-        kind = operation["kind"]
-        if kind == APPROVE_KIND:
-            submission = self.reads.get_submission(
-                operation["recordId"], str(operation["submissionId"])
-            )
-            if submission is None:
-                raise RegistryUnavailable("申請スナップショットを読み取れません。")
-            published = published_item(submission, operation["principal"], now())
-            management_item["publishedVersion"] = operation["recordVersion"]
-            management_item[SUSPENDED_VERSION_KEY] = None
-        elif kind == SUSPEND_KIND:
-            management_item[SUSPENDED_VERSION_KEY] = operation["recordVersion"]
-        resolved_request = self._resolved_request(operation)
-        after = Management(management_item)
+        """決裁・公開停止・廃止の成功を確定する。補助テーブルに書く変更は種別ごとに _DecisionSubject が決める。"""
+        subject = _SUBJECTS[operation["kind"]]
+        outcome = subject.outcome(self.reads, operation)
+        after = Management({**management.item, "activeSubmissionId": None, **outcome.management})
         result: dict[str, Any] = {
-            "recordId": operation["recordId"],
-            "name": record["name"],
-            "displayName": display_name(record),
-            "recordType": record["recordType"],
-            "recordVersion": record["recordVersion"],
-            "status": record["status"],
-            "ownerTeam": operation["ownerTeam"],
+            **record_summary(record, after),
             "publishedVersion": after.published_version(record),
             "operationId": operation["operationId"],
             "operationState": "SUCCEEDED",
-            **_SUBJECTS[kind].result_fields(operation),
+            **subject.result_fields(operation),
         }
-        self.store.finish_decision(operation, result, after, published, resolved_request)
-        return 200, result
-
-    def _resolved_request(self, operation: DecisionOperation) -> DeprecationRequest | None:
-        """廃止で解決する未解決の廃止依頼。なければ None（トランザクションに入れない）。
-
-        公開停止は依頼を閉じない。廃止するか見送るかの判断が残るよう、依頼は審査待ちの一覧に残す。
-        """
-        if operation["kind"] != DEPRECATE_KIND:
-            return None
-        request = self.reads.open_deprecation_request(operation["recordId"])
-        if request is None:
-            return None
-        return request.resolve(
-            RESOLUTION_DEPRECATED, operation["reason"], operation["principal"], now()
+        self.store.finish_decision(
+            operation, result, after, outcome.published, outcome.resolved_request
         )
+        return 200, result
 
     def _abort_quietly(self, operation: DecisionOperation, code: str) -> None:
         try:

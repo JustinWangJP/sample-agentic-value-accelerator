@@ -68,7 +68,7 @@ def setup_pending(stub, registry, db, *, editor="alice", submitter="bob"):
     management = create_management_handler(
         {**ENV, "SUPPLEMENT_TABLE_NAME": SUPPLEMENT_TABLE},
         registry_client=registry,
-        draft_store_client=db,
+        supplement_store_client=db,
         discovery=DiscoveryDependencies(transport=transport, secrets_client=FakeSecrets().client),
     )
     decision = create_curation_handler(

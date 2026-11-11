@@ -1,5 +1,5 @@
 import { createDraftApi, type DraftApi } from '../drafts/api'
-import { createLifecycleApi, type LifecycleApi } from '../lifecycle/api'
+import { createPublicationApi, type PublicationApi } from '../publication/api'
 import { createRecoveryApi, type RecoveryApi } from '../recovery/api'
 import { createReviewApi, type ReviewApi } from '../reviews/api'
 import { hasStrings, isObject } from './guards'
@@ -190,7 +190,7 @@ export type ApiClientOptions = {
 
 export type ApiClient = DraftApi &
   ReviewApi &
-  LifecycleApi &
+  PublicationApi &
   RecoveryApi & {
   getMe: () => Promise<Me>
   /** nextToken はバックエンドが中継する AWS の値で、SPA では中身を解釈しない */
@@ -271,7 +271,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
   return {
     ...createDraftApi(request, () => invalidResponse(200)),
     ...createReviewApi(request, () => invalidResponse(200)),
-    ...createLifecycleApi(request, () => invalidResponse(200)),
+    ...createPublicationApi(request, () => invalidResponse(200)),
     ...createRecoveryApi(request, () => invalidResponse(200)),
     getMe: () => request<Me>('GET', '/api/me'),
     listCatalog: (type, nextToken, a2aOnly) => {

@@ -28,7 +28,7 @@ from decision_helpers import (
     stub_status_update,
 )
 from registry_portal.app import create_management_handler
-from registry_portal.services.draft_store import DraftStore, StoreConflict
+from registry_portal.services.supplement_store import SupplementStore, StoreConflict
 
 ADMIN = "registry-admin"
 OPERATION_ID = "0123456789abcdef0123456789abcdef"
@@ -49,12 +49,12 @@ def history_handler(registry, db):
     return create_management_handler(
         {**ENV, "SUPPLEMENT_TABLE_NAME": SUPPLEMENT_TABLE},
         registry_client=registry,
-        draft_store_client=db,
+        supplement_store_client=db,
     )
 
 
-def store(db) -> DraftStore:
-    return DraftStore(SUPPLEMENT_TABLE, REGISTRY_ARN, db)
+def store(db) -> SupplementStore:
+    return SupplementStore(SUPPLEMENT_TABLE, REGISTRY_ARN, db)
 
 
 def adopt_published(db, record_id=RECORD_ID):

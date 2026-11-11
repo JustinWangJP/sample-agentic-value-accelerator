@@ -101,16 +101,25 @@ def test_module_routes_only_curator_and_recovery_apis_to_the_decision_lambda():
     既存の JWT authorizer を適用し、HTTP API と authorizer は作らない。
     """
     main = (MODULE / "main.tf").read_text()
-    (routes,) = re.findall(r"routes = \[(.*?)\]", main, re.DOTALL)
-    assert re.findall(r'"([^"]+)"', routes) == [
+    (paths,) = re.findall(r"curator_record_paths = \{(.*?)\n  \}\n", main, re.DOTALL)
+    # Curator のレコード単位の path は、route と呼び出し許可の両方を同じ定義から作る
+    curator_paths = re.findall(r'method\s*=\s*"([A-Z]+)"\s*\n\s*path\s*=\s*"([^"]+)"', paths)
+    assert curator_paths == [
+        ("POST", "suspend"),
+        ("POST", "deprecate"),
+        ("GET", "publication"),
+        ("POST", "deprecation-requests/decline"),
+    ]
+    (routes,) = re.findall(r"routes = concat\((.*?)\n  \)\n", main, re.DOTALL)
+    assert (
+        '"${entry.method} /api/records/{recordId}/${entry.path}"' in routes
+        and "values(local.curator_record_paths)" in routes
+    )
+    assert re.findall(r'^\s*"([A-Z]+ /api/[^"]+)",$', routes, re.MULTILINE) == [
         "GET /api/reviews",
         "GET /api/reviews/{recordId}",
         "POST /api/reviews/{recordId}/approve",
         "POST /api/reviews/{recordId}/reject",
-        "POST /api/records/{recordId}/suspend",
-        "POST /api/records/{recordId}/deprecate",
-        "GET /api/records/{recordId}/lifecycle",
-        "POST /api/records/{recordId}/deprecation-requests/decline",
         "GET /api/records/{recordId}/recovery",
         "POST /api/records/{recordId}/recovery",
     ]
@@ -126,13 +135,6 @@ def test_module_routes_only_curator_and_recovery_apis_to_the_decision_lambda():
         "/api/reviews*",
         "/api/records/*/${each.value.path}",
         "/api/records/*/recovery",
-    ]
-    (paths,) = re.findall(r"curator_record_paths = \{(.*?)\n  \}\n", main, re.DOTALL)
-    assert re.findall(r'path\s*=\s*"([^"]+)"', paths) == [
-        "suspend",
-        "deprecate",
-        "lifecycle",
-        "deprecation-requests/decline",
     ]
 
 

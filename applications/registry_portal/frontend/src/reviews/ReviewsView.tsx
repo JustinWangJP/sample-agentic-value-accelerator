@@ -10,8 +10,8 @@ import {
   recordStatusLabel,
   settlesIdempotencyKey,
 } from '../drafts/api'
-import { elapsedDays } from '../lifecycle/api'
-import { RecordLifecycleToggle } from '../lifecycle/RecordLifecyclePanel'
+import { elapsedDays } from '../elapsedDays'
+import { RecordPublicationToggle } from '../publication/RecordPublicationPanel'
 import {
   type DecisionKind,
   type DecisionOperation,
@@ -162,7 +162,7 @@ export function ReviewsView({ api, roles, onRelogin }: Props) {
                     {item.operationId && ' / 結果確認中'}
                   </p>
                   {!item.managed && <p>ポータルで管理されていないため、ここでは対応できません。</p>}
-                  <RecordLifecycleToggle
+                  <RecordPublicationToggle
                     api={api}
                     recordId={item.recordId}
                     onRelogin={onRelogin}

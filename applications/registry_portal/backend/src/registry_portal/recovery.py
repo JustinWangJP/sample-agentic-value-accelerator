@@ -32,7 +32,7 @@ from registry_portal.domain.drafts import (
 from registry_portal.drafts import DraftSettlement
 from registry_portal.errors import ApiError, ForbiddenError, RequestValidationError
 from registry_portal.operations import check_record_id, principal_of, released_message
-from registry_portal.services.draft_store import DraftStore, StoreConflict
+from registry_portal.services.supplement_store import SupplementStore, StoreConflict
 
 # 回復の理由の上限。AWS には送らずポータルの操作記録にだけ残すため、決裁理由の上限
 # （domain/curation.py の REASON_MAX_LENGTH）とは別に定義する。
@@ -123,7 +123,7 @@ class OperationRecovery:
     """結果確認中の操作の照会と、Registry の再取得による回復。"""
 
     def __init__(
-        self, store: DraftStore, curation: RecordCuration, drafts: DraftSettlement
+        self, store: SupplementStore, curation: RecordCuration, drafts: DraftSettlement
     ) -> None:
         self.store = store
         self._curation = curation

@@ -9,7 +9,8 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from collections.abc import Callable, Mapping
+import re
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any, cast
 
 import boto3
@@ -30,7 +31,7 @@ from registry_portal.deprecation import (
     DEPRECATION_BODY_MAX_LENGTH,
     DeprecationRequests,
 )
-from registry_portal.domain.curation import LIFECYCLE_ACTIONS
+from registry_portal.domain.curation import PUBLICATION_ACTIONS
 from registry_portal.domain.drafts import (
     APPROVE_KIND,
     REJECT_KIND,
@@ -46,12 +47,12 @@ from registry_portal.drafts import (
     require_publisher,
 )
 from registry_portal.history import RecordHistory
-from registry_portal.lifecycle import RecordLifecycle
+from registry_portal.publication import RecordPublication
 from registry_portal.recovery import RECOVERY_BODY_MAX_LENGTH, OperationRecovery
 from registry_portal.review_queue import ReviewQueue
 from registry_portal.services.catalog_supplement import CatalogSupplement, SupplementClient
 from registry_portal.services.discovery import DiscoveryDependencies, create_discovery_client
-from registry_portal.services.draft_store import DraftStore, DraftStoreClient
+from registry_portal.services.supplement_store import SupplementStore, SupplementStoreClient
 
 logger = logging.getLogger(__name__)
 
@@ -92,50 +93,33 @@ def _route_key(event: LambdaEvent) -> str:
     return f"{http.get('method', '')} {http.get('path', '')}"
 
 
-# path に1つの要素を含むルート。(実際の path の接頭辞, 接尾辞, ルート表のキー)
-_PARAMETERIZED_ROUTES = (
-    ("GET /api/catalog/", "", "GET /api/catalog/{recordId}"),
-    ("GET /api/records/", "", "GET /api/records/{recordId}"),
-    ("GET /api/records/", "/history", "GET /api/records/{recordId}/history"),
-    ("PATCH /api/records/", "", "PATCH /api/records/{recordId}"),
-    ("POST /api/records/", "/submit", "POST /api/records/{recordId}/submit"),
-    (
-        "POST /api/records/",
-        "/deprecation-requests",
-        "POST /api/records/{recordId}/deprecation-requests",
-    ),
-    (
-        "POST /api/records/",
-        "/deprecation-requests/decline",
-        "POST /api/records/{recordId}/deprecation-requests/decline",
-    ),
-    *(
-        ("POST /api/records/", f"/{action}", f"POST /api/records/{{recordId}}/{action}")
-        for action in LIFECYCLE_ACTIONS
-    ),
-    ("GET /api/records/", "/lifecycle", "GET /api/records/{recordId}/lifecycle"),
-    ("GET /api/records/", "/recovery", "GET /api/records/{recordId}/recovery"),
-    ("POST /api/records/", "/recovery", "POST /api/records/{recordId}/recovery"),
-    ("GET /api/operations/", "", "GET /api/operations/{operationId}"),
-    ("GET /api/reviews/", "", "GET /api/reviews/{recordId}"),
-    ("POST /api/reviews/", "/approve", "POST /api/reviews/{recordId}/approve"),
-    ("POST /api/reviews/", "/reject", "POST /api/reviews/{recordId}/reject"),
-)
+# ルート表のキーに含まれる path パラメーター（例: {recordId}）。1つのルートに1つまで
+_PATH_PARAMETER = re.compile(r"\{([A-Za-z]+)\}")
 
 
-def _route_template(key: str) -> tuple[str, str]:
-    """ルート表のキーと、path パラメーター（なければ空文字）を返す。"""
-    for prefix, suffix, template in _PARAMETERIZED_ROUTES:
+def _route_template(key: str, templates: Iterable[str]) -> tuple[str, dict[str, str]]:
+    """ルート表のキーと path パラメーター（なければ空）を返す。
+
+    パラメーターを含むルートは、ルート表のキー（例: POST /api/records/{recordId}/submit）そのものと
+    照合する。ルートを足すときにルート表とは別の一覧を揃えなくて済むようにするため。
+    """
+    for template in templates:
+        match = _PATH_PARAMETER.search(template)
+        if match is None:
+            continue
+        prefix, suffix = template[: match.start()], template[match.end() :]
         if not key.startswith(prefix) or not key.endswith(suffix):
             continue
         parameter = key[len(prefix) : len(key) - len(suffix)]
         if parameter and "/" not in parameter:
-            return template, parameter
-    return key, ""
+            return template, {match.group(1): parameter}
+    return key, {}
 
 
 def _path_parameter(event: LambdaEvent) -> str:
-    return _route_template(_route_key(event))[1]
+    """ルート表との照合で得た path パラメーターの値（_serve が pathParameters に設定する）。"""
+    parameters = _mapping_or_empty(event.get("pathParameters"))
+    return str(next(iter(parameters.values()), ""))
 
 
 def _query_of(event: LambdaEvent) -> Mapping[str, str]:
@@ -199,10 +183,12 @@ def _serve(routes: Mapping[str, Route], settings: AuthSettings) -> Handler:
         request_id = _request_context(event).get("requestId")
         try:
             caller = authorize(_claims_of(event), settings)
-            route = routes.get(_route_template(_route_key(event))[0])
+            template, parameters = _route_template(_route_key(event), routes)
+            route = routes.get(template)
             if route is None:
                 raise RouteNotFoundError()
-            status, body = route(caller, event)
+            # path パラメーターは実際の path とルート表の照合で決め、受け取った値には頼らない
+            status, body = route(caller, {**event, "pathParameters": parameters})
             return _json_response(status, body)
         except ApiError as error:
             # ログにはトークンや claims の全文を出さない
@@ -221,7 +207,7 @@ def create_management_handler(
     discovery: DiscoveryDependencies | None = None,
     supplement_client: SupplementClient | None = None,
     registry_client: RegistryControlClient | None = None,
-    draft_store_client: DraftStoreClient | None = None,
+    supplement_store_client: SupplementStoreClient | None = None,
 ) -> Handler:
     """管理 handler を作る。認証・発見の設定が不足していれば、ここで起動エラーにする。
 
@@ -256,11 +242,11 @@ def create_management_handler(
             RegistryControlClient,
             boto3.client("agent-registry-control", region_name=region),
         )
-        store = DraftStore(
+        store = SupplementStore(
             catalog_settings.supplement_table_name,
             discovery_settings.registry_arn,
-            draft_store_client
-            or cast(DraftStoreClient, boto3.client("dynamodb", region_name=region)),
+            supplement_store_client
+            or cast(SupplementStoreClient, boto3.client("dynamodb", region_name=region)),
         )
         drafts = RecordDrafts(
             discovery_settings.registry_arn, store, control_client, discovery_client
@@ -369,7 +355,7 @@ def create_curation_handler(
     environ: Mapping[str, str],
     *,
     registry_client: RegistryStatusClient | None = None,
-    store_client: DraftStoreClient | None = None,
+    store_client: SupplementStoreClient | None = None,
 ) -> Handler:
     """決裁 handler を作る。認証設定と補助テーブルが不足していれば、ここで起動エラーにする。
 
@@ -385,10 +371,10 @@ def create_curation_handler(
         # 決裁 handler は補助テーブルなしではどの API も提供できないため、起動を止める
         raise ConfigurationError("決裁 handler の設定が不足しています: SUPPLEMENT_TABLE_NAME")
     region = registry_settings.region
-    store = DraftStore(
+    store = SupplementStore(
         catalog_settings.supplement_table_name,
         registry_settings.arn,
-        store_client or cast(DraftStoreClient, boto3.client("dynamodb", region_name=region)),
+        store_client or cast(SupplementStoreClient, boto3.client("dynamodb", region_name=region)),
     )
     curation_client = registry_client or cast(
         RegistryStatusClient, boto3.client("agent-registry-control", region_name=region)
@@ -396,7 +382,7 @@ def create_curation_handler(
     reads = CurationReads(registry_settings.arn, store, curation_client)
     curation = RecordCuration(reads, store, curation_client)
     reviews = ReviewQueue(reads)
-    lifecycle = RecordLifecycle(reads)
+    publication = RecordPublication(reads)
     deprecation_requests = DeprecationRequests(reads, store)
 
     def list_reviews(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
@@ -407,10 +393,10 @@ def create_curation_handler(
             raise RequestValidationError("審査詳細にクエリパラメーターは指定できません。")
         return reviews.review(caller, _path_parameter(event))
 
-    def get_lifecycle(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+    def get_publication(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
         if _query_of(event):
             raise RequestValidationError("公開管理の照会にクエリパラメーターは指定できません。")
-        return lifecycle.inspect(caller, _path_parameter(event))
+        return publication.inspect(caller, _path_parameter(event))
 
     def decline_deprecation(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
         return deprecation_requests.decline(
@@ -454,9 +440,9 @@ def create_curation_handler(
         # 公開停止と廃止も決裁 handler が行う（UpdateRegistryRecordStatus は決裁 Lambda の権限）
         **{
             f"POST /api/records/{{recordId}}/{action}": decision_route(kind)
-            for action, kind in LIFECYCLE_ACTIONS.items()
+            for action, kind in PUBLICATION_ACTIONS.items()
         },
-        "GET /api/records/{recordId}/lifecycle": get_lifecycle,
+        "GET /api/records/{recordId}/publication": get_publication,
         "POST /api/records/{recordId}/deprecation-requests/decline": decline_deprecation,
         "GET /api/records/{recordId}/recovery": get_recovery,
         "POST /api/records/{recordId}/recovery": recover_operation,

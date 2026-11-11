@@ -31,7 +31,7 @@ from registry_portal.domain.drafts import (
 )
 from registry_portal.errors import ApiError, ForbiddenError
 from registry_portal.operations import check_record_id, principal_of
-from registry_portal.services.draft_store import AppendedRecord, DraftStore
+from registry_portal.services.supplement_store import AppendedRecord, SupplementStore
 
 # 保存内容の異常（管理情報や操作記録の形式違反）は、空の結果にせず利用者に区別して伝える
 _STORED_DATA_INVALID = "保存された操作履歴の形式が正しくありません。管理者に連絡してください。"
@@ -160,7 +160,7 @@ def _check_operation(phases: set[str], operation: Mapping[str, Any]) -> None:
 class RecordHistory:
     """補助ストアの追記記録から、レコード単位の操作と審査の履歴を組み立てる。"""
 
-    def __init__(self, store: DraftStore) -> None:
+    def __init__(self, store: SupplementStore) -> None:
         self.store = store
 
     def history(self, caller: Caller, record_id: str) -> tuple[int, dict[str, Any]]:

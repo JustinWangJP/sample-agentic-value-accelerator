@@ -51,7 +51,7 @@ from registry_portal.operations import (
     principal_of,
     record_request_id,
 )
-from registry_portal.services.draft_store import DraftStore, StoreConflict
+from registry_portal.services.supplement_store import SupplementStore, StoreConflict
 
 # AWS が入力や設定を理由に保存を拒否したと確定できるエラー。作成・更新では ConflictException も含める。
 # 申請 API の ConflictException だけは、状態の変化による競合として 409 にする（_call_submit_api）
@@ -145,7 +145,7 @@ class DraftSettlement:
     これだけを使って下書きの操作を確定する。
     """
 
-    def __init__(self, registry: str, store: DraftStore, client: RegistryRecordReader) -> None:
+    def __init__(self, registry: str, store: SupplementStore, client: RegistryRecordReader) -> None:
         self.registry = registry
         self.store = store
         self._registry = client
@@ -280,7 +280,7 @@ class RecordDrafts:
     def __init__(
         self,
         registry: str,
-        store: DraftStore,
+        store: SupplementStore,
         client: RegistryControlClient,
         discovery: DiscoveryClient,
     ) -> None:

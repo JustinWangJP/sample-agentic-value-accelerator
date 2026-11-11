@@ -14,7 +14,8 @@ import {
 } from '../drafts/api'
 import type { DecisionOperation } from '../reviews/api'
 import { DecisionOperationCheck } from '../reviews/DecisionOperationCheck'
-import { LIFECYCLE_ACTIONS, elapsedDays, type LifecycleAction, type LifecycleView } from './api'
+import { elapsedDays } from '../elapsedDays'
+import { PUBLICATION_ACTIONS, type PublicationAction, type PublicationView } from './api'
 
 type Props = {
   api: ApiClient
@@ -26,14 +27,14 @@ type Props = {
 
 type ViewState =
   | { kind: 'loading' }
-  | { kind: 'ready'; view: LifecycleView }
+  | { kind: 'ready'; view: PublicationView }
   | { kind: 'error'; error: ApiError }
 
 type ActionState =
   | { kind: 'idle' }
   | { kind: 'busy' }
   /** retry は、同じ Idempotency-Key で送り直せる操作。結果が不明なときだけ値を持つ */
-  | { kind: 'error'; error: ApiError; retry: LifecycleAction | null }
+  | { kind: 'error'; error: ApiError; retry: PublicationAction | null }
   | { kind: 'result'; operation: DecisionOperation }
   | { kind: 'declined'; request: DeprecationRequest }
 
@@ -57,7 +58,7 @@ type ActionSpec = {
   send: (api: ApiClient, recordId: string, reason: string, key: string) => Promise<DecisionOperation>
 }
 
-const ACTION_SPECS: Record<LifecycleAction, ActionSpec> = {
+const ACTION_SPECS: Record<PublicationAction, ActionSpec> = {
   suspend: {
     legend: '公開停止',
     description:
@@ -86,19 +87,19 @@ const ACTION_SPECS: Record<LifecycleAction, ActionSpec> = {
   },
 }
 
-type ReasonTarget = LifecycleAction | 'decline'
+type ReasonTarget = PublicationAction | 'decline'
 
 function emptyReasons(): Record<ReasonTarget, string> {
   return { decline: '', ...fromActions(() => '') }
 }
 
-function newKeys(): Record<LifecycleAction, string> {
+function newKeys(): Record<PublicationAction, string> {
   return fromActions(() => crypto.randomUUID())
 }
 
-function fromActions<T>(value: (action: LifecycleAction) => T): Record<LifecycleAction, T> {
-  return Object.fromEntries(LIFECYCLE_ACTIONS.map((action) => [action, value(action)])) as Record<
-    LifecycleAction,
+function fromActions<T>(value: (action: PublicationAction) => T): Record<PublicationAction, T> {
+  return Object.fromEntries(PUBLICATION_ACTIONS.map((action) => [action, value(action)])) as Record<
+    PublicationAction,
     T
   >
 }
@@ -108,11 +109,11 @@ function fromActions<T>(value: (action: LifecycleAction) => T): Record<Lifecycle
  * 廃止は理由の入力に加えて二重確認を必須にする（設計書「業務上の状態」）。
  * 1段目で元に戻せないことの確認をチェックし、2段目でレコード名を入力して確定する
  */
-export function RecordLifecyclePanel({ api, recordId, onRelogin, onChanged }: Props) {
+export function RecordPublicationPanel({ api, recordId, onRelogin, onChanged }: Props) {
   const [state, setState] = useState<ViewState>({ kind: 'loading' })
   const [reasons, setReasons] = useState(emptyReasons)
-  const [acknowledged, setAcknowledged] = useState<LifecycleAction | null>(null)
-  const [confirming, setConfirming] = useState<LifecycleAction | null>(null)
+  const [acknowledged, setAcknowledged] = useState<PublicationAction | null>(null)
+  const [confirming, setConfirming] = useState<PublicationAction | null>(null)
   const [confirmName, setConfirmName] = useState('')
   const [keys, setKeys] = useState(newKeys)
   const [action, setAction] = useState<ActionState>({ kind: 'idle' })
@@ -122,7 +123,7 @@ export function RecordLifecyclePanel({ api, recordId, onRelogin, onChanged }: Pr
   useEffect(() => {
     if (!loading) return
     let active = true
-    api.getLifecycle(recordId).then(
+    api.getPublication(recordId).then(
       (view) => {
         if (active) setState({ kind: 'ready', view })
       },
@@ -158,7 +159,7 @@ export function RecordLifecyclePanel({ api, recordId, onRelogin, onChanged }: Pr
   }
 
   /** 送信の前に二重確認が要る操作は確認に進め、要らない操作はそのまま送る */
-  function requestAction(kind: LifecycleAction) {
+  function requestAction(kind: PublicationAction) {
     if (!reasons[kind].trim() || busy) return
     if (ACTION_SPECS[kind].confirmation === null) {
       void run(kind)
@@ -167,7 +168,7 @@ export function RecordLifecyclePanel({ api, recordId, onRelogin, onChanged }: Pr
     if (acknowledged === kind) setConfirming(kind)
   }
 
-  async function run(kind: LifecycleAction, retry = false) {
+  async function run(kind: PublicationAction, retry = false) {
     const reason = reasons[kind].trim()
     if (!reason || (busy && !retry)) return
     const spec = ACTION_SPECS[kind]
@@ -216,7 +217,7 @@ export function RecordLifecyclePanel({ api, recordId, onRelogin, onChanged }: Pr
   const days = request ? elapsedDays(request.requestedAt) : null
 
   return (
-    <section aria-label={`${view.displayName} の公開管理`} className="lifecycle">
+    <section aria-label={`${view.displayName} の公開管理`} className="publication">
       <h4>公開管理: {view.displayName}</h4>
       <p>
         {RECORD_TYPE_LABELS[view.recordType]}・{view.name}・{view.ownerTeam ?? '所有チーム不明'}・最新の版{' '}
@@ -270,7 +271,7 @@ export function RecordLifecyclePanel({ api, recordId, onRelogin, onChanged }: Pr
           </form>
         </section>
       )}
-      {LIFECYCLE_ACTIONS.map((kind) => {
+      {PUBLICATION_ACTIONS.map((kind) => {
         const availability = view.actions[kind]
         const spec = ACTION_SPECS[kind]
         const { confirmation } = spec
@@ -412,7 +413,7 @@ export function RecordLifecyclePanel({ api, recordId, onRelogin, onChanged }: Pr
 }
 
 /** 公開管理を開閉するボタン。カタログの詳細と審査待ちの一覧から、同じ公開管理を開く */
-export function RecordLifecycleToggle({
+export function RecordPublicationToggle({
   label = '公開管理を開く',
   ...props
 }: Props & { label?: string }) {
@@ -422,7 +423,7 @@ export function RecordLifecycleToggle({
       <button type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
         {open ? '公開管理を閉じる' : label}
       </button>
-      {open && <RecordLifecyclePanel {...props} />}
+      {open && <RecordPublicationPanel {...props} />}
     </div>
   )
 }

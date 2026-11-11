@@ -12,6 +12,7 @@ us-east-1 にある既存の AWS Agent Registry 1個を使い、Agent・MCP サ�
 - [ADR-0004 CI から AWS へは反映せず、反映はローカルから手動で行う](../docs/adr/0004-no-aws-deployment-from-ci.md)
 - [ADR-0010 結果確認中の決裁は、決裁 handler の再送と、決裁した Curator の操作照会で確定する](../docs/adr/0010-settling-uncertain-decisions.md)
 - [ADR-0011 結果確認中の操作の回復は、Admin が決裁 handler で行い、Registry の再取得で確定できないときだけ強制解除する](../docs/adr/0011-admin-recovery-operation.md)
+- [ADR-0012 公開停止の印と廃止依頼は補助テーブルに置き、AWS の状態を優先する](../docs/adr/0012-suspension-mark-and-deprecation-requests-in-supplement.md)
 
 ## 前提とした事実
 
@@ -336,7 +337,7 @@ ADR-0004 に従い、GitHub Actions では AWS への反映を一切行わない
 | `POST /api/reviews/{id}/reject` | 理由を必須にして却下する | Curator |
 | `POST /api/records/{id}/suspend` | 公開停止。却下で発見できなくすることを明示する | Curator |
 | `POST /api/records/{id}/deprecate` | 元に戻せない廃止であることを明示し、二重確認を経て実行する | Curator |
-| `GET /api/records/{id}/lifecycle` | 公開管理の照会。状態・公開中の版・未解決の廃止依頼・実行できる操作（できない理由）を返す。決裁 Lambda が処理する | Curator |
+| `GET /api/records/{id}/publication` | 公開管理の照会。状態・公開中の版・未解決の廃止依頼・実行できる操作（できない理由）を返す。決裁 Lambda が処理する | Curator |
 | `POST /api/records/{id}/deprecation-requests/decline` | 廃止依頼の見送り。理由を必須にし、レコードの状態は変えない。決裁 Lambda が処理する | Curator |
 | `POST /api/records/{id}/adopt` | 未管理レコードの取り込みと所有チームの割り当て | Admin |
 | `GET /api/operations/{id}` | 操作結果、結果確認中の状態、回復結果 | 人間 |

@@ -98,7 +98,7 @@ def stub_get(stub, status, **changes):
     stub.add_response("get_registry_record", {**RECORD, "status": status, **changes}, GET)
 
 
-def stub_lifecycle_update(stub, target, reason, error=None):
+def stub_publication_update(stub, target, reason, error=None):
     params = {**GET, "status": target, "statusReason": reason}
     if error:
         stub.add_client_error("update_registry_record_status", error, expected_params=params)
@@ -112,7 +112,7 @@ def stub_lifecycle_update(stub, target, reason, error=None):
             "status": target,
             "statusReason": reason,
             "updatedAt": RECORD["updatedAt"],
-            "ResponseMetadata": {"RequestId": "aws-lifecycle-1"},
+            "ResponseMetadata": {"RequestId": "aws-publication-1"},
         },
         params,
     )
@@ -154,7 +154,7 @@ def decline(decision, body, *, groups=CURATOR, sub="carol"):
 
 def inspect(decision, *, groups=CURATOR, record_id=RECORD_ID):
     return call(
-        decision, event("GET", f"/api/records/{record_id}/lifecycle", groups=groups, key="")
+        decision, event("GET", f"/api/records/{record_id}/publication", groups=groups, key="")
     )
 
 
@@ -522,6 +522,45 @@ def test_suspend_rejects_records_without_a_published_version_or_with_a_newer_rev
 
 
 @mock_aws
+def test_suspend_explains_that_a_failed_aws_write_blocks_it():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        state = setup_pending(stub, registry, db)
+        approve(stub, state)
+        # 公開中の版が残ったまま AWS の更新が失敗した状態は、「公開中の版がない」ではなく失敗を理由に示す
+        for index, failed in enumerate(("UPDATE_FAILED", "CREATE_FAILED")):
+            stub_get(stub, failed, recordVersion="1.0.1")
+            status, body = suspend(state["decision"], key=f"suspend-failed-{index}")
+            assert status == 409
+            assert "失敗" in body["error"]["message"]
+            assert "公開中の版がない" not in body["error"]["message"]
+            assert stored(db, "LOCK") is None
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_suspension_mark_is_ignored_once_aws_shows_the_record_as_approved():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        state = setup_pending(stub, registry, db)
+        published_and_suspended(stub, state)
+        stub_get(stub, "REJECTED")
+        request_deprecation(state["management"])
+        # ポータルの外で再承認されて AWS が公開中を返すなら、残った印で「公開停止済み」と表示しない
+        stub_get(stub, "APPROVED")
+        status, body = inspect(state["decision"])
+        assert status == 200
+        assert body["suspended"] is False
+        assert body["publishedVersion"] == PUBLISHED_VERSION
+        assert body["actions"]["suspend"]["allowed"] is True
+        stub_pending_list(stub, [])
+        stub_get(stub, "APPROVED")
+        status, body = call_reviews(state["decision"])
+        assert [item["suspended"] for item in body["items"]] == [False]
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
 def test_suspended_record_cannot_be_approved_directly():
     registry, db = clients()
     with Stubber(registry) as stub:
@@ -639,13 +678,13 @@ def test_suspend_resends_when_the_first_call_did_not_reach_aws():
         approve(stub, state)
         # 届いたか不明なエラーは結果確認中。受け付けを確認できていないため、同じキーの再送で送り直す
         stub_get(stub, "APPROVED")
-        stub_lifecycle_update(
+        stub_publication_update(
             stub, "REJECTED", "問題が見つかったため", error="InternalServerException"
         )
         status, body = suspend(state["decision"])
         assert status == 202
         stub_get(stub, "APPROVED")
-        stub_lifecycle_update(stub, "REJECTED", "問題が見つかったため")
+        stub_publication_update(stub, "REJECTED", "問題が見つかったため")
         stub_get(stub, "REJECTED")
         status, body = suspend(state["decision"])
         assert status == 200
@@ -706,7 +745,7 @@ def test_curator_deprecates_with_confirmation_and_the_request_is_resolved():
         request_deprecation(state["management"])
         # 公開停止中（REJECTED）から廃止する
         stub_get(stub, "REJECTED")
-        stub_lifecycle_update(stub, "DEPRECATED", "利用終了のため")
+        stub_publication_update(stub, "DEPRECATED", "利用終了のため")
         stub_get(stub, "DEPRECATED")
         status, body = deprecate(state["decision"])
         assert status == 200
@@ -733,7 +772,7 @@ def test_deprecate_accepts_any_settled_status_and_is_irreversible():
         status, _ = request_deprecation(state["management"])
         assert status == 200
         stub_get(stub, "PENDING_APPROVAL")
-        stub_lifecycle_update(stub, "DEPRECATED", "利用終了のため")
+        stub_publication_update(stub, "DEPRECATED", "利用終了のため")
         stub_get(stub, "DEPRECATED")
         status, body = deprecate(state["decision"])
         assert status == 200, body
@@ -759,7 +798,7 @@ def test_deprecate_without_a_request_writes_no_request():
         state = setup_pending(stub, registry, db)
         approve(stub, state)
         stub_get(stub, "APPROVED")
-        stub_lifecycle_update(stub, "DEPRECATED", "利用終了のため")
+        stub_publication_update(stub, "DEPRECATED", "利用終了のため")
         stub_get(stub, "DEPRECATED")
         status, body = deprecate(state["decision"])
         assert status == 200
@@ -833,7 +872,7 @@ def test_decline_checks_role_body_target_and_lock():
 
 
 @mock_aws
-def test_lifecycle_view_shows_state_request_and_available_actions():
+def test_publication_view_shows_state_request_and_available_actions():
     registry, db = clients()
     with Stubber(registry) as stub:
         state = setup_pending(stub, registry, db)
@@ -869,7 +908,7 @@ def test_lifecycle_view_shows_state_request_and_available_actions():
 
 
 @mock_aws
-def test_lifecycle_view_checks_role_and_distinguishes_missing_records():
+def test_publication_view_checks_role_and_distinguishes_missing_records():
     registry, db = clients()
     with Stubber(registry) as stub:
         state = setup_pending(stub, registry, db)

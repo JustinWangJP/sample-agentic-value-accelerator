@@ -20,12 +20,15 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from registry_portal.auth import Caller
 from registry_portal.curation_reads import (
+    RECORD_BUSY,
     CurationReads,
     RecordNotFound,
     RegistryUnavailable,
     is_managed,
+    record_state,
     require_curator,
 )
+from registry_portal.domain.curation import check_deprecatable
 from registry_portal.domain.deprecation import (
     RESOLUTION_DECLINED,
     DeprecationRequest,
@@ -34,8 +37,6 @@ from registry_portal.domain.deprecation import (
 )
 from registry_portal.domain.drafts import (
     DECLINE_DEPRECATION_KIND,
-    DEPRECATED_STATUS,
-    IN_FLIGHT_STATUSES,
     REQUEST_DEPRECATION_KIND,
     Management,
     OperationKind,
@@ -45,8 +46,8 @@ from registry_portal.domain.drafts import (
 from registry_portal.drafts import require_publisher
 from registry_portal.errors import ApiError, ForbiddenError, RequestValidationError
 from registry_portal.operations import check_record_id, now, principal_of
-from registry_portal.services.draft_store import (
-    DraftStore,
+from registry_portal.services.supplement_store import (
+    SupplementStore,
     InstantOperation,
     RecordLocked,
     StoreConflict,
@@ -54,8 +55,6 @@ from registry_portal.services.draft_store import (
 
 # 依頼・見送りの本文の上限。理由（255文字）と依頼 ID（64文字）に余裕を持たせる
 DEPRECATION_BODY_MAX_LENGTH = 1024
-
-_BUSY = "別の操作が処理中です。結果が確定してから再度お試しください。"
 
 
 class DeprecationConflict(ApiError):
@@ -88,7 +87,7 @@ def _audit(
 class DeprecationRequests:
     """Publisher の廃止依頼の受付と、Curator の見送り。所有チームの検査は申請と同じ規則（設計書「ロールと所有」）。"""
 
-    def __init__(self, reads: CurationReads, store: DraftStore) -> None:
+    def __init__(self, reads: CurationReads, store: SupplementStore) -> None:
         self.reads = reads
         self.store = store
 
@@ -118,13 +117,11 @@ class DeprecationRequests:
         # Publisher は所有チームに含まれないため 403 になる（設計書「ロールと所有」）
         if not management.is_owned_by(caller.teams):
             raise ForbiddenError()
-        status = str(record["status"])
-        if status == DEPRECATED_STATUS:
-            raise DeprecationConflict("このレコードはすでに廃止されています。")
-        if status in IN_FLIGHT_STATUSES:
-            raise DeprecationConflict(
-                "Registry が処理中のため依頼できません。状態が確定してから再度お試しください。"
-            )
+        # 廃止できない状態（処理中・廃止済み）は依頼も受け付けない。判定は廃止の前提と共通にする
+        try:
+            check_deprecatable(record_state(record, management))
+        except ValueError as error:
+            raise DeprecationConflict(str(error)) from None
         principal = principal_of(caller)
         at = now()
         request = DeprecationRequest(
@@ -138,7 +135,7 @@ class DeprecationRequests:
         try:
             self.store.save_deprecation_request(request, audit)
         except RecordLocked:
-            raise DeprecationConflict(_BUSY) from None
+            raise DeprecationConflict(RECORD_BUSY) from None
         except StoreConflict:
             raise DeprecationConflict(
                 "このレコードには未解決の廃止依頼があります。Curator の対応をお待ちください。"
@@ -175,7 +172,7 @@ class DeprecationRequests:
         try:
             self.store.decline_deprecation_request(declined, audit)
         except RecordLocked:
-            raise DeprecationConflict(_BUSY) from None
+            raise DeprecationConflict(RECORD_BUSY) from None
         except StoreConflict:
             raise DeprecationConflict(
                 "廃止依頼の状態が変わりました。最新の状態を確認してください。"
