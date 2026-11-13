@@ -24,7 +24,7 @@ import {
   type SubmissionSnapshot,
   type SubmissionSummary,
 } from './api'
-import { DecisionOperationCheck } from './DecisionOperationCheck'
+import { OperationCheck } from '../components/OperationCheck'
 
 type Props = { api: ApiClient; roles: string[]; onRelogin: () => void }
 type ListState =
@@ -431,9 +431,9 @@ function ReviewDetailView({
         </p>
       )}
       {state.kind === 'result' && state.operation.operationState === 'VERIFYING' && (
-        <DecisionOperationCheck
-          api={api}
+        <OperationCheck
           operationId={state.operation.operationId}
+          load={(id) => api.getDecisionOperation(id)}
           onDone={(operation) => setState({ kind: 'result', operation })}
           onRelogin={onRelogin}
         />

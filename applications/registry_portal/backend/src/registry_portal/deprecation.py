@@ -13,7 +13,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from typing import Any
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -65,6 +66,23 @@ class DeprecationConflict(ApiError):
     default_message = "レコードの状態が変わったため実行できません。最新の状態を確認してください。"
 
 
+@contextmanager
+def _writing(conflict: str) -> Iterator[None]:
+    """廃止依頼の書き込みの失敗を API エラーに変換する。
+
+    ロック中は RECORD_BUSY、依頼の条件付き書き込みの衝突は conflict の理由で 409、
+    補助ストアに書けなければ 502 にする。
+    """
+    try:
+        yield
+    except RecordLocked:
+        raise DeprecationConflict(RECORD_BUSY) from None
+    except StoreConflict:
+        raise DeprecationConflict(conflict) from None
+    except (BotoCoreError, ClientError):
+        raise RegistryUnavailable() from None
+
+
 def _audit(
     kind: OperationKind,
     principal: PrincipalRecord,
@@ -111,12 +129,14 @@ class DeprecationRequests:
             reason = parse_request_reason(body["reason"])
         except ValueError as error:
             raise RequestValidationError(str(error)) from None
-        record = self.reads.require_record(record_id)
-        management = self._managed(record_id)
         # 対象の所有チームを所属チームに持つ Publisher だけが依頼できる。所属チームのない
-        # Publisher は所有チームに含まれないため 403 になる（設計書「ロールと所有」）
-        if not management.is_owned_by(caller.teams):
+        # Publisher は所有チームに含まれないため 403 になる（設計書「ロールと所有」）。
+        # AWS のレコードを読む前に検査し、所有チームに属さない呼び出し元にはレコードの有無や
+        # 管理状態を見せない。管理情報がない・管理下にないレコードも、下書きの操作と同じく 403
+        management = self.reads.load_management(record_id)
+        if management is None or not management.is_owned_by(caller.teams):
             raise ForbiddenError()
+        record = self.reads.require_record(record_id)
         # 廃止できない状態（処理中・廃止済み）は依頼も受け付けない。判定は廃止の前提と共通にする
         try:
             check_deprecatable(record_state(record, management))
@@ -132,16 +152,10 @@ class DeprecationRequests:
             requested_at=at,
         )
         audit = _audit(REQUEST_DEPRECATION_KIND, principal, management, record_id, reason, at)
-        try:
+        with _writing(
+            "このレコードには未解決の廃止依頼があります。Curator の対応をお待ちください。"
+        ):
             self.store.save_deprecation_request(request, audit)
-        except RecordLocked:
-            raise DeprecationConflict(RECORD_BUSY) from None
-        except StoreConflict:
-            raise DeprecationConflict(
-                "このレコードには未解決の廃止依頼があります。Curator の対応をお待ちください。"
-            ) from None
-        except (BotoCoreError, ClientError):
-            raise RegistryUnavailable() from None
         return 200, request.view()
 
     def decline(
@@ -169,14 +183,6 @@ class DeprecationRequests:
         at = now()
         declined = request.resolve(RESOLUTION_DECLINED, reason, principal, at)
         audit = _audit(DECLINE_DEPRECATION_KIND, principal, management, record_id, reason, at)
-        try:
+        with _writing("廃止依頼の状態が変わりました。最新の状態を確認してください。"):
             self.store.decline_deprecation_request(declined, audit)
-        except RecordLocked:
-            raise DeprecationConflict(RECORD_BUSY) from None
-        except StoreConflict:
-            raise DeprecationConflict(
-                "廃止依頼の状態が変わりました。最新の状態を確認してください。"
-            ) from None
-        except (BotoCoreError, ClientError):
-            raise RegistryUnavailable() from None
         return 200, declined.view()

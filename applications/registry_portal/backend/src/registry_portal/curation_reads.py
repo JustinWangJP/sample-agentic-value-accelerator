@@ -7,7 +7,8 @@ Registry と補助ストアの読み取りの失敗は、空の結果にせず 5
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from typing import Any, Protocol, TypeGuard, cast
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -22,7 +23,7 @@ from registry_portal.domain.curation import (
     published_base,
 )
 from registry_portal.domain.deprecation import DeprecationRequest
-from registry_portal.domain.drafts import PUBLISHED_STATUS, Management, RecordStatus
+from registry_portal.domain.drafts import Management, RecordStatus
 from registry_portal.domain.submissions import snapshot_fields
 from registry_portal.errors import ApiError, ForbiddenError
 from registry_portal.services.supplement_store import SupplementStore
@@ -97,15 +98,21 @@ def is_managed(management: Management | None) -> TypeGuard[Management]:
     return management is not None and management.is_managed
 
 
-def is_suspended(management: Management | None, record: Mapping[str, Any]) -> bool:
-    """公開停止中か。管理情報がなければ公開停止もしていない。
+@contextmanager
+def _reading_store(*, invalid: str | None = None) -> Iterator[None]:
+    """補助ストアの読み取りの失敗を 502（RegistryUnavailable）に変換する。
 
-    AWS が公開中（APPROVED）を返すなら、公開停止の印が残っていても公開停止中ではない
-    （ポータルの外で再承認された場合。印はポータルの公開承認でしか消えない）。
+    invalid を渡した読み取りは、保存内容の形式の異常（ValueError）もその理由で 502 にする。
+    渡さなければ ValueError はそのまま呼び出し側に任せる。
     """
-    return (
-        management is not None and management.is_suspended and record["status"] != PUBLISHED_STATUS
-    )
+    try:
+        yield
+    except (BotoCoreError, ClientError):
+        raise RegistryUnavailable() from None
+    except ValueError:
+        if invalid is None:
+            raise
+        raise RegistryUnavailable(invalid) from None
 
 
 def record_state(record: Mapping[str, Any], management: Management | None) -> RecordState:
@@ -147,35 +154,23 @@ class CurationReads:
         return self._client.list_registry_records(registryId=self.registry, **params)
 
     def load_management(self, record_id: str) -> Management | None:
-        try:
+        with _reading_store(invalid=_STORED_MANAGEMENT_INVALID):
             return self.store.get_management(record_id)
-        except (BotoCoreError, ClientError):
-            raise RegistryUnavailable() from None
-        except ValueError:
-            raise RegistryUnavailable(_STORED_MANAGEMENT_INVALID) from None
 
     def get_submission(self, record_id: str, submission_id: str) -> dict[str, Any] | None:
-        try:
+        with _reading_store():
             return self.store.get_submission(record_id, submission_id)
-        except (BotoCoreError, ClientError):
-            raise RegistryUnavailable() from None
 
     def locking_operation_id(self, record_id: str) -> str | None:
         """レコードのロックを持つ処理中の操作の ID。ロックがなければ None。"""
-        try:
+        with _reading_store():
             lock = self.store.get_lock(record_id)
-        except (BotoCoreError, ClientError):
-            raise RegistryUnavailable() from None
         return str(lock["operationId"]) if lock else None
 
     def deprecation_request(self, record_id: str) -> DeprecationRequest | None:
         """レコードの廃止依頼（解決済みを含む）。保存内容の形式の異常は 502。"""
-        try:
+        with _reading_store(invalid=_STORED_REQUEST_INVALID):
             return self.store.get_deprecation_request(record_id)
-        except (BotoCoreError, ClientError):
-            raise RegistryUnavailable() from None
-        except ValueError:
-            raise RegistryUnavailable(_STORED_REQUEST_INVALID) from None
 
     def open_deprecation_request(self, record_id: str) -> DeprecationRequest | None:
         """未解決の廃止依頼。なければ None。"""
@@ -184,12 +179,8 @@ class CurationReads:
 
     def open_deprecation_requests(self) -> list[DeprecationRequest]:
         """未解決の廃止依頼を、古い順（滞留している順）に返す。保存内容の形式の異常は 502。"""
-        try:
+        with _reading_store(invalid=_STORED_REQUEST_INVALID):
             requests = self.store.list_deprecation_requests()
-        except (BotoCoreError, ClientError):
-            raise RegistryUnavailable() from None
-        except ValueError:
-            raise RegistryUnavailable(_STORED_REQUEST_INVALID) from None
         return sorted(
             (request for request in requests if request.is_open),
             key=lambda request: request.requested_at,
@@ -219,10 +210,8 @@ class CurationReads:
         published_version = management.published_version(record) if management else None
         if published_version is None:
             return ATTACHMENT_NONE, None
-        try:
+        with _reading_store():
             stored = self.store.get_published(record_id, published_version)
-        except (BotoCoreError, ClientError):
-            raise RegistryUnavailable() from None
         if stored is None:
             return ATTACHMENT_MISSING, None
         return ATTACHMENT_AVAILABLE, published_base(snapshot_fields(stored), published_version)

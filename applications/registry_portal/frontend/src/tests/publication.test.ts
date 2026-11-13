@@ -267,7 +267,7 @@ it('結果確認中の公開停止は、操作照会で確定する', async () =
   await setValue('suspendReason', '問題が見つかったため')
   await submit('公開停止')
   expect(container.textContent).toContain('結果確認中です。')
-  await click('決裁の結果を確認')
+  await click('処理結果を確認')
   expect(calls[2]?.url).toBe('/api/operations/decision-1')
   expect(container.textContent).toContain('公開停止しました。')
 })

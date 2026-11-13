@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { toApiError, type ApiClient, type ApiError } from '../api/client'
 import { RECORD_TYPE_LABELS } from '../api/recordType'
+import { OperationCheck } from '../components/OperationCheck'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { RecordHistoryToggle } from '../drafts/RecordHistoryView'
 import {
@@ -13,7 +14,6 @@ import {
   type DeprecationRequest,
 } from '../drafts/api'
 import type { DecisionOperation } from '../reviews/api'
-import { DecisionOperationCheck } from '../reviews/DecisionOperationCheck'
 import { elapsedDays } from '../elapsedDays'
 import { PUBLICATION_ACTIONS, type PublicationAction, type PublicationView } from './api'
 
@@ -381,9 +381,9 @@ export function RecordPublicationPanel({ api, recordId, onRelogin, onChanged }: 
         </p>
       )}
       {action.kind === 'result' && action.operation.operationState === 'VERIFYING' && (
-        <DecisionOperationCheck
-          api={api}
+        <OperationCheck
           operationId={action.operation.operationId}
+          load={(id) => api.getDecisionOperation(id)}
           onDone={(operation) => {
             setAction({ kind: 'result', operation })
             settled()

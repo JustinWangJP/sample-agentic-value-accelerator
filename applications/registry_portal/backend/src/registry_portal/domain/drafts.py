@@ -428,7 +428,7 @@ class Management:
         """
         if record["status"] == PUBLISHED_STATUS:
             return str(record["recordVersion"])
-        if record["status"] == DEPRECATED_STATUS or self.is_suspended:
+        if record["status"] == DEPRECATED_STATUS or self.is_suspended(record):
             return None
         return self.last_published_version(record)
 
@@ -445,10 +445,13 @@ class Management:
         version = self.item.get(SUSPENDED_VERSION_KEY)
         return version if isinstance(version, str) else None
 
-    @property
-    def is_suspended(self) -> bool:
-        """公開停止中か（公開停止の印がある）。"""
-        return self.suspended_version is not None
+    def is_suspended(self, record: Mapping[str, Any]) -> bool:
+        """公開停止中か。公開停止の印があり、AWS が公開中（APPROVED）を返していない。
+
+        AWS が公開中を返すなら、印が残っていても公開停止中ではない
+        （ポータルの外で再承認された場合。印はポータルの公開承認でしか消えない）。
+        """
+        return self.suspended_version is not None and record["status"] != PUBLISHED_STATUS
 
     @property
     def adopted_published_version(self) -> str | None:

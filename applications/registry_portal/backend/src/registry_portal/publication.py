@@ -14,7 +14,6 @@ from registry_portal.curation_reads import (
     RECORD_BUSY,
     CurationReads,
     is_managed,
-    is_suspended,
     record_state,
     record_summary,
     require_curator,
@@ -57,7 +56,7 @@ class RecordPublication:
         return 200, {
             **record_summary(record, management),
             "publishedVersion": state.published_version,
-            "suspended": is_suspended(management, record),
+            "suspended": management is not None and management.is_suspended(record),
             "operationId": operation_id,
             "deprecationRequest": request.view() if request else None,
             "actions": {

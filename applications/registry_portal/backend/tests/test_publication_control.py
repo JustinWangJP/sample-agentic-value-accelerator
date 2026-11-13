@@ -285,8 +285,8 @@ def test_deprecation_request_requires_owner_team_publisher():
     with Stubber(registry) as stub:
         state = setup_pending(stub, registry, db)
         approve(stub, state)
-        stub_get(stub, "APPROVED")
-        # 所属チームのない Publisher、他チームの Publisher、Curator、Viewer は 403
+        # 所属チームのない Publisher、他チームの Publisher、Curator、Viewer は 403。
+        # 所有チームの検査は AWS のレコードを読む前に行う（読み取りの応答を用意しない）
         for groups in (
             "registry-publisher",
             "registry-publisher team-other",
@@ -331,7 +331,7 @@ def test_deprecation_request_validates_body_and_rejects_duplicates():
 
 
 @mock_aws
-def test_deprecation_request_rejects_deprecated_unmanaged_and_locked_records():
+def test_deprecation_request_rejects_deprecated_and_locked_records():
     registry, db = clients()
     with Stubber(registry) as stub:
         state = setup_pending(stub, registry, db)
@@ -346,11 +346,42 @@ def test_deprecation_request_rejects_deprecated_unmanaged_and_locked_records():
         assert status == 409
         assert "別の操作が処理中" in body["error"]["message"]
         assert deprecation_item(db) is None
-        # ポータルの管理下にないレコードは 404
-        put(db, "MANAGEMENT", {"managed": False, "ownerTeam": "team-payments"})
-        stub_get(stub, "APPROVED")
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_deprecation_request_hides_existence_and_management_from_non_owners():
+    """所有チームに属さない Publisher には、レコードの有無や管理状態を見せずに 403 を返す。"""
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        state = setup_pending(stub, registry, db)
+        # 所有チームの Publisher には、AWS から消えたレコードを 404 で知らせる
+        stub.add_client_error(
+            "get_registry_record", "ResourceNotFoundException", expected_params=GET
+        )
         status, body = request_deprecation(state["management"])
-        assert status == 404
+        assert status == 404, body
+        assert body["error"]["code"] == "RECORD_NOT_FOUND"
+        # ポータルに管理情報がないレコードは、所有チームを判定できないため 403（AWS は読まない）
+        status, body = call(
+            state["management"],
+            event(
+                "POST",
+                "/api/records/mcpEFGH5678I/deprecation-requests",
+                {"reason": "利用が終わったため"},
+                groups="registry-publisher team-other",
+                key="",
+            ),
+        )
+        assert status == 403, body
+        assert body["error"]["code"] == "FORBIDDEN"
+        # 管理下にないレコードも、下書きの操作と同じく所有チームによらず 403（AWS は読まない）
+        put(db, "MANAGEMENT", {"managed": False, "ownerTeam": "team-payments"})
+        for groups in ("registry-publisher team-payments", "registry-publisher team-other"):
+            status, body = request_deprecation(state["management"], groups=groups)
+            assert status == 403, (groups, body)
+            assert body["error"]["code"] == "FORBIDDEN"
+        assert deprecation_item(db) is None
         stub.assert_no_pending_responses()
 
 
@@ -573,6 +604,43 @@ def test_suspended_record_cannot_be_approved_directly():
         )
         assert status == 409
         assert "再申請" in body["error"]["message"]
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_suspended_record_cannot_be_resubmitted_without_editing():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        state = setup_pending(stub, registry, db)
+        published_and_suspended(stub, state)
+        management_handler = state["management"]
+        rejected = {**RECORD, "status": "REJECTED"}
+        stub.add_response("get_registry_record", rejected, GET)
+        status, current = call(management_handler, event("GET", f"/api/records/{RECORD_ID}"))
+        assert status == 200
+        before = stored(db, "MANAGEMENT")
+        # 再公開には編集が必要。公開停止中（REJECTED）のまま再申請しても、申請 API を呼ばずに 409
+        stub.add_response("get_registry_record", rejected, GET)
+        status, body = call(
+            management_handler,
+            event(
+                "POST",
+                f"/api/records/{RECORD_ID}/submit",
+                {
+                    "expectedContentHash": current["contentHash"],
+                    "reason": "編集せずに再申請する",
+                    "relatedReferences": [],
+                },
+                sub="bob",
+                key="submit-2",
+            ),
+        )
+        assert status == 409, body
+        assert body["error"]["code"] == "CONTENT_CONFLICT"
+        # 申請は保存されず、公開停止の印も残る
+        after = stored(db, "MANAGEMENT")
+        assert after["activeSubmissionId"] == before["activeSubmissionId"]
+        assert Management(after).suspended_version == PUBLISHED_VERSION
         stub.assert_no_pending_responses()
 
 

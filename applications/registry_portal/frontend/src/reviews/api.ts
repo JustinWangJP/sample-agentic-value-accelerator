@@ -16,7 +16,7 @@ import {
   type UnsettledOperationState,
 } from '../drafts/api'
 
-/** 決裁の種別。API の path（/approve・/reject）で AWS の遷移先が決まる（バックエンドの DECISION_TARGETS） */
+/** 決裁の種別。API の path（/approve・/reject）で AWS の遷移先が決まる（バックエンドの CURATION_RULES の target） */
 export const DECISION_KINDS = ['approve', 'reject'] as const
 export type DecisionKind = (typeof DECISION_KINDS)[number]
 
@@ -44,7 +44,10 @@ export type RecordReference = { recordId: string; recordVersion: string }
 
 export type { Principal }
 
-/** 一覧の項目に共通する、レコードの要約（バックエンドの CurationReads.record_summary） */
+/**
+ * 一覧の項目に共通する、レコードの要約（バックエンドの record_summary（curation_reads.py））と、
+ * 一覧と審査で添える処理中の操作（review_queue.py が record_summary に加える operationId）
+ */
 type ReviewRecordSummary = {
   recordId: string
   name: string
@@ -141,7 +144,10 @@ export type PendingDetail = {
   deprecationRequest: DeprecationRequest | null
 }
 
-/** 決裁の結果。SUCCEEDED は決裁が AWS に反映され、公開版スナップショットも保存済み */
+/**
+ * 決裁 handler の操作（決裁である公開承認・却下と、公開停止・廃止）の結果。名前の Decision は決裁 handler を指す。
+ * SUCCEEDED は操作が AWS に反映され、補助テーブルへの書き込み（公開承認なら公開版スナップショット）も保存済み
+ */
 export type DecisionOperation =
   | {
       recordId: string

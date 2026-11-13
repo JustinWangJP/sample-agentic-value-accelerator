@@ -13,7 +13,7 @@ import {
   type DraftOperation,
   type DraftSubmission,
 } from './api'
-import { OperationCheck } from './OperationCheck'
+import { OperationCheck } from '../components/OperationCheck'
 
 type SubmissionState =
   | { kind: 'idle' }
@@ -133,7 +133,7 @@ export function SubmissionView({
         ) : state.operation.operationState === 'FAILED' ? (
           <p role="alert">申請に失敗しました。{state.operation.message}</p>
         ) : (
-          <OperationCheck api={api} operationId={state.operation.operationId}
+          <OperationCheck operationId={state.operation.operationId} load={(id) => api.getDraftOperation(id)}
             onDone={(operation) => setState({ kind: 'result', operation })} onRelogin={onRelogin} />
         )
       )}

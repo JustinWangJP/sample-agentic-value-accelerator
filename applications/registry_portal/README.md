@@ -465,7 +465,7 @@ AWS の状態遷移は [Record lifecycle](https://docs.aws.amazon.com/bedrock-ag
 | `POST /api/records/{recordId}/suspend` | 公開停止。Curator のみ。本文は `{ "reason": 理由 }`（1〜255文字、必須）。最新の版が公開中（`APPROVED`）の管理下のレコードだけが対象。`REJECTED` への却下で発見できなくする。再公開には Publisher による編集と再申請が必要 |
 | `POST /api/records/{recordId}/deprecate` | 廃止。Curator のみ。本文は `{ "reason": 理由, "confirm": true }`。理由（1〜255文字、必須）に加えて、確認（`confirm` に `true`）を必須にし、API と SPA の両方で「元に戻せない」ことを明示する。AWS の処理中（`CREATING`・`UPDATING`）と廃止済み以外は、どの状態からも廃止できる |
 | `GET /api/records/{recordId}/publication` | 公開管理の照会。Curator のみ。現在の状態、公開中の版（公開停止中と廃止済みは `null`）、公開停止中か（`suspended`）、処理中の操作（`operationId`）、未解決の廃止依頼、操作ごとの可否（`actions.suspend` / `actions.deprecate` の `allowed` と、できない理由の `message`）を返す |
-| `POST /api/records/{recordId}/deprecation-requests` | 廃止依頼。管理 handler。対象の所有チームを所属チームに持つ Publisher のみ（所属チームのない Publisher・他チーム・Curator・Viewer は403 `FORBIDDEN`）。本文は `{ "reason": 理由 }`（1〜255文字、必須） |
+| `POST /api/records/{recordId}/deprecation-requests` | 廃止依頼。管理 handler。対象の所有チームを所属チームに持つ Publisher のみ（所属チームのない Publisher・他チーム・Curator・Viewer は403 `FORBIDDEN`）。所有チームは AWS のレコードを読む前に検査し、所有チームに属さない呼び出し元にはレコードの有無や管理状態を見せない（管理情報がない・管理下にないレコードも、下書きの操作と同じく403）。本文は `{ "reason": 理由 }`（1〜255文字、必須） |
 | `POST /api/records/{recordId}/deprecation-requests/decline` | 廃止依頼の見送り。Curator のみ。本文は `{ "requestId": 依頼 ID, "reason": 理由 }`（理由は1〜255文字、必須）。画面で確認した依頼と現在の未解決の依頼が一致するときだけ見送る。レコードの状態は変えない |
 
 ### 廃止依頼のしくみ
@@ -544,7 +544,7 @@ HTTP API・authorizer・統合は作らず借用します。#5 の IaC が HTTP 
 
 Seam 1 の Stubber と moto で、次を検証します。
 
-- 廃止依頼: 認可（所有チームの検査、所属チームのない Publisher・他チーム・Curator・Viewer の403）、本文の検査（理由の必須化と255文字上限、秘密情報の拒否、未知の項目）、未解決の依頼の重複・ロック中・廃止済みの409、未管理レコードの404、補助テーブル未設定の503、履歴への記録
+- 廃止依頼: 認可（所有チームの検査、所属チームのない Publisher・他チーム・Curator・Viewer の403）、本文の検査（理由の必須化と255文字上限、秘密情報の拒否、未知の項目）、未解決の依頼の重複・ロック中・廃止済みの409、未管理レコードと管理情報のないレコードの403（AWS を読む前）、所有チームに対する AWS から消えたレコードの404、補助テーブル未設定の503、履歴への記録
 - 審査待ちの一覧: 種別ごとの項目の形、最初のページだけの表示と古い順、2ページ目に重ねないこと、保存形式の崩れと補助ストアの障害の502、審査の詳細での依頼の警告
 - 公開停止: 依頼を閉じないこと、公開中の版が `null` になり semver の下限が残ること、公開版スナップショットの不変、公開版のない審査待ちと二重リビジョンの409、直接承認の拒否、編集→再申請→承認での再公開と印の消去、反映待ちの結果確認中と操作照会での確定、受け付け前に止まった操作の同じキーでの再送
 - 廃止: 確認の必須化、依頼の解決と理由の記録、審査待ちからの廃止、廃止後の公開停止・廃止・依頼の409

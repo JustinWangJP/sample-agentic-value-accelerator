@@ -28,15 +28,6 @@ from registry_portal.domain.secrets import scan_text
 # 決裁理由の上限。AWS の UpdateRegistryRecordStatus の statusReason が 0〜255 文字のため、
 # ポータルも同じ上限にして、記録した理由をそのまま AWS に送れるようにする
 REASON_MAX_LENGTH = 255
-# 決裁 handler の操作（決裁・公開停止・廃止）ごとの AWS の遷移先。クライアントから status は受け取らず、API の種別だけで決める
-DECISION_TARGETS: Mapping[OperationKind, RecordStatus] = {
-    APPROVE_KIND: PUBLISHED_STATUS,
-    REJECT_KIND: REJECTED_STATUS,
-    # 公開停止は却下で発見できなくする。再公開には Publisher の編集と再申請が必要（設計書「業務上の状態」）
-    SUSPEND_KIND: REJECTED_STATUS,
-    # 廃止は元に戻せない DEPRECATED
-    DEPRECATE_KIND: DEPRECATED_STATUS,
-}
 # 公開停止・廃止の操作。申請のスナップショットではなく、公開中の現物を対象にする。
 # キーは API の path（/api/records/{recordId}/suspend・/deprecate）と公開管理の照会の actions のキー。
 # SPA の `PUBLICATION_ACTIONS`（frontend/src/publication/api.ts）と揃える
@@ -44,8 +35,6 @@ PUBLICATION_ACTIONS: Mapping[str, OperationKind] = {
     "suspend": SUSPEND_KIND,
     "deprecate": DEPRECATE_KIND,
 }
-# 元に戻せないため、確認（confirm: true）を本文に必須にする操作（設計書「業務上の状態」）
-_CONFIRM_REQUIRED: frozenset[OperationKind] = frozenset({DEPRECATE_KIND})
 
 # 審査待ちの一覧の項目の種別。申請（AWS の承認待ち）と廃止依頼（ポータル内で発生）を並べる。
 # SPA の `REVIEW_KINDS`（frontend/src/reviews/api.ts）と揃える
@@ -84,7 +73,8 @@ class DecisionInput:
         snapshot_hash = body["snapshotHash"]
         if not isinstance(snapshot_hash, str) or not HASH_PATTERN.fullmatch(snapshot_hash):
             raise ValueError("審査したスナップショットのハッシュを指定してください。")
-        return cls(snapshot_hash, parse_reason(body["reason"], required=_REASON_REQUIRED[kind]))
+        reason = parse_reason(body["reason"], required=CURATION_RULES[kind].reason_required)
+        return cls(snapshot_hash, reason)
 
 
 def parse_reason(
@@ -112,14 +102,6 @@ def parse_reason(
     return stripped
 
 
-_REASON_REQUIRED: Mapping[OperationKind, str] = {
-    APPROVE_KIND: "公開承認の理由は必須です。判断の根拠を記載してください。",
-    REJECT_KIND: "却下理由は必須です。Publisher が修正できるように記載してください。",
-    SUSPEND_KIND: "公開停止の理由は必須です。問題の内容を記載してください。",
-    DEPRECATE_KIND: "廃止理由は必須です。判断の根拠を記載してください。",
-}
-
-
 @dataclass(frozen=True)
 class PublicationInput:
     """Curator が送る公開停止・廃止の入力。AWS の status は本文から受け取らない。
@@ -131,15 +113,15 @@ class PublicationInput:
 
     @classmethod
     def parse(cls, body: Mapping[str, Any], kind: OperationKind) -> PublicationInput:
-        confirm_required = kind in _CONFIRM_REQUIRED
-        keys = {"reason", "confirm"} if confirm_required else {"reason"}
+        rule = CURATION_RULES[kind]
+        keys = {"reason", "confirm"} if rule.confirm_required else {"reason"}
         if set(body) != keys:
             raise ValueError(
-                f"{'reason と confirm' if confirm_required else 'reason'} を指定してください。"
+                f"{'reason と confirm' if rule.confirm_required else 'reason'} を指定してください。"
                 "ステータスは API ごとに決まるため指定できません。"
             )
-        reason = parse_reason(body["reason"], required=_REASON_REQUIRED[kind])
-        if confirm_required and body["confirm"] is not True:
+        reason = parse_reason(body["reason"], required=rule.reason_required)
+        if rule.confirm_required and body["confirm"] is not True:
             raise ValueError(
                 "廃止は元に戻せません。確認した場合だけ confirm に true を指定してください。"
             )
@@ -229,19 +211,56 @@ def check_decidable(state: RecordState) -> None:
     raise ValueError("審査待ちの申請ではないため決裁できません。一覧から確認してください。")
 
 
-# 決裁 handler の操作ごとの前提の検査。満たさなければ ValueError（利用者に見せる理由）
-DECISION_PRECONDITIONS: Mapping[OperationKind, Callable[[RecordState], None]] = {
-    APPROVE_KIND: check_decidable,
-    REJECT_KIND: check_decidable,
-    SUSPEND_KIND: check_suspendable,
-    DEPRECATE_KIND: check_deprecatable,
+@dataclass(frozen=True)
+class CurationRule:
+    """決裁 handler の操作（決裁である公開承認・却下と、公開停止・廃止）の、種別ごとの規則。
+
+    公開停止・廃止は決裁ではない（GLOSSARY.md「決裁」）が、同じ決裁 handler が同じ手順で行うため、
+    種別ごとに異なる規則をここに集める。手順の中で種別ごとに異なる補助テーブルへの書き込みは、
+    handler の _CurationSubject（curation.py）が受け持つ。
+    """
+
+    # AWS の遷移先。クライアントから status は受け取らず、API の種別だけで決める
+    target: RecordStatus
+    # 前提の検査。満たさなければ ValueError（利用者に見せる理由）
+    precondition: Callable[[RecordState], None]
+    # 理由が空のときに利用者に見せる文言
+    reason_required: str
+    # 元に戻せないため、確認（confirm: true）を本文に必須にするか（設計書「業務上の状態」）
+    confirm_required: bool = False
+
+
+CURATION_RULES: Mapping[OperationKind, CurationRule] = {
+    APPROVE_KIND: CurationRule(
+        target=PUBLISHED_STATUS,
+        precondition=check_decidable,
+        reason_required="公開承認の理由は必須です。判断の根拠を記載してください。",
+    ),
+    REJECT_KIND: CurationRule(
+        target=REJECTED_STATUS,
+        precondition=check_decidable,
+        reason_required="却下理由は必須です。Publisher が修正できるように記載してください。",
+    ),
+    # 公開停止は却下で発見できなくする。再公開には Publisher の編集と再申請が必要（設計書「業務上の状態」）
+    SUSPEND_KIND: CurationRule(
+        target=REJECTED_STATUS,
+        precondition=check_suspendable,
+        reason_required="公開停止の理由は必須です。問題の内容を記載してください。",
+    ),
+    # 廃止は元に戻せない DEPRECATED
+    DEPRECATE_KIND: CurationRule(
+        target=DEPRECATED_STATUS,
+        precondition=check_deprecatable,
+        reason_required="廃止理由は必須です。判断の根拠を記載してください。",
+        confirm_required=True,
+    ),
 }
 
 
 def precondition_failure(kind: OperationKind, state: RecordState) -> str | None:
     """操作の前提を満たさない理由。満たしていれば None。公開管理の画面に実行できない理由を示すために使う。"""
     try:
-        DECISION_PRECONDITIONS[kind](state)
+        CURATION_RULES[kind].precondition(state)
     except ValueError as error:
         return str(error)
     return None

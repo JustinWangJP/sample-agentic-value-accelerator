@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { DeprecationRequestForm } from './DeprecationRequestForm'
-import { OperationCheck } from './OperationCheck'
+import { OperationCheck } from '../components/OperationCheck'
 import { RecordHistoryToggle } from './RecordHistoryView'
 import { SubmissionView } from './SubmissionView'
 import { ApiError, toApiError, type ApiClient, type Role } from '../api/client'
@@ -154,8 +154,8 @@ export function RecordDraftsView({ api, roles, teams, onRelogin }: Props) {
                     </button>
                     {item.operationId && (
                       <OperationCheck
-                        api={api}
                         operationId={item.operationId}
+                        load={(id) => api.getDraftOperation(id)}
                         onDone={back}
                         onRelogin={onRelogin}
                       />
@@ -577,8 +577,8 @@ function DraftEditor({
           <p role="alert">{save.operation.message}</p>
         ) : (
           <OperationCheck
-            api={api}
             operationId={save.operation.operationId}
+            load={(id) => api.getDraftOperation(id)}
             onDone={(operation) => {
               if (operation.operationState === 'SUCCEEDED') onBack()
               else receiveResult(operation)

@@ -17,7 +17,6 @@ from registry_portal.curation_reads import (
     PendingApprovalNotFound,
     RegistryRecordMissing,
     RegistryUnavailable,
-    is_suspended,
     record_summary,
     require_curator,
 )
@@ -115,7 +114,7 @@ class ReviewQueue:
             "requestedAt": request.requested_at,
             "requestedBy": dict(request.requested_by),
             # 公開停止済みで、廃止するか見送るかの判断を待っている
-            "suspended": is_suspended(management, record),
+            "suspended": management is not None and management.is_suspended(record),
             "operationId": self.reads.locking_operation_id(request.record_id),
         }
 

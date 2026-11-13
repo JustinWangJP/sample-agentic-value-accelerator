@@ -36,8 +36,7 @@ from registry_portal.curation_reads import (
 )
 from registry_portal.domain.curation import (
     ATTACHMENT_AVAILABLE,
-    DECISION_PRECONDITIONS,
-    DECISION_TARGETS,
+    CURATION_RULES,
     DecisionInput,
     PublicationInput,
     SelfApprovalError,
@@ -113,7 +112,7 @@ class _Outcome:
     resolved_request: DeprecationRequest | None = None
 
 
-class _DecisionSubject(Protocol):
+class _CurationSubject(Protocol):
     """決裁 handler の操作の対象。決裁は申請スナップショット、公開停止・廃止は公開中の現物を対象にする。
 
     種別ごとに異なるのは、本文の検査・現物との照合と固定・見つからないときのエラー・結果の申請の項目・
@@ -283,7 +282,7 @@ class _Deprecation(_LiveRecordSubject):
         )
 
 
-_SUBJECTS: Mapping[OperationKind, _DecisionSubject] = {
+_SUBJECTS: Mapping[OperationKind, _CurationSubject] = {
     APPROVE_KIND: _Approval(),
     REJECT_KIND: _SubmissionSubject(),
     SUSPEND_KIND: _Suspension(),
@@ -427,14 +426,14 @@ class RecordCuration:
         return str(record["status"])
 
     def _check_and_pin(self, operation: DecisionOperation) -> None:
-        """現物を照合し、操作の対象を操作に固定する（照合の内容は対象ごとに _DecisionSubject が決める）。
+        """現物を照合し、操作の対象を操作に固定する（照合の内容は対象ごとに _CurationSubject が決める）。
 
         固定した時点の状態は、照合で操作が未反映かを見分けるために残す。
         """
         record = self._get_record(operation)
         management = Management(operation["management"])
         try:
-            DECISION_PRECONDITIONS[operation["kind"]](record_state(record, management))
+            CURATION_RULES[operation["kind"]].precondition(record_state(record, management))
         except ValueError as error:
             raise DecisionConflict(str(error)) from None
         operation["observedStatus"] = cast(RecordStatus, str(record["status"]))
@@ -446,7 +445,7 @@ class RecordCuration:
             response = self._registry_client.update_registry_record_status(
                 registryId=self.registry,
                 recordId=operation["recordId"],
-                status=DECISION_TARGETS[operation["kind"]],
+                status=CURATION_RULES[operation["kind"]].target,
                 statusReason=operation["reason"],
             )
         except ClientError as error:
@@ -538,7 +537,7 @@ class RecordCuration:
             # AWS の受け付けを確認した後も決裁前の状態が見えるときは、反映を待っている。
             # 失敗とは確定せず、ロックも解除しない（ADR-0010。確定できなければ ADR-0011 の回復操作）
             return _pending(operation)
-        target = DECISION_TARGETS[operation["kind"]]
+        target = CURATION_RULES[operation["kind"]].target
         management = Management(operation["management"])
         if (
             status != target
@@ -553,7 +552,7 @@ class RecordCuration:
     def _finish(
         self, operation: DecisionOperation, record: Mapping[str, Any], management: Management
     ) -> DecisionResponse:
-        """決裁・公開停止・廃止の成功を確定する。補助テーブルに書く変更は種別ごとに _DecisionSubject が決める。"""
+        """決裁・公開停止・廃止の成功を確定する。補助テーブルに書く変更は種別ごとに _CurationSubject が決める。"""
         subject = _SUBJECTS[operation["kind"]]
         outcome = subject.outcome(self.reads, operation)
         after = Management({**management.item, "activeSubmissionId": None, **outcome.management})
