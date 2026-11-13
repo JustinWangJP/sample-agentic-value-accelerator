@@ -1,24 +1,34 @@
 // 審査と決裁（Seam 2: SPA の fetch 境界）。Curator が審査待ちの一覧と詳細を見て、公開承認・却下を行う。
-// バックエンドの curation.py と契約を揃える。クライアントから AWS の status は送らない。
+// バックエンドの review_queue.py と curation.py と契約を揃える。クライアントから AWS の status は送らない。
+// 公開停止・廃止・廃止依頼の見送りは publication/api.ts が受け持つ。
 import { hasStrings, isObject, isPrincipal, type Principal } from '../api/guards'
 import { isCatalogRecordType, type CatalogRecordType } from '../api/recordType'
 import { createResponseChecker, type ApiRequest } from '../api/request'
 import {
+  isDeprecationRequest,
   isRecordStatus,
   isRecoveryRecord,
   isUnsettledOperationState,
+  type DeprecationRequest,
   type OperationState,
   type RecordStatus,
   type RecoveryRecord,
   type UnsettledOperationState,
 } from '../drafts/api'
 
-/** 決裁理由の上限。AWS の statusReason（0〜255文字）に合わせる（バックエンドの REASON_MAX_LENGTH） */
-export const DECISION_REASON_MAX_LENGTH = 255
-
-/** 決裁の種別。API の path（/approve・/reject）で AWS の遷移先が決まる（バックエンドの DECISION_TARGETS） */
+/** 決裁の種別。API の path（/approve・/reject）で AWS の遷移先が決まる（バックエンドの CURATION_RULES の target） */
 export const DECISION_KINDS = ['approve', 'reject'] as const
 export type DecisionKind = (typeof DECISION_KINDS)[number]
+
+/**
+ * 審査待ちの一覧の項目の種別。申請（AWS の承認待ち）と廃止依頼（ポータル内で発生）を並べて表示する
+ * （設計書「API」。バックエンドの REVIEW_KINDS（domain/curation.py）と揃える）
+ */
+export const REVIEW_KINDS = ['SUBMISSION', 'DEPRECATION_REQUEST'] as const
+export type ReviewKind = (typeof REVIEW_KINDS)[number]
+function isReviewKind(value: unknown): value is ReviewKind {
+  return REVIEW_KINDS.some((kind) => kind === value)
+}
 
 /**
  * 申請スナップショット・公開版スナップショットの取得状態。バックエンドの AttachmentState（domain/curation.py）と揃える。
@@ -34,8 +44,11 @@ export type RecordReference = { recordId: string; recordVersion: string }
 
 export type { Principal }
 
-/** 審査待ちの一覧の項目。AWS の承認待ちを正本とし、申請の補助情報を結合したもの */
-export type PendingSummary = {
+/**
+ * 一覧の項目に共通する、レコードの要約（バックエンドの record_summary（curation_reads.py））と、
+ * 一覧と審査で添える処理中の操作（review_queue.py が record_summary に加える operationId）
+ */
+type ReviewRecordSummary = {
   recordId: string
   name: string
   displayName: string
@@ -44,6 +57,13 @@ export type PendingSummary = {
   status: RecordStatus
   managed: boolean
   ownerTeam: string | null
+  /** レコードのロックを持つ操作。結果確認中の間は値を持つ */
+  operationId: string | null
+}
+
+/** 申請の項目。AWS の承認待ちを正本とし、申請の補助情報を結合したもの */
+export type SubmissionSummary = ReviewRecordSummary & {
+  reviewKind: Extract<ReviewKind, 'SUBMISSION'>
   submissionState: AttachmentState
   submissionId: string | null
   snapshotHash: string | null
@@ -51,10 +71,22 @@ export type PendingSummary = {
   submittedAt: string | null
   submittedBy: Principal | null
   invalidated: boolean
-  operationId: string | null
 }
 
-export type PendingPage = { items: PendingSummary[]; nextToken: string | null }
+/** 未解決の廃止依頼の項目。補助テーブルが正本で、一覧の最初のページにだけ古い順に並ぶ */
+export type DeprecationRequestSummary = ReviewRecordSummary & {
+  reviewKind: Extract<ReviewKind, 'DEPRECATION_REQUEST'>
+  requestId: string
+  reason: string
+  requestedAt: string
+  requestedBy: Principal
+  /** 公開停止済みで、廃止するか見送るかの判断を待っている */
+  suspended: boolean
+}
+
+export type ReviewItem = SubmissionSummary | DeprecationRequestSummary
+
+export type PendingPage = { items: ReviewItem[]; nextToken: string | null }
 
 /**
  * 差分の比較対象（公開中の版のスナップショット）。ADR-0007 の公開版スナップショットから読む。
@@ -108,9 +140,14 @@ export type PendingDetail = {
   snapshot: SubmissionSnapshot | null
   publishedState: AttachmentState
   published: PublishedBase | null
+  /** 未解決の廃止依頼。依頼を出した Publisher の再申請を承認するときの見落としを防ぐ */
+  deprecationRequest: DeprecationRequest | null
 }
 
-/** 決裁の結果。SUCCEEDED は決裁が AWS に反映され、公開版スナップショットも保存済み */
+/**
+ * 決裁 handler の操作（決裁である公開承認・却下と、公開停止・廃止）の結果。名前の Decision は決裁 handler を指す。
+ * SUCCEEDED は操作が AWS に反映され、補助テーブルへの書き込み（公開承認なら公開版スナップショット）も保存済み
+ */
 export type DecisionOperation =
   | {
       recordId: string
@@ -123,8 +160,9 @@ export type DecisionOperation =
       publishedVersion: string | null
       operationId: string
       operationState: Extract<OperationState, 'SUCCEEDED'>
-      submissionId: string
-      snapshotHash: string
+      /** 公開停止・廃止は申請を対象としないため null */
+      submissionId: string | null
+      snapshotHash: string | null
       /** Admin の回復操作で確定した決裁にだけ付く */
       recovery?: RecoveryRecord
     }
@@ -159,29 +197,46 @@ function isReferenceList(value: unknown): value is RecordReference[] {
   return Array.isArray(value) && value.every(isReference)
 }
 
-function isSummary(value: unknown): value is PendingSummary {
+function isRecordSummary(value: Record<string, unknown>): boolean {
   return (
-    isObject(value) &&
     hasStrings(value, ['recordId', 'name', 'displayName', 'recordVersion']) &&
     isCatalogRecordType(value.recordType) &&
     isRecordStatus(value.status) &&
     typeof value.managed === 'boolean' &&
     isStringOrNull(value.ownerTeam) &&
+    isStringOrNull(value.operationId)
+  )
+}
+function isSubmissionSummary(value: Record<string, unknown>): boolean {
+  return (
     isAttachmentState(value.submissionState) &&
     isStringOrNull(value.submissionId) &&
     isStringOrNull(value.snapshotHash) &&
     isStringOrNull(value.reason) &&
     isStringOrNull(value.submittedAt) &&
     (value.submittedBy === null || isPrincipal(value.submittedBy)) &&
-    typeof value.invalidated === 'boolean' &&
-    isStringOrNull(value.operationId)
+    typeof value.invalidated === 'boolean'
   )
+}
+function isDeprecationRequestSummary(value: Record<string, unknown>): boolean {
+  return (
+    hasStrings(value, ['requestId', 'reason', 'requestedAt']) &&
+    isPrincipal(value.requestedBy) &&
+    typeof value.suspended === 'boolean'
+  )
+}
+/** 一覧の項目。種別（reviewKind）ごとに必須の項目が異なる（バックエンドの ReviewQueue と揃える） */
+function isReviewItem(value: unknown): value is ReviewItem {
+  if (!isObject(value) || !isReviewKind(value.reviewKind) || !isRecordSummary(value)) return false
+  return value.reviewKind === 'SUBMISSION'
+    ? isSubmissionSummary(value)
+    : isDeprecationRequestSummary(value)
 }
 function isPage(value: unknown): value is PendingPage {
   return (
     isObject(value) &&
     Array.isArray(value.items) &&
-    value.items.every(isSummary) &&
+    value.items.every(isReviewItem) &&
     isStringOrNull(value.nextToken)
   )
 }
@@ -234,23 +289,20 @@ function isDetail(value: unknown): value is PendingDetail {
     typeof value.invalidated === 'boolean' &&
     (value.snapshot === null || isSnapshot(value.snapshot)) &&
     isAttachmentState(value.publishedState) &&
-    (value.published === null || isPublished(value.published))
+    (value.published === null || isPublished(value.published)) &&
+    (value.deprecationRequest === null || isDeprecationRequest(value.deprecationRequest))
   )
 }
-function isOperation(value: unknown): value is DecisionOperation {
+/** 決裁 handler の操作の応答。決裁と公開停止・廃止（publication/api.ts）で同じ形で返る */
+export function isDecisionOperation(value: unknown): value is DecisionOperation {
   return (
     isObject(value) &&
     typeof value.operationId === 'string' &&
     ((value.operationState === 'SUCCEEDED' &&
-      hasStrings(value, [
-        'recordId',
-        'name',
-        'displayName',
-        'recordVersion',
-        'ownerTeam',
-        'submissionId',
-        'snapshotHash',
-      ]) &&
+      hasStrings(value, ['recordId', 'name', 'displayName', 'recordVersion', 'ownerTeam']) &&
+      // 公開停止・廃止は申請を対象としないため、申請の情報は持たない
+      isStringOrNull(value.submissionId) &&
+      isStringOrNull(value.snapshotHash) &&
       isRecordStatus(value.status) &&
       isStringOrNull(value.publishedVersion) &&
       isCatalogRecordType(value.recordType)) ||
@@ -276,9 +328,9 @@ export function createReviewApi(request: ApiRequest, invalidResponse: () => Erro
         request('POST', `/api/reviews/${encodeURIComponent(id)}/${kind}`, input, {
           'idempotency-key': key,
         }),
-        isOperation,
+        isDecisionOperation,
       ),
     getDecisionOperation: (id) =>
-      checked(request('GET', `/api/operations/${encodeURIComponent(id)}`), isOperation),
+      checked(request('GET', `/api/operations/${encodeURIComponent(id)}`), isDecisionOperation),
   }
 }

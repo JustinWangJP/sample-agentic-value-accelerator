@@ -17,3 +17,23 @@ variable "supplement_table_arn" {
   type        = string
   description = "管理 Lambda の環境変数 SUPPLEMENT_TABLE_NAME が指す補助 DynamoDB テーブルの ARN"
 }
+
+variable "http_api_id" {
+  type        = string
+  description = "管理 handler の route（履歴・廃止依頼）を割り当てる既存 API Gateway HTTP API の ID"
+}
+
+variable "jwt_authorizer_id" {
+  type        = string
+  description = "管理 handler の route に適用する既存 JWT authorizer の ID"
+}
+
+variable "management_integration_id" {
+  type        = string
+  description = "既存 HTTP API にある、管理 Lambda への統合（integration）の ID"
+}
+
+variable "management_function_name" {
+  type        = string
+  description = "呼び出し許可を追加する、既存の管理 Lambda の関数名"
+}

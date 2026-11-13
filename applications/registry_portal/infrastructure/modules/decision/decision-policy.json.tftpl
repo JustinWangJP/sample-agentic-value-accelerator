@@ -21,7 +21,13 @@
     {
       "Sid": "DecisionSupplement",
       "Effect": "Allow",
-      "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"],
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:Query",
+        "dynamodb:ConditionCheckItem"
+      ],
       "Resource": "${supplement_table_arn}"
     }
   ]

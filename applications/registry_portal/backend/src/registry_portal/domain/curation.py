@@ -1,20 +1,24 @@
-"""決裁入力、決裁の規則、公開版スナップショットの書き出しと読み取り。"""
+"""決裁と公開停止・廃止の入力と規則、公開版スナップショットの書き出しと読み取り。"""
 
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from registry_portal.domain.drafts import (
     APPROVE_KIND,
     AWS_FAILED_STATUSES,
+    DEPRECATE_KIND,
+    DEPRECATED_STATUS,
+    DRAFT_STATUS,
     IN_FLIGHT_STATUSES,
     PENDING_APPROVAL_STATUS,
     PUBLISHED_STATUS,
     REJECT_KIND,
     REJECTED_STATUS,
+    SUSPEND_KIND,
     OperationKind,
     PrincipalRecord,
     RecordStatus,
@@ -24,11 +28,20 @@ from registry_portal.domain.secrets import scan_text
 # 決裁理由の上限。AWS の UpdateRegistryRecordStatus の statusReason が 0〜255 文字のため、
 # ポータルも同じ上限にして、記録した理由をそのまま AWS に送れるようにする
 REASON_MAX_LENGTH = 255
-# 決裁の種別ごとの AWS の遷移先。クライアントから status は受け取らず、API の種別だけで決める
-DECISION_TARGETS: Mapping[OperationKind, RecordStatus] = {
-    APPROVE_KIND: PUBLISHED_STATUS,
-    REJECT_KIND: REJECTED_STATUS,
+# 公開停止・廃止の操作。申請のスナップショットではなく、公開中の現物を対象にする。
+# キーは API の path（/api/records/{recordId}/suspend・/deprecate）と公開管理の照会の actions のキー。
+# SPA の `PUBLICATION_ACTIONS`（frontend/src/publication/api.ts）と揃える
+PUBLICATION_ACTIONS: Mapping[str, OperationKind] = {
+    "suspend": SUSPEND_KIND,
+    "deprecate": DEPRECATE_KIND,
 }
+
+# 審査待ちの一覧の項目の種別。申請（AWS の承認待ち）と廃止依頼（ポータル内で発生）を並べる。
+# SPA の `REVIEW_KINDS`（frontend/src/reviews/api.ts）と揃える
+ReviewKind = Literal["SUBMISSION", "DEPRECATION_REQUEST"]
+REVIEW_KINDS: tuple[ReviewKind, ...] = get_args(ReviewKind)
+REVIEW_SUBMISSION: ReviewKind = "SUBMISSION"
+REVIEW_DEPRECATION_REQUEST: ReviewKind = "DEPRECATION_REQUEST"
 # 公開版スナップショット（PUBLISHED#版）に写す項目。カタログ詳細が読み取る契約（ADR-0007）
 PUBLISHED_FIELDS = ("contact", "termsOfUse", "connectionReference")
 HASH_PATTERN = re.compile(r"[a-f0-9]{64}")
@@ -57,36 +70,132 @@ class DecisionInput:
                 "snapshotHash と reason を指定してください。"
                 "ステータスは API ごとに決まるため指定できません。"
             )
-        snapshot_hash, reason = body["snapshotHash"], body["reason"]
+        snapshot_hash = body["snapshotHash"]
         if not isinstance(snapshot_hash, str) or not HASH_PATTERN.fullmatch(snapshot_hash):
             raise ValueError("審査したスナップショットのハッシュを指定してください。")
-        stripped = reason.strip() if isinstance(reason, str) else ""
-        if not stripped:
-            raise ValueError(_REASON_REQUIRED[kind])
-        if len(stripped) > REASON_MAX_LENGTH:
-            raise ValueError(
-                f"決裁理由は{REASON_MAX_LENGTH}文字以内で指定してください。"
-                "細かい内容は申請理由や別の記録に残してください。"
-            )
-        if scan_text("reason", stripped):
-            raise ValueError(
-                "決裁理由に秘密情報らしき値が含まれています。保管先への参照を記載してください。"
-            )
-        return cls(snapshot_hash, stripped)
+        reason = parse_reason(body["reason"], required=CURATION_RULES[kind].reason_required)
+        return cls(snapshot_hash, reason)
 
 
-_REASON_REQUIRED: Mapping[OperationKind, str] = {
-    APPROVE_KIND: "公開承認の理由は必須です。判断の根拠を記載してください。",
-    REJECT_KIND: "却下理由は必須です。Publisher が修正できるように記載してください。",
-}
+def parse_reason(
+    value: object,
+    *,
+    required: str,
+    label: str = "理由",
+    max_length: int = REASON_MAX_LENGTH,
+) -> str:
+    """Curator・Publisher が入力する理由を検査し、前後の空白を除いて返す。
+
+    決裁・公開停止・廃止・廃止依頼・依頼の見送りで共通。空、上限超え、秘密情報らしき値は ValueError。
+    """
+    stripped = value.strip() if isinstance(value, str) else ""
+    if not stripped:
+        raise ValueError(required)
+    if len(stripped) > max_length:
+        raise ValueError(
+            f"{label}は{max_length}文字以内で指定してください。細かい内容は別の記録に残してください。"
+        )
+    if scan_text("reason", stripped):
+        raise ValueError(
+            f"{label}に秘密情報らしき値が含まれています。保管先への参照を記載してください。"
+        )
+    return stripped
+
+
+@dataclass(frozen=True)
+class PublicationInput:
+    """Curator が送る公開停止・廃止の入力。AWS の status は本文から受け取らない。
+
+    廃止は元に戻せないため、確認（confirm: true）を必須にする（設計書「業務上の状態」）。
+    """
+
+    reason: str
+
+    @classmethod
+    def parse(cls, body: Mapping[str, Any], kind: OperationKind) -> PublicationInput:
+        rule = CURATION_RULES[kind]
+        keys = {"reason", "confirm"} if rule.confirm_required else {"reason"}
+        if set(body) != keys:
+            raise ValueError(
+                f"{'reason と confirm' if rule.confirm_required else 'reason'} を指定してください。"
+                "ステータスは API ごとに決まるため指定できません。"
+            )
+        reason = parse_reason(body["reason"], required=rule.reason_required)
+        if rule.confirm_required and body["confirm"] is not True:
+            raise ValueError(
+                "廃止は元に戻せません。確認した場合だけ confirm に true を指定してください。"
+            )
+        return cls(reason)
+
+
+@dataclass(frozen=True)
+class RecordState:
+    """決裁・公開停止・廃止の前提を検査するときの、Registry レコードの現在の状態。
+
+    status は AWS の状態（管理 API が返す最新版）、published_version は発見できる版（なければ None）。
+    """
+
+    status: RecordStatus
+    published_version: str | None
+
+
+# 公開中の版を残したまま新しい版が下書き・審査待ち・却下済みになっている状態（二重リビジョン）。
+# この状態で却下したときに旧版が発見されなくなるかは AWS の文書になく、実環境でも未確認のため、
+# 公開停止を受け付けない（README「公開停止・廃止・廃止依頼」）
+DUAL_REVISION_STATUSES: frozenset[RecordStatus] = frozenset(
+    {DRAFT_STATUS, PENDING_APPROVAL_STATUS, REJECTED_STATUS}
+)
+
+
+def check_suspendable(state: RecordState) -> None:
+    """公開停止できる状態か検査する。最新版が公開中（APPROVED）のときだけが対象（設計書「業務上の状態」）。"""
+    status = state.status
+    if status == PUBLISHED_STATUS:
+        return
+    if status in IN_FLIGHT_STATUSES:
+        raise ValueError(
+            "AWS が処理中のため公開停止できません。状態が確定してから確認してください。"
+        )
+    if status == DEPRECATED_STATUS:
+        raise ValueError("廃止済みのレコードは公開停止できません。")
+    if status in AWS_FAILED_STATUSES:
+        # 公開中の版が残っていても、失敗した版を却下したときの挙動は確認できていないため受け付けない
+        raise ValueError(
+            "AWS での作成・更新が失敗した状態のため公開停止できません。"
+            "Publisher に修正を依頼し、状態が確定してから確認してください。"
+        )
+    if status in DUAL_REVISION_STATUSES and state.published_version is not None:
+        raise ValueError(
+            f"公開中の版 {state.published_version} に加えて新しい版があるため、公開停止できません。"
+            "この状態で公開を止められるかは確認できていません。審査待ちなら先に申請を却下し、"
+            "カタログに表示されなくなったかを確認してください。表示が続く場合は管理者に連絡してください。"
+        )
+    if status == PENDING_APPROVAL_STATUS:
+        raise ValueError(
+            "公開中の版がない審査待ちの申請です。公開停止ではなく、審査で却下してください。"
+        )
+    if status == REJECTED_STATUS:
+        raise ValueError(
+            "公開中の版がありません（公開停止中、または却下済み）。公開停止は不要です。"
+        )
+    raise ValueError("公開中の版がないため公開停止できません。状態を確認してください。")
+
+
+def check_deprecatable(state: RecordState) -> None:
+    """廃止できる状態か検査する。AWS ではどの状態からも廃止できるため、処理中と廃止済みだけを拒否する。"""
+    if state.status in IN_FLIGHT_STATUSES:
+        raise ValueError("AWS が処理中のため廃止できません。状態が確定してから確認してください。")
+    if state.status == DEPRECATED_STATUS:
+        raise ValueError("このレコードはすでに廃止されています。")
 
 
 class SelfApprovalError(Exception):
     """申請者または最終編集者自身が決裁しようとした。"""
 
 
-def check_decidable(status: str) -> None:
-    """決裁できる状態か検査する。AWS の承認待ちだけが決裁対象（ADR-0002）。"""
+def check_decidable(state: RecordState) -> None:
+    """公開承認・却下できる状態か検査する。AWS の承認待ちだけが決裁対象（ADR-0002）。"""
+    status = state.status
     if status == PENDING_APPROVAL_STATUS:
         return
     if status in IN_FLIGHT_STATUSES:
@@ -100,6 +209,61 @@ def check_decidable(status: str) -> None:
             "却下済みのレコードは決裁できません。Publisher が編集して再申請してください。"
         )
     raise ValueError("審査待ちの申請ではないため決裁できません。一覧から確認してください。")
+
+
+@dataclass(frozen=True)
+class CurationRule:
+    """決裁 handler の操作（決裁である公開承認・却下と、公開停止・廃止）の、種別ごとの規則。
+
+    公開停止・廃止は決裁ではない（GLOSSARY.md「決裁」）が、同じ決裁 handler が同じ手順で行うため、
+    種別ごとに異なる規則をここに集める。手順の中で種別ごとに異なる補助テーブルへの書き込みは、
+    handler の _CurationSubject（curation.py）が受け持つ。
+    """
+
+    # AWS の遷移先。クライアントから status は受け取らず、API の種別だけで決める
+    target: RecordStatus
+    # 前提の検査。満たさなければ ValueError（利用者に見せる理由）
+    precondition: Callable[[RecordState], None]
+    # 理由が空のときに利用者に見せる文言
+    reason_required: str
+    # 元に戻せないため、確認（confirm: true）を本文に必須にするか（設計書「業務上の状態」）
+    confirm_required: bool = False
+
+
+CURATION_RULES: Mapping[OperationKind, CurationRule] = {
+    APPROVE_KIND: CurationRule(
+        target=PUBLISHED_STATUS,
+        precondition=check_decidable,
+        reason_required="公開承認の理由は必須です。判断の根拠を記載してください。",
+    ),
+    REJECT_KIND: CurationRule(
+        target=REJECTED_STATUS,
+        precondition=check_decidable,
+        reason_required="却下理由は必須です。Publisher が修正できるように記載してください。",
+    ),
+    # 公開停止は却下で発見できなくする。再公開には Publisher の編集と再申請が必要（設計書「業務上の状態」）
+    SUSPEND_KIND: CurationRule(
+        target=REJECTED_STATUS,
+        precondition=check_suspendable,
+        reason_required="公開停止の理由は必須です。問題の内容を記載してください。",
+    ),
+    # 廃止は元に戻せない DEPRECATED
+    DEPRECATE_KIND: CurationRule(
+        target=DEPRECATED_STATUS,
+        precondition=check_deprecatable,
+        reason_required="廃止理由は必須です。判断の根拠を記載してください。",
+        confirm_required=True,
+    ),
+}
+
+
+def precondition_failure(kind: OperationKind, state: RecordState) -> str | None:
+    """操作の前提を満たさない理由。満たしていれば None。公開管理の画面に実行できない理由を示すために使う。"""
+    try:
+        CURATION_RULES[kind].precondition(state)
+    except ValueError as error:
+        return str(error)
+    return None
 
 
 def check_not_self_approval(

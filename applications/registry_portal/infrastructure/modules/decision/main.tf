@@ -1,5 +1,6 @@
 # 決裁 Lambda と専用の実行ロールを定義する。
-# 決裁 handler（handlers/curation.py）は審査待ちの閲覧と、公開承認・却下（状態遷移）、
+# 決裁 handler（handlers/curation.py）は審査待ちの閲覧と、決裁（公開承認・却下）・公開停止・廃止（状態遷移）、
+# 公開管理の照会と廃止依頼の見送り、
 # Admin による結果確認中の操作の回復（Registry の再取得と強制解除）だけを行う。
 # descriptor の作成・更新（CreateRegistryRecord / UpdateRegistryRecord）と申請の権限は持たない
 # （設計書「最小インフラとセキュリティ」の決裁 Lambda）。既存 Registry と補助テーブルは借用するだけ。
@@ -58,14 +59,45 @@ resource "aws_lambda_function" "decision" {
 # 決裁 handler の route を、借用する既存 HTTP API（#5 の IaC が持つ）に割り当てる。
 # HTTP API と JWT authorizer は作らず ID で受け取る。route はここで定義し、決裁 Lambda だけを統合先にする
 locals {
-  routes = [
-    "GET /api/reviews",
-    "GET /api/reviews/{recordId}",
-    "POST /api/reviews/{recordId}/approve",
-    "POST /api/reviews/{recordId}/reject",
-    "GET /api/records/{recordId}/recovery",
-    "POST /api/records/{recordId}/recovery",
-  ]
+  # 決裁 Lambda を呼び出せる /api/records/{recordId} 以下の path の末尾と、そのメソッド、Lambda の呼び出し許可の ID。
+  # 公開停止・廃止・公開管理の照会・廃止依頼の見送り（#13）。route と呼び出し許可の両方をこの定義から作る。
+  # 回復操作の許可は下の decision_recovery_api
+  curator_record_paths = {
+    suspend = {
+      method       = "POST"
+      path         = "suspend"
+      statement_id = "AllowHttpApiInvokeSuspend"
+    }
+    deprecate = {
+      method       = "POST"
+      path         = "deprecate"
+      statement_id = "AllowHttpApiInvokeDeprecate"
+    }
+    publication = {
+      method       = "GET"
+      path         = "publication"
+      statement_id = "AllowHttpApiInvokePublication"
+    }
+    decline = {
+      method       = "POST"
+      path         = "deprecation-requests/decline"
+      statement_id = "AllowHttpApiInvokeDeclineDeprecation"
+    }
+  }
+
+  routes = concat(
+    [
+      "GET /api/reviews",
+      "GET /api/reviews/{recordId}",
+      "POST /api/reviews/{recordId}/approve",
+      "POST /api/reviews/{recordId}/reject",
+    ],
+    [for entry in values(local.curator_record_paths) : "${entry.method} /api/records/{recordId}/${entry.path}"],
+    [
+      "GET /api/records/{recordId}/recovery",
+      "POST /api/records/{recordId}/recovery",
+    ],
+  )
 }
 
 data "aws_apigatewayv2_api" "portal" {
@@ -88,14 +120,23 @@ resource "aws_apigatewayv2_route" "decision" {
   authorizer_id      = var.jwt_authorizer_id
 }
 
-# HTTP API から決裁 Lambda を呼び出す許可。審査と決裁の path（/api/reviews 以下）と、
-# 回復操作の path（/api/records/{recordId}/recovery）だけに限る
+# HTTP API から決裁 Lambda を呼び出す許可。審査と決裁の path（/api/reviews 以下）、Curator の
+# レコード単位の path（local.curator_record_paths）、回復操作の path（/api/records/{recordId}/recovery）だけに限る
 resource "aws_lambda_permission" "decision_api" {
   statement_id  = "AllowHttpApiInvokeReviews"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.decision.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/*/api/reviews*"
+}
+
+resource "aws_lambda_permission" "decision_curator_record_api" {
+  for_each      = local.curator_record_paths
+  statement_id  = each.value.statement_id
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.decision.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/*/api/records/*/${each.value.path}"
 }
 
 resource "aws_lambda_permission" "decision_recovery_api" {

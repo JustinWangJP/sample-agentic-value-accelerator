@@ -15,6 +15,7 @@ from registry_portal.domain.drafts import (
     OperationRecord,
     OperationState,
     OperationStatus,
+    RECORD_ID_PATTERN,
     RECOVERY_RELEASED,
     PrincipalRecord,
 )
@@ -41,6 +42,12 @@ def check_idempotency_key(key: str) -> None:
         raise RequestValidationError(
             "Idempotency-Key は1〜128文字の英数字・_・- で指定してください。"
         )
+
+
+def check_record_id(record_id: str) -> None:
+    """path で受け取った Registry レコード ID の形式を検査する。誤っていれば 400。"""
+    if not RECORD_ID_PATTERN.fullmatch(record_id):
+        raise RequestValidationError("Registry レコード ID の形式が正しくありません。")
 
 
 def principal_of(caller: Caller) -> PrincipalRecord:

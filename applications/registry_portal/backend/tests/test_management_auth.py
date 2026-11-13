@@ -235,6 +235,34 @@ def test_unknown_route_returns_not_found_with_common_error_dto() -> None:
     assert body["error"]["message"] == "指定された API は存在しません。"
 
 
+def test_parameterized_routes_are_matched_from_the_route_table_keys() -> None:
+    # ルート表とは別の一覧を持たず、ルート表のキーそのものと照合する
+    templates = [
+        "GET /api/me",
+        "GET /api/records/{recordId}",
+        "POST /api/records/{recordId}/deprecation-requests/decline",
+        "GET /api/operations/{operationId}",
+    ]
+    match = app_module._route_template
+
+    assert match("GET /api/records/abc", templates) == (
+        "GET /api/records/{recordId}",
+        {"recordId": "abc"},
+    )
+    assert match("POST /api/records/abc/deprecation-requests/decline", templates) == (
+        "POST /api/records/{recordId}/deprecation-requests/decline",
+        {"recordId": "abc"},
+    )
+    assert match("GET /api/operations/op-1", templates) == (
+        "GET /api/operations/{operationId}",
+        {"operationId": "op-1"},
+    )
+    # 階層が余分なもの・パラメーターが空のものは照合せず、未定義のルートとして扱う
+    assert match("GET /api/records/abc/unknown", templates) == ("GET /api/records/abc/unknown", {})
+    assert match("GET /api/records/", templates) == ("GET /api/records/", {})
+    assert match("GET /api/me", templates) == ("GET /api/me", {})
+
+
 @pytest.mark.parametrize(
     "environ",
     [

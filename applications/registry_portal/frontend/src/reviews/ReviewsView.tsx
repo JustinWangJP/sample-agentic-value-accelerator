@@ -1,28 +1,30 @@
 import { useEffect, useState } from 'react'
 import { toApiError, type ApiClient, type ApiError } from '../api/client'
 import { RECORD_TYPE_LABELS } from '../api/recordType'
-import { RecoveredOperationNotice } from '../components/RecoveryDetails'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { RecordHistoryToggle } from '../drafts/RecordHistoryView'
 import {
-  PENDING_APPROVAL_STATUS,
   PUBLISHED_STATUS,
+  STATUS_REASON_MAX_LENGTH,
   isUncertainWriteError,
+  recordStatusLabel,
   settlesIdempotencyKey,
-  type RecordStatus,
 } from '../drafts/api'
+import { elapsedDays } from '../elapsedDays'
+import { RecordPublicationToggle } from '../publication/RecordPublicationPanel'
 import {
-  DECISION_REASON_MAX_LENGTH,
   type DecisionKind,
   type DecisionOperation,
+  type DeprecationRequestSummary,
   type PendingDetail,
   type PendingPage,
-  type PendingSummary,
   type Principal,
   type PublishedBase,
   type RecordReference,
   type SubmissionSnapshot,
+  type SubmissionSummary,
 } from './api'
+import { OperationCheck } from '../components/OperationCheck'
 
 type Props = { api: ApiClient; roles: string[]; onRelogin: () => void }
 type ListState =
@@ -51,11 +53,6 @@ const DECISION_COPY: Record<
   },
 }
 
-/** 画面に出す AWS の状態。PENDING_APPROVAL は「審査待ち」と表示する（GLOSSARY「申請」） */
-function statusLabel(status: RecordStatus): string {
-  return status === PENDING_APPROVAL_STATUS ? '審査待ち' : status
-}
-
 function formatReferences(references: RecordReference[]): string {
   return (
     references.map((reference) => `${reference.recordId} @ ${reference.recordVersion}`).join('、') ||
@@ -68,14 +65,21 @@ function principalLabel(principal: Principal | null): string {
 }
 
 /** 一覧の申請理由。申請がない場合と、申請はあるはずなのに読めない場合を区別する */
-function submissionLine(item: PendingSummary): string {
+function submissionLine(item: SubmissionSummary): string {
   if (item.submissionState === 'MISSING')
     return '申請スナップショットを取得できません（管理者に連絡してください）'
   if (item.submissionState === 'NONE' || item.reason === null) return 'ポータル経由の申請なし'
   return item.reason
 }
 
-/** Curator の審査待ちの一覧と、申請のスナップショットに基づく公開承認・却下 */
+/** 廃止依頼の項目の状況。公開停止済みなら、廃止するか見送るかの判断待ち */
+function requestProgress(item: DeprecationRequestSummary): string {
+  const days = elapsedDays(item.requestedAt)
+  const elapsed = days === null ? '' : `・${days} 日経過`
+  return item.suspended ? `公開停止済み・廃止の判断待ち${elapsed}` : `未対応${elapsed}`
+}
+
+/** Curator の審査待ちの一覧と、申請のスナップショットに基づく公開承認・却下、廃止依頼への対応 */
 export function ReviewsView({ api, roles, onRelogin }: Props) {
   const [list, setList] = useState<ListState>({ kind: 'loading' })
   const [token, setToken] = useState<string | undefined>()
@@ -124,6 +128,9 @@ export function ReviewsView({ api, roles, onRelogin }: Props) {
         AWS の承認待ち（PENDING_APPROVAL）を正本として表示します。申請のスナップショットを確認してから
         公開承認または却下を行ってください。公開承認は実行の許可ではありません。
       </p>
+      <p>
+        未解決の廃止依頼は、最初のページに古い順で表示します。公開停止で止めてから、廃止するか見送るかを判断できます。
+      </p>
       {list.kind === 'loading' ? (
         <p role="status">一覧を読み込んでいます…</p>
       ) : list.kind === 'error' ? (
@@ -139,31 +146,57 @@ export function ReviewsView({ api, roles, onRelogin }: Props) {
             <p>{list.page.nextToken ? 'このページに審査待ちはありません。' : '審査待ちはありません。'}</p>
           )}
           <ul className="catalog-items">
-            {list.page.items.map((item) => (
-              <li key={item.recordId}>
-                <h3>{item.displayName}</h3>
-                <p>
-                  {RECORD_TYPE_LABELS[item.recordType]}・{item.name}・
-                  {item.ownerTeam ?? '所有チーム不明'}・版 {item.recordVersion}
-                </p>
-                <p>
-                  申請理由: {submissionLine(item)}
-                  {item.submittedBy && `（申請者 ${item.submittedBy.subject}）`}
-                </p>
-                <p>
-                  状態 {statusLabel(item.status)}
-                  {item.operationId && ' / 結果確認中'}
-                </p>
-                {!item.managed && <p>ポータルで管理されていないため、ここでは決裁できません。</p>}
-                <button
-                  type="button"
-                  disabled={item.operationId !== null || !item.snapshotHash}
-                  onClick={() => void openDetail(item.recordId)}
-                >
-                  審査する
-                </button>
-              </li>
-            ))}
+            {list.page.items.map((item) =>
+              item.reviewKind === 'DEPRECATION_REQUEST' ? (
+                <li key={`request-${item.recordId}`}>
+                  <h3>{item.displayName}</h3>
+                  <p>
+                    {RECORD_TYPE_LABELS[item.recordType]}・{item.name}・
+                    {item.ownerTeam ?? '所有チーム不明'}・版 {item.recordVersion}
+                  </p>
+                  <p>
+                    廃止依頼: {item.reason}（依頼者 {item.requestedBy.subject}）
+                  </p>
+                  <p>
+                    状態 {recordStatusLabel(item.status)} / {requestProgress(item)}
+                    {item.operationId && ' / 結果確認中'}
+                  </p>
+                  {!item.managed && <p>ポータルで管理されていないため、ここでは対応できません。</p>}
+                  <RecordPublicationToggle
+                    api={api}
+                    recordId={item.recordId}
+                    onRelogin={onRelogin}
+                    label="対応する"
+                  />
+                </li>
+              ) : (
+                <li key={item.recordId}>
+                  <h3>{item.displayName}</h3>
+                  <p>
+                    {RECORD_TYPE_LABELS[item.recordType]}・{item.name}・
+                    {item.ownerTeam ?? '所有チーム不明'}・版 {item.recordVersion}
+                  </p>
+                  <p>
+                    申請理由: {submissionLine(item)}
+                    {item.submittedBy && `（申請者 ${item.submittedBy.subject}）`}
+                  </p>
+                  <p>
+                    状態 {recordStatusLabel(item.status)}
+                    {item.operationId && ' / 結果確認中'}
+                  </p>
+                  {!item.managed && (
+                    <p>ポータルで管理されていないため、ここでは決裁できません。</p>
+                  )}
+                  <button
+                    type="button"
+                    disabled={item.operationId !== null || !item.snapshotHash}
+                    onClick={() => void openDetail(item.recordId)}
+                  >
+                    審査する
+                  </button>
+                </li>
+              ),
+            )}
           </ul>
           <nav className="pager" aria-label="審査待ちのページ">
             <button
@@ -286,6 +319,12 @@ function ReviewDetailView({
         所有チーム {detail.ownerTeam ?? '不明'} /{' '}
         {detail.publishedVersion ? `公開中の版 ${detail.publishedVersion}` : '公開版なし（初回公開）'}
       </p>
+      {detail.deprecationRequest && (
+        <p role="alert">
+          このレコードには未解決の廃止依頼があります（理由: {detail.deprecationRequest.reason}・依頼者{' '}
+          {detail.deprecationRequest.requestedBy.subject}）。依頼者の意図を確認してから決裁してください。
+        </p>
+      )}
       {!snapshot ? (
         <p role="alert">
           {detail.submissionState === 'MISSING'
@@ -340,7 +379,7 @@ function ReviewDetailView({
                   <textarea
                     name={DECISION_COPY[kind].field}
                     required
-                    maxLength={DECISION_REASON_MAX_LENGTH}
+                    maxLength={STATUS_REASON_MAX_LENGTH}
                     rows={3}
                     value={reasons[kind]}
                     onChange={(event) =>
@@ -392,9 +431,9 @@ function ReviewDetailView({
         </p>
       )}
       {state.kind === 'result' && state.operation.operationState === 'VERIFYING' && (
-        <DecisionOperationCheck
-          api={api}
+        <OperationCheck
           operationId={state.operation.operationId}
+          load={(id) => api.getDecisionOperation(id)}
           onDone={(operation) => setState({ kind: 'result', operation })}
           onRelogin={onRelogin}
         />
@@ -485,54 +524,5 @@ function DiffTable({ next, published }: { next: DiffFields; published: Published
         ))}
       </tbody>
     </table>
-  )
-}
-
-function DecisionOperationCheck({
-  api,
-  operationId,
-  onDone,
-  onRelogin,
-}: {
-  api: ApiClient
-  operationId: string
-  onDone: (operation: DecisionOperation) => void
-  onRelogin: () => void
-}) {
-  const [message, setMessage] = useState('決裁の結果確認中です。確定するまでこのレコードへの書き込みを停止しています。')
-  const [error, setError] = useState<ApiError | null>(null)
-  const [busy, setBusy] = useState(false)
-  // Admin の回復操作で確定した決裁は、回復結果を見せてから結果の表示へ進む
-  const [recovered, setRecovered] = useState<DecisionOperation | null>(null)
-  async function check() {
-    setBusy(true)
-    setError(null)
-    try {
-      const result = await api.getDecisionOperation(operationId)
-      if (result.operationState === 'VERIFYING') setMessage(result.message)
-      else if (result.recovery) setRecovered(result)
-      else onDone(result)
-    } catch (failure) {
-      setError(toApiError(failure, '決裁の結果を取得できませんでした。'))
-    } finally {
-      setBusy(false)
-    }
-  }
-  if (recovered?.recovery) {
-    return (
-      <RecoveredOperationNotice
-        recovery={recovered.recovery}
-        onContinue={() => onDone(recovered)}
-      />
-    )
-  }
-  return (
-    <div>
-      <p role="status">{message}</p>
-      <button type="button" disabled={busy} onClick={() => void check()}>
-        決裁の結果を確認
-      </button>
-      {error && <RequestErrorAlert error={error} onRelogin={onRelogin} />}
-    </div>
   )
 }

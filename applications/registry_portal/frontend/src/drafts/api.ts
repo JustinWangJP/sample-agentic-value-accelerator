@@ -42,8 +42,21 @@ export function isRecordStatus(value: unknown): value is RecordStatus {
 export const PENDING_APPROVAL_STATUS: RecordStatus = 'PENDING_APPROVAL'
 /** 公開承認済み。バックエンドの PUBLISHED_STATUS と揃える */
 export const PUBLISHED_STATUS: RecordStatus = 'APPROVED'
+/** 廃止済み。元に戻せない終端の状態。バックエンドの DEPRECATED_STATUS と揃える */
+export const DEPRECATED_STATUS: RecordStatus = 'DEPRECATED'
+
+/** 画面に出す AWS の状態。PENDING_APPROVAL は「審査待ち」と表示する（GLOSSARY「申請」） */
+export function recordStatusLabel(status: RecordStatus): string {
+  return status === PENDING_APPROVAL_STATUS ? '審査待ち' : status
+}
+
+/**
+ * 決裁・公開停止・廃止の理由の上限。AWS の UpdateRegistryRecordStatus の statusReason（0〜255文字）に合わせる
+ * （バックエンドの REASON_MAX_LENGTH（domain/curation.py））
+ */
+export const STATUS_REASON_MAX_LENGTH = 255
 /** 編集を受け付けない状態。バックエンドの NOT_EDITABLE_STATUSES と揃える */
-const NOT_EDITABLE_STATUSES: readonly RecordStatus[] = ['CREATING', 'UPDATING', 'DEPRECATED']
+const NOT_EDITABLE_STATUSES: readonly RecordStatus[] = ['CREATING', 'UPDATING', DEPRECATED_STATUS]
 export function isEditableStatus(status: RecordStatus): boolean {
   return !NOT_EDITABLE_STATUSES.includes(status)
 }
@@ -127,7 +140,17 @@ export type DraftOperation =
     }
 
 /** 操作の種別。バックエンドの OperationKind（domain/drafts.py）と揃える */
-export const OPERATION_KINDS = ['CREATE', 'UPDATE', 'SUBMIT', 'APPROVE', 'REJECT'] as const
+export const OPERATION_KINDS = [
+  'CREATE',
+  'UPDATE',
+  'SUBMIT',
+  'APPROVE',
+  'REJECT',
+  'SUSPEND',
+  'DEPRECATE',
+  'REQUEST_DEPRECATION',
+  'DECLINE_DEPRECATION',
+] as const
 export type OperationKind = (typeof OPERATION_KINDS)[number]
 /** 操作と審査の種別の表示 */
 export const KIND_LABELS: Record<OperationKind, string> = {
@@ -136,6 +159,10 @@ export const KIND_LABELS: Record<OperationKind, string> = {
   SUBMIT: '申請',
   APPROVE: '公開承認',
   REJECT: '却下',
+  SUSPEND: '公開停止',
+  DEPRECATE: '廃止',
+  REQUEST_DEPRECATION: '廃止依頼',
+  DECLINE_DEPRECATION: '廃止依頼の見送り',
 }
 /**
  * 履歴 API が返す操作記録の結果。バックエンドの HistoryState（domain/drafts.py）と揃える。
@@ -226,6 +253,48 @@ export type DraftApi = {
     idempotencyKey: string,
   ) => Promise<DraftOperation>
   getHistory: (recordId: string) => Promise<RecordHistory>
+  /** 廃止依頼。AWS の状態は変えず、Curator が審査待ちの一覧で廃止するか見送るかを判断する */
+  requestDeprecation: (recordId: string, input: DeprecationRequestInput) => Promise<DeprecationRequest>
+}
+
+/** 廃止依頼・見送りの理由の上限。バックエンドの DEPRECATION_REASON_MAX_LENGTH（domain/deprecation.py）と揃える */
+export const DEPRECATION_REASON_MAX_LENGTH = 255
+/** 廃止依頼の入力 */
+export type DeprecationRequestInput = { reason: string }
+/** 廃止依頼の状態。バックエンドの DeprecationRequestState（domain/deprecation.py）と揃える */
+export const DEPRECATION_REQUEST_STATES = ['OPEN', 'RESOLVED'] as const
+export type DeprecationRequestState = (typeof DEPRECATION_REQUEST_STATES)[number]
+/**
+ * 解決済みの依頼の終わり方。廃止（Curator の廃止で解決）か見送り（理由を付けて閉じる）だけ。
+ * 公開停止は依頼を閉じない。バックエンドの DeprecationResolution（domain/deprecation.py）と揃える
+ */
+export const DEPRECATION_RESOLUTIONS = ['DEPRECATED', 'DECLINED'] as const
+export type DeprecationResolution = (typeof DEPRECATION_RESOLUTIONS)[number]
+/** 廃止依頼。バックエンドの DeprecationRequest.view（domain/deprecation.py）と揃える */
+export type DeprecationRequest = {
+  state: DeprecationRequestState
+  requestId: string
+  recordId: string
+  reason: string
+  requestedBy: Principal
+  requestedAt: string
+  resolution: DeprecationResolution | null
+  /** 見送りでは見送りの理由、廃止では廃止の理由 */
+  resolutionReason: string | null
+  resolvedBy: Principal | null
+  resolvedAt: string | null
+}
+export function isDeprecationRequest(value: unknown): value is DeprecationRequest {
+  return (
+    isObject(value) &&
+    DEPRECATION_REQUEST_STATES.some((state) => state === value.state) &&
+    hasStrings(value, ['requestId', 'recordId', 'reason', 'requestedAt']) &&
+    isPrincipal(value.requestedBy) &&
+    (value.resolution === null || DEPRECATION_RESOLUTIONS.some((kind) => kind === value.resolution)) &&
+    (value.resolutionReason === null || typeof value.resolutionReason === 'string') &&
+    (value.resolvedBy === null || isPrincipal(value.resolvedBy)) &&
+    (value.resolvedAt === null || typeof value.resolvedAt === 'string')
+  )
 }
 
 function isDraft(value: unknown): value is RecordDraft {
@@ -354,6 +423,11 @@ export function createDraftApi(request: ApiRequest, invalidResponse: () => Error
       checked(
         request('GET', `/api/records/${encodeURIComponent(id)}/history`),
         isHistory,
+      ),
+    requestDeprecation: (id, input) =>
+      checked(
+        request('POST', `/api/records/${encodeURIComponent(id)}/deprecation-requests`, input),
+        isDeprecationRequest,
       ),
   }
 }

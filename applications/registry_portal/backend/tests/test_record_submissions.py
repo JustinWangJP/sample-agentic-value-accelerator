@@ -23,7 +23,7 @@ from draft_helpers import RECORD_ARN, RECORD_ID, aws_record, call, clients, even
 from record_fixtures import CUSTOM_DRAFT, CUSTOM_DESCRIPTORS, METADATA, stub_create
 from registry_portal.app import create_management_handler
 from registry_portal.domain.drafts import RecordDraft
-from registry_portal.services.draft_store import DraftStore
+from registry_portal.services.supplement_store import SupplementStore
 from registry_portal.services.discovery import DiscoveryDependencies
 
 GET = {"registryId": REGISTRY_ARN, "recordId": RECORD_ID}
@@ -59,7 +59,7 @@ def setup_draft(stub, registry, db, responses=None):
     handler = create_management_handler(
         {**ENV, "SUPPLEMENT_TABLE_NAME": SUPPLEMENT_TABLE},
         registry_client=registry,
-        draft_store_client=db,
+        supplement_store_client=db,
         discovery=DiscoveryDependencies(transport=transport, secrets_client=secrets.client),
     )
     stub_create(stub, CUSTOM_DRAFT, CUSTOM_DESCRIPTORS, META)
@@ -306,7 +306,7 @@ def test_skill_submission_retains_provenance_supplement_for_review():
         handler = create_management_handler(
             {**ENV, "SUPPLEMENT_TABLE_NAME": SUPPLEMENT_TABLE},
             registry_client=registry,
-            draft_store_client=db,
+            supplement_store_client=db,
             discovery=DiscoveryDependencies(transport=transport, secrets_client=secrets.client),
         )
         stub_create(stub, SKILL_DRAFT, SKILL_DESCRIPTORS, METADATA)
@@ -516,7 +516,7 @@ def test_editing_invalidates_the_previous_submission_and_allows_the_same_unpubli
         stub_submission(stub, record)
         _, submitted = submit(handler, created)
         original = stored(db, f'SUBMISSION#{submitted["submissionId"]}')
-        store = DraftStore(SUPPLEMENT_TABLE, REGISTRY_ARN, db)
+        store = SupplementStore(SUPPLEMENT_TABLE, REGISTRY_ARN, db)
         assert store.get_submission(RECORD_ID, submitted["submissionId"])["invalidated"] is False
         pending = {**record, "status": before_status}
         stub.add_response("get_registry_record", pending, GET)

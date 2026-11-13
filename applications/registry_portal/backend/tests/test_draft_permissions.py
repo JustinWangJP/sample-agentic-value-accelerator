@@ -40,6 +40,8 @@ def test_draft_policy_only_grants_record_writes_and_supplement_transactions():
                 "dynamodb:PutItem",
                 "dynamodb:DeleteItem",
                 "dynamodb:Query",
+                # 廃止依頼の保存が、ロックがないことをトランザクションの中で確かめるために使う
+                "dynamodb:ConditionCheckItem",
             ],
             "Resource": TABLE_ARN,
         },
@@ -80,6 +82,48 @@ def test_root_module_applies_the_draft_policy_to_the_management_role():
     root_variables = set(
         re.findall(r'^variable "([^"]+)"', (ROOT / "variables.tf").read_text(), re.MULTILINE)
     )
-    assert root_variables == module_variables | {"region"}
+    assert root_variables == module_variables | _variables(ROUTES_MODULE) | {"region"}
     # CI では検証だけを行うため、state の保存先は部分設定にして環境ごとに渡す
     assert 'backend "s3" {}' in (ROOT / "versions.tf").read_text()
+
+
+ROUTES_MODULE = MODULE.parent / "management_routes"
+
+
+def _variables(module: Path) -> set[str]:
+    return set(
+        re.findall(r'^variable "([^"]+)"', (module / "variables.tf").read_text(), re.MULTILINE)
+    )
+
+
+def test_routes_module_assigns_only_portal_added_management_routes():
+    """履歴と廃止依頼の route だけを、既存の管理 Lambda の統合に割り当てる。
+
+    HTTP API・authorizer・統合は借用し、作らない。呼び出し許可は割り当てた path だけに限る。
+    """
+    main = (ROUTES_MODULE / "main.tf").read_text()
+    assert re.findall(r'route_key\s*=\s*"([^"]+)"', main) == [
+        "GET /api/records/{recordId}/history",
+        "POST /api/records/{recordId}/deprecation-requests",
+    ]
+    assert re.findall(r'^resource "([^"]+)"', main, re.MULTILINE) == [
+        "aws_apigatewayv2_route",
+        "aws_lambda_permission",
+    ]
+    assert 'target             = "integrations/${var.management_integration_id}"' in main
+    assert 'authorization_type = "JWT"' in main
+    assert "authorizer_id      = var.jwt_authorizer_id" in main
+    paths = re.findall(r'path\s*=\s*"([^"]+)"', main)
+    assert paths == ["history", "deprecation-requests"]
+    (source_arn,) = re.findall(r"source_arn\s*=\s*\"([^\"]+)\"", main)
+    assert source_arn.split("/*/*")[1] == "/api/records/*/${each.value.path}"
+
+
+def test_root_module_applies_the_routes_module():
+    main = (ROOT / "main.tf").read_text()
+    (block,) = re.findall(r'module "management_routes" \{(.*?)\n\}', main, re.DOTALL)
+    source = re.search(r'source\s*=\s*"([^"]+)"', block)
+    assert source is not None
+    assert (ROOT / source.group(1)).resolve() == ROUTES_MODULE
+    for name in _variables(ROUTES_MODULE):
+        assert re.search(rf"^\s*{name}\s*=\s*var\.{name}$", block, re.MULTILINE), name

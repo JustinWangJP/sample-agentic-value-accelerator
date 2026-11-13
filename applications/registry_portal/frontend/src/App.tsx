@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { CatalogView } from './catalog/CatalogView'
 import { canViewAllHistory } from './drafts/api'
 import { RecordDraftsView } from './drafts/RecordDraftsView'
+import { RecordPublicationView } from './publication/RecordPublicationView'
 import { RecoveryView } from './recovery/RecoveryView'
 import { ReviewsView } from './reviews/ReviewsView'
 import type { StartupState } from './startup'
@@ -62,9 +63,11 @@ export function StartupView({ state }: { state: StartupState | null }) {
           <CatalogView
             api={state.api}
             canViewHistory={canViewAllHistory(state.me.roles)}
+            canManagePublication={state.me.roles.includes('Curator')}
             onRelogin={state.relogin}
           />
           <ReviewsView api={state.api} roles={state.me.roles} onRelogin={state.relogin} />
+          <RecordPublicationView api={state.api} roles={state.me.roles} onRelogin={state.relogin} />
           <RecoveryView api={state.api} roles={state.me.roles} onRelogin={state.relogin} />
           <RecordDraftsView api={state.api} roles={state.me.roles} teams={state.me.teams} onRelogin={state.relogin} />
         </>

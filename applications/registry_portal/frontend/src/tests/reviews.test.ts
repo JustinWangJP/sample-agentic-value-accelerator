@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 // 審査と決裁（Seam 2: SPA の fetch 境界）。Curator の一覧・スナップショットの差分・
-// 公開承認・却下の本文と結果の表示（検索への反映待ち、409 の再読み込み）を確認する。
+// 公開承認・却下の本文と結果の表示（検索への反映待ち、409 の再読み込み）と、
+// 廃止依頼の項目（経過日数・公開停止済みの判断待ち・公開管理の入口）を確認する。
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -12,6 +13,7 @@ const SNAPSHOT_HASH = 'b'.repeat(64)
 const submittedBy = { issuer: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_EXAMPLE', subject: 'publisher-1' }
 const lastEditedBy = { ...submittedBy, subject: 'publisher-2' }
 const summary = {
+  reviewKind: 'SUBMISSION',
   recordId: 'agentABC1234',
   name: 'payments-a2a',
   displayName: '決済 Agent',
@@ -81,6 +83,7 @@ const detail = {
     record: { ...snapshot.record, description: '残高を調べる', recordVersion: '1.0.0' },
     approvedBy: { ...submittedBy, subject: 'curator-1' },
   },
+  deprecationRequest: null,
 }
 const approveResult = {
   recordId: 'agentABC1234',
@@ -284,8 +287,8 @@ it('結果確認中の決裁は操作照会で確定し、承認後に反映待�
   await click('審査する')
   await setValue('approveReason', '内容を確認した')
   await submitForm(0)
-  expect(container.textContent).toContain('決裁の結果確認中')
-  await click('決裁の結果を確認')
+  expect(container.textContent).toContain('結果確認中です。確定するまで')
+  await click('処理結果を確認')
   expect(calls[3]?.url).toBe('/api/operations/decision-1')
   expect(container.textContent).toContain('公開承認しました（版 2.0.0）')
   expect(container.textContent).toContain('検索への反映待ち')
@@ -309,7 +312,7 @@ it('Admin の回復操作で確定した決裁は、照会で回復結果を見�
   await click('審査する')
   await setValue('approveReason', '内容を確認した')
   await submitForm(0)
-  await click('決裁の結果を確認')
+  await click('処理結果を確認')
   expect(container.textContent).toContain('Admin の回復操作で結果が確定しました。')
   expect(container.textContent).toContain('Registry を再取得して確定')
   expect(container.textContent).not.toContain('公開承認しました')
@@ -385,4 +388,107 @@ it('状態が AWS の値の一覧にない応答は不正な応答として扱�
   await mount([jsonResponse(200, { items: [{ ...summary, status: 'UNKNOWN' }], nextToken: null })])
   expect(container.textContent).not.toContain('決済 Agent')
   expect(container.querySelector('[role="alert"]')).not.toBeNull()
+})
+
+/** 未解決の廃止依頼の項目。申請の項目（summary）とは形が異なる（バックエンドの ReviewQueue と揃える） */
+const deprecationRequest = {
+  reviewKind: 'DEPRECATION_REQUEST',
+  recordId: 'agentABC1234',
+  name: 'payments-a2a',
+  displayName: '決済 Agent',
+  recordType: 'AGENT',
+  recordVersion: '1.0.0',
+  status: 'APPROVED',
+  managed: true,
+  ownerTeam: 'team-payments',
+  requestId: 'request-1',
+  reason: '利用が終わったため',
+  requestedAt: '2026-11-01T01:00:00+00:00',
+  requestedBy: { ...submittedBy, subject: 'publisher-1' },
+  suspended: false,
+  operationId: null,
+}
+const publicationView = {
+  recordId: 'agentABC1234',
+  name: 'payments-a2a',
+  displayName: '決済 Agent',
+  recordType: 'AGENT',
+  recordVersion: '1.0.0',
+  status: 'APPROVED',
+  managed: true,
+  ownerTeam: 'team-payments',
+  publishedVersion: '1.0.0',
+  suspended: false,
+  operationId: null,
+  deprecationRequest: {
+    requestId: 'request-1',
+    recordId: 'agentABC1234',
+    reason: '利用が終わったため',
+    requestedBy: { ...submittedBy, subject: 'publisher-1' },
+    requestedAt: '2026-11-01T01:00:00+00:00',
+    state: 'OPEN',
+    resolution: null,
+    resolutionReason: null,
+    resolvedBy: null,
+    resolvedAt: null,
+  },
+  actions: {
+    suspend: { allowed: true, message: null },
+    deprecate: { allowed: true, message: null },
+  },
+}
+
+it('廃止依頼を申請と並べて一覧に表示し、経過日数と判断待ちの状況を確認できる', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-11-11T00:00:00+00:00'))
+  await mount([
+    jsonResponse(200, {
+      items: [deprecationRequest, { ...deprecationRequest, recordId: 'mcpEFGH5678I', suspended: true }, summary],
+      nextToken: null,
+    }),
+  ])
+  vi.useRealTimers()
+  expect(container.textContent).toContain('廃止依頼: 利用が終わったため（依頼者 publisher-1）')
+  expect(container.textContent).toContain('未対応・9 日経過')
+  expect(container.textContent).toContain('公開停止済み・廃止の判断待ち・9 日経過')
+  // 申請の審査と廃止依頼への対応を同じ一覧で行う
+  expect(container.textContent).toContain('申請理由: 利用者向けに公開する')
+  expect(button('審査する').disabled).toBe(false)
+})
+
+it('廃止依頼の「対応する」で、同じレコードの公開管理を開く', async () => {
+  const calls = await mount([
+    jsonResponse(200, { items: [deprecationRequest], nextToken: null }),
+    jsonResponse(200, publicationView),
+  ])
+  await click('対応する')
+  expect(calls[1]?.url).toBe('/api/records/agentABC1234/publication')
+  expect(container.textContent).toContain('公開管理: 決済 Agent')
+  expect(container.textContent).toContain('未解決の廃止依頼')
+  expect(button('公開停止する')).toBeTruthy()
+})
+
+it('審査の詳細は、未解決の廃止依頼があれば決裁の前に警告する', async () => {
+  await mount([
+    jsonResponse(200, { items: [summary], nextToken: null }),
+    jsonResponse(200, { ...detail, deprecationRequest: publicationView.deprecationRequest }),
+  ])
+  await click('審査する')
+  expect(container.textContent).toContain('このレコードには未解決の廃止依頼があります（理由: 利用が終わったため')
+})
+
+it('一覧の項目は種別ごとの必須の項目を検査し、欠けていれば拒否する', async () => {
+  const withoutKind: Record<string, unknown> = { ...summary }
+  delete withoutKind.reviewKind
+  const requestWithoutSuspended: Record<string, unknown> = { ...deprecationRequest }
+  delete requestWithoutSuspended.suspended
+  // 申請の項目の形で返った廃止依頼（以前の不整合）も拒否する
+  const requestShapedAsSubmission = { ...summary, reviewKind: 'DEPRECATION_REQUEST' }
+  for (const item of [withoutKind, requestWithoutSuspended, requestShapedAsSubmission]) {
+    await mount([jsonResponse(200, { items: [item], nextToken: null })])
+    expect(container.textContent).toContain('API から想定外の応答が返されました。')
+    // 前の項目の表示を引き継がないよう、項目ごとに描画し直す
+    await act(() => root.unmount())
+    root = createRoot(container)
+  }
 })

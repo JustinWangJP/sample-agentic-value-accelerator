@@ -588,3 +588,76 @@ it('作成と申請は、結果が不明な失敗だけ同じキーを保ち、�
   expect(settlesIdempotencyKey({ status: 0, code: 'NETWORK_ERROR' })).toBe(false)
   expect(settlesIdempotencyKey({ status: 502, code: 'REGISTRY_UNAVAILABLE' })).toBe(false)
 })
+
+const openRequest = {
+  state: 'OPEN',
+  requestId: 'request-1',
+  recordId: 'agentABC1234',
+  reason: '利用が終わったため',
+  requestedBy: { issuer: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_EXAMPLE', subject: 'alice' },
+  requestedAt: '2026-11-09T01:00:00+00:00',
+  resolution: null,
+  resolutionReason: null,
+  resolvedBy: null,
+  resolvedAt: null,
+}
+
+it('廃止依頼は理由を本文に載せて送り、Curator の判断と履歴での確認を案内する', async () => {
+  const calls = await mount([
+    savedList(a2aDraft, 'APPROVED'),
+    jsonResponse(200, detailOf(a2aDraft)),
+    jsonResponse(200, openRequest),
+  ])
+  await click('編集')
+  await setValue('deprecationReason', '利用が終わったため')
+  await act(() =>
+    container
+      .querySelectorAll('form')[1]
+      ?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+  )
+  expect(calls[2]?.url).toBe('/api/records/agentABC1234/deprecation-requests')
+  expect(sentBody(calls, 2)).toEqual({ reason: '利用が終わったため' })
+  expect(container.textContent).toContain('廃止依頼を送信しました。Curator が廃止するか見送るかを判断します')
+  expect(container.textContent).toContain('結果は操作履歴で確認できます')
+})
+
+it('廃止依頼の 409 は、サーバーの理由（重複か処理中か）をそのまま表示する', async () => {
+  await mount([
+    savedList(a2aDraft, 'APPROVED'),
+    jsonResponse(200, detailOf(a2aDraft)),
+    jsonResponse(409, {
+      error: {
+        code: 'CONTENT_CONFLICT',
+        message: '別の操作が処理中です。結果が確定してから再度お試しください。',
+        requestId: 'r-1',
+      },
+    }),
+  ])
+  await click('編集')
+  await setValue('deprecationReason', '利用が終わったため')
+  await act(() =>
+    container
+      .querySelectorAll('form')[1]
+      ?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+  )
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain('別の操作が処理中です')
+  expect(container.textContent).not.toContain('未解決の廃止依頼があります')
+})
+
+it('解決の項目が欠けた廃止依頼の応答は拒否する', async () => {
+  const withoutResolution: Record<string, unknown> = { ...openRequest }
+  delete withoutResolution.resolution
+  await mount([
+    savedList(a2aDraft, 'APPROVED'),
+    jsonResponse(200, detailOf(a2aDraft)),
+    jsonResponse(200, withoutResolution),
+  ])
+  await click('編集')
+  await setValue('deprecationReason', '利用が終わったため')
+  await act(() =>
+    container
+      .querySelectorAll('form')[1]
+      ?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+  )
+  expect(container.textContent).toContain('API から想定外の応答が返されました。')
+})

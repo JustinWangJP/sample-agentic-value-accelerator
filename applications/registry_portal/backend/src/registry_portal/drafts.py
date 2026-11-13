@@ -15,7 +15,6 @@ from registry_portal.domain.drafts import (
     DRAFT_STATUS,
     IN_FLIGHT_STATUSES,
     NOT_EDITABLE_STATUSES,
-    RECORD_ID_PATTERN,
     SUBMIT_KIND,
     SUBMITTED_STATUSES,
     UPDATE_KIND,
@@ -46,12 +45,13 @@ from registry_portal.operations import (
     AWS_REJECTED_ERRORS as _AWS_REJECTED_ERRORS,
     AWS_THROTTLED_ERRORS,
     check_idempotency_key,
+    check_record_id,
     now,
     operation_status,
     principal_of,
     record_request_id,
 )
-from registry_portal.services.draft_store import DraftStore, StoreConflict
+from registry_portal.services.supplement_store import SupplementStore, StoreConflict
 
 # AWS が入力や設定を理由に保存を拒否したと確定できるエラー。作成・更新では ConflictException も含める。
 # 申請 API の ConflictException だけは、状態の変化による競合として 409 にする（_call_submit_api）
@@ -145,7 +145,7 @@ class DraftSettlement:
     これだけを使って下書きの操作を確定する。
     """
 
-    def __init__(self, registry: str, store: DraftStore, client: RegistryRecordReader) -> None:
+    def __init__(self, registry: str, store: SupplementStore, client: RegistryRecordReader) -> None:
         self.registry = registry
         self.store = store
         self._registry = client
@@ -280,7 +280,7 @@ class RecordDrafts:
     def __init__(
         self,
         registry: str,
-        store: DraftStore,
+        store: SupplementStore,
         client: RegistryControlClient,
         discovery: DiscoveryClient,
     ) -> None:
@@ -386,8 +386,7 @@ class RecordDrafts:
 
     def _management(self, caller: Caller, record_id: str) -> Management:
         require_publisher(caller)
-        if not RECORD_ID_PATTERN.fullmatch(record_id):
-            raise RequestValidationError("Registry レコード ID の形式が正しくありません。")
+        check_record_id(record_id)
         management = self._load_management(record_id)
         if management is None or not management.is_owned_by(caller.teams):
             raise ForbiddenError()
@@ -563,10 +562,11 @@ class RecordDrafts:
         draft = self._read_draft(record, management)
         check_a2a_metadata(record, request.references)
         published = self._discovery.get_record(record_id)
+        # 公開停止中も、最後に公開承認された版を semver の下限にする（公開版スナップショットを上書きしない）
         published_version = check_newer_than_published(
             str(record["recordVersion"]),
             [
-                management.published_version(record),
+                management.last_published_version(record),
                 published.item.record_version if published else None,
             ],
         )

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { OperationCheck } from './OperationCheck'
+import { DeprecationRequestForm } from './DeprecationRequestForm'
+import { OperationCheck } from '../components/OperationCheck'
 import { RecordHistoryToggle } from './RecordHistoryView'
 import { SubmissionView } from './SubmissionView'
 import { ApiError, toApiError, type ApiClient, type Role } from '../api/client'
@@ -8,6 +9,7 @@ import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { CATALOG_RECORD_TYPES, RECORD_TYPE_LABELS } from '../api/recordType'
 import {
   DEFAULT_DRAFT_ENVIRONMENT,
+  DEPRECATED_STATUS,
   isEditableStatus,
   isUncertainWriteError,
   settlesIdempotencyKey,
@@ -152,8 +154,8 @@ export function RecordDraftsView({ api, roles, teams, onRelogin }: Props) {
                     </button>
                     {item.operationId && (
                       <OperationCheck
-                        api={api}
                         operationId={item.operationId}
+                        load={(id) => api.getDraftOperation(id)}
                         onDone={back}
                         onRelogin={onRelogin}
                       />
@@ -575,8 +577,8 @@ function DraftEditor({
           <p role="alert">{save.operation.message}</p>
         ) : (
           <OperationCheck
-            api={api}
             operationId={save.operation.operationId}
+            load={(id) => api.getDraftOperation(id)}
             onDone={(operation) => {
               if (operation.operationState === 'SUCCEEDED') onBack()
               else receiveResult(operation)
@@ -603,6 +605,13 @@ function DraftEditor({
             保存済みの内容を申請
           </button>
         </>
+      )}
+      {initial.kind === 'edit' && initial.detail.status !== DEPRECATED_STATUS && (
+        <DeprecationRequestForm
+          api={api}
+          recordId={initial.detail.recordId}
+          onRelogin={onRelogin}
+        />
       )}
       {initial.kind === 'edit' && (
         <RecordHistoryToggle api={api} recordId={initial.detail.recordId} onRelogin={onRelogin} />

@@ -22,7 +22,6 @@ from registry_portal.auth import Caller, Role
 from registry_portal.curation import RecordCuration
 from registry_portal.domain.drafts import (
     IN_FLIGHT_STATUSES,
-    RECORD_ID_PATTERN,
     RECOVERY_RECONCILED,
     RECOVERY_RELEASED,
     RecoveryRecord,
@@ -32,8 +31,8 @@ from registry_portal.domain.drafts import (
 )
 from registry_portal.drafts import DraftSettlement
 from registry_portal.errors import ApiError, ForbiddenError, RequestValidationError
-from registry_portal.operations import principal_of, released_message
-from registry_portal.services.draft_store import DraftStore, StoreConflict
+from registry_portal.operations import check_record_id, principal_of, released_message
+from registry_portal.services.supplement_store import SupplementStore, StoreConflict
 
 # 回復の理由の上限。AWS には送らずポータルの操作記録にだけ残すため、決裁理由の上限
 # （domain/curation.py の REASON_MAX_LENGTH）とは別に定義する。
@@ -124,7 +123,7 @@ class OperationRecovery:
     """結果確認中の操作の照会と、Registry の再取得による回復。"""
 
     def __init__(
-        self, store: DraftStore, curation: RecordCuration, drafts: DraftSettlement
+        self, store: SupplementStore, curation: RecordCuration, drafts: DraftSettlement
     ) -> None:
         self.store = store
         self._curation = curation
@@ -213,8 +212,7 @@ class OperationRecovery:
 
     def _lock_holder(self, record_id: str) -> StoredOperation | None:
         """レコード共通のロックを持つ操作。ロックがなければ None。"""
-        if not RECORD_ID_PATTERN.fullmatch(record_id):
-            raise RequestValidationError("Registry レコード ID の形式が正しくありません。")
+        check_record_id(record_id)
         try:
             lock = self.store.get_lock(record_id)
             if lock is None:
