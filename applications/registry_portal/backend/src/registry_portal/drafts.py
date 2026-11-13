@@ -559,7 +559,7 @@ class RecordDrafts:
             or content_hash(record, management) != request.expected_hash
         ):
             raise DraftConflict()
-        draft = self._read_draft(record, management)
+        draft = RecordDraft.parse(self._read_draft(record, management).fields)
         check_a2a_metadata(record, request.references)
         published = self._discovery.get_record(record_id)
         # 公開停止中も、最後に公開承認された版を semver の下限にする（公開版スナップショットを上書きしない）

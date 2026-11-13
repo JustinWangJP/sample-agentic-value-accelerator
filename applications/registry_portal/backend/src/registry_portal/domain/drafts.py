@@ -506,6 +506,12 @@ class RecordDraft:
 
     @classmethod
     def parse(cls, value: Mapping[str, Any]) -> RecordDraft:
+        return cls._parse(value)
+
+    @classmethod
+    def _parse(
+        cls, value: Mapping[str, Any], *, source_record: Mapping[str, Any] | None = None
+    ) -> RecordDraft:
         record_type = value.get("recordType", AGENT_RECORD_TYPE)
         descriptor_type = value.get("descriptorType")
         if descriptor_type is None and record_type in CATALOG_RECORD_TYPES:
@@ -529,12 +535,22 @@ class RecordDraft:
             if (
                 not isinstance(text, str)
                 or len(text) > limit
-                or (not text.strip() and key not in OPTIONAL_FIELDS)
+                or (
+                    not text.strip()
+                    and key not in OPTIONAL_FIELDS
+                    and not (
+                        key == "description"
+                        and source_record is not None
+                        and key not in source_record
+                    )
+                )
             ):
                 raise ValueError(f"{key} は1〜{limit}文字で指定してください。")
         if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_./-]*", fields["name"]):
             raise ValueError("name は英数字で始め、英数字と _ . / - で指定してください。")
-        if not SEMVER.fullmatch(fields["recordVersion"]):
+        if not SEMVER.fullmatch(fields["recordVersion"]) and not (
+            source_record is not None and re.fullmatch(r"[a-zA-Z0-9.-]+", fields["recordVersion"])
+        ):
             raise ValueError(
                 "recordVersion は semver（例 1.0.0）で指定してください。"
                 "ビルドメタデータ（+ 以降）は指定できません。"
@@ -574,23 +590,27 @@ class RecordDraft:
                 raise ValueError("primary descriptor が1個ではありません。")
             kind, descriptor = check_kind(record["recordType"], next(iter(descriptors)))
             metadata = record.get("customMetadata", {})
-            if isinstance(supplement.get("adoptedAt"), str):
+            adopted = isinstance(supplement.get("adoptedAt"), str)
+            record_fields = {key: record[key] for key in RECORD_FIELDS if key in record}
+            if adopted:
+                record_fields = {"displayName": record["name"], "description": "", **record_fields}
                 metadata = {
                     "environment": DEFAULT_ENVIRONMENT,
                     "dataClassification": "private",
                     **metadata,
                 }
             specific = read_descriptor_fields(descriptor, descriptors[descriptor], supplement)
-            return cls.parse(
+            return cls._parse(
                 {
-                    **{key: record[key] for key in RECORD_FIELDS},
+                    **record_fields,
                     "recordType": kind,
                     "descriptorType": descriptor,
                     "ownerTeam": owner_team,
                     "environment": metadata["environment"],
                     "dataClassification": metadata["dataClassification"],
                     **specific,
-                }
+                },
+                source_record=record if adopted else None,
             )
         except (KeyError, TypeError) as error:
             raise ValueError("Registry レコードに必要な項目がありません。") from error
@@ -660,11 +680,23 @@ def draft_view(record: Mapping[str, Any], management: Management, draft: RecordD
         "hasDraft": has_draft(record["status"]),
         "publishedVersion": management.published_version(record),
     }
-    if isinstance(management.item.get("adoptedAt"), str) and any(
-        key not in record.get("customMetadata", {}) for key in ("environment", "dataClassification")
-    ):
-        view["initializationNotice"] = (
-            "取り込みレコードの未設定 metadata は、環境 dev・データ分類 private を初期値として表示しています。"
-            "内容を確認して保存してください。"
-        )
+    if isinstance(management.item.get("adoptedAt"), str):
+        notices = []
+        if any(
+            key not in record.get("customMetadata", {})
+            for key in ("environment", "dataClassification")
+        ):
+            notices.append(
+                "未設定 metadata は、環境 dev・データ分類 private を初期値として表示しています。"
+            )
+        if "displayName" not in record or "description" not in record:
+            notices.append("未設定の表示名は name、説明は空欄を初期値として表示しています。")
+        if not SEMVER.fullmatch(draft.fields["recordVersion"]):
+            notices.append(
+                "既存の版をそのまま表示しています。保存前に semver の版を指定してください。"
+            )
+        if notices:
+            view["initializationNotice"] = (
+                "取り込みレコードです。" + "".join(notices) + "内容を確認して保存してください。"
+            )
     return view

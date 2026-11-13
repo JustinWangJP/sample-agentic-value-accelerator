@@ -601,6 +601,8 @@ Admin の「Registry 管理」から、未管理レコードを所有チーム�
 
 対応する primary descriptor が1個ある Agent・MCP サーバー・Skill を取り込めます。descriptor から読める補助情報を管理情報へ写します。A2A・MCP・Skill の連絡先等、元の定義から取得できない補助情報は空文字で保存し、所有チームが通常編集で補います。取り込んだレコードに environment・dataClassification が未設定なら、編集画面では dev・private を初期値として表示し、その旨を案内します。読み取りだけでは Registry を更新せず、所有チームが確認して保存します。confidential 等の明示的な不正値を初期値で上書きしません。
 
+表示名・説明が未設定なら、表示名は既存の `name`、説明は空欄を初期値として表示し、補完を案内します。`v1` 等の旧形式の版は元の文字列のまま表示します。所有チームは説明を補い、semver の版を指定して保存してから申請してください。保存・申請時の必須項目と semver の検証は変わりません。既存の公開版自体が semver ではない場合、新しい版との順序を比較できないため申請を400で拒否します。Admin が公開版の移行方針を確認する必要があります。ポータルは公開版の値を自動置換せず、旧公開版と公開版スナップショットを保持します。
+
 `MANAGEMENT`、公開版がある場合の `PUBLISHED#<recordVersion>`、追記専用の `AUDIT#<操作ID>#INTENT/#RESULT`、再送用の結果を一つの DynamoDB transaction で保存します。すべての書き込みと共通の `LOCK` がないこと、および読取時の管理情報との一致を同時に検査します。既存の公開スナップショットは上書きしません。衝突時は409で再読み込みを案内します。AWS が `CREATING` / `UPDATING` の間も409です。
 
 公開版があれば `publishedVersion` と `adoptedPublishedVersion` に、その公開版の文字列を保存します。取り込み前の承認者・承認日時や最終編集者に Admin を代入しません。履歴の先頭には `APPROVE`・`UNKNOWN`・`principal: null` の項目が現れ、後の編集・申請・所有変更・公開承認後も残ります。取り込み・所有変更自身の監査種別は `ADOPT` / `REASSIGN_OWNER` です。主体・対象ハッシュ・理由・時刻、所有変更では旧チームと新チームを記録します。
@@ -610,6 +612,8 @@ Admin の「Registry 管理」から、未管理レコードを所有チーム�
 瞬時の補助ストア操作なので `CONTROL` と永続ロックは作りません。transaction の応答が失われても、保存した結果を強整合で読み直して成功を確認します。結果も読み取れなければ503を返します。SPA は同じ内容の再試行で同じキーを使います。再送結果は7日間保持し、監査項目には TTL を付けません。結果が不明な間は同じ内容・同じキーで再試行してください。ポータル外の変更との排他は ADR-0001 の書き込み経路集約を前提とします。
 
 ### 接続情報と設定逸脱
+
+ローカル Vite と実際の管理画面・API クライアントを Chromium で操作し、取り込み、所有チーム変更、自動承認警告、接続失敗表示を確認しました。API 応答には fixture を使用しています。実 AWS・Cognito との結合試験ではありません。確認画面は[所有チーム変更](docs/screenshots/issue16-ownership.png)、[自動承認警告](docs/screenshots/issue16-drift.png)、[接続取得失敗](docs/screenshots/issue16-error.png)を参照してください。
 
 `GetRegistry` の `discoveryConfiguration.authorizerType` を `CUSTOM_JWT` / `AWS_IAM` として表示し、`approvalConfiguration.autoApprovalRules` が空なら自動承認無効、非空なら警告を表示します。設定の欠落は `UNKNOWN` とし、無効であると推測しません。取得に失敗しても設定由来の ARN・リージョンを保持し、認可方式未取得と日本語の接続エラーを表示します。この診断はレコードの試験呼び出しを行いません。自動承認逸脱時に既存の申請 API が拒否する動作も維持します。
 

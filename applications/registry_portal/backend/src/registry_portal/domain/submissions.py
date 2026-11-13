@@ -79,6 +79,11 @@ def check_newer_than_published(version: str, known_published: list[str | None]) 
     却下後の再申請は公開中の版と比べるだけなので、同じ値を許す。
     """
     candidates = [known for known in known_published if known is not None]
+    if any(not SEMVER.fullmatch(known) for known in candidates):
+        raise ValueError(
+            "既存の公開版が semver ではないため、新しい版との順序を比較できません。"
+            "管理者が公開版の移行方針を確認するまで申請できません。"
+        )
     published = max(candidates, key=version_key) if candidates else None
     if published is not None and version_key(version) <= version_key(published):
         raise ValueError("recordVersion は公開中の版より大きくしてください。")

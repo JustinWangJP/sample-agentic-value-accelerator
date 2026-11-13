@@ -519,22 +519,74 @@ def test_unmanaged_publisher_cannot_edit_or_submit_before_adoption():
             )
 
 
+@pytest.mark.parametrize(
+    "missing_fields,version,published",
+    [
+        ((), "1.0.0", False),
+        (("displayName",), "1.0.0", False),
+        (("description",), "1.0.0", False),
+        ((), "v1", False),
+        ((), "v1", True),
+    ],
+)
 @mock_aws
-def test_adopted_record_without_metadata_can_be_read_and_completed_by_its_owner():
+def test_adopted_record_completion_and_submission_check_published_version(
+    missing_fields, version, published
+):
     registry, db = clients()
-    original = {**RECORD, "customMetadata": {"external": "保持する"}}
-    handler = decision_for(registry, db, [missing_published()])
-    management = handler_for(registry, db)
+    original = {
+        **{key: value for key, value in RECORD.items() if key not in missing_fields},
+        "recordVersion": version,
+        "status": "APPROVED" if published else "DRAFT",
+        "customMetadata": {"external": "保持する"},
+    }
+    discovered = (
+        json_response(
+            200, {"registryRecords": [public_record(recordVersion=version)], "errors": []}
+        )
+        if published
+        else missing_published()
+    )
+    handler = decision_for(registry, db, [discovered])
+    management = create_management_handler(
+        {**ENV, "SUPPLEMENT_TABLE_NAME": SUPPLEMENT_TABLE},
+        registry_client=registry,
+        supplement_store_client=db,
+        discovery=DiscoveryDependencies(
+            transport=FakeTransport(registry=deque([discovered])),
+            secrets_client=FakeSecrets().client,
+        ),
+    )
     completed = {**RECORD, "customMetadata": {**RECORD["customMetadata"], "external": "保持する"}}
     with Stubber(registry) as stub:
         stub.add_response("get_registry_record", original, GET)
         assert adopt(handler)[0] == 200
+        published_snapshot = stored(db, f"PUBLISHED#{version}")
         stub.add_response("get_registry_record", original, GET)
         status, view = call(management, event("GET", f"/api/records/{RECORD_ID}"))
         assert status == 200
         assert view["draft"]["environment"] == "dev"
         assert view["draft"]["dataClassification"] == "private"
+        assert view["draft"]["recordVersion"] == version
+        assert view["draft"]["displayName"] == original.get("displayName", original["name"])
+        assert view["draft"]["description"] == original.get("description", "")
         assert "初期値" in view["initializationNotice"]
+        if missing_fields:
+            assert "未設定の表示名" in view["initializationNotice"]
+        if version == "v1":
+            assert "既存の版をそのまま表示" in view["initializationNotice"]
+        if "description" in missing_fields or version == "v1":
+            assert (
+                call(
+                    management,
+                    event(
+                        "PATCH",
+                        f"/api/records/{RECORD_ID}",
+                        {"draft": view["draft"], "expectedContentHash": view["contentHash"]},
+                    ),
+                )[0]
+                == 400
+            )
         stub.add_response("get_registry_record", original, GET)
         stub.add_response(
             "update_registry_record",
@@ -555,23 +607,65 @@ def test_adopted_record_without_metadata_can_be_read_and_completed_by_its_owner(
                 "PATCH",
                 f"/api/records/{RECORD_ID}",
                 {
-                    "draft": view["draft"],
+                    "draft": CUSTOM_DRAFT,
                     "expectedContentHash": view["contentHash"],
                 },
             ),
         )
         assert status == 200
         assert "initializationNotice" not in result
+        stub.add_response("get_registry_record", completed, GET)
+        if not published:
+            stub.add_response(
+                "get_registry", registry_configuration([]), {"registryId": REGISTRY_ARN}
+            )
+            stub.add_response(
+                "submit_registry_record_for_approval",
+                {
+                    "registryArn": REGISTRY_ARN,
+                    "recordArn": RECORD["recordArn"],
+                    "recordId": RECORD_ID,
+                    "status": "PENDING_APPROVAL",
+                    "updatedAt": RECORD["updatedAt"],
+                },
+                GET,
+            )
+            stub.add_response(
+                "get_registry_record", {**completed, "status": "PENDING_APPROVAL"}, GET
+            )
+        status, submitted = call(
+            management,
+            event(
+                "POST",
+                f"/api/records/{RECORD_ID}/submit",
+                {
+                    "expectedContentHash": result["contentHash"],
+                    "reason": "不足項目と版を補完した",
+                    "relatedReferences": [],
+                },
+                key="complete-submit",
+                sub="bob",
+            ),
+        )
+        assert status == (400 if published else 200)
+        if published:
+            assert "公開版が semver ではない" in submitted["error"]["message"]
+            assert stored(db, f"PUBLISHED#{version}") == published_snapshot
         stub.assert_no_pending_responses()
 
 
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"customMetadata": {"environment": "dev", "dataClassification": "confidential"}},
+        {"displayName": " "},
+        {"description": " "},
+    ],
+)
 @mock_aws
-def test_adoption_never_replaces_explicit_invalid_classification_with_default():
+def test_adoption_never_replaces_explicit_invalid_values_with_defaults(changes):
     registry, db = clients()
-    original = {
-        **RECORD,
-        "customMetadata": {"environment": "dev", "dataClassification": "confidential"},
-    }
+    original = {**RECORD, **changes}
     handler = decision_for(registry, db, [missing_published()])
     with Stubber(registry) as stub:
         stub.add_response("get_registry_record", original, GET)
