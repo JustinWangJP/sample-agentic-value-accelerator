@@ -15,6 +15,12 @@ from typing import Any, cast
 
 import boto3
 
+from registry_portal.administration import (
+    AdministrationReads,
+    RegistryAdministration,
+    RegistryAdministrationClient,
+    require_admin,
+)
 from registry_portal.auth import Caller, authorize
 from registry_portal.catalog import get_catalog_detail, list_catalog, search_catalog
 from registry_portal.config import (
@@ -232,6 +238,7 @@ def create_management_handler(
     )
     region = discovery_settings.registry_region
     drafts = None
+    reads = None
     # 決裁操作の照会（GET /api/operations）は管理 handler が担う。決裁自体は決裁 handler が行うため、
     # このインスタンスは AWS の状態更新 API を呼び出さない（IAM でも拒否される）
     curation = None
@@ -333,8 +340,28 @@ def create_management_handler(
             return curation.operation_status(caller, operation)
         return drafts.operation_status(caller, operation)
 
+    admin_reads = AdministrationReads(
+        load_registry_settings(environ),
+        cast(
+            RegistryAdministrationClient,
+            registry_client or boto3.client("agent-registry-control", region_name=region),
+        ),
+        reads,
+    )
+
+    def admin_list(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        return admin_reads.list_records(caller, _query_of(event))
+
+    def admin_connection(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        require_admin(caller)
+        if _query_of(event):
+            raise RequestValidationError("接続情報にクエリパラメーターは指定できません。")
+        return admin_reads.connection(caller)
+
     routes: Mapping[str, Route] = {
         **MANAGEMENT_ROUTES,
+        "GET /api/admin/records": admin_list,
+        "GET /api/admin/connection": admin_connection,
         "GET /api/catalog": get_catalog,
         "POST /api/catalog/search": post_search,
         "GET /api/catalog/{recordId}": get_detail,
@@ -356,6 +383,7 @@ def create_curation_handler(
     *,
     registry_client: RegistryStatusClient | None = None,
     store_client: SupplementStoreClient | None = None,
+    discovery: DiscoveryDependencies | None = None,
 ) -> Handler:
     """決裁 handler を作る。認証設定と補助テーブルが不足していれば、ここで起動エラーにする。
 
@@ -432,7 +460,31 @@ def create_curation_handler(
 
         return decide
 
+    discovery_client = (
+        create_discovery_client(
+            load_discovery_settings(environ), discovery or DiscoveryDependencies()
+        )
+        if environ.get("DISCOVERY_CLIENT_ID")
+        else None
+    )
+    administration = RegistryAdministration(reads, store, discovery_client)
+
+    def admin_route(*, reassign: bool) -> Route:
+        def execute(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+            require_admin(caller)
+            return administration.execute(
+                caller,
+                _path_parameter(event),
+                _json_body(event),
+                _idempotency_key(event),
+                reassign=reassign,
+            )
+
+        return execute
+
     routes: Mapping[str, Route] = {
+        "POST /api/records/{recordId}/adopt": admin_route(reassign=False),
+        "POST /api/records/{recordId}/reassign-owner": admin_route(reassign=True),
         "GET /api/reviews": list_reviews,
         "GET /api/reviews/{recordId}": get_review,
         "POST /api/reviews/{recordId}/approve": decision_route(APPROVE_KIND),

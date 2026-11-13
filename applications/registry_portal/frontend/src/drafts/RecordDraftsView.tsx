@@ -503,6 +503,7 @@ function DraftEditor({
   return (
     <>
       <h3>{text.title}</h3>
+      {savedDetail?.initializationNotice && <p role="status">{savedDetail.initializationNotice}</p>}
       <p>
         秘密情報を入力せず、接続先や認証情報の参照を記載してください。申請するときは、公開中の版より大きい版が必要です。
       </p>

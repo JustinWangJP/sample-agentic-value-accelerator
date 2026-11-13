@@ -20,6 +20,10 @@ def render_policy() -> dict:
         template.replace("${registry_arn}", REGISTRY_ARN)
         .replace("${supplement_table_arn}", TABLE_ARN)
         .replace("${log_group_arn}", LOG_GROUP_ARN)
+        .replace(
+            "${discovery_secret_arn}",
+            "arn:aws:secretsmanager:us-east-1:123456789012:secret:discovery",
+        )
     )
     assert "${" not in rendered
     return json.loads(rendered)
@@ -92,7 +96,8 @@ def test_module_creates_the_decision_lambda_with_its_own_role_and_log_group():
     for env in ("COGNITO_ISSUER", "HUMAN_CLIENT_ID", "REGISTRY_ARN", "SUPPLEMENT_TABLE_NAME"):
         assert env in main
     # 補助テーブルがないと決裁 handler は起動しない（アプリ側の ConfigurationError と同じ前提）
-    assert "DISCOVERY_TOKEN_URL" not in main
+    assert "DISCOVERY_TOKEN_URL" in main
+    assert "DISCOVERY_CLIENT_SECRET_ARN" in main
 
 
 def test_module_routes_only_curator_and_recovery_apis_to_the_decision_lambda():
@@ -101,10 +106,12 @@ def test_module_routes_only_curator_and_recovery_apis_to_the_decision_lambda():
     既存の JWT authorizer を適用し、HTTP API と authorizer は作らない。
     """
     main = (MODULE / "main.tf").read_text()
-    (paths,) = re.findall(r"curator_record_paths = \{(.*?)\n  \}\n", main, re.DOTALL)
+    (paths,) = re.findall(r"decision_record_paths = \{(.*?)\n  \}\n", main, re.DOTALL)
     # Curator のレコード単位の path は、route と呼び出し許可の両方を同じ定義から作る
     curator_paths = re.findall(r'method\s*=\s*"([A-Z]+)"\s*\n\s*path\s*=\s*"([^"]+)"', paths)
     assert curator_paths == [
+        ("POST", "adopt"),
+        ("POST", "reassign-owner"),
         ("POST", "suspend"),
         ("POST", "deprecate"),
         ("GET", "publication"),
@@ -113,7 +120,7 @@ def test_module_routes_only_curator_and_recovery_apis_to_the_decision_lambda():
     (routes,) = re.findall(r"routes = concat\((.*?)\n  \)\n", main, re.DOTALL)
     assert (
         '"${entry.method} /api/records/{recordId}/${entry.path}"' in routes
-        and "values(local.curator_record_paths)" in routes
+        and "values(local.decision_record_paths)" in routes
     )
     assert re.findall(r'^\s*"([A-Z]+ /api/[^"]+)",$', routes, re.MULTILINE) == [
         "GET /api/reviews",

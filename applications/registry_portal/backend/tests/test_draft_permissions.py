@@ -103,6 +103,8 @@ def test_routes_module_assigns_only_portal_added_management_routes():
     """
     main = (ROUTES_MODULE / "main.tf").read_text()
     assert re.findall(r'route_key\s*=\s*"([^"]+)"', main) == [
+        "GET /api/admin/records",
+        "GET /api/admin/connection",
         "GET /api/records/{recordId}/history",
         "POST /api/records/{recordId}/deprecation-requests",
     ]
@@ -114,9 +116,14 @@ def test_routes_module_assigns_only_portal_added_management_routes():
     assert 'authorization_type = "JWT"' in main
     assert "authorizer_id      = var.jwt_authorizer_id" in main
     paths = re.findall(r'path\s*=\s*"([^"]+)"', main)
-    assert paths == ["history", "deprecation-requests"]
+    assert paths == [
+        "api/admin/records",
+        "api/admin/connection",
+        "api/records/*/history",
+        "api/records/*/deprecation-requests",
+    ]
     (source_arn,) = re.findall(r"source_arn\s*=\s*\"([^\"]+)\"", main)
-    assert source_arn.split("/*/*")[1] == "/api/records/*/${each.value.path}"
+    assert source_arn.split("/*/*")[1] == "/${each.value.path}"
 
 
 def test_root_module_applies_the_routes_module():

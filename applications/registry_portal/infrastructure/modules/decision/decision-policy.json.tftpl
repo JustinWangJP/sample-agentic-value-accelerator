@@ -19,6 +19,12 @@
       "Resource": ["${registry_arn}", "${registry_arn}/record/*"]
     },
     {
+      "Sid": "AdoptionDiscoverySecret",
+      "Effect": "Allow",
+      "Action": ["secretsmanager:GetSecretValue"],
+      "Resource": "${discovery_secret_arn}"
+    },
+    {
       "Sid": "DecisionSupplement",
       "Effect": "Allow",
       "Action": [

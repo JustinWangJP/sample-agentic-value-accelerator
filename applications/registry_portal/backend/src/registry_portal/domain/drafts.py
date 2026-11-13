@@ -127,6 +127,8 @@ OperationKind = Literal[
     "DEPRECATE",
     "REQUEST_DEPRECATION",
     "DECLINE_DEPRECATION",
+    "ADOPT",
+    "REASSIGN_OWNER",
 ]
 OPERATION_KINDS: tuple[OperationKind, ...] = get_args(OperationKind)
 CREATE_KIND: OperationKind = "CREATE"
@@ -314,6 +316,7 @@ class DraftView(TypedDict):
     status: str
     hasDraft: bool
     publishedVersion: str | None
+    initializationNotice: NotRequired[str]
 
 
 class DraftResult(DraftView):
@@ -378,7 +381,12 @@ class Management:
             or any(key in item and not isinstance(item[key], str) for key in ALL_SUPPLEMENT_FIELDS)
             or any(
                 item.get(key) is not None and not isinstance(item[key], str)
-                for key in ("publishedVersion", "adoptedPublishedVersion", SUSPENDED_VERSION_KEY)
+                for key in (
+                    "publishedVersion",
+                    "adoptedPublishedVersion",
+                    "adoptedAt",
+                    SUSPENDED_VERSION_KEY,
+                )
             )
             or ("lastEditedBy" in item and not is_principal(item["lastEditedBy"]))
         ):
@@ -565,7 +573,13 @@ class RecordDraft:
             if len(descriptors) != 1:
                 raise ValueError("primary descriptor が1個ではありません。")
             kind, descriptor = check_kind(record["recordType"], next(iter(descriptors)))
-            metadata = record["customMetadata"]
+            metadata = record.get("customMetadata", {})
+            if isinstance(supplement.get("adoptedAt"), str):
+                metadata = {
+                    "environment": DEFAULT_ENVIRONMENT,
+                    "dataClassification": "private",
+                    **metadata,
+                }
             specific = read_descriptor_fields(descriptor, descriptors[descriptor], supplement)
             return cls.parse(
                 {
@@ -593,7 +607,11 @@ class RecordDraft:
             "customMetadata": self._custom_metadata(),
         }
 
-    def update_payload(self, existing_descriptors: Collection[str] = ()) -> dict[str, Any]:
+    def update_payload(
+        self,
+        existing_descriptors: Collection[str] = (),
+        existing_metadata: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """UpdateRegistryRecord の payload。
 
         primary descriptor を切り替えるときは、古い descriptor を空のオブジェクトで削除して1個に保つ。
@@ -605,7 +623,9 @@ class RecordDraft:
             "displayName": {"optionalValue": self.fields["displayName"]},
             "description": {"optionalValue": self.fields["description"]},
             "recordVersion": self.fields["recordVersion"],
-            "customMetadata": {"optionalValue": self._custom_metadata()},
+            "customMetadata": {
+                "optionalValue": {**(existing_metadata or {}), **self._custom_metadata()}
+            },
             "descriptors": {"optionalValue": {**removed, **patches}},
         }
 
@@ -632,7 +652,7 @@ class RecordDraft:
 
 
 def draft_view(record: Mapping[str, Any], management: Management, draft: RecordDraft) -> DraftView:
-    return {
+    view: DraftView = {
         "recordId": record["recordId"],
         "draft": dict(draft.fields),
         "contentHash": content_hash(record, management),
@@ -640,3 +660,11 @@ def draft_view(record: Mapping[str, Any], management: Management, draft: RecordD
         "hasDraft": has_draft(record["status"]),
         "publishedVersion": management.published_version(record),
     }
+    if isinstance(management.item.get("adoptedAt"), str) and any(
+        key not in record.get("customMetadata", {}) for key in ("environment", "dataClassification")
+    ):
+        view["initializationNotice"] = (
+            "取り込みレコードの未設定 metadata は、環境 dev・データ分類 private を初期値として表示しています。"
+            "内容を確認して保存してください。"
+        )
+    return view

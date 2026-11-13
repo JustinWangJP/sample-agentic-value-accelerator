@@ -366,3 +366,13 @@ it('下書きの準備中（503）は一覧の0件や作成結果の不明と区
   expect(container.textContent).not.toContain('作成結果が不明です。')
   expect(button('一覧に戻る').disabled).toBe(false)
 })
+
+it('取り込み時に欠けていた metadata の初期値を編集画面で案内する', async () => {
+  const notice = '取り込みレコードの未設定 metadata は、環境 dev・データ分類 private を初期値として表示しています。内容を確認して保存してください。'
+  await mount([
+    jsonResponse(200, { items: [item], nextToken: null }),
+    jsonResponse(200, { ...detail, initializationNotice: notice }),
+  ])
+  await click('編集')
+  expect(container.textContent).toContain(notice)
+})

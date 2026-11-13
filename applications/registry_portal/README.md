@@ -579,3 +579,53 @@ Seam 2 の Vitest で、次を確認します。
 SPA の「回復操作」は Admin（`registry-admin` グループ）だけに表示します。Registry レコード ID から結果確認中の操作を確認し（回復できる時刻はバックエンドの `recoverableAt` を表示します）、理由を付けて「Registry を再取得して照合」を実行します。確定できず結果確認中のままの場合だけ、確認のチェックを入れてから「強制解除する」を実行できます。結果確認中・成功・失敗と回復結果（方法・主体・時刻・理由）は、取得や回復の失敗（403・409・502）とは別の表示です。Publisher と Curator の「処理結果を確認」「決裁の結果を確認」でも、回復操作で確定した操作は回復結果を表示してから結果に進み、操作と審査の履歴にも回復結果を表示します。
 
 Seam 1 の Stubber と moto で、Admin だけが実行できること（Curator・Publisher・グループなしは403）、本文の検査（`reason` の必須化と255文字上限、未知の項目の拒否）、拒否した要求が AWS もロックも変えないこと、開始直後の操作と、ロックを持つ操作がないレコードの409、結果確認中の決裁・更新を Registry の状態から確定して回復の主体と理由を操作記録に残すこと、申請 API を呼び直さないこと、確定できない操作の強制解除（Registry を再取得できないとき、AWS が受け付けを返した決裁・申請は解除しない）、操作照会と履歴への回復結果の反映（決裁した Curator と更新した Publisher）、補助ストアの異常を Registry の障害と区別する502、回復の応答に操作の中身を含めないこと、決裁と申請について AWS の403・429・5xx・503・タイムアウトで成功を記録せず、結果不明のときだけロックを残すこと、Lambda の再起動後も操作を取得して回復できることを検証します。AWS 成功後の補助ストア障害は、既存の作成・申請・決裁のテストで検証しています。Seam 2 の Vitest で、Admin 以外への非表示と API を呼ばないこと、結果確認中の操作の表示、操作なし・取得失敗・409の区別、回復できない操作の案内（`recoverableAt` の表示と、それを欠いた応答の拒否）、AWS が受け付けた操作の強制解除の拒否の表示、Publisher・Curator の照会と履歴での回復結果の表示、照合と強制解除の本文（強制解除は確認の後だけ）、確定した結果と回復結果の表示を確認します。実 AWS への書き込みは行っていません。デプロイ後に実環境で、決裁 Lambda の route の追加と、Admin による回復を確認してください。
+
+## 既存レコードの取り込み・所有変更・接続診断（#16）
+
+Admin の「Registry 管理」から、未管理レコードを所有チームへ割り当てて取り込み、管理済みレコードの所有チームを変更できます。Admin 以外には画面も接続情報も表示せず、API は AWS・補助テーブルへ問い合わせる前に403を返します。取り込み前の Publisher による編集・申請は引き続き403です。所有チームは `team-` で始まる既存の Cognito グループ名を入力します。この画面はグループを作成せず、存在の確認もしません。
+
+| API | handler | 入力・応答 |
+| --- | --- | --- |
+| `GET /api/admin/records?management=unmanaged` | 管理 | 未管理の `items` と `nextToken`。`management=managed` で所有変更の対象を取得。省略時は未管理 |
+| `GET /api/admin/connection` | 管理 | 固定設定の `registryArn`・`region`、観測した `authorization`、`connection`、`autoApproval`、`warnings` |
+| `POST /api/records/{recordId}/adopt` | 決裁 | `ownerTeam`、`reason`。`Idempotency-Key` 必須 |
+| `POST /api/records/{recordId}/reassign-owner` | 決裁 | `ownerTeam`、`reason`、一覧で取得した `expectedManagementHash`。`Idempotency-Key` 必須 |
+
+一覧は Registry 管理 API の1ページ（最大50件）と管理情報を照合します。ページ内の全件が管理済みなら未管理の `items` は空でも `nextToken` が残ります。トークンがなくなるまで次ページを確認してください。通信障害・管理情報の破損を0件へ置き換えません。各項目はレコードID・名前・表示名・種別・版・AWS状態・`managed`・`ownerTeam`・`managementHash` を持ちます。
+
+成功応答は `recordId`・`ownerTeam`・`operationId`・`operationState: SUCCEEDED`・`publishedVersion`（公開版がなければ null）・`a2aBackfillRequired` です。後者は取り込み時の公開 Agent に descriptor と一致する真偽値の `isA2A` がなければ true です。
+
+### 取り込みと監査の保存
+
+取り込みは Registry の descriptor・metadata・公開状態を更新しません。現在の下書きは管理 API、現在公開中の版は JWT 発見 API の batch-get から別々に読みます。新しい下書きと古い公開版が共存していても、公開版の連絡先等に下書きの値を混ぜません。発見 API の確定的な不存在だけを公開版なしとして扱います。アクセス拒否・通信障害・不正応答では502、管理 API が返す公開版の発見反映待ちでは409を返し、取り込みません。
+
+対応する primary descriptor が1個ある Agent・MCP サーバー・Skill を取り込めます。descriptor から読める補助情報を管理情報へ写します。A2A・MCP・Skill の連絡先等、元の定義から取得できない補助情報は空文字で保存し、所有チームが通常編集で補います。取り込んだレコードに environment・dataClassification が未設定なら、編集画面では dev・private を初期値として表示し、その旨を案内します。読み取りだけでは Registry を更新せず、所有チームが確認して保存します。confidential 等の明示的な不正値を初期値で上書きしません。
+
+`MANAGEMENT`、公開版がある場合の `PUBLISHED#<recordVersion>`、追記専用の `AUDIT#<操作ID>#INTENT/#RESULT`、再送用の結果を一つの DynamoDB transaction で保存します。すべての書き込みと共通の `LOCK` がないこと、および読取時の管理情報との一致を同時に検査します。既存の公開スナップショットは上書きしません。衝突時は409で再読み込みを案内します。AWS が `CREATING` / `UPDATING` の間も409です。
+
+公開版があれば `publishedVersion` と `adoptedPublishedVersion` に、その公開版の文字列を保存します。取り込み前の承認者・承認日時や最終編集者に Admin を代入しません。履歴の先頭には `APPROVE`・`UNKNOWN`・`principal: null` の項目が現れ、後の編集・申請・所有変更・公開承認後も残ります。取り込み・所有変更自身の監査種別は `ADOPT` / `REASSIGN_OWNER` です。主体・対象ハッシュ・理由・時刻、所有変更では旧チームと新チームを記録します。
+
+所有変更は管理情報全体を保持して `ownerTeam` だけを変更し、公開スナップショットを変更しません。旧チームの Publisher は直ちに編集できなくなります。審査中の内容ハッシュは一致しなくなるため、古い申請の決裁は409です。新チームが下書きを保存し、申請し直してください。Registry の検索用 `ownerTeam` の写しは次回の通常編集・公開まで古い場合があります。
+
+瞬時の補助ストア操作なので `CONTROL` と永続ロックは作りません。transaction の応答が失われても、保存した結果を強整合で読み直して成功を確認します。結果も読み取れなければ503を返します。SPA は同じ内容の再試行で同じキーを使います。再送結果は7日間保持し、監査項目には TTL を付けません。結果が不明な間は同じ内容・同じキーで再試行してください。ポータル外の変更との排他は ADR-0001 の書き込み経路集約を前提とします。
+
+### 接続情報と設定逸脱
+
+`GetRegistry` の `discoveryConfiguration.authorizerType` を `CUSTOM_JWT` / `AWS_IAM` として表示し、`approvalConfiguration.autoApprovalRules` が空なら自動承認無効、非空なら警告を表示します。設定の欠落は `UNKNOWN` とし、無効であると推測しません。取得に失敗しても設定由来の ARN・リージョンを保持し、認可方式未取得と日本語の接続エラーを表示します。この診断はレコードの試験呼び出しを行いません。自動承認逸脱時に既存の申請 API が拒否する動作も維持します。
+
+根拠は [GetRegistry](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_GetRegistry.html)、[ListRegistryRecords](https://docs.aws.amazon.com/cli/latest/reference/agent-registry-control/list-registry-records.html)、[BatchGetDiscoverableRegistryRecord](https://docs.aws.amazon.com/agent-registry/latest/APIReference/API_BatchGetDiscoverableRegistryRecord.html) です。GetRegistryRecord に公開旧版を指定する引数はないため、下書きを公開版として保存しません。
+
+### A2A metadata の補完と有効化
+
+1. Admin が既存レコードを取り込み、所有チームに引き渡します。
+2. 所有チームの Publisher が下書きを読み、公開中の版より大きい semver の版を通常編集で保存します。保存時に descriptor から `isA2A` を導出し、既存の任意 metadata を保持したまま、所有チーム・環境・データ分類をフォームの値で更新します。未取得の連絡先等もこの時に補います。
+3. 通常の申請と、申請者・最終編集者以外の Curator による公開承認を行います。ポータル外の審査待ちレコードも、そのまま承認せず、保存・再申請から進めます。
+4. 検索への反映を待ち、公開中の AGENT を全ページ取得し、`isA2A` が真偽値で存在し descriptor と一致することを実 AWS で確認します。
+5. A2A の一覧を全ページ取得し、`a2a=true` と `a2a=false` の検索結果と照合します。検索は上位20件なので必要に応じてクエリを分け、一覧を全件の正本として漏れを確認します。
+6. 照合が完了した後に #5 の IaC で管理 Lambda の `A2A_SEARCH_ENABLED=true` を設定します。取り込み・編集・承認はこのフラグを自動変更しません。
+
+この変更の自動検査は Stubber・moto・fetch fake までです。実 AWS の既存レコード補完、検索インデックスの全ページ照合と A2A 検索有効化は実施していません。
+
+### 決裁 Lambda の追加設定と権限
+
+`infrastructure/decision/terraform.tfvars.example` に、管理 Lambda と同じ発見用 M2M の token URL、client ID、client secret ARN、scope を設定します。決裁 Lambda に追加する AWS 権限は、その secret に対する `secretsmanager:GetSecretValue` だけです。JWT 発見 API は M2M で認可します。descriptor 更新・schema 更新・Registry 更新権限は追加しません。管理一覧・接続診断は管理 Lambda、取り込み・所有変更は決裁 Lambda への専用 route と呼び出し許可で公開します。借用 Registry を Terraform resource にしません。

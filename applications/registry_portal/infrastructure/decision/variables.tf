@@ -48,3 +48,23 @@ variable "jwt_authorizer_id" {
   type        = string
   description = "決裁の route に適用する既存 JWT authorizer の ID"
 }
+
+variable "discovery_token_url" {
+  type        = string
+  description = "公開旧版を取得する発見用 M2M の HTTPS トークンエンドポイント"
+}
+
+variable "discovery_client_id" {
+  type        = string
+  description = "取り込みで公開旧版を読む既存の発見用 M2M client ID"
+}
+
+variable "discovery_client_secret_arn" {
+  type        = string
+  description = "発見用 M2M client secret を保存した Secrets Manager の ARN"
+}
+
+variable "discovery_scope" {
+  type        = string
+  description = "発見用 M2M に要求する scope。空文字なら client の既定値"
+}

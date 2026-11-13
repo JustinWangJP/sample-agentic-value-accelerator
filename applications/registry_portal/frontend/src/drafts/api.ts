@@ -64,6 +64,7 @@ export type DraftDetail = {
   recordId: string
   draft: RecordDraft
   contentHash: string
+  initializationNotice?: string
   status: RecordStatus
   hasDraft: boolean
   publishedVersion: string | null
@@ -150,6 +151,8 @@ export const OPERATION_KINDS = [
   'DEPRECATE',
   'REQUEST_DEPRECATION',
   'DECLINE_DEPRECATION',
+  'ADOPT',
+  'REASSIGN_OWNER',
 ] as const
 export type OperationKind = (typeof OPERATION_KINDS)[number]
 /** 操作と審査の種別の表示 */
@@ -163,6 +166,8 @@ export const KIND_LABELS: Record<OperationKind, string> = {
   DEPRECATE: '廃止',
   REQUEST_DEPRECATION: '廃止依頼',
   DECLINE_DEPRECATION: '廃止依頼の見送り',
+  ADOPT: '取り込み',
+  REASSIGN_OWNER: '所有チーム変更',
 }
 /**
  * 履歴 API が返す操作記録の結果。バックエンドの HistoryState（domain/drafts.py）と揃える。
@@ -331,6 +336,7 @@ function isDetail(value: unknown): value is DraftDetail {
   return (
     isObject(value) &&
     isRecord(value) &&
+    (value.initializationNotice === undefined || typeof value.initializationNotice === 'string') &&
     isDraft(value.draft) &&
     typeof value.contentHash === 'string' &&
     /^[a-f0-9]{64}$/.test(value.contentHash)

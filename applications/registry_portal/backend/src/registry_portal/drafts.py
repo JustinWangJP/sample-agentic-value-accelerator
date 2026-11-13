@@ -674,7 +674,7 @@ class RecordDrafts:
                 response = self._registry.update_registry_record(
                     registryId=self.registry,
                     recordId=record_id,
-                    **draft.update_payload(record["descriptors"]),
+                    **draft.update_payload(record["descriptors"], record.get("customMetadata", {})),
                 )
             except ClientError as error:
                 return self._registry_error(operation, error)
