@@ -31,7 +31,7 @@ from registry_portal.config import (
     load_registry_settings,
 )
 from registry_portal.curation import DECISION_BODY_MAX_LENGTH, RecordCuration
-from registry_portal.curation_reads import CurationReads, RegistryStatusClient
+from registry_portal.curation_reads import CurationReads, RegistryReadClient, RegistryStatusClient
 from registry_portal.deprecation import (
     DEPRECATION_BODY_MAX_LENGTH,
     DeprecationRequests,
@@ -54,11 +54,18 @@ from registry_portal.drafts import (
     require_publisher,
 )
 from registry_portal.history import RecordHistory
+from registry_portal.notification_events import RegistryEventNotifier
+from registry_portal.notifications import (
+    READ_BODY_MAX_LENGTH,
+    NotificationInbox,
+    NotificationsNotConfigured,
+)
 from registry_portal.publication import RecordPublication
 from registry_portal.recovery import RECOVERY_BODY_MAX_LENGTH, OperationRecovery
 from registry_portal.review_queue import ReviewQueue
 from registry_portal.services.catalog_supplement import CatalogSupplement, SupplementClient
 from registry_portal.services.discovery import DiscoveryDependencies, create_discovery_client
+from registry_portal.services.notification_store import NotificationStore, NotificationStoreClient
 from registry_portal.services.supplement_store import SupplementStore, SupplementStoreClient
 
 logger = logging.getLogger(__name__)
@@ -245,17 +252,26 @@ def create_management_handler(
     curation = None
     history_service = None
     deprecation_requests = None
+    inbox = None
     if catalog_settings.supplement_table_name:
         control_client = registry_client or cast(
             RegistryControlClient,
             boto3.client("agent-registry-control", region_name=region),
         )
+        store_client = supplement_store_client or cast(
+            SupplementStoreClient, boto3.client("dynamodb", region_name=region)
+        )
         store = SupplementStore(
             catalog_settings.supplement_table_name,
             discovery_settings.registry_arn,
-            supplement_store_client
-            or cast(SupplementStoreClient, boto3.client("dynamodb", region_name=region)),
+            store_client,
         )
+        notification_store = NotificationStore(
+            catalog_settings.supplement_table_name,
+            discovery_settings.registry_arn,
+            cast(NotificationStoreClient, store_client),
+        )
+        inbox = NotificationInbox(notification_store)
         drafts = RecordDrafts(
             discovery_settings.registry_arn, store, control_client, discovery_client
         )
@@ -265,7 +281,7 @@ def create_management_handler(
         reads = CurationReads(discovery_settings.registry_arn, store, status_client)
         curation = RecordCuration(reads, store, status_client)
         history_service = RecordHistory(store)
-        deprecation_requests = DeprecationRequests(reads, store)
+        deprecation_requests = DeprecationRequests(reads, store, notification_store)
 
     def drafts_for(caller: Caller) -> RecordDrafts:
         # 権限のない呼び出し元には、設定の状態より先に 403 を返す
@@ -341,6 +357,19 @@ def create_management_handler(
             return curation.operation_status(caller, operation)
         return drafts.operation_status(caller, operation)
 
+    # 通知は宛先グループに属する主体（Curator・Admin・所属チームの Publisher）が読む。
+    # 宛先グループの判定は通知 API の内側で行い、Viewer には0件を返す
+    def inbox_for() -> NotificationInbox:
+        if inbox is None:
+            raise NotificationsNotConfigured()
+        return inbox
+
+    def get_notifications(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        return inbox_for().list(caller, _query_of(event))
+
+    def read_notifications(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        return inbox_for().mark_read(caller, _json_body(event, READ_BODY_MAX_LENGTH))
+
     admin_reads = AdministrationReads(
         load_registry_settings(environ),
         cast(
@@ -371,6 +400,8 @@ def create_management_handler(
         "GET /api/operations/{operationId}": get_operation,
         "POST /api/records/{recordId}/submit": submit_record,
         "POST /api/records/{recordId}/deprecation-requests": request_deprecation,
+        "GET /api/notifications": get_notifications,
+        "POST /api/notifications/read": read_notifications,
     }
 
     return _serve(routes, settings)
@@ -397,10 +428,12 @@ def create_curation_handler(
         # 決裁 handler は補助テーブルなしではどの API も提供できないため、起動を止める
         raise ConfigurationError("決裁 handler の設定が不足しています: SUPPLEMENT_TABLE_NAME")
     region = registry_settings.region
-    store = SupplementStore(
+    db = store_client or cast(SupplementStoreClient, boto3.client("dynamodb", region_name=region))
+    store = SupplementStore(catalog_settings.supplement_table_name, registry_settings.arn, db)
+    notification_store = NotificationStore(
         catalog_settings.supplement_table_name,
         registry_settings.arn,
-        store_client or cast(SupplementStoreClient, boto3.client("dynamodb", region_name=region)),
+        cast(NotificationStoreClient, db),
     )
     curation_client = registry_client or cast(
         RegistryStatusClient, boto3.client("agent-registry-control", region_name=region)
@@ -409,7 +442,7 @@ def create_curation_handler(
     curation = RecordCuration(reads, store, curation_client)
     reviews = ReviewQueue(reads)
     publication = RecordPublication(reads)
-    deprecation_requests = DeprecationRequests(reads, store)
+    deprecation_requests = DeprecationRequests(reads, store, notification_store)
 
     def list_reviews(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
         return reviews.list_reviews(caller, _query_of(event))
@@ -500,3 +533,44 @@ def create_curation_handler(
     }
 
     return _serve(routes, settings)
+
+
+def create_event_handler(
+    environ: Mapping[str, str],
+    *,
+    registry_client: RegistryReadClient | None = None,
+    store_client: SupplementStoreClient | None = None,
+) -> Callable[[Any, Any], dict[str, Any]]:
+    """イベント処理 handler を作る。Registry の ARN と補助テーブルが不足していれば起動エラーにする。
+
+    EventBridge のルールから Registry のレコードのイベントを受け取り、Registry を再取得して
+    補助テーブルに通知を書く。認証設定は使わない（API Gateway からは呼ばれない）。
+    Registry・補助テーブルの一時的な失敗は例外のまま返し、Lambda の非同期呼び出しの再試行に任せる。
+    """
+    registry_settings = load_registry_settings(environ)
+    catalog_settings = load_catalog_settings(environ)
+    if not catalog_settings.supplement_table_name:
+        raise ConfigurationError(
+            "イベント処理 handler の設定が不足しています: SUPPLEMENT_TABLE_NAME"
+        )
+    region = registry_settings.region
+    db = store_client or cast(SupplementStoreClient, boto3.client("dynamodb", region_name=region))
+    notifier = RegistryEventNotifier(
+        registry_settings.arn,
+        SupplementStore(catalog_settings.supplement_table_name, registry_settings.arn, db),
+        NotificationStore(
+            catalog_settings.supplement_table_name,
+            registry_settings.arn,
+            cast(NotificationStoreClient, db),
+        ),
+        registry_client
+        or cast(RegistryReadClient, boto3.client("agent-registry-control", region_name=region)),
+    )
+
+    def handler(event: Any, context: Any) -> dict[str, Any]:
+        if not isinstance(event, Mapping):
+            logger.warning("想定外の形のイベントを無視しました")
+            return {"result": "IGNORED", "notified": 0}
+        return notifier.handle(event)
+
+    return handler

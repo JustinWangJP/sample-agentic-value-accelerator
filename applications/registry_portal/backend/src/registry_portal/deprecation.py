@@ -9,6 +9,8 @@
 
 どちらの書き込みも共通のロックの外では行わず（ロックがあれば 409）、操作記録（INTENT と RESULT）を
 同じトランザクションで追記する。結果は履歴（GET /api/records/{recordId}/history）で Publisher も確認できる。
+依頼は Curator 全員に、見送りは所有チームの Publisher 全員に、アプリ内の通知（#15）として同じトランザクションで届ける。
+見送りは AWS の状態を変えないため、Registry のイベントからは通知できない。
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from registry_portal.curation_reads import (
     CurationReads,
     RecordNotFound,
     RegistryUnavailable,
+    display_name,
     is_managed,
     record_state,
     require_curator,
@@ -44,9 +47,19 @@ from registry_portal.domain.drafts import (
     PrincipalRecord,
     digest,
 )
+from registry_portal.domain.notifications import (
+    CURATOR_AUDIENCE,
+    Notification,
+    NotificationKind,
+    notification_id,
+    notification_message,
+    notification_time,
+    team_audience,
+)
 from registry_portal.drafts import require_publisher
 from registry_portal.errors import ApiError, ForbiddenError, RequestValidationError
 from registry_portal.operations import check_record_id, now, principal_of
+from registry_portal.services.notification_store import NotificationStore
 from registry_portal.services.supplement_store import (
     SupplementStore,
     InstantOperation,
@@ -102,12 +115,34 @@ def _audit(
     }
 
 
+def _in_app_notification(
+    audit: InstantOperation,
+    audience: str,
+    kind: NotificationKind,
+    record_name: str | None,
+) -> Notification:
+    """操作記録と同じトランザクションで書くアプリ内の通知。出来事は操作 ID で表す。"""
+    record_id = audit["recordId"]
+    return Notification(
+        notification_id=notification_id(f"OPERATION#{audit['operationId']}", audience, kind),
+        audience=audience,
+        kind=kind,
+        record_id=record_id,
+        record_name=record_name,
+        message=notification_message(kind, record_id, record_name, reason=audit["reason"]),
+        created_at=notification_time(audit["startedAt"]),
+    )
+
+
 class DeprecationRequests:
     """Publisher の廃止依頼の受付と、Curator の見送り。所有チームの検査は申請と同じ規則（設計書「ロールと所有」）。"""
 
-    def __init__(self, reads: CurationReads, store: SupplementStore) -> None:
+    def __init__(
+        self, reads: CurationReads, store: SupplementStore, notifications: NotificationStore
+    ) -> None:
         self.reads = reads
         self.store = store
+        self.notifications = notifications
 
     def _managed(self, record_id: str) -> Management:
         management = self.reads.load_management(record_id)
@@ -152,10 +187,15 @@ class DeprecationRequests:
             requested_at=at,
         )
         audit = _audit(REQUEST_DEPRECATION_KIND, principal, management, record_id, reason, at)
+        notification = _in_app_notification(
+            audit, CURATOR_AUDIENCE, "DEPRECATION_REQUESTED", display_name(record)
+        )
         with _writing(
             "このレコードには未解決の廃止依頼があります。Curator の対応をお待ちください。"
         ):
-            self.store.save_deprecation_request(request, audit)
+            self.store.save_deprecation_request(
+                request, audit, self.notifications.notification_put(notification)
+            )
         return 200, request.view()
 
     def decline(
@@ -183,6 +223,12 @@ class DeprecationRequests:
         at = now()
         declined = request.resolve(RESOLUTION_DECLINED, reason, principal, at)
         audit = _audit(DECLINE_DEPRECATION_KIND, principal, management, record_id, reason, at)
+        # 見送りは Registry を読まないため、通知にはレコードの名前を含めず record ID で示す
+        notification = _in_app_notification(
+            audit, team_audience(management.owner_team), "DEPRECATION_DECLINED", None
+        )
         with _writing("廃止依頼の状態が変わりました。最新の状態を確認してください。"):
-            self.store.decline_deprecation_request(declined, audit)
+            self.store.decline_deprecation_request(
+                declined, audit, self.notifications.notification_put(notification)
+            )
         return 200, declined.view()

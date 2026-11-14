@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from collections.abc import Mapping
 from typing import Any, NamedTuple, NotRequired, Protocol, TypedDict, Unpack, cast
 
@@ -207,9 +208,12 @@ class SupplementStore:
             params["ExclusiveStartKey"] = last_key
 
     def save_deprecation_request(
-        self, request: DeprecationRequest, audit: InstantOperation
+        self,
+        request: DeprecationRequest,
+        audit: InstantOperation,
+        notification: Mapping[str, Any] | None = None,
     ) -> None:
-        """廃止依頼を保存し、操作記録を追記する。
+        """廃止依頼を保存し、操作記録を追記する。notification はアプリ内の通知の項目（同じトランザクションで書く）。
 
         別の操作がロックを持てば RecordLocked、未解決の依頼がすでにあれば StoreConflict。
         解決済みの依頼は新しい依頼で上書きする（レコードごとに依頼は1件だけ残る）。
@@ -222,25 +226,39 @@ class SupplementStore:
                 names={"#state": "state"},
             ),
             audit,
+            notification,
         )
 
     def decline_deprecation_request(
-        self, declined: DeprecationRequest, audit: InstantOperation
+        self,
+        declined: DeprecationRequest,
+        audit: InstantOperation,
+        notification: Mapping[str, Any] | None = None,
     ) -> None:
         """未解決の廃止依頼を見送りとして解決し、操作記録を追記する。
 
         別の操作がロックを持てば RecordLocked（公開停止・廃止の処理中など）、
         依頼が未解決でないか別の依頼に置き換わっていれば StoreConflict。
         """
-        self._transact_unlocked(self._resolve_deprecation_request(declined), audit)
+        self._transact_unlocked(self._resolve_deprecation_request(declined), audit, notification)
 
-    def _transact_unlocked(self, write: dict[str, Any], audit: InstantOperation) -> None:
+    def _transact_unlocked(
+        self,
+        write: dict[str, Any],
+        audit: InstantOperation,
+        notification: Mapping[str, Any] | None = None,
+    ) -> None:
         """レコードのロックがないことを確かめながら、1件の書き込みと操作記録の追記を行う。
+
+        notification（アプリ内の通知の項目）を渡すと、同じトランザクションで書く。書き込みが
+        取り消されれば通知も残らず、書き込みが成功すれば通知も必ず残る。
 
         トランザクションの項目の位置はこのメソッドの中だけで扱い、呼び出し側には例外の種類で伝える。
         """
         lock_check = self._no_lock(audit["recordId"])
         items = [write, lock_check, *self._instant_audit(audit)]
+        if notification is not None:
+            items.append(dict(notification))
         try:
             self._transact(items)
         except StoreConflict as conflict:
@@ -415,17 +433,21 @@ class SupplementStore:
     def _put(
         self,
         item: Mapping[str, Any],
-        condition: str = "attribute_not_exists(pk)",
+        condition: str | None = "attribute_not_exists(pk)",
         values: Mapping[str, Any] | None = None,
         *,
         names: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
-        """条件付きの Put の項目。names は条件式で予約語（state など）を置き換える属性名。"""
+        """条件付きの Put の項目。names は条件式で予約語（state など）を置き換える属性名。
+
+        condition に None を渡すと、条件なしで上書きする（逆引きの索引など、同じ内容を書き直すもの）。
+        """
         put: dict[str, Any] = {
             "TableName": self.table,
             "Item": {key: TypeSerializer().serialize(value) for key, value in item.items()},
-            "ConditionExpression": condition,
         }
+        if condition is not None:
+            put["ConditionExpression"] = condition
         if values:
             put["ExpressionAttributeValues"] = {
                 name: TypeSerializer().serialize(value) for name, value in values.items()
@@ -579,6 +601,9 @@ class SupplementStore:
             if "result" in outcome:
                 recorded["result"] = {**outcome["result"], "recovery": recovery}
             outcome = {**outcome, **recorded}
+        # 操作記録には確定した時刻も残す。通知のイベント処理が、Registry の状態変化が
+        # この操作の間に起きたか（ポータル内の変更か）を照合するのに使う
+        audit_outcome = {**outcome, "settledAt": datetime.now(timezone.utc).isoformat()}
         audit_items = [
             self._put(
                 {
@@ -592,7 +617,9 @@ class SupplementStore:
                 "operationId = :op",
                 {":op": op_id},
             ),
-            self._put({**outcome, "pk": operation["lockPk"], "sk": audit_sk(op_id, AUDIT_RESULT)}),
+            self._put(
+                {**audit_outcome, "pk": operation["lockPk"], "sk": audit_sk(op_id, AUDIT_RESULT)}
+            ),
         ]
         # 作成の操作は、保存中（save_pending）にレコード単位へ写した INTENT と組になるよう、RESULT も写す。
         # 条件式（attribute_not_exists）付きのため、既存の記録を上書きしない
@@ -600,7 +627,11 @@ class SupplementStore:
         if target is not None and self.record_pk(target) != operation["lockPk"]:
             audit_items.append(
                 self._put(
-                    {**outcome, "pk": self.record_pk(target), "sk": audit_sk(op_id, AUDIT_RESULT)}
+                    {
+                        **audit_outcome,
+                        "pk": self.record_pk(target),
+                        "sk": audit_sk(op_id, AUDIT_RESULT),
+                    }
                 )
             )
         return [*audit_items, *self._release_locks(operation, record_id)]
@@ -674,6 +705,52 @@ class SupplementStore:
                     }
                 )
             )
+            items.extend(self._reference_index(operation["recordId"], published))
         if resolved_request is not None:
             items.append(self._resolve_deprecation_request(resolved_request))
         self._transact(items)
+
+    def _reference_pk(self, target_id: str) -> str:
+        """参照先から、それを関連参照に持つ Agent を引く逆引きのパーティションキー。ソートキーは Agent の ID。"""
+        return f"REGISTRY#{self.registry}#REFERENCED#{target_id}"
+
+    def _reference_index(
+        self, record_id: str, published: Mapping[str, Any]
+    ) -> list[dict[str, Any]]:
+        """公開承認した版の関連参照を、参照先からの逆引きに書く項目（参照先の公開停止・廃止の通知に使う）。
+
+        新しい版で参照をやめても項目は消さない。通知の側で、公開中の版の関連参照を読み直して確かめる。
+        """
+        references = published.get("relatedReferences")
+        targets = {
+            reference["recordId"]
+            for reference in (references if isinstance(references, list) else [])
+            if isinstance(reference, Mapping) and isinstance(reference.get("recordId"), str)
+        }
+        return [
+            self._put(
+                {"pk": self._reference_pk(target), "sk": record_id, "recordId": record_id},
+                None,
+            )
+            for target in sorted(targets)
+        ]
+
+    def referencing_records(self, target_id: str) -> list[str]:
+        """参照先（target_id）を関連参照に持つ版を公開承認した Agent の ID（逆引き）。"""
+        params: QueryParams = {
+            "TableName": self.table,
+            "KeyConditionExpression": "pk = :pk",
+            "ExpressionAttributeValues": {":pk": {"S": self._reference_pk(target_id)}},
+        }
+        records: list[str] = []
+        while True:
+            response = self._client.query(**params)
+            for raw in response.get("Items", []):
+                record_id = _deserialize(raw).get("sk")
+                if not isinstance(record_id, str):
+                    raise ValueError("保存された関連参照の逆引きの形式が正しくありません。")
+                records.append(record_id)
+            last_key = response.get("LastEvaluatedKey")
+            if not last_key:
+                return records
+            params["ExclusiveStartKey"] = last_key

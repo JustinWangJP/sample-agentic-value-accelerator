@@ -1,0 +1,23 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EventsLogs",
+      "Effect": "Allow",
+      "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+      "Resource": "${log_group_arn}:*"
+    },
+    {
+      "Sid": "RegistryRead",
+      "Effect": "Allow",
+      "Action": ["agent-registry:GetRegistryRecord"],
+      "Resource": ["${registry_arn}", "${registry_arn}/record/*"]
+    },
+    {
+      "Sid": "NotificationSupplement",
+      "Effect": "Allow",
+      "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query"],
+      "Resource": "${supplement_table_arn}"
+    }
+  ]
+}

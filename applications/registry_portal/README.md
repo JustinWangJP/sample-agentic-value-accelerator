@@ -10,6 +10,7 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 |---|---|
 | `backend/src/registry_portal/handlers/management.py` | 管理 handler の Lambda エントリーポイント。認証設定がなければ初期化に失敗する |
 | `backend/src/registry_portal/handlers/curation.py` | 決裁 handler の Lambda エントリーポイント。認証設定または補助テーブルがなければ初期化に失敗する |
+| `backend/src/registry_portal/handlers/events.py` | イベント処理 handler の Lambda エントリーポイント（#15）。Registry の ARN または補助テーブルがなければ初期化に失敗する |
 | `backend/src/registry_portal/app.py` | API Gateway HTTP API（payload format 2.0）のイベントを受け取り、route を振り分ける |
 | `backend/src/registry_portal/auth.py` | 認可。検証済みの claims から主体・業務ロール・所属チームを導出する |
 | `backend/src/registry_portal/errors.py` | 共通エラー DTO と日本語メッセージ |
@@ -29,6 +30,10 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 | `backend/src/registry_portal/domain/submissions.py` | 申請入力、semver の比較、`isA2A`・公開中の版・関連参照の参照先の検査、申請スナップショットの構築と、保存済みスナップショットからのハッシュの再計算 |
 | `backend/src/registry_portal/domain/curation.py` | 決裁入力（スナップショットのハッシュと理由）・公開停止と廃止の入力と理由の検査、決裁・公開停止・廃止の前提の規則、自己承認の禁止、操作ごとの AWS の遷移先、審査待ちの項目の種別、公開版スナップショット（`PUBLISHED#版`）への書き出しと差分用の読み取り |
 | `backend/src/registry_portal/domain/deprecation.py` | 廃止依頼のモデル（状態・終わり方・理由の検査、保存形式と API の形）。SPA の `frontend/src/drafts/api.ts` と値を揃える |
+| `backend/src/registry_portal/notification_events.py` | Registry の EventBridge イベントから通知を作るイベント処理。Registry の再取得、操作記録との照合（ポータル外の変更の判定）、宛先グループの決定、event ID と状態変化での重複除去 |
+| `backend/src/registry_portal/notifications.py` | 自分宛ての通知の一覧・未読件数と既読位置の更新の API。業務ロールと所属チームから宛先グループを決める |
+| `backend/src/registry_portal/domain/notifications.py` | 通知のモデル（種別・宛先グループ・本文・既読位置の形式・保持期間）と、Registry の状態変化を操作記録と照合する規則。SPA の `frontend/src/notifications/api.ts` と値を揃える |
+| `backend/src/registry_portal/services/notification_store.py` | 補助テーブルの通知・重複除去の印・処理済みのイベント・既読位置の読み書き |
 | `backend/src/registry_portal/services/supplement_store.py` | 補助テーブルの項目（管理情報・ロック・操作・操作記録・申請スナップショット `SUBMISSION#`・無効化記録・公開版スナップショット・廃止依頼）の読み書き |
 | `infrastructure/` | 下書きの IAM モジュール（`modules/management_drafts`）、決裁 Lambda・実行ロール・審査と決裁の route のモジュール（`modules/decision`）、既存ロールへ適用するルートモジュール（`management`）と決裁 Lambda 用のルートモジュール（`decision`） |
 | `frontend/` | React SPA。Authorization Code + PKCE でログインし、アクセストークンはメモリー上だけで保持する |
@@ -72,6 +77,8 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 | `POST /api/records/{recordId}/deprecate` | 廃止（元に戻せない DEPRECATED）。理由の入力と確認（confirm）が必須。Curator のみ（決裁 handler。詳細は #13 の節） |
 | `GET /api/records/{recordId}/publication` | 公開管理の照会（状態・公開中の版・未解決の廃止依頼・実行できる操作）。Curator のみ（決裁 handler。詳細は #13 の節） |
 | `POST /api/records/{recordId}/deprecation-requests/decline` | 廃止依頼の見送り（理由が必須。レコードの状態は変えない）。Curator のみ（決裁 handler。詳細は #13 の節） |
+| `GET /api/notifications` | 自分宛ての通知（新しい順に最大50件）・未読件数・既読位置。宛先グループを持たない Viewer は0件（詳細は #15 の節） |
+| `POST /api/notifications/read` | 既読位置の更新。本文は `{ "readUpTo": 通知の position }`（詳細は #15 の節） |
 
 ### カタログの一覧・検索・詳細
 
@@ -142,6 +149,8 @@ A2A の判定と検索用の写しの設計理由は [ADR-0006](../../docs/adr/0
 | `DISCOVERY_SCOPE` | （任意）トークン取得時に要求する scope。空なら client の既定 |
 | `SUPPLEMENT_TABLE_NAME` | （任意。下書きの管理には必須）Registry と同じリージョンにある補助 DynamoDB テーブル名。所有チームの正本と公開版のスナップショットを読み、下書きの管理情報・ロック・操作を保存する。カタログだけなら `dynamodb:GetItem`、下書きには「custom Agent の下書き」の IAM が必要。未設定なら下書きの API は 503。決裁 handler（`handlers/curation.py`）はこれが必須で、未設定なら起動エラー |
 | `A2A_SEARCH_ENABLED` | （任意）`true` で A2A の絞り込み検索を有効にする。既定は無効。`isA2A` の準備が終わるまで有効にしない（「A2A 検索を有効にする」を参照）。`true`・`false` 以外は起動エラー |
+
+イベント処理 handler（`handlers/events.py`、#15）は `REGISTRY_ARN` と `SUPPLEMENT_TABLE_NAME`（必須）だけを使い、認証・発見の設定は読みません。
 
 必須の変数が未設定、または形式が誤っていれば起動エラーにします。開発用に認証を通す設定はありません。管理 Lambda の実行ロールには、`DISCOVERY_CLIENT_SECRET_ARN` に対する `secretsmanager:GetSecretValue` 権限が必要です（IaC は #5 で用意する）。Boto3・Botocore は Lambda ランタイム付属のものを使わず、`requirements.txt` で固定した版を同梱します（設計書「新しいサービス名前空間を使う」）。
 
@@ -490,7 +499,7 @@ AWS の状態遷移は [Record lifecycle](https://docs.aws.amazon.com/bedrock-ag
 
 審査の詳細（`GET /api/reviews/{recordId}`）は、未解決の廃止依頼があれば `deprecationRequest` に添えます。依頼を出した Publisher が再申請した場合に、承認での見落としを防ぐためです。依頼は承認では閉じません。
 
-通知は #15 が担います。公開停止と廃止は AWS のイベント（`Rejected`・`Deprecated`）から所有チームへの通知になりますが、見送りは AWS の状態を変えないためイベントが出ません。アプリ内で発生する通知として #15 で扱います。
+通知は #15 が担います（「画面上の通知」の節）。公開停止と廃止は AWS のイベント（`Rejected`・`Deprecated`）から所有チームへの通知になりますが、見送りは AWS の状態を変えないためイベントが出ません。廃止依頼と見送りは、アプリ内で発生する通知として、依頼・見送りと同じトランザクションで書きます。
 
 ### 決裁と同じ手順
 
@@ -639,3 +648,84 @@ Admin の「Registry 管理」から、未管理レコードを所有チーム�
 ### 決裁 Lambda の追加設定と権限
 
 `infrastructure/decision/terraform.tfvars.example` に、管理 Lambda と同じ発見用 M2M の token URL、client ID、client secret ARN、scope を設定します。決裁 Lambda に追加する AWS 権限は、その secret に対する `secretsmanager:GetSecretValue` だけです。JWT 発見 API は M2M で認可します。descriptor 更新・schema 更新・Registry 更新権限は追加しません。管理一覧・接続診断は管理 Lambda、取り込み・所有変更は決裁 Lambda への専用 route と呼び出し許可で公開します。借用 Registry を Terraform resource にしません。
+
+## 画面上の通知（#15）
+
+Registry の状態変化と廃止依頼・見送りを、画面の通知欄に届けます。メール・SNS・WebSocket は使いません（設計書「通知」）。
+
+| 出来事 | 発生元 | 宛先グループ | 種別（`kind`） |
+| --- | --- | --- | --- |
+| 申請（`Pending Approval`） | Registry のイベント | Curator 全員 | `SUBMITTED` |
+| 廃止依頼 | アプリ内（依頼と同じトランザクション） | Curator 全員 | `DEPRECATION_REQUESTED` |
+| 公開承認・却下・公開停止・廃止（`Approved`・`Rejected`・`Deprecated`） | Registry のイベント | 所有チームの Publisher 全員 | `APPROVED`・`REJECTED`・`SUSPENDED`・`DEPRECATED` |
+| 廃止依頼の見送り | アプリ内（見送りと同じトランザクション） | 所有チームの Publisher 全員 | `DEPRECATION_DECLINED` |
+| 参照先の Skill・MCP サーバーの公開停止・廃止 | Registry のイベント | 参照先を公開中の版で使う Agent の所有チーム（チームごとに1件） | `REFERENCE_SUSPENDED`・`REFERENCE_DEPRECATED` |
+| 操作記録と照合できない状態変化（ポータル外の変更） | Registry のイベント | Admin 全員 | `OUTSIDE_CHANGE` |
+
+宛先グループは、Curator（`registry-curator`）・Admin（`registry-admin`）・所有チームの Publisher（`registry-publisher` と `team-*`）の3種類です。通知はグループ単位で1件だけ作り、既読はユーザー（主体）単位の既読位置で管理します。
+
+### イベント処理
+
+EventBridge の default バスに Registry が送るイベント（source `aws.agent-registry`、detail-type `Registry Record State changed to Draft`・`Pending Approval`・`Approved`・`Rejected`・`Deprecated`）を、ルール1本でイベント処理 Lambda（`handlers/events.py`）に流します。イベントの `detail` には `registryRecordId` と `registryId` しかなく、操作者は含まれません（[Registry EventBridge イベント](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-eventbridge.html)、[イベントの形式](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-notifications-approvals.html)）。ルールは借用する Registry の ID（`detail.registryId`）に絞り、handler も source・detail-type・Registry ID・record ID の形式を確かめ、対象外のイベントは Registry を読まずに無視します。
+
+1. **重複除去**: 処理を終えた event ID は補助テーブルに印を残し、同じ event ID の再配信は Registry を読まずに終えます。印は通知をすべて書いた後に書くため、途中で失敗したイベントは再配信で処理し直せます。
+2. **再取得**: `GetRegistryRecord` でレコードを読み直し、イベントの detail-type ではなく、再取得した状態（`status`）と更新時刻（`updatedAt`）を使います。順序が入れ替わって申請のイベントが承認の後に届いても、承認として扱います。処理中・失敗の状態（`CREATING`・`UPDATING`・`CREATE_FAILED`・`UPDATE_FAILED`）は遷移が確定していないため通知せず、確定した後の遷移のイベントで通知します。レコードが削除されていれば（`ResourceNotFoundException`）通知せずに処理済みにします。
+3. **照合**: レコードの操作記録（`AUDIT#…`）のうち、AWS の状態を変える操作（作成・編集・申請・公開承認・却下・公開停止・廃止）で、状態の変化より前に始まった最も新しいものが、次をすべて満たすときだけ、ポータル内の変更とみなします。満たさなければ「ポータル外の変更」として Admin に届けます。
+   - 観測した状態に遷移させる種別である（`DRAFT` は作成・編集、`PENDING_APPROVAL` は申請、`APPROVED` は公開承認、`REJECTED` は却下・公開停止、`DEPRECATED` は廃止）
+   - 失敗していない（強制解除した操作を含む）
+   - 確定している場合は、AWS の `updatedAt` が操作の開始から確定（`settledAt`）までの間にある。結果確認中（RESULT がない）の操作は、確定を待たずにポータル内とみなす
+
+   過去に同じ種別の操作があっても、その後に別の操作や時間をおいた変化が挟まれば説明できません（例: ポータルで承認した1時間後の再承認はポータル外）。Lambda と AWS の時計のずれとして前後5分を許容します。確定時刻は、この変更から操作記録の RESULT に記録します。それより前に確定した操作は、開始から15分（Lambda の上限）までの変化と照合します。未管理レコード（取り込み前）の変化は、ポータルの操作記録がないため常にポータル外の変更です。ポータル内の作成・編集による `DRAFT` は通知しません。
+4. **宛先**: 所有チームは管理情報の `ownerTeam`（正本）から決めます。公開停止と却下は、照合した操作の種別（`SUSPEND` / `REJECT`）で区別します。廃止はポータル外の変更でも元に戻せないため、Admin に加えて参照先を使う Agent の所有チームにも届けます。
+5. **書き込み**: 同じ状態変化（レコード・状態・`updatedAt`）から作る通知は、宛先グループと種別ごとに重複除去の印と通知を1つのトランザクションで書きます。別の event ID で届いた同じ状態変化からは、通知を作り直しません。
+
+Registry・補助テーブルの一時的な失敗（スロットリング・5xx など）では、handler は例外を返して Lambda の非同期呼び出しの再試行（最大2回、イベントの経過時間1時間まで）に任せます（[非同期呼び出しのエラー処理](https://docs.aws.amazon.com/lambda/latest/dg/invocation-async-error-handling.html)）。再試行しても通知は増えません。再試行を使い切ったイベントは失われるため、障害が続いた後は Admin が操作履歴と Registry を確認してください。
+
+### 参照先の逆引き
+
+参照先から Agent を引くため、公開承認の確定と同じトランザクションで、公開した版の関連参照を逆引きの項目（`pk` = `REGISTRY#{registryArn}#REFERENCED#{参照先の record ID}`、`sk` = Agent の record ID）に書きます。新しい版で参照をやめても項目は消さず、通知のときに Agent の管理情報の `publishedVersion` の公開版スナップショット（`relatedReferences`）を読み直して、今も参照している Agent だけに届けます。この変更より前に公開承認された Agent には逆引きの項目がないため、次の公開承認まで参照先の通知が届きません（MVP1 は実環境への反映前のため、既存データの移行は行いません）。
+
+### 保存形式と保持期間
+
+補助テーブルの次の項目は、すべて TTL 属性 `expiresAt` に90日後の時刻を持ちます（設計書「補助テーブルに保存するもの」）。DynamoDB の TTL による削除は期限から遅れることがあるため（[TTL の仕組み](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/howitworks-ttl.html)）、期限切れの項目は一覧・未読件数・既読位置の読み取りで除きます。
+
+| 項目 | `pk` | `sk` |
+| --- | --- | --- |
+| 通知 | `REGISTRY#{registryArn}#NOTIFICATION#{宛先グループ}`（`CURATOR`・`ADMIN`・`TEAM#{team}`） | `{時刻}#{通知 ID}`（既読位置。時刻は UTC・マイクロ秒までの固定桁） |
+| 重複除去の印 | `REGISTRY#{registryArn}#NOTIFIED#{出来事のキー}` | `{宛先グループ}#{種別}` |
+| 処理済みのイベント | `REGISTRY#{registryArn}#EVENT#{event ID}` | `EVENT` |
+| 既読位置 | `REGISTRY#{registryArn}#READ#{issuer}#{subject}` | `READ` |
+
+通知は宛先グループ・種別・レコード ID・表示名（アプリ内の見送りでは Registry を読まないため持たない）・本文・時刻・EventBridge の event ID（イベント由来のもの）を持ちます。アプリ内の通知は、元の操作（廃止依頼・見送り）と同じトランザクションで書くため、依頼が409で拒否されれば通知も残りません。
+
+### API
+
+- `GET /api/notifications`（管理 handler）: 呼び出し元の宛先グループの通知を新しい順に最大50件、未読件数（既読位置より後の通知の数。50件を超えても全件を数える）、既読位置（`readUpTo`、未設定なら `null`）を返します。各通知は `notificationId`・`position`・`kind`・`recordId`・`recordName`（`null` あり）・`message`・`createdAt`・`read` です。宛先グループを持たない Viewer と所属チームのない Publisher は0件です。補助テーブルが未設定なら503 `NOTIFICATIONS_NOT_CONFIGURED`、読めないか保存内容の形式が崩れていれば502 `NOTIFICATIONS_UNAVAILABLE` で、0件とは区別します。
+- `POST /api/notifications/read`（管理 handler）: 本文 `{ "readUpTo": 通知の position }` で、その位置までの通知を既読にします。応答は一覧と同じ形です。既読位置は前にだけ進み、古い位置を送っても戻りません（複数のタブからの更新に備える）。形式の誤り・未知の項目は400 `VALIDATION_ERROR` です。
+
+### SPA
+
+ヘッダーの通知欄に未読件数（「通知（未読 N 件）」）を表示し、表示している間は約60秒ごとにポーリングします。押すと一覧（種別・レコード・本文・時刻・未読の印）を開き、「すべて既読にする」で最新の通知の位置まで既読にします。0件（「通知はありません。」）と取得の失敗（再試行、401 ではログインし直し）を区別して表示し、取得に失敗している間は未読件数の代わりに「未読件数を取得できません」と表示します。
+
+### IaC
+
+- [イベント処理モジュール](infrastructure/modules/notification_events/main.tf): イベント処理 Lambda、専用の実行ロール、ロググループ（365日）、EventBridge ルール（default バス、source・detail-type・`detail.registryId` で絞る）とターゲット、ルールからだけの呼び出し許可、非同期呼び出しの再試行設定。実行ロールは `agent-registry:GetRegistryRecord` と、補助テーブルの `dynamodb:GetItem`・`PutItem`・`Query` だけを持ちます。Registry の状態変更や descriptor の書き込みの権限は持ちません。
+- ルートモジュール [`infrastructure/notification_events`](infrastructure/notification_events/main.tf): `terraform.tfvars.example` をコピーし、リージョン（Registry と同じ）、Lambda の zip、Registry ARN、補助テーブルの名前と ARN を設定します。
+- 通知 API の route（`GET /api/notifications`・`POST /api/notifications/read`）は、[管理 handler の route 用モジュール](infrastructure/modules/management_routes/main.tf) で既存の管理 Lambda の統合に割り当てます。管理 Lambda と決裁 Lambda のロールは、既存の `dynamodb:GetItem`・`PutItem`・`Query` で通知と既読位置を読み書きできるため、権限は追加しません。
+- 補助テーブルの TTL（属性 `expiresAt`）が有効であることを前提にします（#5 の IaC が持つ）。
+
+### テスト
+
+Seam 1 の Stubber と moto で、EventBridge イベントを入力に、次を検証します（`tests/test_notifications.py`、`tests/test_notification_permissions.py`）。
+
+- 申請・公開承認・却下の宛先、同じ event ID の再配信で Registry を読まないこと、順序が入れ替わったイベントで再取得した状態を1回だけ通知すること
+- ポータル外の変更（申請しか記録のない承認、過去の承認の後の時間をおいた承認、未管理レコード）が Admin にだけ届くこと
+- 参照先のポータル外の廃止とポータルでの公開停止が、参照先を使う Agent の所有チームに届くこと、公開中の版で参照をやめた Agent に届かないこと
+- 廃止依頼と見送りのアプリ内の通知、拒否された依頼で通知が残らないこと
+- 既読位置がユーザー単位で、グループの通知を共有すること、既読位置が戻らないこと、本文の検査、90日の TTL と期限切れの除外、Viewer の0件、503・502 の区別
+- 対象外のイベントの無視、Registry の一時的な失敗での例外と再配信での処理、削除済みのレコード、ポータル内の作成の `DRAFT` と処理中の状態を通知しないこと、設定不足での起動エラー
+- IaC: 実行ロールの権限、Lambda・ルール・呼び出し許可、ルールの detail-type と handler が受け付ける種別の一致、ルートモジュール、通知 API の route
+
+Seam 2 の Vitest で、ヘッダーの未読件数、一覧を開くまで表示しないこと、約60秒ごとのポーリングと表示をやめたときの停止、既読の本文と更新、0件と取得失敗・401 の区別、応答の検査を確認します（`frontend/src/tests/notifications.test.ts`）。
+
+実 AWS への反映と、実環境での EventBridge イベントの受信は行っていません。デプロイ後に実環境で、ルールがイベントを受け取ること（`detail.registryId` が ARN の末尾の ID であること）、IAM の境界、TTL による削除を確認してください。
