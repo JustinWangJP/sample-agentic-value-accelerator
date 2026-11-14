@@ -199,6 +199,11 @@ class RegistryEventNotifier:
         )
         if operation is None:
             plans = [_Plan(ADMIN_AUDIENCE, "OUTSIDE_CHANGE")]
+            # 管理下のレコードは、所有チームにも自分のレコードの変化を知らせる。通常の決裁と同じ種別にはせず、
+            # Curator にも届けない（ポータル外の審査待ちは、そのまま決裁せず保存・再申請から進める）。
+            # 未管理レコードにはポータル上の所有チームがないため、Admin にだけ届ける
+            if management is not None and management.is_managed:
+                plans.append(_Plan(team_audience(management.owner_team), "OUTSIDE_CHANGE"))
             # 廃止は元に戻せないため、ポータル外の廃止でも参照先を使う Agent の所有チームに知らせる
             if status == DEPRECATED_STATUS:
                 plans.extend(self._reference_plans(record_id, "REFERENCE_DEPRECATED"))

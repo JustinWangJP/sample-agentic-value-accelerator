@@ -150,7 +150,13 @@ class Notification:
             record_id=record_id,
             record_name=record_name,
             message=notification_message(
-                kind, record_id, record_name, reason=reason, status=status, agents=agents
+                kind,
+                record_id,
+                record_name,
+                reason=reason,
+                status=status,
+                agents=agents,
+                audience=audience,
             ),
             created_at=notification_time(created_at),
             event_id=event_id,
@@ -231,8 +237,12 @@ def notification_message(
     reason: str | None = None,
     status: str | None = None,
     agents: Iterable[str] = (),
+    audience: str = ADMIN_AUDIENCE,
 ) -> str:
-    """通知の本文（日本語）。理由は Registry の statusReason または操作記録の理由。"""
+    """通知の本文（日本語）。理由は Registry の statusReason または操作記録の理由。
+
+    ポータル外の変更は、変更経路を調べる Admin と、経緯を Admin に確かめる所有チームとで文面を分ける。
+    """
     label = f"「{_label(record_name, record_id)}」"
     agent_list = "、".join(agents)
     texts: dict[NotificationKind, str] = {
@@ -255,7 +265,11 @@ def notification_message(
         ),
         "OUTSIDE_CHANGE": (
             f"{label}の状態がポータルの外で {status} に変わりました。"
-            "操作記録と照合できないため、Registry の変更経路を確認してください。"
+            + (
+                "操作記録と照合できないため、Registry の変更経路を確認してください。"
+                if audience == ADMIN_AUDIENCE
+                else "ポータルの操作ではないため、経緯は Admin に確認してください。"
+            )
         ),
     }
     return texts[kind]

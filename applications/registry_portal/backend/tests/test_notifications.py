@@ -176,8 +176,12 @@ ADMIN = "registry-admin"
 
 
 @mock_aws
-def test_state_change_without_a_matching_operation_reaches_admins_as_an_outside_change():
-    """申請だけの記録しかないのに承認された（ポータル外での直接承認）。Admin にだけ届く。"""
+def test_outside_change_reaches_admins_and_the_owner_team_but_not_curators():
+    """申請だけの記録しかないのに承認された（ポータル外での直接承認）。
+
+    Admin と所有チームの Publisher に「ポータル外の変更」として届く。所有チームには通常の公開承認と
+    同じ種別にはせず、Curator にも届けない（確認されていない変化を通常の決裁と同じに見せない）。
+    """
     registry, db = clients()
     with Stubber(registry) as stub:
         state = setup_pending(stub, registry, db)
@@ -188,8 +192,15 @@ def test_state_change_without_a_matching_operation_reaches_admins_as_an_outside_
         (item,) = _notifications(state["management"], ADMIN)[1]["items"]
         assert item["kind"] == "OUTSIDE_CHANGE"
         assert "ポータルの外" in item["message"] and "APPROVED" in item["message"]
-        assert _notifications(state["management"], PUBLISHER)[1]["items"] == []
+        (owner,) = _notifications(state["management"], PUBLISHER)[1]["items"]
+        assert owner["kind"] == "OUTSIDE_CHANGE"
+        assert "Admin" in owner["message"]
+        # 宛先グループごとに別の通知になる（同じ状態変化でも、宛先ごとに1件ずつ）
+        assert owner["notificationId"] != item["notificationId"]
         assert _notifications(state["management"], CURATOR)[1]["items"] == []
+        assert (
+            _notifications(state["management"], "registry-publisher team-other")[1]["items"] == []
+        )
 
 
 @mock_aws
@@ -212,11 +223,15 @@ def test_an_earlier_portal_operation_of_the_same_kind_does_not_explain_a_later_c
         assert [
             item["kind"] for item in _notifications(state["management"], ADMIN)[1]["items"]
         ] == ["OUTSIDE_CHANGE"]
-        assert _notifications(state["management"], PUBLISHER)[1]["items"] == []
+        # 所有チームにも、公開承認ではなくポータル外の変更として届く
+        assert [
+            item["kind"] for item in _notifications(state["management"], PUBLISHER)[1]["items"]
+        ] == ["OUTSIDE_CHANGE"]
 
 
 @mock_aws
-def test_changes_to_unmanaged_records_reach_admins():
+def test_changes_to_unmanaged_records_reach_only_admins():
+    """未管理レコードにはポータル上の所有チームがないため、Admin にだけ届く。"""
     registry, db = clients()
     with Stubber(registry) as stub:
         events = event_handler(registry, db)
@@ -234,6 +249,7 @@ def test_changes_to_unmanaged_records_reach_admins():
         assert (item["kind"], item["recordId"]) == ("OUTSIDE_CHANGE", other)
         # ポータル外の申請は Curator の審査待ちに通知しない（取り込みと再申請から進める）
         assert _notifications(management, CURATOR)[1]["items"] == []
+        assert _notifications(management, PUBLISHER)[1]["items"] == []
 
 
 SKILL_ID = "skillABC1234"
