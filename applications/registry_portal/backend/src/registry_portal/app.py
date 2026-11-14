@@ -38,7 +38,9 @@ from registry_portal.deprecation import (
 )
 from registry_portal.domain.curation import PUBLICATION_ACTIONS
 from registry_portal.domain.drafts import (
+    ADOPT_KIND,
     APPROVE_KIND,
+    REASSIGN_OWNER_KIND,
     REJECT_KIND,
     OperationKind,
     is_decision_operation,
@@ -465,19 +467,23 @@ def create_curation_handler(
     )
     administration = RegistryAdministration(reads, store, discovery_client)
 
-    def adopt_record(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        return administration.adopt(
-            caller, _path_parameter(event), _json_body(event), _idempotency_key(event)
-        )
+    def ownership_route(kind: OperationKind) -> Route:
+        """取り込み・所有変更の route。操作の種類は route で決まり、本文からは受け取らない。"""
 
-    def reassign_owner(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        return administration.reassign_owner(
-            caller, _path_parameter(event), _json_body(event), _idempotency_key(event)
-        )
+        def change(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+            return administration.change_ownership(
+                caller,
+                _path_parameter(event),
+                _json_body(event),
+                _idempotency_key(event),
+                kind=kind,
+            )
+
+        return change
 
     routes: Mapping[str, Route] = {
-        "POST /api/records/{recordId}/adopt": adopt_record,
-        "POST /api/records/{recordId}/reassign-owner": reassign_owner,
+        "POST /api/records/{recordId}/adopt": ownership_route(ADOPT_KIND),
+        "POST /api/records/{recordId}/reassign-owner": ownership_route(REASSIGN_OWNER_KIND),
         "GET /api/reviews": list_reviews,
         "GET /api/reviews/{recordId}": get_review,
         "POST /api/reviews/{recordId}/approve": decision_route(APPROVE_KIND),

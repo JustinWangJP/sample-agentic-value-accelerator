@@ -18,7 +18,7 @@ from decision_helpers import put, setup_pending, decide, stub_status_update
 from record_fixtures import CUSTOM_DRAFT, CUSTOM_DESCRIPTORS, CUSTOM_DEFINITION
 from botocore.stub import ANY
 from registry_portal.app import create_management_handler
-from registry_portal.domain.submissions import auto_approval_state
+from draft_helpers import AUTO_APPROVAL_CASES, ConfiguredRegistry
 
 
 ADMIN = "registry-admin"
@@ -168,20 +168,24 @@ def test_connection_stays_connected_when_optional_settings_are_missing(
     assert result["warnings"] == warnings
 
 
-@pytest.mark.parametrize(
-    "registry,state",
-    [
-        ({}, "DISABLED"),
-        ({"approvalConfiguration": {}}, "DISABLED"),
-        ({"approvalConfiguration": {"autoApprovalRules": []}}, "DISABLED"),
-        ({"approvalConfiguration": {"autoApprovalRules": ["APPROVE_ALL"]}}, "ENABLED"),
-        ({"approvalConfiguration": {"autoApprovalRules": "APPROVE_ALL"}}, "UNKNOWN"),
-        ({"approvalConfiguration": []}, "UNKNOWN"),
-    ],
-)
-def test_connection_and_submission_share_the_auto_approval_judgement(registry, state):
-    """接続情報の表示と申請の停止が使う共通の判定。申請は DISABLED のときだけ進む。"""
-    assert auto_approval_state(registry) == state
+@pytest.mark.parametrize("approval,state", AUTO_APPROVAL_CASES)
+@mock_aws
+def test_connection_reports_the_auto_approval_judgement_shared_with_submission(approval, state):
+    """接続情報の表示は、申請の停止と同じ判定を返す（申請側は test_record_submissions.py）。"""
+    registry, db = clients()
+    base = {
+        key: value
+        for key, value in registry_configuration([]).items()
+        if key != "approvalConfiguration"
+    }
+    configured = ConfiguredRegistry(registry, {**base, **approval})
+    status, result = call(
+        handler_for(configured, db), event("GET", "/api/admin/connection", groups=ADMIN)
+    )
+    assert status == 200
+    assert result["connection"] == {"state": "CONNECTED"}
+    assert result["autoApproval"]["state"] == state
+    assert bool(result["warnings"]) == (state != "DISABLED")
 
 
 @mock_aws
@@ -329,7 +333,23 @@ def test_connection_error_preserves_configured_location_and_marks_unknown(code):
     assert result["registryArn"] == REGISTRY_ARN
     assert result["authorization"] is None
     assert result["connection"]["state"] == "ERROR"
+    # 接続の問題を切り分けられるよう、AWS のエラーコードを原因として返す
+    assert result["connection"]["cause"] == code
     assert result["autoApproval"]["state"] == "UNKNOWN"
+
+
+@mock_aws
+def test_connection_error_reports_network_failure_as_its_cause():
+    registry, db = clients()
+    unreachable = ConfiguredRegistry(
+        registry, EndpointConnectionError(endpoint_url="https://agent-registry.example")
+    )
+    status, result = call(
+        handler_for(unreachable, db), event("GET", "/api/admin/connection", groups=ADMIN)
+    )
+    assert status == 200
+    assert result["connection"]["state"] == "ERROR"
+    assert result["connection"]["cause"] == "EndpointConnectionError"
 
 
 @mock_aws
@@ -447,6 +467,8 @@ def test_backfill_preserves_existing_metadata_through_edit_submit_and_new_public
         assert adopt(adopted)[0] == 200
         stub.add_response("get_registry_record", before, GET)
         _, view = call(management, event("GET", f"/api/records/{RECORD_ID}"))
+        # 補完が必要なことは、取り込んだ Admin だけでなく編集する所有チームにも示す
+        assert "A2A 検索用の isA2A が未設定です" in view["initializationNotice"]
         stub.add_response("get_registry_record", before, GET)
         stub.add_response(
             "update_registry_record",
@@ -470,6 +492,8 @@ def test_backfill_preserves_existing_metadata_through_edit_submit_and_new_public
             ),
         )
         assert status == 200
+        # 保存で descriptor から補完されたら、通知は消える
+        assert "A2A" not in edited.get("initializationNotice", "")
         stub.add_response("get_registry_record", after, GET)
         stub.add_response("get_registry", registry_configuration([]), {"registryId": REGISTRY_ARN})
         stub.add_response(

@@ -1,14 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import { toApiError, type ApiError } from '../api/client'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
-import type {
-  AdminPage,
-  AdminRecord,
-  AdministrationApi,
-  AdministrationResult,
-  AutoApprovalState,
-  ManagementFilter,
-  RegistryConnection,
+import { SUBMISSION_REASON_MAX_LENGTH } from '../drafts/api'
+import {
+  OWNER_TEAM_MAX_LENGTH,
+  OWNER_TEAM_PREFIX,
+  isOwnerTeam,
+  type AdminPage,
+  type AdminRecord,
+  type AdministrationApi,
+  type AdministrationResult,
+  type AutoApprovalState,
+  type ManagementFilter,
+  type RegistryConnection,
 } from './api'
 
 type Props = { api: AdministrationApi; roles: readonly string[]; onRelogin: () => void }
@@ -98,7 +102,7 @@ function AdministrationPanel({ api, onRelogin }: Props) {
     setError(null)
     try {
       const result = await action.send(key)
-      setMessage(`${action.doneLabel}が完了しました。所有チーム ${result.ownerTeam}。${result.a2aBackfillRequired ? 'A2A 検索用 metadata の補完が必要です。' : ''}`)
+      setMessage(`${action.doneLabel}が完了しました。所有チーム ${result.ownerTeam}。${result.a2aBackfillRequired ? 'A2A 検索用 metadata の補完が必要です。所有チームが保存・申請・公開承認すると補完されます。' : ''}`)
       setList((current) => current.kind === 'ready'
         ? { kind: 'ready', page: { ...current.page, items: current.page.items.filter((item) => item.recordId !== selected.recordId) } }
         : current)
@@ -120,7 +124,7 @@ function AdministrationPanel({ api, onRelogin }: Props) {
     {connection && <>
       <dl><dt>Registry ARN</dt><dd>{connection.registryArn}</dd><dt>リージョン</dt><dd>{connection.region}</dd>
         <dt>認可方式</dt><dd>{connection.authorization ?? '未取得'}</dd>
-        <dt>接続</dt><dd>{connection.connection.state === 'CONNECTED' ? '接続情報取得済み' : connection.connection.message}</dd>
+        <dt>接続</dt><dd>{connection.connection.state === 'CONNECTED' ? '接続情報取得済み' : `${connection.connection.message}（原因: ${connection.connection.cause}）`}</dd>
         <dt>自動承認</dt><dd>{AUTO_APPROVAL_LABELS[connection.autoApproval.state]}</dd>
       </dl>
       {connection.warnings.map((warning) => <p role="alert" key={warning}>{warning}</p>)}
@@ -147,11 +151,11 @@ function AdministrationPanel({ api, onRelogin }: Props) {
     </>}
     {selected && action && <form onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <h4>{selected.displayName} の{action.title}</h4>
-      <label>所有チーム<input name="adminOwnerTeam" value={ownerTeam} maxLength={128} onChange={(event) => setOwnerTeam(event.target.value)} disabled={submitting} required /></label>
-      <p>既存の Cognito グループ名を team- から入力してください。</p>
-      <label>理由<input name="adminReason" value={reason} maxLength={4096} onChange={(event) => setReason(event.target.value)} disabled={submitting} required /></label>
-      <button type="submit" disabled={submitting || !/^team-[A-Za-z0-9_./-]{1,123}$/.test(ownerTeam) || !reason.trim()}>{submitting ? '結果を確認しています…' : action.submitLabel}</button>
+      <label>所有チーム<input name="adminOwnerTeam" value={ownerTeam} maxLength={OWNER_TEAM_MAX_LENGTH} onChange={(event) => setOwnerTeam(event.target.value)} disabled={submitting} required /></label>
+      <p>既存の Cognito グループ名を {OWNER_TEAM_PREFIX} から入力してください。</p>
+      <label>理由<input name="adminReason" value={reason} maxLength={SUBMISSION_REASON_MAX_LENGTH} onChange={(event) => setReason(event.target.value)} disabled={submitting} required /></label>
+      <button type="submit" disabled={submitting || !isOwnerTeam(ownerTeam) || !reason.trim()}>{submitting ? '結果を確認しています…' : action.submitLabel}</button>
     </form>}
-    <p className="note">取り込み後は所有チームの Publisher が通常の編集・申請・公開承認を進めてください。取り込んだレコードは既存 metadata を保持し、descriptor から isA2A を補完します。検索の全ページ照合が完了するまで A2A 検索を有効にしません。取り込み前の承認者は履歴で「不明」と表示します。</p>
+    <p className="note">取り込みは Registry を更新しません。取り込み後は所有チームの Publisher が通常の編集・申請・公開承認を進めてください。既存 metadata は保持され、A2A 検索用の isA2A は所有チームが保存したときに descriptor から補完されます（編集画面にも補完が必要なことを表示します）。検索の全ページ照合が完了するまで A2A 検索を有効にしません。取り込み前の承認者は履歴で「不明」と表示します。</p>
   </section>
 }

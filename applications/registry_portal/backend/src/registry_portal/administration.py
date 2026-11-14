@@ -24,12 +24,14 @@ from registry_portal.domain.administration import (
     adopted_snapshot,
     adopted_supplement,
     is_authorizer_type,
-    management_hash,
-    needs_a2a_backfill,
 )
 from registry_portal.domain.catalog import is_catalog_record_type
+from registry_portal.domain.descriptors import needs_a2a_backfill
 from registry_portal.domain.drafts import (
+    ADOPT_KIND,
     IN_FLIGHT_STATUSES,
+    PUBLISHED_STATUS,
+    REASSIGN_OWNER_KIND,
     Management,
     OperationKind,
     content_hash,
@@ -117,7 +119,7 @@ class AdministrationReads:
                         AdminRecordSummary,
                         {
                             **record_summary(record, management),
-                            "managementHash": management_hash(management) if management else None,
+                            "managementHash": management.fingerprint if management else None,
                         },
                     )
                 )
@@ -144,18 +146,16 @@ class AdministrationReads:
         }
         try:
             registry = self.client.get_registry(registryId=self.settings.arn)
-        except (BotoCoreError, ClientError):
-            registry = None
-        if not isinstance(registry, Mapping):
-            result["connection"] = {
-                "state": "ERROR",
-                "code": "REGISTRY_CONNECTION_ERROR",
-                "message": "Registry の接続情報を取得できません。権限・接続先・サービスの状態を確認してください。",
-            }
-            result["warnings"].append(
-                "自動承認の設定は未取得です。設定を確認してから申請してください。"
+        except ClientError as error:
+            # 権限・スロットリング・サービス障害などを切り分けられるよう、AWS のエラーコードを返す
+            return 200, _disconnected(
+                result, error.response.get("Error", {}).get("Code") or "ClientError"
             )
-            return 200, result
+        except BotoCoreError as error:
+            # 接続先に届かないなど、AWS の応答がない失敗は例外名で示す
+            return 200, _disconnected(result, type(error).__name__)
+        if not isinstance(registry, Mapping):
+            return 200, _disconnected(result, "InvalidResponse")
         discovery = registry.get("discoveryConfiguration")
         authorization = discovery.get("authorizerType") if isinstance(discovery, Mapping) else None
         if is_authorizer_type(authorization):
@@ -177,8 +177,20 @@ class AdministrationReads:
         return 200, result
 
 
-class _Planned(NamedTuple):
-    """取り込み・所有変更が保存する管理情報と、取り込み時の公開版スナップショット。"""
+def _disconnected(result: ConnectionReport, cause: str) -> ConnectionReport:
+    """GetRegistry に失敗した接続情報。設定由来の ARN・リージョンは残し、観測値は未取得とする。"""
+    result["connection"] = {
+        "state": "ERROR",
+        "code": "REGISTRY_CONNECTION_ERROR",
+        "message": "Registry の接続情報を取得できません。権限・接続先・サービスの状態を確認してください。",
+        "cause": cause,
+    }
+    result["warnings"].append("自動承認の設定は未取得です。設定を確認してから申請してください。")
+    return result
+
+
+class _SavePlan(NamedTuple):
+    """取り込み・所有変更で保存する管理情報と、取り込み時の公開版スナップショット・A2A 補完の要否。"""
 
     management: Management
     published: dict[str, Any] | None = None
@@ -186,24 +198,30 @@ class _Planned(NamedTuple):
 
 
 class _OwnershipChange(Protocol):
-    """取り込み・所有変更のそれぞれが持つ、前提の検査と保存内容の決定。"""
+    """取り込み・所有変更のそれぞれが持つ、本文の検査・前提の検査・保存内容の決定。"""
 
     kind: OperationKind
+
+    def parse(self, body: Mapping[str, Any]) -> OwnershipInput:
+        """本文を検査する。不正なら ValueError。"""
 
     def check(self, management: Management | None, request: OwnershipInput) -> None:
         """補助ストアの管理情報だけで判断できる前提。崩れていれば Registry を読む前に 409。"""
 
     def plan(
         self, record: Mapping[str, Any], management: Management | None, request: OwnershipInput
-    ) -> _Planned:
+    ) -> _SavePlan:
         """読取時の Registry レコードと管理情報から、保存する内容を決める。"""
 
 
 class _Adoption:
-    kind: OperationKind = "ADOPT"
+    kind: OperationKind = ADOPT_KIND
 
     def __init__(self, discovery: DiscoveryClient | None) -> None:
         self.discovery = discovery
+
+    def parse(self, body: Mapping[str, Any]) -> OwnershipInput:
+        return OwnershipInput.parse_adoption(body)
 
     def check(self, management: Management | None, request: OwnershipInput) -> None:
         if management is not None and management.is_managed:
@@ -213,11 +231,11 @@ class _Adoption:
 
     def plan(
         self, record: Mapping[str, Any], management: Management | None, request: OwnershipInput
-    ) -> _Planned:
+    ) -> _SavePlan:
         if self.discovery is None:
             raise RegistryUnavailable("公開版の取得設定がありません。管理者に連絡してください。")
         public_record = self.discovery.get_published_record(record["recordId"])
-        if record["status"] == "APPROVED" and (
+        if record["status"] == PUBLISHED_STATUS and (
             public_record is None or public_record["recordVersion"] != record["recordVersion"]
         ):
             raise AdministrationConflict(
@@ -231,12 +249,12 @@ class _Adoption:
                 **adopted_supplement(record),
             }
             if public_record is None:
-                return _Planned(Management.parse(fields))
+                return _SavePlan(Management.parse(fields))
             fields |= {
                 "publishedVersion": public_record["recordVersion"],
                 "adoptedPublishedVersion": public_record["recordVersion"],
             }
-            return _Planned(
+            return _SavePlan(
                 Management.parse(fields),
                 adopted_snapshot(public_record),
                 needs_a2a_backfill(public_record),
@@ -246,21 +264,24 @@ class _Adoption:
 
 
 class _Reassignment:
-    kind: OperationKind = "REASSIGN_OWNER"
+    kind: OperationKind = REASSIGN_OWNER_KIND
+
+    def parse(self, body: Mapping[str, Any]) -> OwnershipInput:
+        return OwnershipInput.parse_reassignment(body)
 
     def check(self, management: Management | None, request: OwnershipInput) -> None:
         if (
             management is None
             or not management.is_managed
-            or management_hash(management) != request.expected_hash
+            or management.fingerprint != request.expected_hash
         ):
             raise AdministrationConflict()
 
     def plan(
         self, record: Mapping[str, Any], management: Management | None, request: OwnershipInput
-    ) -> _Planned:
+    ) -> _SavePlan:
         assert management is not None  # check で管理下であることを確かめている
-        return _Planned(Management({**management.item, "ownerTeam": request.owner_team}))
+        return _SavePlan(Management({**management.item, "ownerTeam": request.owner_team}))
 
 
 class RegistryAdministration:
@@ -268,33 +289,26 @@ class RegistryAdministration:
         self, reads: CurationReads, store: SupplementStore, discovery: DiscoveryClient | None
     ) -> None:
         self.reads, self.store = reads, store
-        self._adoption = _Adoption(discovery)
-        self._reassignment = _Reassignment()
+        adoption, reassignment = _Adoption(discovery), _Reassignment()
+        self._changes: Mapping[OperationKind, _OwnershipChange] = {
+            adoption.kind: adoption,
+            reassignment.kind: reassignment,
+        }
 
-    def adopt(
-        self, caller: Caller, record_id: str, body: Mapping[str, Any], key: str
-    ) -> tuple[int, AdministrationResult]:
-        """未管理レコードを所有チームへ割り当て、ポータルの管理下に置く。"""
-        request = _validated(caller, record_id, key, OwnershipInput.parse_adoption, body)
-        return self._run(caller, self._adoption, record_id, body, key, request)
-
-    def reassign_owner(
-        self, caller: Caller, record_id: str, body: Mapping[str, Any], key: str
-    ) -> tuple[int, AdministrationResult]:
-        """管理下のレコードの所有チームだけを変更する。公開版スナップショットは変えない。"""
-        request = _validated(caller, record_id, key, OwnershipInput.parse_reassignment, body)
-        return self._run(caller, self._reassignment, record_id, body, key, request)
-
-    def _run(
+    def change_ownership(
         self,
         caller: Caller,
-        change: _OwnershipChange,
         record_id: str,
         body: Mapping[str, Any],
         key: str,
-        request: OwnershipInput,
+        *,
+        kind: OperationKind,
     ) -> tuple[int, AdministrationResult]:
-        kind = change.kind
+        """取り込み（ADOPT）は未管理レコードを所有チームへ割り当てて管理下に置き、所有変更
+        （REASSIGN_OWNER）は管理下のレコードの所有チームだけを変える。どちらも Registry は更新しない。
+        """
+        change = self._changes[kind]
+        request = _validated(caller, record_id, key, change.parse, body)
         op_id = digest([kind, self.store.registry, record_id, principal_of(caller), key])
         request_hash = digest(body)
         try:
@@ -375,7 +389,7 @@ def _validated(
         raise RequestValidationError(str(error)) from None
 
 
-def _replay(receipt: Mapping[str, Any], request_hash: str) -> tuple[int, AdministrationResult]:
+def _replay(receipt: AdministrationReceipt, request_hash: str) -> tuple[int, AdministrationResult]:
     if receipt.get("requestHash") != request_hash:
         raise AdministrationConflict("同じ Idempotency-Key に異なる内容は指定できません。")
-    return 200, cast(AdministrationResult, cast(AdministrationReceipt, receipt)["result"])
+    return 200, receipt["result"]

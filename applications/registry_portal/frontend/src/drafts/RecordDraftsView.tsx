@@ -4,7 +4,7 @@ import { OperationCheck } from '../components/OperationCheck'
 import { RecordHistoryToggle } from './RecordHistoryView'
 import { SubmissionView } from './SubmissionView'
 import { ApiError, toApiError, type ApiClient, type Role } from '../api/client'
-import { DATA_CLASSIFICATIONS } from '../api/dataClassification'
+import { DATA_CLASSIFICATIONS, UNSET_DATA_CLASSIFICATION } from '../api/dataClassification'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { CATALOG_RECORD_TYPES, RECORD_TYPE_LABELS } from '../api/recordType'
 import {
@@ -405,7 +405,7 @@ function MetadataFields({
             if (classification) onChange({ ...draft, dataClassification: classification })
           }}
         >
-          {draft.dataClassification === '' && <option value="">選択してください</option>}
+          {draft.dataClassification === UNSET_DATA_CLASSIFICATION && <option value={UNSET_DATA_CLASSIFICATION}>選択してください</option>}
           {DATA_CLASSIFICATIONS.map((value) => (
             <option key={value}>{value}</option>
           ))}

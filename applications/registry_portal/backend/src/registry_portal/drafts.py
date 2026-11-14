@@ -397,7 +397,7 @@ class RecordDrafts:
     @staticmethod
     def _read_draft(record: Mapping[str, Any], management: Management) -> RecordDraft:
         try:
-            return RecordDraft.from_record(record, management.owner_team, management.item)
+            return RecordDraft.from_record(record, management)
         except ValueError:
             raise DraftUnavailable(
                 "この下書きはフォームで読み取れません。管理者に連絡してください。"

@@ -19,7 +19,16 @@ from catalog_helpers import (
     json_response,
     summary,
 )
-from draft_helpers import RECORD_ARN, RECORD_ID, aws_record, call, clients, event
+from draft_helpers import (
+    AUTO_APPROVAL_CASES,
+    RECORD_ARN,
+    RECORD_ID,
+    ConfiguredRegistry,
+    aws_record,
+    call,
+    clients,
+    event,
+)
 from record_fixtures import CUSTOM_DRAFT, CUSTOM_DESCRIPTORS, METADATA, stub_create
 from registry_portal.app import create_management_handler
 from registry_portal.domain.drafts import RecordDraft
@@ -218,6 +227,30 @@ def test_submission_refuses_automatic_approval_without_an_aws_write():
         stub.assert_no_pending_responses()
 
 
+@pytest.mark.parametrize("approval,state", AUTO_APPROVAL_CASES)
+@mock_aws
+def test_submission_proceeds_only_when_auto_approval_is_disabled(approval, state):
+    """申請は、接続情報の表示と同じ判定が DISABLED のときだけ進む（表示側は test_administration.py）。"""
+    registry, db = clients()
+    configured = ConfiguredRegistry(registry, {"name": "registry", **approval})
+    with Stubber(registry) as stub:
+        handler, created, _ = setup_draft(stub, configured, db)
+        record = aws_record(CUSTOM_DRAFT, descriptors=CUSTOM_DESCRIPTORS, customMetadata=META)
+        if state == "DISABLED":
+            stub_submission(stub, record, approval=False)
+        else:
+            # 自動承認が無効と確かめられなければ、申請 API を呼ばずに止める
+            stub.add_response("get_registry_record", record, GET)
+        status, body = submit(handler, created)
+        stub.assert_no_pending_responses()
+    if state == "DISABLED":
+        assert status == 200
+    else:
+        assert status == 503
+        assert body["error"]["code"] == "APPROVAL_CONFIGURATION_CHANGED"
+        assert stored(db, "LOCK") is None
+
+
 @pytest.mark.parametrize(
     ("known", "adopted", "version", "expected"),
     [
@@ -361,9 +394,11 @@ def stub_approval_configuration(stub, record, rules=()):
     )
 
 
-def stub_submission(stub, record, error=None):
+def stub_submission(stub, record, error=None, *, approval=True):
+    """申請の AWS 呼び出しを並べる。approval=False は GetRegistry を ConfiguredRegistry が返すとき。"""
     stub.add_response("get_registry_record", record, GET)
-    stub_approval_configuration(stub, record)
+    if approval:
+        stub_approval_configuration(stub, record)
     if error:
         stub.add_client_error("submit_registry_record_for_approval", error, expected_params=GET)
     else:

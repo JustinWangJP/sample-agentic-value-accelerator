@@ -126,6 +126,21 @@ def derive_is_a2a(record_type: str, descriptor_type: str) -> bool:
     return record_type == AGENT_RECORD_TYPE and descriptor_type == A2A_DESCRIPTOR_TYPE
 
 
+def a2a_metadata_matches(record: Mapping[str, Any]) -> bool:
+    """Agent の metadata に、descriptor から導出した値と一致する真偽値の isA2A があるか（ADR-0006）。"""
+    metadata = record.get("customMetadata", {})
+    expected = any(
+        derive_is_a2a(record["recordType"], descriptor)
+        for descriptor in record.get("descriptors", {})
+    )
+    return isinstance(metadata.get("isA2A"), bool) and metadata["isA2A"] == expected
+
+
+def needs_a2a_backfill(record: Mapping[str, Any]) -> bool:
+    """Agent に、descriptor と一致する真偽値の isA2A がないか。所有チームの通常編集で補う（ADR-0006）。"""
+    return record["recordType"] == AGENT_RECORD_TYPE and not a2a_metadata_matches(record)
+
+
 def custom_metadata_extra(record_type: str, descriptor_type: str) -> dict[str, bool]:
     """custom metadata に足す項目。isA2A は Agent にだけ付ける（MCP・Skill は schema にない）。"""
     if record_type != AGENT_RECORD_TYPE:

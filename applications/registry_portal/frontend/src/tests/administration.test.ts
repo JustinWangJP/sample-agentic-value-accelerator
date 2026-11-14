@@ -99,10 +99,12 @@ it('所有変更は取得時の管理情報ハッシュを送り、409 で再読
 
 it('自動承認の逸脱と接続エラーを Admin に表示する', async () => {
   await mount([
-    jsonResponse(200, { ...connection, authorization: null, connection: { state: 'ERROR', code: 'REGISTRY_CONNECTION_ERROR', message: '接続情報を取得できません。' }, autoApproval: { state: 'UNKNOWN' }, warnings: ['自動承認の設定は未取得です。'] }),
+    jsonResponse(200, { ...connection, authorization: null, connection: { state: 'ERROR', code: 'REGISTRY_CONNECTION_ERROR', message: '接続情報を取得できません。', cause: 'AccessDeniedException' }, autoApproval: { state: 'UNKNOWN' }, warnings: ['自動承認の設定は未取得です。'] }),
     jsonResponse(502, { error: { code: 'REGISTRY_UNAVAILABLE', message: 'Registry を取得できません。' } }),
   ])
   expect(container.textContent).toContain('接続情報を取得できません。')
+  // 接続の問題を切り分けられるよう、AWS のエラーコードを原因として表示する
+  expect(container.textContent).toContain('原因: AccessDeniedException')
   expect(container.textContent).toContain('自動承認の設定は未取得です。')
   expect(container.textContent).not.toContain('未管理レコードはありません。')
 })

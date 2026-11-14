@@ -15,7 +15,7 @@ from registry_portal.domain.catalog import (
     SKILL_RECORD_TYPE,
     CatalogDetail,
 )
-from registry_portal.domain.descriptors import SUPPLEMENT_FIELDS, derive_is_a2a
+from registry_portal.domain.descriptors import SUPPLEMENT_FIELDS, a2a_metadata_matches
 from registry_portal.domain.drafts import (
     RECORD_ID_PATTERN,
     SEMVER,
@@ -59,16 +59,6 @@ def version_key(value: str) -> tuple[int, int, int, tuple[tuple[int, int | str],
         tuple((0, int(p)) if p.isdigit() else (1, p) for p in pre.split(".")) if pre else ((2, ""),)
     )
     return int(match[1]), int(match[2]), int(match[3]), parts
-
-
-def a2a_metadata_matches(record: Mapping[str, Any]) -> bool:
-    """Agent の metadata に、descriptor から導出した値と一致する真偽値の isA2A があるか（ADR-0006）。"""
-    metadata = record.get("customMetadata", {})
-    expected = any(
-        derive_is_a2a(record["recordType"], descriptor)
-        for descriptor in record.get("descriptors", {})
-    )
-    return isinstance(metadata.get("isA2A"), bool) and metadata["isA2A"] == expected
 
 
 def check_a2a_metadata(record: Mapping[str, Any], references: list[dict[str, str]]) -> None:

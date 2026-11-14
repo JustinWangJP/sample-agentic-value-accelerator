@@ -12,13 +12,17 @@ from registry_portal.domain.descriptors import (
     check_kind,
     read_descriptor_fields,
 )
-from registry_portal.domain.drafts import Management, RecordStatus, digest
-from registry_portal.domain.catalog import AGENT_RECORD_TYPE, CatalogRecordType
+from registry_portal.domain.drafts import RecordStatus
+from registry_portal.domain.catalog import CatalogRecordType
 from registry_portal.domain.submissions import (
     REASON_MAX_LENGTH,
     SNAPSHOT_RECORD_FIELDS,
     AutoApprovalState,
-    a2a_metadata_matches,
+)
+from registry_portal.domain.teams import (
+    OWNER_TEAM_MAX_LENGTH,
+    TEAM_GROUP_PREFIX,
+    is_owner_team,
 )
 
 
@@ -42,6 +46,9 @@ class ConnectionFailure(TypedDict):
     state: Literal["ERROR"]
     code: str
     message: str
+    # 接続の問題を切り分けるための原因。AWS のエラーコード（AccessDeniedException など）か、
+    # 通信の例外名（EndpointConnectionError など）
+    cause: str
 
 
 class AutoApproval(TypedDict):
@@ -102,17 +109,14 @@ class OwnershipInput:
     @classmethod
     def _parse(cls, body: Mapping[str, Any], expected: str | None) -> OwnershipInput:
         team, reason = body.get("ownerTeam"), body.get("reason")
-        if not isinstance(team, str) or not re.fullmatch(r"team-[A-Za-z0-9_./-]{1,123}", team):
+        if not is_owner_team(team):
             raise ValueError(
-                "所有チームは team- で始まる128文字以内のグループ名を指定してください。"
+                f"所有チームは {TEAM_GROUP_PREFIX} で始まる{OWNER_TEAM_MAX_LENGTH}文字以内の"
+                "グループ名を指定してください。"
             )
         if not isinstance(reason, str) or not reason.strip() or len(reason) > REASON_MAX_LENGTH:
             raise ValueError(f"理由は1〜{REASON_MAX_LENGTH}文字で指定してください。")
         return cls(team, reason.strip(), expected)
-
-
-def management_hash(management: Management) -> str:
-    return digest(dict(management.item))
 
 
 def adopted_supplement(record: Mapping[str, Any]) -> dict[str, str]:
@@ -130,11 +134,6 @@ def adopted_supplement(record: Mapping[str, Any]) -> dict[str, str]:
         raise ValueError(
             "Registry の定義を読み取れません。対応する descriptor を確認してください。"
         ) from None
-
-
-def needs_a2a_backfill(record: Mapping[str, Any]) -> bool:
-    """公開中の Agent に、descriptor と一致する真偽値の isA2A がないか。所有チームの通常編集で補う。"""
-    return record["recordType"] == AGENT_RECORD_TYPE and not a2a_metadata_matches(record)
 
 
 def adopted_snapshot(record: Mapping[str, Any]) -> dict[str, Any]:

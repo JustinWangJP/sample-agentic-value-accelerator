@@ -7,6 +7,7 @@ Registry 管理 API は `agent-registry-control` の実サービスモデルに�
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
 
@@ -73,6 +74,37 @@ def clients() -> tuple[Any, Any]:
         BillingMode="PAY_PER_REQUEST",
     )
     return registry, db
+
+
+# GetRegistry の approvalConfiguration と、接続情報・申請が共有する自動承認の判定（AWS の定義では
+# 省略・空は手動審査）。型違いの応答は Stubber のモデル検査を通らないため ConfiguredRegistry で返す
+AUTO_APPROVAL_CASES: list[tuple[dict[str, Any], str]] = [
+    ({}, "DISABLED"),
+    ({"approvalConfiguration": {}}, "DISABLED"),
+    ({"approvalConfiguration": {"autoApprovalRules": []}}, "DISABLED"),
+    ({"approvalConfiguration": {"autoApprovalRules": ["APPROVE_ALL"]}}, "ENABLED"),
+    ({"approvalConfiguration": {"autoApprovalRules": "APPROVE_ALL"}}, "UNKNOWN"),
+    ({"approvalConfiguration": []}, "UNKNOWN"),
+]
+
+
+class ConfiguredRegistry:
+    """GetRegistry だけを任意の応答（または例外）に差し替え、ほかの API は元のクライアントに委ねる。
+
+    Stubber はサービスモデルに合わない応答を拒否するため、型違いの設定や通信例外の再現に使う。
+    """
+
+    def __init__(self, client: Any, response: Mapping[str, Any] | Exception) -> None:
+        self._client = client
+        self._response = response
+
+    def get_registry(self, **_: Any) -> Mapping[str, Any]:
+        if isinstance(self._response, Exception):
+            raise self._response
+        return self._response
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
 
 
 def handler_for(registry: Any, db: Any) -> Any:

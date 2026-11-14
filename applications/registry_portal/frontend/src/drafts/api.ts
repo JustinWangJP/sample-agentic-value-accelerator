@@ -1,5 +1,5 @@
 import type { Role } from '../api/client'
-import { isDataClassification } from '../api/dataClassification'
+import { UNSET_DATA_CLASSIFICATION, isDataClassification } from '../api/dataClassification'
 import { hasStrings, isObject, isPrincipal, type Principal } from '../api/guards'
 import { isCatalogRecordType, type CatalogRecordType } from '../api/recordType'
 import { createResponseChecker, type ApiRequest } from '../api/request'
@@ -313,7 +313,7 @@ function isDraft(value: unknown): value is RecordDraft {
     ) &&
     typeof value.ownerTeam === 'string' &&
     isDraftEnvironment(value.environment) &&
-    (value.dataClassification === '' || isDataClassification(value.dataClassification))
+    (value.dataClassification === UNSET_DATA_CLASSIFICATION || isDataClassification(value.dataClassification))
   )
 }
 function isRecord(

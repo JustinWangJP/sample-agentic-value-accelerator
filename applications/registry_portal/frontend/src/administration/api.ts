@@ -12,6 +12,17 @@ export type AuthorizerType = (typeof AUTHORIZER_TYPES)[number]
 /** 自動承認の観測結果。バックエンドの AutoApprovalState（domain/submissions.py）と揃える */
 export const AUTO_APPROVAL_STATES = ['DISABLED', 'ENABLED', 'UNKNOWN'] as const
 export type AutoApprovalState = (typeof AUTO_APPROVAL_STATES)[number]
+/** 所有チーム（Cognito のチームグループ）の名前。バックエンドの domain/teams.py と揃える */
+export const OWNER_TEAM_PREFIX = 'team-'
+export const OWNER_TEAM_MAX_LENGTH = 128
+const OWNER_TEAM_PATTERN = new RegExp(
+  `^${OWNER_TEAM_PREFIX}[A-Za-z0-9_./-]{1,${OWNER_TEAM_MAX_LENGTH - OWNER_TEAM_PREFIX.length}}$`,
+)
+
+/** Admin が所有チームとして指定できるグループ名か */
+export function isOwnerTeam(value: string): boolean {
+  return OWNER_TEAM_PATTERN.test(value)
+}
 
 function isOneOf<T>(values: readonly T[], value: unknown): value is T {
   return values.some((item) => item === value)
@@ -31,7 +42,8 @@ export type RegistryConnection = {
   registryArn: string
   region: string
   authorization: AuthorizerType | null
-  connection: { state: 'CONNECTED' } | { state: 'ERROR'; code: string; message: string }
+  /** cause は AWS のエラーコード（AccessDeniedException など）か、通信の例外名 */
+  connection: { state: 'CONNECTED' } | { state: 'ERROR'; code: string; message: string; cause: string }
   autoApproval: { state: AutoApprovalState }
   warnings: string[]
 }
@@ -70,7 +82,7 @@ function isConnection(value: unknown): value is RegistryConnection {
     !isOneOf(AUTO_APPROVAL_STATES, value.autoApproval.state) ||
     !Array.isArray(value.warnings) || !value.warnings.every((warning) => typeof warning === 'string')) return false
   return value.connection.state === 'CONNECTED' ||
-    (value.connection.state === 'ERROR' && hasStrings(value.connection, ['code', 'message']))
+    (value.connection.state === 'ERROR' && hasStrings(value.connection, ['code', 'message', 'cause']))
 }
 function isResult(value: unknown): value is AdministrationResult {
   return isObject(value) && hasStrings(value, ['recordId', 'ownerTeam', 'operationId']) &&

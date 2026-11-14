@@ -591,15 +591,17 @@ Admin の「Registry 管理」から、未管理レコードを所有チーム�
 | `POST /api/records/{recordId}/adopt` | 決裁 | `ownerTeam`、`reason`。`Idempotency-Key` 必須 |
 | `POST /api/records/{recordId}/reassign-owner` | 決裁 | `ownerTeam`、`reason`、一覧で取得した `expectedManagementHash`。`Idempotency-Key` 必須 |
 
+`connection` は通信に成功すれば `{"state": "CONNECTED"}`、GetRegistry に失敗すれば `{"state": "ERROR", "code": "REGISTRY_CONNECTION_ERROR", "message", "cause"}` です。`cause` は接続の問題を切り分けるための原因で、AWS のエラーコード（`AccessDeniedException`・`ThrottlingException` など）か、AWS の応答がない失敗の例外名（`EndpointConnectionError` など）です。画面は案内文と原因を並べて表示します。
+
 一覧は Registry 管理 API の1ページ（最大50件）と管理情報を照合します。ページ内の全件が管理済みなら未管理の `items` は空でも `nextToken` が残ります。トークンがなくなるまで次ページを確認してください。通信障害・管理情報の破損を0件へ置き換えません。各項目はレコードID・名前・表示名・種別・版・AWS状態・`managed`・`ownerTeam`・`managementHash` を持ちます。
 
-成功応答は `recordId`・`ownerTeam`・`operationId`・`operationState: SUCCEEDED`・`publishedVersion`（公開版がなければ null）・`a2aBackfillRequired` です。後者は取り込み時の公開 Agent に descriptor と一致する真偽値の `isA2A` がなければ true です。
+成功応答は `recordId`・`ownerTeam`・`operationId`・`operationState: SUCCEEDED`・`publishedVersion`（公開版がなければ null）・`a2aBackfillRequired` です。後者は取り込み時の公開 Agent に descriptor と一致する真偽値の `isA2A` がなければ true です。取り込みは Registry を更新しないため、補完は所有チームの保存・申請・公開承認で行います（ADR-0006）。補完が必要なことは取り込んだ Admin への応答だけでなく、所有チームが開く取り込みレコードの編集画面（`initializationNotice`）にも、保存で補完されるまで表示します。
 
 ### 取り込みと監査の保存
 
 取り込みは Registry の descriptor・metadata・公開状態を更新しません。現在の下書きは管理 API、現在公開中の版は JWT 発見 API の batch-get から別々に読みます。新しい下書きと古い公開版が共存していても、公開版の連絡先等に下書きの値を混ぜません。発見 API の確定的な不存在だけを公開版なしとして扱います。アクセス拒否・通信障害・不正応答では502、管理 API が返す公開版の発見反映待ちでは409を返し、取り込みません。
 
-対応する primary descriptor が1個ある Agent・MCP サーバー・Skill を取り込めます。descriptor から読める補助情報を管理情報へ写します。A2A・MCP・Skill の連絡先等、元の定義から取得できない補助情報は空文字で保存し、所有チームが通常編集で補います。取り込んだレコードに environment が未設定なら、設計書の既定値 dev を初期値として表示し、その旨を案内します。dataClassification には仕様上の既定値がないため推測せず、未選択（空文字）のまま表示して public / private の選択を案内します。未選択のままの保存は400です。読み取りだけでは Registry を更新せず、所有チームが確認して保存します。confidential 等の明示的な不正値を初期値で上書きしません。
+対応する primary descriptor が1個ある Agent・MCP サーバー・Skill を取り込めます。descriptor から読める補助情報を管理情報へ写します。A2A・MCP・Skill の連絡先等、元の定義から取得できない補助情報は空文字で保存し、所有チームが通常編集で補います。取り込んだレコードに environment が未設定なら、設計書の既定値 dev を初期値として表示し、その旨を案内します。dataClassification には仕様上の既定値がないため推測せず、未選択（空文字。バックエンドと SPA の `UNSET_DATA_CLASSIFICATION`）のまま表示して public / private の選択を案内します。未選択のままの保存は400です。読み取りだけでは Registry を更新せず、所有チームが確認して保存します。confidential 等の明示的な不正値を初期値で上書きしません。
 
 取り込んだレコードの更新では、ポータルが管理しない既存の custom metadata の項目を保持し、ポータルの項目（所有チーム・環境・データ分類・`isA2A`）だけを上書きします。ポータルで作成したレコードの更新は、従来どおりポータルの項目だけで metadata を置き換えます。
 
@@ -619,7 +621,7 @@ Admin の「Registry 管理」から、未管理レコードを所有チーム�
 
 `GetRegistry` の `discoveryConfiguration.authorizerType` を `CUSTOM_JWT` / `AWS_IAM` として表示し、`approvalConfiguration.autoApprovalRules` が省略または空なら自動承認無効、非空なら警告を表示します。[自動承認設定](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_ApprovalConfiguration.html)は「省略または空なら手動審査」と定めています。設定や規則の型が契約と異なる応答だけを `UNKNOWN` とし、無効であるとは推測しません。botocore のモデルでは `discoveryConfiguration.authorizerType` も任意です。`GetRegistry` が成功して認可方式だけがない場合は、接続済みのまま認可方式を未取得（`null`）として警告します。接続エラーとするのは `GetRegistry` の呼び出し自体が失敗したときだけです。その場合も設定由来の ARN・リージョンを保持し、認可方式未取得と日本語の接続エラーを表示します。この診断はレコードの試験呼び出しを行いません。
 
-申請 API も同じ判定（`domain/submissions.py` の `auto_approval_state`）を使い、自動承認が無効（`DISABLED`）のときだけ申請します。有効（`ENABLED`）と未取得（`UNKNOWN`）では、既存の動作どおり503 `APPROVAL_CONFIGURATION_CHANGED` で申請を止めます。そのため、画面の表示と申請の可否は常に一致します。
+申請 API も同じ判定（`domain/submissions.py` の `auto_approval_state`）を使い、自動承認が無効（`DISABLED`）のときだけ申請します。有効（`ENABLED`）と未取得（`UNKNOWN`）では、既存の動作どおり503 `APPROVAL_CONFIGURATION_CHANGED` で申請を止めます。そのため、画面の表示と申請の可否は常に一致します。Seam 1 では、同じ設定の組（省略・空・非空・型違い）を接続情報 API と申請 API の両方に与え、表示と申請の可否が一致することを確認します（`tests/draft_helpers.py` の `AUTO_APPROVAL_CASES`）。
 
 根拠は [GetRegistry](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_GetRegistry.html)、[ListRegistryRecords](https://docs.aws.amazon.com/cli/latest/reference/agent-registry-control/list-registry-records.html)、[BatchGetDiscoverableRegistryRecord](https://docs.aws.amazon.com/agent-registry/latest/APIReference/API_BatchGetDiscoverableRegistryRecord.html) です。GetRegistryRecord には公開承認済みの版を指定する引数がないため、下書きを公開版として保存しません。
 

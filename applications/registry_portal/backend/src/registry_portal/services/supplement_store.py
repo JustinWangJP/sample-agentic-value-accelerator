@@ -7,6 +7,7 @@ from typing import Any, NamedTuple, NotRequired, Protocol, TypedDict, Unpack, ca
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 
+from registry_portal.domain.administration import AdministrationResult
 from registry_portal.domain.catalog import published_snapshot_sk
 from registry_portal.domain.deprecation import (
     DEPRECATION_OPEN,
@@ -38,6 +39,8 @@ from registry_portal.domain.drafts import (
 
 # 補助テーブルの TTL 属性名。テーブルの TTL 設定でこの属性を指定する（README「custom Agent の下書き」）
 TTL_ATTRIBUTE = "expiresAt"
+# 取り込み・所有変更の再送用の結果の sk。保存と読み取りで同じ値を使う
+ADMIN_RECEIPT_SK = "ADMIN_RECEIPT"
 
 # 作成の操作の INTENT をレコード単位に写すときに含めない項目。
 # recordId と awsRequestId は開始（begin）より後に書き足すため、開始時の意図に揃えるよう除く。
@@ -118,7 +121,7 @@ class AdministrationReceipt(TypedDict):
     """取り込み・所有変更の再送用の結果。同じ Idempotency-Key と内容には同じ結果を返す。"""
 
     requestHash: str
-    result: Mapping[str, Any]
+    result: AdministrationResult
 
 
 class AdministrationChange(NamedTuple):
@@ -273,9 +276,12 @@ class SupplementStore:
             self._put({"operationId": op_id, "pk": pk, "sk": audit_sk(op_id, AUDIT_RESULT)}),
         ]
 
-    def administration_receipt(self, op_id: str) -> dict[str, Any] | None:
+    def administration_receipt(self, op_id: str) -> AdministrationReceipt | None:
         """瞬時の Admin 操作の確定結果。AWS 操作の CONTROL と回復経路から分ける。"""
-        return self.get(self._operation_pk(op_id), "ADMIN_RECEIPT")
+        return cast(
+            "AdministrationReceipt | None",
+            self.get(self._operation_pk(op_id), ADMIN_RECEIPT_SK),
+        )
 
     def save_administration(self, change: AdministrationChange) -> None:
         """管理情報・公開版・監査・再送の結果を、共通ロックと CAS で原子的に保存する。"""
@@ -319,7 +325,7 @@ class SupplementStore:
                 {
                     **receipt,
                     "pk": self._operation_pk(audit["operationId"]),
-                    "sk": "ADMIN_RECEIPT",
+                    "sk": ADMIN_RECEIPT_SK,
                     TTL_ATTRIBUTE: int(time.time()) + SETTLED_OPERATION_RETENTION_SECONDS,
                 }
             ),

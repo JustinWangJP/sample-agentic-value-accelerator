@@ -1,4 +1,4 @@
-import type { DataClassification } from '../api/dataClassification'
+import type { DataClassificationChoice } from '../api/dataClassification'
 import { CATALOG_RECORD_TYPES, type CatalogRecordType } from '../api/recordType'
 import type { DraftEnvironment } from './api'
 
@@ -180,8 +180,8 @@ export type CommonDraftFields = {
   recordVersion: string
   ownerTeam: string
   environment: DraftEnvironment
-  /** 空文字は未選択。データ分類のない取り込みレコードだけが返し、保存時はサーバーが拒否する */
-  dataClassification: DataClassification | ''
+  /** UNSET_DATA_CLASSIFICATION は未選択。データ分類のない取り込みレコードだけが返す */
+  dataClassification: DataClassificationChoice
   recordType: CatalogRecordType
   descriptorType: DescriptorType
   connectionReference: string
