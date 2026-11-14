@@ -1,3 +1,4 @@
+import { AdministrationView } from './administration/AdministrationView'
 import { useEffect, useState } from 'react'
 import { CatalogView } from './catalog/CatalogView'
 import { canViewAllHistory } from './drafts/api'
@@ -68,6 +69,7 @@ export function StartupView({ state }: { state: StartupState | null }) {
           />
           <ReviewsView api={state.api} roles={state.me.roles} onRelogin={state.relogin} />
           <RecordPublicationView api={state.api} roles={state.me.roles} onRelogin={state.relogin} />
+          <AdministrationView api={state.api} roles={state.me.roles} onRelogin={state.relogin} />
           <RecoveryView api={state.api} roles={state.me.roles} onRelogin={state.relogin} />
           <RecordDraftsView api={state.api} roles={state.me.roles} teams={state.me.teams} onRelogin={state.relogin} />
         </>

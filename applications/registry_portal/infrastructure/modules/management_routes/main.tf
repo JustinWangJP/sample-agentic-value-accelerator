@@ -2,17 +2,27 @@
 # HTTP API・JWT authorizer・管理 Lambda とその統合（integration）は #5 の IaC（または既存環境）が持ち、
 # ここでは ID と名前で受け取るだけにする。route と、その path に限った呼び出し許可だけを作る。
 locals {
-  # 管理 Lambda に割り当てる route と、Lambda の呼び出し許可の ID・path の末尾
+  # 管理 Lambda に割り当てる route と、Lambda の呼び出し許可の ID・path（execution ARN の後ろ）
   routes = {
+    admin_records = {
+      route_key    = "GET /api/admin/records"
+      statement_id = "AllowHttpApiInvokeAdminRecords"
+      path         = "api/admin/records"
+    }
+    admin_connection = {
+      route_key    = "GET /api/admin/connection"
+      statement_id = "AllowHttpApiInvokeAdminConnection"
+      path         = "api/admin/connection"
+    }
     history = {
       route_key    = "GET /api/records/{recordId}/history"
       statement_id = "AllowHttpApiInvokeRecordHistory"
-      path         = "history"
+      path         = "api/records/*/history"
     }
     deprecation_request = {
       route_key    = "POST /api/records/{recordId}/deprecation-requests"
       statement_id = "AllowHttpApiInvokeDeprecationRequest"
-      path         = "deprecation-requests"
+      path         = "api/records/*/deprecation-requests"
     }
   }
 }
@@ -37,5 +47,5 @@ resource "aws_lambda_permission" "management_api" {
   action        = "lambda:InvokeFunction"
   function_name = var.management_function_name
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/*/api/records/*/${each.value.path}"
+  source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/*/${each.value.path}"
 }

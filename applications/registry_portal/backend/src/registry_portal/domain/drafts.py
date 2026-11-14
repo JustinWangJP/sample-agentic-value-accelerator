@@ -10,6 +10,7 @@ from registry_portal.domain.catalog import (
     AGENT_RECORD_TYPE,
     CATALOG_RECORD_TYPES,
     DATA_CLASSIFICATIONS,
+    UNSET_DATA_CLASSIFICATION,
     DescriptorType,
 )
 from registry_portal.domain.descriptors import (
@@ -25,6 +26,7 @@ from registry_portal.domain.descriptors import (
     custom_metadata_extra,
     default_descriptor_type,
     descriptors_applied,
+    needs_a2a_backfill,
     normalize_and_check,
     read_descriptor_fields,
     supplement_fields,
@@ -127,6 +129,8 @@ OperationKind = Literal[
     "DEPRECATE",
     "REQUEST_DEPRECATION",
     "DECLINE_DEPRECATION",
+    "ADOPT",
+    "REASSIGN_OWNER",
 ]
 OPERATION_KINDS: tuple[OperationKind, ...] = get_args(OperationKind)
 CREATE_KIND: OperationKind = "CREATE"
@@ -142,6 +146,9 @@ DEPRECATE_KIND: OperationKind = "DEPRECATE"
 # 実行制御（CONTROL）やロックを残さず、1つのトランザクションで INTENT と RESULT を同時に追記する
 REQUEST_DEPRECATION_KIND: OperationKind = "REQUEST_DEPRECATION"
 DECLINE_DEPRECATION_KIND: OperationKind = "DECLINE_DEPRECATION"
+# Admin の取り込みと所有変更。廃止依頼と同じく、補助テーブルへの書き込みだけで完結する
+ADOPT_KIND: OperationKind = "ADOPT"
+REASSIGN_OWNER_KIND: OperationKind = "REASSIGN_OWNER"
 # 決裁 handler が行う操作（決裁である公開承認・却下と、公開停止・廃止）。操作照会は種別ごとに参照できる主体を変える
 DECISION_KINDS: frozenset[OperationKind] = frozenset(
     {APPROVE_KIND, REJECT_KIND, SUSPEND_KIND, DEPRECATE_KIND}
@@ -186,6 +193,20 @@ RECORD_ID_PATTERN = re.compile(rf"[A-Za-z0-9]{{{RECORD_ID_LENGTH}}}")
 # 公開停止中であることを示す管理情報（MANAGEMENT）の項目。値は公開停止した時点の公開中の版で、
 # 公開停止の成功で書き込み、公開承認の成功で消す（README「公開停止・廃止・廃止依頼」）
 SUSPENDED_VERSION_KEY = "suspendedVersion"
+
+# 管理情報（MANAGEMENT）が持ちうる項目。取り込み・所有変更は、読取時から変わっていないことを全項目で検査する
+MANAGEMENT_FIELDS = (
+    "managed",
+    "ownerTeam",
+    "publishedVersion",
+    "adoptedPublishedVersion",
+    "adoptedAt",
+    SUSPENDED_VERSION_KEY,
+    "lastEditedBy",
+    "lastEditedAt",
+    "activeSubmissionId",
+    *ALL_SUPPLEMENT_FIELDS,
+)
 
 # 確定した操作（実行制御の項目）を補助テーブルの TTL で削除するまでの秒数（設計書「補助テーブルに保存するもの」）。
 # この間は同じ Idempotency-Key に同じ結果を返す。未確定の操作とロックには TTL を付けない
@@ -314,6 +335,7 @@ class DraftView(TypedDict):
     status: str
     hasDraft: bool
     publishedVersion: str | None
+    initializationNotice: NotRequired[str]
 
 
 class DraftResult(DraftView):
@@ -378,7 +400,12 @@ class Management:
             or any(key in item and not isinstance(item[key], str) for key in ALL_SUPPLEMENT_FIELDS)
             or any(
                 item.get(key) is not None and not isinstance(item[key], str)
-                for key in ("publishedVersion", "adoptedPublishedVersion", SUSPENDED_VERSION_KEY)
+                for key in (
+                    "publishedVersion",
+                    "adoptedPublishedVersion",
+                    "adoptedAt",
+                    SUSPENDED_VERSION_KEY,
+                )
             )
             or ("lastEditedBy" in item and not is_principal(item["lastEditedBy"]))
         ):
@@ -454,6 +481,11 @@ class Management:
         return self.suspended_version is not None and record["status"] != PUBLISHED_STATUS
 
     @property
+    def is_adopted(self) -> bool:
+        """取り込み（#16）でポータルの管理下に置いたレコードか。ポータル外で作られた項目の欠落を許す。"""
+        return isinstance(self.item.get("adoptedAt"), str)
+
+    @property
     def adopted_published_version(self) -> str | None:
         """取り込み（#16）の時点で既に公開されていた版。ポータルに公開承認の操作記録がない。
 
@@ -462,6 +494,11 @@ class Management:
         """
         version = self.item.get("adoptedPublishedVersion")
         return version if isinstance(version, str) else None
+
+    @property
+    def fingerprint(self) -> str:
+        """管理情報の全項目のハッシュ（API の managementHash）。所有変更で、取得後に変わっていないかを確かめる。"""
+        return digest(dict(self.item))
 
     def hashed_fields(self) -> dict[str, Any]:
         """内容ハッシュに含める補助情報。"""
@@ -476,6 +513,76 @@ def content_hash(record: Mapping[str, Any], management: Management | None = None
     if management is not None:
         content["supplement"] = management.hashed_fields()
     return digest(content)
+
+
+# 取り込みレコードで欠けていたら、空のまま所有チームに入力させる項目（保存時に必須を検査する）
+_ENTERED_BY_OWNER = frozenset({"description", "dataClassification"})
+
+
+@dataclass(frozen=True)
+class AdoptedGaps:
+    """取り込みレコード（ポータル外で作られたレコード）で、Registry に存在しなかった項目。
+
+    欠落は推測で埋めない。表示名は name、環境は設計書の既定値 dev を初期値とし、説明とデータ分類は
+    空のまま所有チームに入力させる。ポータル導入前の semver でない版はそのまま読む。
+    取り込みレコードの読み取りに固有の扱いは、通常の下書き検査に混ぜずここに集める。
+    """
+
+    missing: frozenset[str]
+
+    @classmethod
+    def of(cls, record: Mapping[str, Any]) -> AdoptedGaps:
+        metadata = record.get("customMetadata", {})
+        return cls(
+            frozenset(
+                {key for key in ("displayName", "description") if key not in record}
+                | {key for key in ("environment", "dataClassification") if key not in metadata}
+            )
+        )
+
+    @staticmethod
+    def record_defaults(record: Mapping[str, Any]) -> dict[str, str]:
+        return {"displayName": record["name"], "description": ""}
+
+    @staticmethod
+    def metadata_defaults() -> dict[str, str]:
+        return {
+            "environment": DEFAULT_ENVIRONMENT,
+            "dataClassification": UNSET_DATA_CLASSIFICATION,
+        }
+
+    def allows_empty(self, key: str) -> bool:
+        return key in self.missing and key in _ENTERED_BY_OWNER
+
+    @staticmethod
+    def allows_legacy_version(version: str) -> bool:
+        return re.fullmatch(r"[a-zA-Z0-9.-]+", version) is not None
+
+    def notice(self, record: Mapping[str, Any], draft: RecordDraft) -> str | None:
+        """所有チームに確認を求める初期化の通知。確認することがなければ None。"""
+        notices = []
+        if "environment" in self.missing:
+            notices.append(f"未設定の環境は {DEFAULT_ENVIRONMENT} を初期値として表示しています。")
+        if "dataClassification" in self.missing:
+            notices.append(
+                "データ分類が未設定です。"
+                f"{' または '.join(DATA_CLASSIFICATIONS)} を選択してください。"
+            )
+        if self.missing & {"displayName", "description"}:
+            notices.append("未設定の表示名は name、説明は空欄を初期値として表示しています。")
+        if not SEMVER.fullmatch(draft.fields["recordVersion"]):
+            notices.append(
+                "既存の版をそのまま表示しています。保存前に semver の版を指定してください。"
+            )
+        if needs_a2a_backfill(record):
+            # 取り込みは Registry を更新しないため、補完は所有チームの保存・申請・公開承認で行う（ADR-0006）
+            notices.append(
+                "A2A 検索用の isA2A が未設定です。保存すると descriptor から補完され、"
+                "申請・公開承認で公開版に反映されます。"
+            )
+        if not notices:
+            return None
+        return "取り込みレコードです。" + "".join(notices) + "内容を確認して保存してください。"
 
 
 @dataclass(frozen=True)
@@ -498,6 +605,15 @@ class RecordDraft:
 
     @classmethod
     def parse(cls, value: Mapping[str, Any]) -> RecordDraft:
+        return cls._parse(value)
+
+    @classmethod
+    def _parse(cls, value: Mapping[str, Any], gaps: AdoptedGaps | None = None) -> RecordDraft:
+        """下書きを検査する。gaps は取り込みレコードの読み取りだけが渡す。
+
+        gaps があれば、Registry レコードに存在しなかった項目を空のまま読み、ポータル導入前の
+        semver でない版をそのまま読む。保存・申請は parse で検査し直す。
+        """
         record_type = value.get("recordType", AGENT_RECORD_TYPE)
         descriptor_type = value.get("descriptorType")
         if descriptor_type is None and record_type in CATALOG_RECORD_TYPES:
@@ -521,19 +637,29 @@ class RecordDraft:
             if (
                 not isinstance(text, str)
                 or len(text) > limit
-                or (not text.strip() and key not in OPTIONAL_FIELDS)
+                or (
+                    not text.strip()
+                    and key not in OPTIONAL_FIELDS
+                    and not (gaps and gaps.allows_empty(key))
+                )
             ):
                 raise ValueError(f"{key} は1〜{limit}文字で指定してください。")
         if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_./-]*", fields["name"]):
             raise ValueError("name は英数字で始め、英数字と _ . / - で指定してください。")
-        if not SEMVER.fullmatch(fields["recordVersion"]):
+        if not SEMVER.fullmatch(fields["recordVersion"]) and not (
+            gaps and gaps.allows_legacy_version(fields["recordVersion"])
+        ):
             raise ValueError(
                 "recordVersion は semver（例 1.0.0）で指定してください。"
                 "ビルドメタデータ（+ 以降）は指定できません。"
             )
         if fields["environment"] not in ENVIRONMENTS:
             raise ValueError(f"environment は {' または '.join(ENVIRONMENTS)} のみ指定できます。")
-        if fields.get("dataClassification") not in DATA_CLASSIFICATIONS:
+        if fields.get("dataClassification") not in DATA_CLASSIFICATIONS and not (
+            gaps
+            and gaps.allows_empty("dataClassification")
+            and fields.get("dataClassification") == UNSET_DATA_CLASSIFICATION
+        ):
             raise ValueError(
                 f"データ分類は {' または '.join(DATA_CLASSIFICATIONS)} を指定してください。"
             )
@@ -552,31 +678,36 @@ class RecordDraft:
         return cls(fields)
 
     @classmethod
-    def from_record(
-        cls, record: Mapping[str, Any], owner_team: str, supplement: Mapping[str, Any]
-    ) -> RecordDraft:
+    def from_record(cls, record: Mapping[str, Any], management: Management) -> RecordDraft:
         """Registry レコードをフォームの下書きとして読む。読めなければ ValueError。
 
         定義は primary descriptor の中身を正本とし、所有チームは補助ストアの値を使う（ADR-0002）。
-        descriptor に置けない連絡先などは補助ストアの管理情報（supplement）を正本として読む（ADR-0009）。
+        descriptor に置けない連絡先などは補助ストアの管理情報を正本として読む（ADR-0009）。
+        取り込みレコードは、ポータル外で作られた項目の欠落を AdoptedGaps の初期値で補って読む。
         """
         try:
             descriptors = record["descriptors"]
             if len(descriptors) != 1:
                 raise ValueError("primary descriptor が1個ではありません。")
             kind, descriptor = check_kind(record["recordType"], next(iter(descriptors)))
-            metadata = record["customMetadata"]
-            specific = read_descriptor_fields(descriptor, descriptors[descriptor], supplement)
-            return cls.parse(
+            gaps = AdoptedGaps.of(record) if management.is_adopted else None
+            record_fields = {key: record[key] for key in RECORD_FIELDS if key in record}
+            metadata = record.get("customMetadata", {})
+            if gaps is not None:
+                record_fields = {**gaps.record_defaults(record), **record_fields}
+                metadata = {**gaps.metadata_defaults(), **metadata}
+            specific = read_descriptor_fields(descriptor, descriptors[descriptor], management.item)
+            return cls._parse(
                 {
-                    **{key: record[key] for key in RECORD_FIELDS},
+                    **record_fields,
                     "recordType": kind,
                     "descriptorType": descriptor,
-                    "ownerTeam": owner_team,
+                    "ownerTeam": management.owner_team,
                     "environment": metadata["environment"],
                     "dataClassification": metadata["dataClassification"],
                     **specific,
-                }
+                },
+                gaps,
             )
         except (KeyError, TypeError) as error:
             raise ValueError("Registry レコードに必要な項目がありません。") from error
@@ -593,10 +724,16 @@ class RecordDraft:
             "customMetadata": self._custom_metadata(),
         }
 
-    def update_payload(self, existing_descriptors: Collection[str] = ()) -> dict[str, Any]:
+    def update_payload(
+        self,
+        existing_descriptors: Collection[str] = (),
+        preserved_metadata: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """UpdateRegistryRecord の payload。
 
         primary descriptor を切り替えるときは、古い descriptor を空のオブジェクトで削除して1個に保つ。
+        preserved_metadata は取り込みレコードの既存 metadata で、ポータルが管理しない項目を残す。
+        ポータルで作成したレコードは渡さず、ポータルの項目だけで置き換える。
         """
         descriptor = self.descriptor_type
         patches = update_descriptors(descriptor, self.fields)
@@ -605,7 +742,9 @@ class RecordDraft:
             "displayName": {"optionalValue": self.fields["displayName"]},
             "description": {"optionalValue": self.fields["description"]},
             "recordVersion": self.fields["recordVersion"],
-            "customMetadata": {"optionalValue": self._custom_metadata()},
+            "customMetadata": {
+                "optionalValue": {**(preserved_metadata or {}), **self._custom_metadata()}
+            },
             "descriptors": {"optionalValue": {**removed, **patches}},
         }
 
@@ -632,7 +771,7 @@ class RecordDraft:
 
 
 def draft_view(record: Mapping[str, Any], management: Management, draft: RecordDraft) -> DraftView:
-    return {
+    view: DraftView = {
         "recordId": record["recordId"],
         "draft": dict(draft.fields),
         "contentHash": content_hash(record, management),
@@ -640,3 +779,8 @@ def draft_view(record: Mapping[str, Any], management: Management, draft: RecordD
         "hasDraft": has_draft(record["status"]),
         "publishedVersion": management.published_version(record),
     }
+    if management.is_adopted:
+        notice = AdoptedGaps.of(record).notice(record, draft)
+        if notice is not None:
+            view["initializationNotice"] = notice
+    return view

@@ -19,10 +19,20 @@ from catalog_helpers import (
     json_response,
     summary,
 )
-from draft_helpers import RECORD_ARN, RECORD_ID, aws_record, call, clients, event
+from draft_helpers import (
+    AUTO_APPROVAL_CASES,
+    RECORD_ARN,
+    RECORD_ID,
+    ConfiguredRegistry,
+    aws_record,
+    call,
+    clients,
+    event,
+)
 from record_fixtures import CUSTOM_DRAFT, CUSTOM_DESCRIPTORS, METADATA, stub_create
 from registry_portal.app import create_management_handler
 from registry_portal.domain.drafts import RecordDraft
+from registry_portal.domain.submissions import check_newer_than_published
 from registry_portal.services.supplement_store import SupplementStore
 from registry_portal.services.discovery import DiscoveryDependencies
 
@@ -217,6 +227,54 @@ def test_submission_refuses_automatic_approval_without_an_aws_write():
         stub.assert_no_pending_responses()
 
 
+@pytest.mark.parametrize("approval,state", AUTO_APPROVAL_CASES)
+@mock_aws
+def test_submission_proceeds_only_when_auto_approval_is_disabled(approval, state):
+    """申請は、接続情報の表示と同じ判定が DISABLED のときだけ進む（表示側は test_administration.py）。"""
+    registry, db = clients()
+    configured = ConfiguredRegistry(registry, {"name": "registry", **approval})
+    with Stubber(registry) as stub:
+        handler, created, _ = setup_draft(stub, configured, db)
+        record = aws_record(CUSTOM_DRAFT, descriptors=CUSTOM_DESCRIPTORS, customMetadata=META)
+        if state == "DISABLED":
+            stub_submission(stub, record, approval=False)
+        else:
+            # 自動承認が無効と確かめられなければ、申請 API を呼ばずに止める
+            stub.add_response("get_registry_record", record, GET)
+        status, body = submit(handler, created)
+        stub.assert_no_pending_responses()
+    if state == "DISABLED":
+        assert status == 200
+    else:
+        assert status == 503
+        assert body["error"]["code"] == "APPROVAL_CONFIGURATION_CHANGED"
+        assert stored(db, "LOCK") is None
+
+
+@pytest.mark.parametrize(
+    ("known", "adopted", "version", "expected"),
+    [
+        # 取り込み時に記録した semver でない公開版は、ポータル導入前の版として semver より前とみなす
+        (["v1", "v1"], "v1", "0.0.1", "v1"),
+        (["v1", None], "v1", "1.0.0", "v1"),
+        # 取り込み後に semver の版が公開されたら、その版と比較する
+        (["1.2.0", "1.2.0"], "v1", "1.2.1", "1.2.0"),
+        (["1.2.0", "1.2.0"], "v1", "1.1.0", None),
+        # 取り込み時の版と異なる semver でない版は、順序を決められないため拒否する
+        (["release-2", "release-2"], "v1", "9.0.0", None),
+        (["v1", "v1"], None, "1.0.0", None),
+    ],
+)
+def test_adopted_legacy_published_version_precedes_semver_versions(
+    known, adopted, version, expected
+):
+    if expected is None:
+        with pytest.raises(ValueError):
+            check_newer_than_published(version, known, adopted)
+    else:
+        assert check_newer_than_published(version, known, adopted) == expected
+
+
 def published(version, record_id=RECORD_ID, kind="AGENT"):
     return json_response(
         200,
@@ -336,9 +394,11 @@ def stub_approval_configuration(stub, record, rules=()):
     )
 
 
-def stub_submission(stub, record, error=None):
+def stub_submission(stub, record, error=None, *, approval=True):
+    """申請の AWS 呼び出しを並べる。approval=False は GetRegistry を ConfiguredRegistry が返すとき。"""
     stub.add_response("get_registry_record", record, GET)
-    stub_approval_configuration(stub, record)
+    if approval:
+        stub_approval_configuration(stub, record)
     if error:
         stub.add_client_error("submit_registry_record_for_approval", error, expected_params=GET)
     else:

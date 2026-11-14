@@ -7,16 +7,15 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from registry_portal.domain.catalog import (
-    A2A_DESCRIPTOR_TYPE,
     AGENT_RECORD_TYPE,
     MCP_RECORD_TYPE,
     SKILL_RECORD_TYPE,
     CatalogDetail,
 )
-from registry_portal.domain.descriptors import SUPPLEMENT_FIELDS
+from registry_portal.domain.descriptors import SUPPLEMENT_FIELDS, a2a_metadata_matches
 from registry_portal.domain.drafts import (
     RECORD_ID_PATTERN,
     SEMVER,
@@ -31,6 +30,8 @@ from registry_portal.domain.secrets import scan_json, scan_text
 
 # 申請入力の上限。SPA の申請フォーム（frontend/src/drafts/api.ts）と揃える
 REASON_MAX_LENGTH = 4096
+# 自動承認の規則の観測結果。SPA の接続情報（frontend/src/administration/api.ts）と揃える
+AutoApprovalState = Literal["DISABLED", "ENABLED", "UNKNOWN"]
 RELATED_REFERENCES_MAX = 20
 # 関連参照の参照先にできる種別（設計書「関連参照」: Agent と、それが使う Skill・MCP サーバーとの関係）
 REFERENCE_TARGET_RECORD_TYPES = frozenset({MCP_RECORD_TYPE, SKILL_RECORD_TYPE})
@@ -66,21 +67,47 @@ def check_a2a_metadata(record: Mapping[str, Any], references: list[dict[str, str
         if references:
             raise ValueError("関連参照は Agent の申請にのみ指定できます。")
         return
-    metadata = record.get("customMetadata", {})
-    expected_a2a = A2A_DESCRIPTOR_TYPE in record.get("descriptors", {})
-    if not isinstance(metadata.get("isA2A"), bool) or metadata["isA2A"] != expected_a2a:
+    if not a2a_metadata_matches(record):
         raise ValueError("isA2A が定義と一致しません。下書きを保存し直してください。")
 
 
-def check_newer_than_published(version: str, known_published: list[str | None]) -> str | None:
+def auto_approval_state(registry: Mapping[str, Any]) -> AutoApprovalState:
+    """GetRegistry の自動承認の規則を、無効・有効・未取得に分ける。
+
+    AWS の ApprovalConfiguration は「autoApprovalRules が省略または空なら手動審査」と定めるため、
+    設定や規則の欠落は無効とする。型が契約と異なる応答だけを未取得とし、無効と推測しない。
+    接続情報の表示と申請の停止は、この判定を共有する。
+    """
+    configuration = registry.get("approvalConfiguration", {})
+    if not isinstance(configuration, Mapping):
+        return "UNKNOWN"
+    rules = configuration.get("autoApprovalRules", [])
+    if not isinstance(rules, list):
+        return "UNKNOWN"
+    return "ENABLED" if rules else "DISABLED"
+
+
+def check_newer_than_published(
+    version: str, known_published: list[str | None], adopted_version: str | None = None
+) -> str | None:
     """recordVersion が公開中の版より大きいことを検査し、公開中の版を返す。
 
     公開中の版は、知っている版（補助ストアと発見 API）の大きい方とする。
     却下後の再申請は公開中の版と比べるだけなので、同じ値を許す。
+    取り込み時に記録した公開版（adopted_version）が semver でなければ、ポータル導入前の版として
+    semver のどの版よりも前とみなす。それ以外の semver でない版は順序を決められないため拒否する。
     """
     candidates = [known for known in known_published if known is not None]
-    published = max(candidates, key=version_key) if candidates else None
-    if published is not None and version_key(version) <= version_key(published):
+    ordered = [known for known in candidates if SEMVER.fullmatch(known)]
+    if any(known != adopted_version for known in candidates if known not in ordered):
+        raise ValueError(
+            "既存の公開版が semver ではないため、新しい版との順序を比較できません。"
+            "管理者が公開版の移行方針を確認するまで申請できません。"
+        )
+    if not ordered:
+        return candidates[0] if candidates else None
+    published = max(ordered, key=version_key)
+    if version_key(version) <= version_key(published):
         raise ValueError("recordVersion は公開中の版より大きくしてください。")
     return published
 

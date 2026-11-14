@@ -401,6 +401,16 @@ class DiscoveryClient:
 
     def get_record(self, record_id: str) -> CatalogDetail | None:
         """指定した1件の公開承認済みの版を取得する。"""
+        found = self._fetch_published(record_id)
+        return None if found is None else found[1]
+
+    def get_published_record(self, record_id: str) -> Mapping[str, Any] | None:
+        """公開版の定義と metadata を保持して読む。現在の下書きとは混ぜない。"""
+        found = self._fetch_published(record_id)
+        return None if found is None else found[0]
+
+    def _fetch_published(self, record_id: str) -> tuple[Mapping[str, Any], CatalogDetail] | None:
+        """公開承認済みの版を、発見 API の応答と、それを検査したカタログ詳細の組で返す。"""
         response = self._request(
             self._batch_url,
             {"entries": [{"registryId": self._registry_arn, "recordIds": [record_id]}]},
@@ -425,7 +435,7 @@ class DiscoveryClient:
                     return None
                 detail = _parse_detail(record)
                 if detail is not None:
-                    return detail
+                    return record, detail
         raise _unavailable("詳細 API が想定外の応答を返しました: status=%s", response.status)
 
     def _request(self, url: str, payload: Mapping[str, Any]) -> TransportResponse:

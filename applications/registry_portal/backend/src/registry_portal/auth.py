@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import Any
 
 from registry_portal.config import AuthSettings
+from registry_portal.domain.teams import TEAM_GROUP_PREFIX
 from registry_portal.errors import AuthenticationError, ForbiddenError
 
 
@@ -43,7 +44,6 @@ _ROLE_GROUPS: tuple[tuple[Role, str], ...] = (
     (Role.CURATOR, "registry-curator"),
     (Role.ADMIN, "registry-admin"),
 )
-TEAM_GROUP_PREFIX = "team-"
 
 
 def _parse_groups(value: Any) -> set[str]:

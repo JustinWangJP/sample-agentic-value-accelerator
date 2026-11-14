@@ -1,3 +1,4 @@
+import { createAdministrationApi, type AdministrationApi } from '../administration/api'
 import { createDraftApi, type DraftApi } from '../drafts/api'
 import { createPublicationApi, type PublicationApi } from '../publication/api'
 import { createRecoveryApi, type RecoveryApi } from '../recovery/api'
@@ -188,7 +189,7 @@ export type ApiClientOptions = {
   getAccessToken: () => string | null
 }
 
-export type ApiClient = DraftApi &
+export type ApiClient = AdministrationApi & DraftApi &
   ReviewApi &
   PublicationApi &
   RecoveryApi & {
@@ -269,6 +270,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
   }
 
   return {
+    ...createAdministrationApi(request, () => invalidResponse(200)),
     ...createDraftApi(request, () => invalidResponse(200)),
     ...createReviewApi(request, () => invalidResponse(200)),
     ...createPublicationApi(request, () => invalidResponse(200)),

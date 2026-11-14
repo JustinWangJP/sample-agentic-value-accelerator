@@ -7,6 +7,7 @@ from typing import Any, NamedTuple, NotRequired, Protocol, TypedDict, Unpack, ca
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 
+from registry_portal.domain.administration import AdministrationResult
 from registry_portal.domain.catalog import published_snapshot_sk
 from registry_portal.domain.deprecation import (
     DEPRECATION_OPEN,
@@ -18,6 +19,7 @@ from registry_portal.domain.drafts import (
     AUDIT_RESULT,
     AUDIT_SK_PREFIX,
     CREATE_KIND,
+    MANAGEMENT_FIELDS,
     SETTLED_OPERATION_RETENTION_SECONDS,
     UPDATE_KIND,
     DecisionOperation,
@@ -37,6 +39,8 @@ from registry_portal.domain.drafts import (
 
 # 補助テーブルの TTL 属性名。テーブルの TTL 設定でこの属性を指定する（README「custom Agent の下書き」）
 TTL_ATTRIBUTE = "expiresAt"
+# 取り込み・所有変更の再送用の結果の sk。保存と読み取りで同じ値を使う
+ADMIN_RECEIPT_SK = "ADMIN_RECEIPT"
 
 # 作成の操作の INTENT をレコード単位に写すときに含めない項目。
 # recordId と awsRequestId は開始（begin）より後に書き足すため、開始時の意図に揃えるよう除く。
@@ -108,6 +112,30 @@ class InstantOperation(TypedDict):
     ownerTeam: str
     recordId: str
     reason: str
+    expectedContentHash: NotRequired[str]
+    previousOwnerTeam: NotRequired[str]
+    recordVersion: NotRequired[str]
+
+
+class AdministrationReceipt(TypedDict):
+    """取り込み・所有変更の再送用の結果。同じ Idempotency-Key と内容には同じ結果を返す。"""
+
+    requestHash: str
+    result: AdministrationResult
+
+
+class AdministrationChange(NamedTuple):
+    """取り込み・所有変更で1つの transaction に保存する内容。
+
+    previous は読取時の管理情報（未作成なら None）で、保存時に全項目が変わっていないことを検査する。
+    published は取り込み時の公開版スナップショット（公開版がなければ None）。
+    """
+
+    previous: Management | None
+    management: Management
+    published: Mapping[str, Any] | None
+    audit: InstantOperation
+    receipt: AdministrationReceipt
 
 
 class SupplementStore:
@@ -248,6 +276,67 @@ class SupplementStore:
             self._put({"operationId": op_id, "pk": pk, "sk": audit_sk(op_id, AUDIT_RESULT)}),
         ]
 
+    def administration_receipt(self, op_id: str) -> AdministrationReceipt | None:
+        """瞬時の Admin 操作の確定結果。AWS 操作の CONTROL と回復経路から分ける。"""
+        return cast(
+            "AdministrationReceipt | None",
+            self.get(self._operation_pk(op_id), ADMIN_RECEIPT_SK),
+        )
+
+    def save_administration(self, change: AdministrationChange) -> None:
+        """管理情報・公開版・監査・再送の結果を、共通ロックと CAS で原子的に保存する。"""
+        previous, management, published, audit, receipt = change
+        record_pk = self.record_pk(audit["recordId"])
+        condition = "attribute_not_exists(pk)"
+        values: dict[str, Any] = {}
+        names: dict[str, str] = {}
+        if previous is not None:
+            fields = (set(previous.item) - {"pk", "sk"}) | set(MANAGEMENT_FIELDS)
+            clauses = []
+            for index, field in enumerate(sorted(fields)):
+                name, value = f"#f{index}", f":v{index}"
+                names[name] = field
+                if field in previous.item:
+                    clauses.append(f"{name} = {value}")
+                    values[value] = previous.item[field]
+                else:
+                    clauses.append(f"attribute_not_exists({name})")
+            condition = " AND ".join(clauses)
+        items = [
+            self._put(
+                {**management.item, "pk": record_pk, "sk": "MANAGEMENT"},
+                condition,
+                values or None,
+                names=names or None,
+            )
+        ]
+        if published is not None:
+            version = management.adopted_published_version
+            if version is None:
+                raise ValueError("公開版スナップショットには取り込み時の公開版が必要です。")
+            items.append(
+                self._put({**published, "pk": record_pk, "sk": published_snapshot_sk(version)})
+            )
+        lock_check = self._no_lock(audit["recordId"])
+        items += [
+            lock_check,
+            *self._instant_audit(audit),
+            self._put(
+                {
+                    **receipt,
+                    "pk": self._operation_pk(audit["operationId"]),
+                    "sk": ADMIN_RECEIPT_SK,
+                    TTL_ATTRIBUTE: int(time.time()) + SETTLED_OPERATION_RETENTION_SECONDS,
+                }
+            ),
+        ]
+        try:
+            self._transact(items)
+        except StoreConflict as conflict:
+            if items.index(lock_check) in conflict.failed:
+                raise RecordLocked(conflict.failed) from None
+            raise
+
     def get(self, pk: str, sk: str) -> dict[str, Any] | None:
         item = self._client.get_item(
             TableName=self.table, Key=self._key(pk, sk), ConsistentRead=True
@@ -327,7 +416,7 @@ class SupplementStore:
         self,
         item: Mapping[str, Any],
         condition: str = "attribute_not_exists(pk)",
-        values: Mapping[str, str] | None = None,
+        values: Mapping[str, Any] | None = None,
         *,
         names: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
@@ -339,7 +428,7 @@ class SupplementStore:
         }
         if values:
             put["ExpressionAttributeValues"] = {
-                name: {"S": value} for name, value in values.items()
+                name: TypeSerializer().serialize(value) for name, value in values.items()
             }
         if names:
             put["ExpressionAttributeNames"] = dict(names)

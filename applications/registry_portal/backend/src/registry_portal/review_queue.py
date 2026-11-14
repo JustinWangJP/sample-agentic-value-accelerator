@@ -25,7 +25,7 @@ from registry_portal.domain.deprecation import DeprecationRequest
 from registry_portal.domain.drafts import PENDING_APPROVAL_STATUS
 from registry_portal.domain.submissions import recompute_snapshot_hash, snapshot_fields
 from registry_portal.errors import RequestValidationError
-from registry_portal.operations import check_record_id
+from registry_portal.operations import check_next_token, check_record_id
 
 # 1ページに並べる申請の上限（AWS の ListRegistryRecords の maxResults）
 REVIEW_PAGE_SIZE = 20
@@ -52,12 +52,7 @@ class ReviewQueue:
         if set(query) - {"nextToken"}:
             raise RequestValidationError("一覧には nextToken のみ指定できます。")
         token = query.get("nextToken")
-        if token is not None and (
-            not token or len(token) > 2048 or any(char.isspace() for char in token)
-        ):
-            raise RequestValidationError(
-                "ページの指定が正しくありません。最初から表示してください。"
-            )
+        check_next_token(token)
         params: dict[str, Any] = {
             "maxResults": REVIEW_PAGE_SIZE,
             "filters": [{"name": "status", "values": [PENDING_APPROVAL_STATUS]}],

@@ -13,13 +13,13 @@
 - 操作照会（`GET /api/operations/{id}`）に Admin を加える案は採用しない。操作の中身を主体以外に渡さない ADR-0010 の境界が崩れ、管理 Lambda に決裁の権限が必要になる。
 - 回復を、操作 ID を受け取る API にする案は採用しない。Admin が操作 ID を知る手段がなく、結果確認中の決裁の操作 ID を Admin に渡すと ADR-0010 の境界が崩れる。
 - 照合を省き、Admin の判断だけで解除する案は採用しない。AWS に届いていた書き込みの上から別の書き込みを許し、誤った成功・失敗の記録につながる。
-- 強制解除のときに、Admin の指定した結果（成功・失敗）をそのまま記録する案は採用しない。観測できない結果を、ポータルが成功として記録することになる。強制解除は失敗として確定し、Registry の実際の状態は、その後の照合・取り込み（#16）で扱う。
+- 強制解除のときに、Admin の指定した結果（成功・失敗）をそのまま記録する案は採用しない。観測できない結果を、ポータルが成功として記録することになる。強制解除は失敗として確定し、Registry の実際の状態は、その後の照合と、Registry の状態を踏まえた再実行で扱う。
 - 申請 API や状態更新 API を、Admin の回復で送り直す案は採用しない。決裁 Lambda は申請の権限を持たず、送り直しは決裁した Curator の再送（ADR-0010）に限るため。
 
 ## 影響
 
 - レコードの ID が決まる前に失敗した作成（Registry の応答が届かなかった作成）は、レコードのロックを持たないため、この回復では扱えない。同じ入力と Idempotency-Key での再試行（AWS の `clientToken`）で確定する。
-- 強制解除した操作が実際には AWS に反映されていた場合、Registry の状態とポータルの記録（公開版スナップショットなど）が食い違う。Admin は強制解除の前に Registry の状態を確認し、食い違いが出たときは、その状態を踏まえた再実行や取り込み（#16）で整える。
+- 強制解除した操作が実際には AWS に反映されていた場合、Registry の状態とポータルの記録（公開版スナップショットなど）が食い違う。Admin は強制解除の前に Registry の状態を確認し、食い違いが出たときは、その状態を踏まえた再実行（所有チームの再申請と Curator の再決裁）で整える。取り込み（#16）は未管理レコードだけを対象とし、管理下のレコードの管理情報と公開版スナップショットは書き換えない（409）。申請の semver の下限は、補助ストアの版と発見 API が返す公開承認済みの版の大きい方とするため、記録が古くても公開中の版より古い版は申請できない。ただし、管理下のレコードの公開版スナップショットを Registry に合わせて作り直す照合の手段は持たない。強制解除した公開承認が実際には反映されていた場合、その版のスナップショットがないまま、次の公開承認まで食い違いが残る。この照合は #16 の範囲から外し、必要になった時点で別の Issue で扱う。
 - 回復の画面と API は Admin だけに開く。Admin が決裁の自己承認禁止から除外されないのと同じく、回復の理由と主体が操作記録に残る。
 - 開始から5分の判定は操作の開始時刻を基準にする。同時に確定した操作は、ロックを削除する条件付き書き込み（操作 ID の一致）が1回しか成功しないため、先に確定した結果を後から上書きしない。ただし実行中の Lambda が、回復の後に AWS を呼ぶ可能性は残るため、強制解除の前に Registry の状態を確認する。
 - `clientToken` を持つ Registry 管理 API は作成（[`CreateRegistryRecord`](https://docs.aws.amazon.com/boto3/latest/reference/services/agent-registry-control/client/create_registry_record.html)）だけで、[更新](https://docs.aws.amazon.com/boto3/latest/reference/services/agent-registry-control/client/update_registry_record.html)・[申請](https://docs.aws.amazon.com/boto3/latest/reference/services/agent-registry-control/client/submit_registry_record_for_approval.html)・[状態更新](https://docs.aws.amazon.com/boto3/latest/reference/services/agent-registry-control/client/update_registry_record_status.html)にはない（公式ドキュメントと botocore のサービスモデルで確認）。作成は同じ操作 ID を `clientToken` に使って再試行し、他は照合で確定する。

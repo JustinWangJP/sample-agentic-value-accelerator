@@ -15,6 +15,9 @@ CATALOG_RECORD_TYPES: tuple[CatalogRecordType, ...] = get_args(CatalogRecordType
 # SPA の `DataClassification`（frontend/src/api/dataClassification.ts）と同じ値に揃える
 DataClassification = Literal["public", "private"]
 DATA_CLASSIFICATIONS: tuple[DataClassification, ...] = get_args(DataClassification)
+# データ分類の未選択。データ分類のない取り込みレコードの下書きだけが返し、保存時は拒否する。
+# SPA の `UNSET_DATA_CLASSIFICATION` と同じ値に揃える
+UNSET_DATA_CLASSIFICATION = ""
 
 AGENT_RECORD_TYPE: CatalogRecordType = "AGENT"
 MCP_RECORD_TYPE: CatalogRecordType = "MCP"

@@ -15,6 +15,11 @@ from typing import Any, cast
 
 import boto3
 
+from registry_portal.administration import (
+    AdministrationReads,
+    RegistryAdministration,
+    RegistryAdministrationClient,
+)
 from registry_portal.auth import Caller, authorize
 from registry_portal.catalog import get_catalog_detail, list_catalog, search_catalog
 from registry_portal.config import (
@@ -33,7 +38,9 @@ from registry_portal.deprecation import (
 )
 from registry_portal.domain.curation import PUBLICATION_ACTIONS
 from registry_portal.domain.drafts import (
+    ADOPT_KIND,
     APPROVE_KIND,
+    REASSIGN_OWNER_KIND,
     REJECT_KIND,
     OperationKind,
     is_decision_operation,
@@ -232,6 +239,7 @@ def create_management_handler(
     )
     region = discovery_settings.registry_region
     drafts = None
+    reads = None
     # 決裁操作の照会（GET /api/operations）は管理 handler が担う。決裁自体は決裁 handler が行うため、
     # このインスタンスは AWS の状態更新 API を呼び出さない（IAM でも拒否される）
     curation = None
@@ -333,8 +341,25 @@ def create_management_handler(
             return curation.operation_status(caller, operation)
         return drafts.operation_status(caller, operation)
 
+    admin_reads = AdministrationReads(
+        load_registry_settings(environ),
+        cast(
+            RegistryAdministrationClient,
+            registry_client or boto3.client("agent-registry-control", region_name=region),
+        ),
+        reads,
+    )
+
+    def admin_list(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        return admin_reads.list_records(caller, _query_of(event))
+
+    def admin_connection(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        return admin_reads.connection(caller, _query_of(event))
+
     routes: Mapping[str, Route] = {
         **MANAGEMENT_ROUTES,
+        "GET /api/admin/records": admin_list,
+        "GET /api/admin/connection": admin_connection,
         "GET /api/catalog": get_catalog,
         "POST /api/catalog/search": post_search,
         "GET /api/catalog/{recordId}": get_detail,
@@ -356,6 +381,7 @@ def create_curation_handler(
     *,
     registry_client: RegistryStatusClient | None = None,
     store_client: SupplementStoreClient | None = None,
+    discovery: DiscoveryDependencies | None = None,
 ) -> Handler:
     """決裁 handler を作る。認証設定と補助テーブルが不足していれば、ここで起動エラーにする。
 
@@ -432,7 +458,32 @@ def create_curation_handler(
 
         return decide
 
+    discovery_client = (
+        create_discovery_client(
+            load_discovery_settings(environ), discovery or DiscoveryDependencies()
+        )
+        if environ.get("DISCOVERY_CLIENT_ID")
+        else None
+    )
+    administration = RegistryAdministration(reads, store, discovery_client)
+
+    def ownership_route(kind: OperationKind) -> Route:
+        """取り込み・所有変更の route。操作の種類は route で決まり、本文からは受け取らない。"""
+
+        def change(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+            return administration.change_ownership(
+                caller,
+                _path_parameter(event),
+                _json_body(event),
+                _idempotency_key(event),
+                kind=kind,
+            )
+
+        return change
+
     routes: Mapping[str, Route] = {
+        "POST /api/records/{recordId}/adopt": ownership_route(ADOPT_KIND),
+        "POST /api/records/{recordId}/reassign-owner": ownership_route(REASSIGN_OWNER_KIND),
         "GET /api/reviews": list_reviews,
         "GET /api/reviews/{recordId}": get_review,
         "POST /api/reviews/{recordId}/approve": decision_route(APPROVE_KIND),
