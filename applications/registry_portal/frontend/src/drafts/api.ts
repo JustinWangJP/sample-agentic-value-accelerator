@@ -313,7 +313,7 @@ function isDraft(value: unknown): value is RecordDraft {
     ) &&
     typeof value.ownerTeam === 'string' &&
     isDraftEnvironment(value.environment) &&
-    isDataClassification(value.dataClassification)
+    (value.dataClassification === '' || isDataClassification(value.dataClassification))
   )
 }
 function isRecord(

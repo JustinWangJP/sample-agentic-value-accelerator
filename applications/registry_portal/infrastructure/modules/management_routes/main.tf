@@ -2,6 +2,7 @@
 # HTTP API・JWT authorizer・管理 Lambda とその統合（integration）は #5 の IaC（または既存環境）が持ち、
 # ここでは ID と名前で受け取るだけにする。route と、その path に限った呼び出し許可だけを作る。
 locals {
+  # 管理 Lambda に割り当てる route と、Lambda の呼び出し許可の ID・path（execution ARN の後ろ）
   routes = {
     admin_records = {
       route_key    = "GET /api/admin/records"

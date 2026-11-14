@@ -367,12 +367,15 @@ it('下書きの準備中（503）は一覧の0件や作成結果の不明と区
   expect(button('一覧に戻る').disabled).toBe(false)
 })
 
-it('取り込み時に欠けていた metadata の初期値を編集画面で案内する', async () => {
-  const notice = '取り込みレコードの未設定 metadata は、環境 dev・データ分類 private を初期値として表示しています。内容を確認して保存してください。'
+it('取り込み時に欠けていた metadata を案内し、データ分類は未選択のまま表示する', async () => {
+  const notice = '取り込みレコードです。未設定の環境は dev を初期値として表示しています。データ分類が未設定です。public または private を選択してください。内容を確認して保存してください。'
   await mount([
     jsonResponse(200, { items: [item], nextToken: null }),
-    jsonResponse(200, { ...detail, initializationNotice: notice }),
+    jsonResponse(200, { ...detail, draft: { ...draft, dataClassification: '' }, initializationNotice: notice }),
   ])
   await click('編集')
   expect(container.textContent).toContain(notice)
+  const select = container.querySelector<HTMLSelectElement>('select[name="dataClassification"]')
+  expect(select?.value).toBe('')
+  expect(select?.options[0]?.textContent).toBe('選択してください')
 })

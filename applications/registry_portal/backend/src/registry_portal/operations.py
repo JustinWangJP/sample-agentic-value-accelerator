@@ -50,6 +50,14 @@ def check_record_id(record_id: str) -> None:
         raise RequestValidationError("Registry レコード ID の形式が正しくありません。")
 
 
+def check_next_token(token: str | None) -> None:
+    """一覧の nextToken を検査する。AWS が返す不透明な値なので、空・2048文字超・空白を含むものだけを 400 にする。"""
+    if token is not None and (
+        not token or len(token) > 2048 or any(char.isspace() for char in token)
+    ):
+        raise RequestValidationError("ページの指定が正しくありません。最初から表示してください。")
+
+
 def principal_of(caller: Caller) -> PrincipalRecord:
     """操作記録に残す主体。検証済み JWT の issuer と subject だけを使う（設計書「補助テーブルに保存するもの」）。"""
     return {"issuer": caller.principal.issuer, "subject": caller.principal.subject}

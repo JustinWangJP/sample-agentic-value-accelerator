@@ -180,7 +180,8 @@ export type CommonDraftFields = {
   recordVersion: string
   ownerTeam: string
   environment: DraftEnvironment
-  dataClassification: DataClassification
+  /** 空文字は未選択。データ分類のない取り込みレコードだけが返し、保存時はサーバーが拒否する */
+  dataClassification: DataClassification | ''
   recordType: CatalogRecordType
   descriptorType: DescriptorType
   connectionReference: string

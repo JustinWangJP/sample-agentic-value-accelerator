@@ -19,7 +19,6 @@ from registry_portal.administration import (
     AdministrationReads,
     RegistryAdministration,
     RegistryAdministrationClient,
-    require_admin,
 )
 from registry_portal.auth import Caller, authorize
 from registry_portal.catalog import get_catalog_detail, list_catalog, search_catalog
@@ -353,10 +352,7 @@ def create_management_handler(
         return admin_reads.list_records(caller, _query_of(event))
 
     def admin_connection(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        require_admin(caller)
-        if _query_of(event):
-            raise RequestValidationError("接続情報にクエリパラメーターは指定できません。")
-        return admin_reads.connection(caller)
+        return admin_reads.connection(caller, _query_of(event))
 
     routes: Mapping[str, Route] = {
         **MANAGEMENT_ROUTES,
@@ -469,22 +465,19 @@ def create_curation_handler(
     )
     administration = RegistryAdministration(reads, store, discovery_client)
 
-    def admin_route(*, reassign: bool) -> Route:
-        def execute(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-            require_admin(caller)
-            return administration.execute(
-                caller,
-                _path_parameter(event),
-                _json_body(event),
-                _idempotency_key(event),
-                reassign=reassign,
-            )
+    def adopt_record(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        return administration.adopt(
+            caller, _path_parameter(event), _json_body(event), _idempotency_key(event)
+        )
 
-        return execute
+    def reassign_owner(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        return administration.reassign_owner(
+            caller, _path_parameter(event), _json_body(event), _idempotency_key(event)
+        )
 
     routes: Mapping[str, Route] = {
-        "POST /api/records/{recordId}/adopt": admin_route(reassign=False),
-        "POST /api/records/{recordId}/reassign-owner": admin_route(reassign=True),
+        "POST /api/records/{recordId}/adopt": adopt_record,
+        "POST /api/records/{recordId}/reassign-owner": reassign_owner,
         "GET /api/reviews": list_reviews,
         "GET /api/reviews/{recordId}": get_review,
         "POST /api/reviews/{recordId}/approve": decision_route(APPROVE_KIND),

@@ -70,12 +70,12 @@ variable "jwt_authorizer_id" {
 
 variable "discovery_token_url" {
   type        = string
-  description = "公開旧版を取得する発見用 M2M の HTTPS トークンエンドポイント"
+  description = "取り込み時の公開承認済みの版を取得する発見用 M2M の HTTPS トークンエンドポイント"
 }
 
 variable "discovery_client_id" {
   type        = string
-  description = "取り込みで公開旧版を読む既存の発見用 M2M client ID"
+  description = "取り込みで公開承認済みの版を読む既存の発見用 M2M client ID"
 }
 
 variable "discovery_client_secret_arn" {

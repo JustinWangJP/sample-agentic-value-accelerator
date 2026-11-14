@@ -405,6 +405,7 @@ function MetadataFields({
             if (classification) onChange({ ...draft, dataClassification: classification })
           }}
         >
+          {draft.dataClassification === '' && <option value="">選択してください</option>}
           {DATA_CLASSIFICATIONS.map((value) => (
             <option key={value}>{value}</option>
           ))}

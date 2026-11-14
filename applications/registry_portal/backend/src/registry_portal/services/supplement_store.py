@@ -18,6 +18,7 @@ from registry_portal.domain.drafts import (
     AUDIT_RESULT,
     AUDIT_SK_PREFIX,
     CREATE_KIND,
+    MANAGEMENT_FIELDS,
     SETTLED_OPERATION_RETENTION_SECONDS,
     UPDATE_KIND,
     DecisionOperation,
@@ -111,6 +112,27 @@ class InstantOperation(TypedDict):
     expectedContentHash: NotRequired[str]
     previousOwnerTeam: NotRequired[str]
     recordVersion: NotRequired[str]
+
+
+class AdministrationReceipt(TypedDict):
+    """取り込み・所有変更の再送用の結果。同じ Idempotency-Key と内容には同じ結果を返す。"""
+
+    requestHash: str
+    result: Mapping[str, Any]
+
+
+class AdministrationChange(NamedTuple):
+    """取り込み・所有変更で1つの transaction に保存する内容。
+
+    previous は読取時の管理情報（未作成なら None）で、保存時に全項目が変わっていないことを検査する。
+    published は取り込み時の公開版スナップショット（公開版がなければ None）。
+    """
+
+    previous: Management | None
+    management: Management
+    published: Mapping[str, Any] | None
+    audit: InstantOperation
+    receipt: AdministrationReceipt
 
 
 class SupplementStore:
@@ -255,37 +277,15 @@ class SupplementStore:
         """瞬時の Admin 操作の確定結果。AWS 操作の CONTROL と回復経路から分ける。"""
         return self.get(self._operation_pk(op_id), "ADMIN_RECEIPT")
 
-    def save_administration(
-        self,
-        previous: Management | None,
-        management: Management,
-        published: Mapping[str, Any] | None,
-        audit: InstantOperation,
-        receipt: Mapping[str, Any],
-    ) -> None:
+    def save_administration(self, change: AdministrationChange) -> None:
         """管理情報・公開版・監査・再送の結果を、共通ロックと CAS で原子的に保存する。"""
+        previous, management, published, audit, receipt = change
         record_pk = self.record_pk(audit["recordId"])
         condition = "attribute_not_exists(pk)"
         values: dict[str, Any] = {}
         names: dict[str, str] = {}
         if previous is not None:
-            fields = set(previous.item) - {"pk", "sk"}
-            fields |= {
-                "managed",
-                "ownerTeam",
-                "publishedVersion",
-                "adoptedPublishedVersion",
-                "suspendedVersion",
-                "lastEditedBy",
-                "lastEditedAt",
-                "activeSubmissionId",
-                "contact",
-                "termsOfUse",
-                "connectionReference",
-                "skillCommit",
-                "skillVersion",
-                "skillDigest",
-            }
+            fields = (set(previous.item) - {"pk", "sk"}) | set(MANAGEMENT_FIELDS)
             clauses = []
             for index, field in enumerate(sorted(fields)):
                 name, value = f"#f{index}", f":v{index}"
@@ -305,16 +305,11 @@ class SupplementStore:
             )
         ]
         if published is not None:
+            version = management.adopted_published_version
+            if version is None:
+                raise ValueError("公開版スナップショットには取り込み時の公開版が必要です。")
             items.append(
-                self._put(
-                    {
-                        **published,
-                        "pk": record_pk,
-                        "sk": published_snapshot_sk(
-                            str(management.item["adoptedPublishedVersion"])
-                        ),
-                    }
-                )
+                self._put({**published, "pk": record_pk, "sk": published_snapshot_sk(version)})
             )
         lock_check = self._no_lock(audit["recordId"])
         items += [

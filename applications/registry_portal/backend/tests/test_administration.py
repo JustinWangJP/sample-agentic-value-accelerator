@@ -18,6 +18,7 @@ from decision_helpers import put, setup_pending, decide, stub_status_update
 from record_fixtures import CUSTOM_DRAFT, CUSTOM_DESCRIPTORS, CUSTOM_DEFINITION
 from botocore.stub import ANY
 from registry_portal.app import create_management_handler
+from registry_portal.domain.submissions import auto_approval_state
 
 
 ADMIN = "registry-admin"
@@ -132,6 +133,65 @@ def test_connection_reports_observed_authorizer_and_approval_warning(rules, stat
     assert result["authorization"] == "CUSTOM_JWT"
     assert result["autoApproval"]["state"] == state
     assert bool(result["warnings"]) == bool(rules)
+
+
+@pytest.mark.parametrize(
+    "missing,authorization,warnings",
+    [
+        # 認可方式の欠落は接続エラーにせず、認可方式だけを未取得として警告する
+        (
+            "discoveryConfiguration",
+            None,
+            ["認可方式を取得できません。Registry の発見設定を確認してください。"],
+        ),
+        # 自動承認の規則の省略は AWS の定義どおり手動審査（無効）で、申請側の判定とも一致させる
+        ("approvalConfiguration", "CUSTOM_JWT", []),
+    ],
+)
+@mock_aws
+def test_connection_stays_connected_when_optional_settings_are_missing(
+    missing, authorization, warnings
+):
+    registry, db = clients()
+    configuration = {
+        key: value for key, value in registry_configuration([]).items() if key != missing
+    }
+    with Stubber(registry) as stub:
+        stub.add_response("get_registry", configuration, {"registryId": REGISTRY_ARN})
+        status, result = call(
+            handler_for(registry, db), event("GET", "/api/admin/connection", groups=ADMIN)
+        )
+    assert status == 200
+    assert result["connection"] == {"state": "CONNECTED"}
+    assert result["authorization"] == authorization
+    assert result["autoApproval"]["state"] == "DISABLED"
+    assert result["warnings"] == warnings
+
+
+@pytest.mark.parametrize(
+    "registry,state",
+    [
+        ({}, "DISABLED"),
+        ({"approvalConfiguration": {}}, "DISABLED"),
+        ({"approvalConfiguration": {"autoApprovalRules": []}}, "DISABLED"),
+        ({"approvalConfiguration": {"autoApprovalRules": ["APPROVE_ALL"]}}, "ENABLED"),
+        ({"approvalConfiguration": {"autoApprovalRules": "APPROVE_ALL"}}, "UNKNOWN"),
+        ({"approvalConfiguration": []}, "UNKNOWN"),
+    ],
+)
+def test_connection_and_submission_share_the_auto_approval_judgement(registry, state):
+    """接続情報の表示と申請の停止が使う共通の判定。申請は DISABLED のときだけ進む。"""
+    assert auto_approval_state(registry) == state
+
+
+@mock_aws
+def test_connection_rejects_query_after_admin_check():
+    registry, db = clients()
+    handler = handler_for(registry, db)
+    with Stubber(registry):
+        request = event("GET", "/api/admin/connection", groups=ADMIN)
+        request["queryStringParameters"] = {"debug": "1"}
+        assert call(handler, request)[0] == 400
 
 
 def public_record(**changes):
@@ -504,11 +564,21 @@ def test_concurrent_adoption_cannot_overwrite_another_owner_or_leave_audit_fragm
     assert history["entries"] == []
 
 
+@pytest.mark.parametrize(
+    "management",
+    [
+        None,
+        # 所有チームが記録されていても、取り込み前（managed=false）なら更新できない
+        {"managed": False, "ownerTeam": "team-payments"},
+    ],
+)
 @mock_aws
-def test_unmanaged_publisher_cannot_edit_or_submit_before_adoption():
+def test_unmanaged_publisher_cannot_edit_or_submit_before_adoption(management):
     registry, db = clients()
+    if management is not None:
+        put(db, "MANAGEMENT", management)
     handler = handler_for(registry, db)
-    with Stubber(registry):
+    with Stubber(registry) as stub:
         for method, suffix in [("PATCH", ""), ("POST", "/submit")]:
             assert (
                 call(
@@ -517,6 +587,26 @@ def test_unmanaged_publisher_cannot_edit_or_submit_before_adoption():
                 )[0]
                 == 403
             )
+        stub.assert_no_pending_responses()
+    assert stored(db, "LOCK") is None
+    assert stored(db, "MANAGEMENT") == (
+        None if management is None else {**management, "pk": ANY, "sk": "MANAGEMENT"}
+    )
+
+
+@mock_aws
+def test_service_client_cannot_edit_or_submit_unmanaged_record():
+    """CI 用などの M2M トークンは、人間用 SPA client 以外として更新前に403で拒否する。"""
+    registry, db = clients()
+    handler = handler_for(registry, db)
+    with Stubber(registry):
+        for method, suffix in [("PATCH", ""), ("POST", "/submit")]:
+            request = event(method, f"/api/records/{RECORD_ID}{suffix}", {"draft": CUSTOM_DRAFT})
+            claims = request["requestContext"]["authorizer"]["jwt"]["claims"]
+            claims["client_id"] = "ci-m2m-client"
+            assert call(handler, request)[0] == 403
+    assert stored(db, "MANAGEMENT") is None
+    assert stored(db, "LOCK") is None
 
 
 @pytest.mark.parametrize(
@@ -566,27 +656,31 @@ def test_adopted_record_completion_and_submission_check_published_version(
         status, view = call(management, event("GET", f"/api/records/{RECORD_ID}"))
         assert status == 200
         assert view["draft"]["environment"] == "dev"
-        assert view["draft"]["dataClassification"] == "private"
+        # 仕様に既定値のないデータ分類は推測せず、未選択のまま所有チームに選ばせる
+        assert view["draft"]["dataClassification"] == ""
         assert view["draft"]["recordVersion"] == version
         assert view["draft"]["displayName"] == original.get("displayName", original["name"])
         assert view["draft"]["description"] == original.get("description", "")
-        assert "初期値" in view["initializationNotice"]
+        assert "未設定の環境は dev を初期値" in view["initializationNotice"]
+        assert "データ分類が未設定です" in view["initializationNotice"]
         if missing_fields:
             assert "未設定の表示名" in view["initializationNotice"]
         if version == "v1":
             assert "既存の版をそのまま表示" in view["initializationNotice"]
-        if "description" in missing_fields or version == "v1":
-            assert (
-                call(
-                    management,
-                    event(
-                        "PATCH",
-                        f"/api/records/{RECORD_ID}",
-                        {"draft": view["draft"], "expectedContentHash": view["contentHash"]},
-                    ),
-                )[0]
-                == 400
-            )
+        # 補完前の初期値（空のデータ分類・説明、旧形式の版）のままでは保存できない
+        status, rejected = call(
+            management,
+            event(
+                "PATCH",
+                f"/api/records/{RECORD_ID}",
+                {"draft": view["draft"], "expectedContentHash": view["contentHash"]},
+            ),
+        )
+        assert status == 400
+        assert any(
+            label in rejected["error"]["message"]
+            for label in ("データ分類", "description", "recordVersion")
+        )
         stub.add_response("get_registry_record", original, GET)
         stub.add_response(
             "update_registry_record",
@@ -615,24 +709,19 @@ def test_adopted_record_completion_and_submission_check_published_version(
         assert status == 200
         assert "initializationNotice" not in result
         stub.add_response("get_registry_record", completed, GET)
-        if not published:
-            stub.add_response(
-                "get_registry", registry_configuration([]), {"registryId": REGISTRY_ARN}
-            )
-            stub.add_response(
-                "submit_registry_record_for_approval",
-                {
-                    "registryArn": REGISTRY_ARN,
-                    "recordArn": RECORD["recordArn"],
-                    "recordId": RECORD_ID,
-                    "status": "PENDING_APPROVAL",
-                    "updatedAt": RECORD["updatedAt"],
-                },
-                GET,
-            )
-            stub.add_response(
-                "get_registry_record", {**completed, "status": "PENDING_APPROVAL"}, GET
-            )
+        stub.add_response("get_registry", registry_configuration([]), {"registryId": REGISTRY_ARN})
+        stub.add_response(
+            "submit_registry_record_for_approval",
+            {
+                "registryArn": REGISTRY_ARN,
+                "recordArn": RECORD["recordArn"],
+                "recordId": RECORD_ID,
+                "status": "PENDING_APPROVAL",
+                "updatedAt": RECORD["updatedAt"],
+            },
+            GET,
+        )
+        stub.add_response("get_registry_record", {**completed, "status": "PENDING_APPROVAL"}, GET)
         status, submitted = call(
             management,
             event(
@@ -647,10 +736,9 @@ def test_adopted_record_completion_and_submission_check_published_version(
                 sub="bob",
             ),
         )
-        assert status == (400 if published else 200)
-        if published:
-            assert "公開版が semver ではない" in submitted["error"]["message"]
-            assert stored(db, f"PUBLISHED#{version}") == published_snapshot
+        # 取り込み時の公開版 v1 はポータル導入前の版とみなし、semver の 1.0.0 を申請できる
+        assert status == 200, submitted
+        assert stored(db, f"PUBLISHED#{version}") == published_snapshot
         stub.assert_no_pending_responses()
 
 

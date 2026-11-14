@@ -7,18 +7,19 @@ provider "aws" {
 }
 
 module "decision" {
+  source                = "../modules/decision"
+  name_prefix           = var.name_prefix
+  lambda_zip_path       = var.lambda_zip_path
+  cognito_issuer        = "https://cognito-idp.${var.region}.amazonaws.com/${var.cognito_user_pool_id}"
+  human_client_id       = var.human_client_id
+  registry_arn          = var.registry_arn
+  supplement_table_name = var.supplement_table_name
+  supplement_table_arn  = var.supplement_table_arn
+  http_api_id           = var.http_api_id
+  jwt_authorizer_id     = var.jwt_authorizer_id
+  # 取り込みで公開承認済みの版を読む発見用 M2M（管理 Lambda と同じ client）
   discovery_token_url         = var.discovery_token_url
   discovery_client_id         = var.discovery_client_id
   discovery_client_secret_arn = var.discovery_client_secret_arn
   discovery_scope             = var.discovery_scope
-  source                      = "../modules/decision"
-  name_prefix                 = var.name_prefix
-  lambda_zip_path             = var.lambda_zip_path
-  cognito_issuer              = "https://cognito-idp.${var.region}.amazonaws.com/${var.cognito_user_pool_id}"
-  human_client_id             = var.human_client_id
-  registry_arn                = var.registry_arn
-  supplement_table_name       = var.supplement_table_name
-  supplement_table_arn        = var.supplement_table_arn
-  http_api_id                 = var.http_api_id
-  jwt_authorizer_id           = var.jwt_authorizer_id
 }

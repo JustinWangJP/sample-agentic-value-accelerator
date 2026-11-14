@@ -65,7 +65,8 @@ resource "aws_lambda_function" "decision" {
 # HTTP API と JWT authorizer は作らず ID で受け取る。route はここで定義し、決裁 Lambda だけを統合先にする
 locals {
   # 決裁 Lambda を呼び出せる /api/records/{recordId} 以下の path の末尾と、そのメソッド、Lambda の呼び出し許可の ID。
-  # 公開停止・廃止・公開管理の照会・廃止依頼の見送り（#13）。route と呼び出し許可の両方をこの定義から作る。
+  # Admin の取り込み・所有変更（#16）と、Curator の公開停止・廃止・公開管理の照会・廃止依頼の見送り（#13）。
+  # route と呼び出し許可の両方をこの定義から作る。
   # 回復操作の許可は下の decision_recovery_api
   decision_record_paths = {
     adopt = {
@@ -135,7 +136,7 @@ resource "aws_apigatewayv2_route" "decision" {
   authorizer_id      = var.jwt_authorizer_id
 }
 
-# HTTP API から決裁 Lambda を呼び出す許可。審査と決裁の path（/api/reviews 以下）、Curator の
+# HTTP API から決裁 Lambda を呼び出す許可。審査と決裁の path（/api/reviews 以下）、Admin・Curator の
 # レコード単位の path（local.decision_record_paths）、回復操作の path（/api/records/{recordId}/recovery）だけに限る
 resource "aws_lambda_permission" "decision_api" {
   statement_id  = "AllowHttpApiInvokeReviews"
@@ -145,7 +146,13 @@ resource "aws_lambda_permission" "decision_api" {
   source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/*/api/reviews*"
 }
 
-resource "aws_lambda_permission" "decision_curator_record_api" {
+# Admin の route を加えたため Curator 専用の名前から改めた。適用済みの state は moved で引き継ぐ
+moved {
+  from = aws_lambda_permission.decision_curator_record_api
+  to   = aws_lambda_permission.decision_record_api
+}
+
+resource "aws_lambda_permission" "decision_record_api" {
   for_each      = local.decision_record_paths
   statement_id  = each.value.statement_id
   action        = "lambda:InvokeFunction"

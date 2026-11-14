@@ -23,6 +23,7 @@ from draft_helpers import RECORD_ARN, RECORD_ID, aws_record, call, clients, even
 from record_fixtures import CUSTOM_DRAFT, CUSTOM_DESCRIPTORS, METADATA, stub_create
 from registry_portal.app import create_management_handler
 from registry_portal.domain.drafts import RecordDraft
+from registry_portal.domain.submissions import check_newer_than_published
 from registry_portal.services.supplement_store import SupplementStore
 from registry_portal.services.discovery import DiscoveryDependencies
 
@@ -215,6 +216,30 @@ def test_submission_refuses_automatic_approval_without_an_aws_write():
         assert stored(db, "LOCK") is None
         assert stored(db, "MANAGEMENT").get("activeSubmissionId") is None
         stub.assert_no_pending_responses()
+
+
+@pytest.mark.parametrize(
+    ("known", "adopted", "version", "expected"),
+    [
+        # 取り込み時に記録した semver でない公開版は、ポータル導入前の版として semver より前とみなす
+        (["v1", "v1"], "v1", "0.0.1", "v1"),
+        (["v1", None], "v1", "1.0.0", "v1"),
+        # 取り込み後に semver の版が公開されたら、その版と比較する
+        (["1.2.0", "1.2.0"], "v1", "1.2.1", "1.2.0"),
+        (["1.2.0", "1.2.0"], "v1", "1.1.0", None),
+        # 取り込み時の版と異なる semver でない版は、順序を決められないため拒否する
+        (["release-2", "release-2"], "v1", "9.0.0", None),
+        (["v1", "v1"], None, "1.0.0", None),
+    ],
+)
+def test_adopted_legacy_published_version_precedes_semver_versions(
+    known, adopted, version, expected
+):
+    if expected is None:
+        with pytest.raises(ValueError):
+            check_newer_than_published(version, known, adopted)
+    else:
+        assert check_newer_than_published(version, known, adopted) == expected
 
 
 def published(version, record_id=RECORD_ID, kind="AGENT"):

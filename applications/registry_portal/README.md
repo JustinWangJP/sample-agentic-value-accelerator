@@ -599,9 +599,11 @@ Admin の「Registry 管理」から、未管理レコードを所有チーム�
 
 取り込みは Registry の descriptor・metadata・公開状態を更新しません。現在の下書きは管理 API、現在公開中の版は JWT 発見 API の batch-get から別々に読みます。新しい下書きと古い公開版が共存していても、公開版の連絡先等に下書きの値を混ぜません。発見 API の確定的な不存在だけを公開版なしとして扱います。アクセス拒否・通信障害・不正応答では502、管理 API が返す公開版の発見反映待ちでは409を返し、取り込みません。
 
-対応する primary descriptor が1個ある Agent・MCP サーバー・Skill を取り込めます。descriptor から読める補助情報を管理情報へ写します。A2A・MCP・Skill の連絡先等、元の定義から取得できない補助情報は空文字で保存し、所有チームが通常編集で補います。取り込んだレコードに environment・dataClassification が未設定なら、編集画面では dev・private を初期値として表示し、その旨を案内します。読み取りだけでは Registry を更新せず、所有チームが確認して保存します。confidential 等の明示的な不正値を初期値で上書きしません。
+対応する primary descriptor が1個ある Agent・MCP サーバー・Skill を取り込めます。descriptor から読める補助情報を管理情報へ写します。A2A・MCP・Skill の連絡先等、元の定義から取得できない補助情報は空文字で保存し、所有チームが通常編集で補います。取り込んだレコードに environment が未設定なら、設計書の既定値 dev を初期値として表示し、その旨を案内します。dataClassification には仕様上の既定値がないため推測せず、未選択（空文字）のまま表示して public / private の選択を案内します。未選択のままの保存は400です。読み取りだけでは Registry を更新せず、所有チームが確認して保存します。confidential 等の明示的な不正値を初期値で上書きしません。
 
-表示名・説明が未設定なら、表示名は既存の `name`、説明は空欄を初期値として表示し、補完を案内します。`v1` 等の旧形式の版は元の文字列のまま表示します。所有チームは説明を補い、semver の版を指定して保存してから申請してください。保存・申請時の必須項目と semver の検証は変わりません。既存の公開版自体が semver ではない場合、新しい版との順序を比較できないため申請を400で拒否します。Admin が公開版の移行方針を確認する必要があります。ポータルは公開版の値を自動置換せず、旧公開版と公開版スナップショットを保持します。
+取り込んだレコードの更新では、ポータルが管理しない既存の custom metadata の項目を保持し、ポータルの項目（所有チーム・環境・データ分類・`isA2A`）だけを上書きします。ポータルで作成したレコードの更新は、従来どおりポータルの項目だけで metadata を置き換えます。
+
+表示名・説明が未設定なら、表示名は既存の `name`、説明は空欄を初期値として表示し、補完を案内します。`v1` 等の旧形式の版は元の文字列のまま表示します。所有チームは説明を補い、semver の版を指定して保存してから申請してください。保存・申請時の必須項目と semver の検証は変わりません。取り込み時に記録した公開版（`adoptedPublishedVersion`）が semver でない場合は、ポータル導入前の版として、semver のどの版よりも前とみなします。所有チームは任意の semver の版（例 `1.0.0`）で申請できます。取り込み後に semver の版が公開されたら、以降はその版と比較します。取り込み時の版と異なる semver でない版が公開版として観測された場合は、順序を決められないため申請を400で拒否します。ポータルは公開版の値を自動置換せず、取り込み時の公開版と公開版スナップショットを保持します。
 
 `MANAGEMENT`、公開版がある場合の `PUBLISHED#<recordVersion>`、追記専用の `AUDIT#<操作ID>#INTENT/#RESULT`、再送用の結果を一つの DynamoDB transaction で保存します。すべての書き込みと共通の `LOCK` がないこと、および読取時の管理情報との一致を同時に検査します。既存の公開スナップショットは上書きしません。衝突時は409で再読み込みを案内します。AWS が `CREATING` / `UPDATING` の間も409です。
 
@@ -615,9 +617,11 @@ Admin の「Registry 管理」から、未管理レコードを所有チーム�
 
 ローカル Vite と実際の管理画面・API クライアントを Chromium で操作し、取り込み、所有チーム変更、自動承認警告、接続失敗表示を確認しました。API 応答には fixture を使用しています。実 AWS・Cognito との結合試験ではありません。確認画面は[所有チーム変更](docs/screenshots/issue16-ownership.png)、[自動承認警告](docs/screenshots/issue16-drift.png)、[接続取得失敗](docs/screenshots/issue16-error.png)を参照してください。
 
-`GetRegistry` の `discoveryConfiguration.authorizerType` を `CUSTOM_JWT` / `AWS_IAM` として表示し、`approvalConfiguration.autoApprovalRules` が空なら自動承認無効、非空なら警告を表示します。設定の欠落は `UNKNOWN` とし、無効であると推測しません。取得に失敗しても設定由来の ARN・リージョンを保持し、認可方式未取得と日本語の接続エラーを表示します。この診断はレコードの試験呼び出しを行いません。自動承認逸脱時に既存の申請 API が拒否する動作も維持します。
+`GetRegistry` の `discoveryConfiguration.authorizerType` を `CUSTOM_JWT` / `AWS_IAM` として表示し、`approvalConfiguration.autoApprovalRules` が省略または空なら自動承認無効、非空なら警告を表示します。[自動承認設定](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_ApprovalConfiguration.html)は「省略または空なら手動審査」と定めています。設定や規則の型が契約と異なる応答だけを `UNKNOWN` とし、無効であるとは推測しません。botocore のモデルでは `discoveryConfiguration.authorizerType` も任意です。`GetRegistry` が成功して認可方式だけがない場合は、接続済みのまま認可方式を未取得（`null`）として警告します。接続エラーとするのは `GetRegistry` の呼び出し自体が失敗したときだけです。その場合も設定由来の ARN・リージョンを保持し、認可方式未取得と日本語の接続エラーを表示します。この診断はレコードの試験呼び出しを行いません。
 
-根拠は [GetRegistry](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_GetRegistry.html)、[ListRegistryRecords](https://docs.aws.amazon.com/cli/latest/reference/agent-registry-control/list-registry-records.html)、[BatchGetDiscoverableRegistryRecord](https://docs.aws.amazon.com/agent-registry/latest/APIReference/API_BatchGetDiscoverableRegistryRecord.html) です。GetRegistryRecord に公開旧版を指定する引数はないため、下書きを公開版として保存しません。
+申請 API も同じ判定（`domain/submissions.py` の `auto_approval_state`）を使い、自動承認が無効（`DISABLED`）のときだけ申請します。有効（`ENABLED`）と未取得（`UNKNOWN`）では、既存の動作どおり503 `APPROVAL_CONFIGURATION_CHANGED` で申請を止めます。そのため、画面の表示と申請の可否は常に一致します。
+
+根拠は [GetRegistry](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_GetRegistry.html)、[ListRegistryRecords](https://docs.aws.amazon.com/cli/latest/reference/agent-registry-control/list-registry-records.html)、[BatchGetDiscoverableRegistryRecord](https://docs.aws.amazon.com/agent-registry/latest/APIReference/API_BatchGetDiscoverableRegistryRecord.html) です。GetRegistryRecord には公開承認済みの版を指定する引数がないため、下書きを公開版として保存しません。
 
 ### A2A metadata の補完と有効化
 

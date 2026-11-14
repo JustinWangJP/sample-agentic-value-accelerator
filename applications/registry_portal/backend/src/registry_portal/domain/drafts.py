@@ -189,6 +189,20 @@ RECORD_ID_PATTERN = re.compile(rf"[A-Za-z0-9]{{{RECORD_ID_LENGTH}}}")
 # 公開停止の成功で書き込み、公開承認の成功で消す（README「公開停止・廃止・廃止依頼」）
 SUSPENDED_VERSION_KEY = "suspendedVersion"
 
+# 管理情報（MANAGEMENT）が持ちうる項目。取り込み・所有変更は、読取時から変わっていないことを全項目で検査する
+MANAGEMENT_FIELDS = (
+    "managed",
+    "ownerTeam",
+    "publishedVersion",
+    "adoptedPublishedVersion",
+    "adoptedAt",
+    SUSPENDED_VERSION_KEY,
+    "lastEditedBy",
+    "lastEditedAt",
+    "activeSubmissionId",
+    *ALL_SUPPLEMENT_FIELDS,
+)
+
 # 確定した操作（実行制御の項目）を補助テーブルの TTL で削除するまでの秒数（設計書「補助テーブルに保存するもの」）。
 # この間は同じ Idempotency-Key に同じ結果を返す。未確定の操作とロックには TTL を付けない
 SETTLED_OPERATION_RETENTION_SECONDS = 7 * 24 * 60 * 60
@@ -462,6 +476,11 @@ class Management:
         return self.suspended_version is not None and record["status"] != PUBLISHED_STATUS
 
     @property
+    def is_adopted(self) -> bool:
+        """取り込み（#16）でポータルの管理下に置いたレコードか。ポータル外で作られた項目の欠落を許す。"""
+        return isinstance(self.item.get("adoptedAt"), str)
+
+    @property
     def adopted_published_version(self) -> str | None:
         """取り込み（#16）の時点で既に公開されていた版。ポータルに公開承認の操作記録がない。
 
@@ -510,8 +529,17 @@ class RecordDraft:
 
     @classmethod
     def _parse(
-        cls, value: Mapping[str, Any], *, source_record: Mapping[str, Any] | None = None
+        cls,
+        value: Mapping[str, Any],
+        *,
+        unset: Collection[str] = (),
+        legacy_version: bool = False,
     ) -> RecordDraft:
+        """下書きを検査する。unset と legacy_version は取り込みレコードの読み取りだけが使う。
+
+        unset は Registry レコードに存在しなかった項目で、空のまま読むことを許す。legacy_version は
+        ポータル導入前の semver でない版をそのまま読むことを許す。保存・申請は parse で検査し直す。
+        """
         record_type = value.get("recordType", AGENT_RECORD_TYPE)
         descriptor_type = value.get("descriptorType")
         if descriptor_type is None and record_type in CATALOG_RECORD_TYPES:
@@ -535,21 +563,13 @@ class RecordDraft:
             if (
                 not isinstance(text, str)
                 or len(text) > limit
-                or (
-                    not text.strip()
-                    and key not in OPTIONAL_FIELDS
-                    and not (
-                        key == "description"
-                        and source_record is not None
-                        and key not in source_record
-                    )
-                )
+                or (not text.strip() and key not in OPTIONAL_FIELDS and key not in unset)
             ):
                 raise ValueError(f"{key} は1〜{limit}文字で指定してください。")
         if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_./-]*", fields["name"]):
             raise ValueError("name は英数字で始め、英数字と _ . / - で指定してください。")
         if not SEMVER.fullmatch(fields["recordVersion"]) and not (
-            source_record is not None and re.fullmatch(r"[a-zA-Z0-9.-]+", fields["recordVersion"])
+            legacy_version and re.fullmatch(r"[a-zA-Z0-9.-]+", fields["recordVersion"])
         ):
             raise ValueError(
                 "recordVersion は semver（例 1.0.0）で指定してください。"
@@ -557,7 +577,9 @@ class RecordDraft:
             )
         if fields["environment"] not in ENVIRONMENTS:
             raise ValueError(f"environment は {' または '.join(ENVIRONMENTS)} のみ指定できます。")
-        if fields.get("dataClassification") not in DATA_CLASSIFICATIONS:
+        if fields.get("dataClassification") not in DATA_CLASSIFICATIONS and not (
+            "dataClassification" in unset and fields.get("dataClassification") == ""
+        ):
             raise ValueError(
                 f"データ分類は {' または '.join(DATA_CLASSIFICATIONS)} を指定してください。"
             )
@@ -590,13 +612,20 @@ class RecordDraft:
                 raise ValueError("primary descriptor が1個ではありません。")
             kind, descriptor = check_kind(record["recordType"], next(iter(descriptors)))
             metadata = record.get("customMetadata", {})
-            adopted = isinstance(supplement.get("adoptedAt"), str)
             record_fields = {key: record[key] for key in RECORD_FIELDS if key in record}
+            adopted = isinstance(supplement.get("adoptedAt"), str)
+            unset: set[str] = set()
             if adopted:
+                # ポータル外で作られた項目の欠落は推測で埋めない。表示名は name、環境は設計書の既定値 dev を
+                # 初期値とし、説明とデータ分類は空のまま所有チームに入力させる（保存時に必須を検査する）
+                if "description" not in record:
+                    unset.add("description")
+                if "dataClassification" not in metadata:
+                    unset.add("dataClassification")
                 record_fields = {"displayName": record["name"], "description": "", **record_fields}
                 metadata = {
                     "environment": DEFAULT_ENVIRONMENT,
-                    "dataClassification": "private",
+                    "dataClassification": "",
                     **metadata,
                 }
             specific = read_descriptor_fields(descriptor, descriptors[descriptor], supplement)
@@ -610,7 +639,8 @@ class RecordDraft:
                     "dataClassification": metadata["dataClassification"],
                     **specific,
                 },
-                source_record=record if adopted else None,
+                unset=unset,
+                legacy_version=adopted,
             )
         except (KeyError, TypeError) as error:
             raise ValueError("Registry レコードに必要な項目がありません。") from error
@@ -630,11 +660,13 @@ class RecordDraft:
     def update_payload(
         self,
         existing_descriptors: Collection[str] = (),
-        existing_metadata: Mapping[str, Any] | None = None,
+        preserved_metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """UpdateRegistryRecord の payload。
 
         primary descriptor を切り替えるときは、古い descriptor を空のオブジェクトで削除して1個に保つ。
+        preserved_metadata は取り込みレコードの既存 metadata で、ポータルが管理しない項目を残す。
+        ポータルで作成したレコードは渡さず、ポータルの項目だけで置き換える。
         """
         descriptor = self.descriptor_type
         patches = update_descriptors(descriptor, self.fields)
@@ -644,7 +676,7 @@ class RecordDraft:
             "description": {"optionalValue": self.fields["description"]},
             "recordVersion": self.fields["recordVersion"],
             "customMetadata": {
-                "optionalValue": {**(existing_metadata or {}), **self._custom_metadata()}
+                "optionalValue": {**(preserved_metadata or {}), **self._custom_metadata()}
             },
             "descriptors": {"optionalValue": {**removed, **patches}},
         }
@@ -680,14 +712,15 @@ def draft_view(record: Mapping[str, Any], management: Management, draft: RecordD
         "hasDraft": has_draft(record["status"]),
         "publishedVersion": management.published_version(record),
     }
-    if isinstance(management.item.get("adoptedAt"), str):
+    if management.is_adopted:
         notices = []
-        if any(
-            key not in record.get("customMetadata", {})
-            for key in ("environment", "dataClassification")
-        ):
+        metadata = record.get("customMetadata", {})
+        if "environment" not in metadata:
+            notices.append(f"未設定の環境は {DEFAULT_ENVIRONMENT} を初期値として表示しています。")
+        if "dataClassification" not in metadata:
             notices.append(
-                "未設定 metadata は、環境 dev・データ分類 private を初期値として表示しています。"
+                "データ分類が未設定です。"
+                f"{' または '.join(DATA_CLASSIFICATIONS)} を選択してください。"
             )
         if "displayName" not in record or "description" not in record:
             notices.append("未設定の表示名は name、説明は空欄を初期値として表示しています。")

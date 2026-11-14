@@ -107,6 +107,17 @@ it('自動承認の逸脱と接続エラーを Admin に表示する', async () 
   expect(container.textContent).not.toContain('未管理レコードはありません。')
 })
 
+it('接続できても認可方式や自動承認が未取得なら、接続エラーと区別して警告する', async () => {
+  await mount([
+    jsonResponse(200, { ...connection, authorization: null, autoApproval: { state: 'UNKNOWN' }, warnings: ['認可方式を取得できません。', '自動承認の設定を取得できません。'] }),
+    jsonResponse(200, { items: [], nextToken: null }),
+  ])
+  expect(container.textContent).toContain('接続情報取得済み')
+  expect(container.textContent).toContain('認可方式未取得')
+  expect(container.textContent).toContain('自動承認未取得')
+  expect([...container.querySelectorAll('[role="alert"]')].map((node) => node.textContent)).toEqual(['認可方式を取得できません。', '自動承認の設定を取得できません。'])
+})
+
 it('空のページに nextToken があれば続きを取得し、異常応答を0件と表示しない', async () => {
   const calls = await mount([
     jsonResponse(200, { ...connection, autoApproval: { state: 'ENABLED' }, warnings: ['自動承認の設定が想定から外れています。'] }),

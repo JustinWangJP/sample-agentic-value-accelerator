@@ -34,6 +34,7 @@ from registry_portal.domain.drafts import (
 from registry_portal.domain.submissions import (
     Submission,
     SubmissionInput,
+    auto_approval_state,
     check_a2a_metadata,
     check_newer_than_published,
     check_reference_target,
@@ -45,6 +46,7 @@ from registry_portal.operations import (
     AWS_REJECTED_ERRORS as _AWS_REJECTED_ERRORS,
     AWS_THROTTLED_ERRORS,
     check_idempotency_key,
+    check_next_token,
     check_record_id,
     now,
     operation_status,
@@ -416,12 +418,7 @@ class RecordDrafts:
         if set(query) - {"nextToken"}:
             raise RequestValidationError("一覧には nextToken のみ指定できます。")
         token = query.get("nextToken")
-        if token is not None and (
-            not token or len(token) > 2048 or any(char.isspace() for char in token)
-        ):
-            raise RequestValidationError(
-                "ページの指定が正しくありません。最初から表示してください。"
-            )
+        check_next_token(token)
         params: dict[str, Any] = {
             "registryId": self.registry,
             "maxResults": 20,
@@ -559,6 +556,8 @@ class RecordDrafts:
             or content_hash(record, management) != request.expected_hash
         ):
             raise DraftConflict()
+        # 取り込みレコードの読み取りは、未設定の説明や旧形式の版を初期値として許す。申請は通常の作成・
+        # 保存と同じ必須項目と semver で検査し直し、補完前の下書きを申請させない
         draft = RecordDraft.parse(self._read_draft(record, management).fields)
         check_a2a_metadata(record, request.references)
         published = self._discovery.get_record(record_id)
@@ -569,6 +568,7 @@ class RecordDrafts:
                 management.last_published_version(record),
                 published.item.record_version if published else None,
             ],
+            management.adopted_published_version,
         )
         for reference in request.references:
             check_reference_target(record_id, reference, self._discovery.get_record)
@@ -582,10 +582,12 @@ class RecordDrafts:
         return snapshot
 
     def _check_approval_configuration(self) -> None:
-        """自動承認の規則が1件でもあれば、申請が審査を経ずに公開されるため止める。"""
+        """自動承認が無効と確認できなければ止める。規則があれば申請が審査を経ずに公開されるため。
+
+        判定は接続情報の画面と共有する（規則の省略は無効、型の異なる応答は未取得として止める）。
+        """
         configuration = self._registry.get_registry(registryId=self.registry)
-        rules = configuration.get("approvalConfiguration", {}).get("autoApprovalRules", [])
-        if rules != []:
+        if auto_approval_state(configuration) != "DISABLED":
             raise ApprovalConfigurationChanged()
 
     def _call_submit_api(self, operation: DraftOperation, resume: bool = False) -> DraftResponse:
@@ -674,7 +676,10 @@ class RecordDrafts:
                 response = self._registry.update_registry_record(
                     registryId=self.registry,
                     recordId=record_id,
-                    **draft.update_payload(record["descriptors"], record.get("customMetadata", {})),
+                    **draft.update_payload(
+                        record["descriptors"],
+                        record.get("customMetadata", {}) if management.is_adopted else None,
+                    ),
                 )
             except ClientError as error:
                 return self._registry_error(operation, error)
