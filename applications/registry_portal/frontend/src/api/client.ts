@@ -1,5 +1,6 @@
 import { createAdministrationApi, type AdministrationApi } from '../administration/api'
 import { createDraftApi, type DraftApi } from '../drafts/api'
+import { createNotificationApi, type NotificationApi } from '../notifications/api'
 import { createPublicationApi, type PublicationApi } from '../publication/api'
 import { createRecoveryApi, type RecoveryApi } from '../recovery/api'
 import { createReviewApi, type ReviewApi } from '../reviews/api'
@@ -192,7 +193,8 @@ export type ApiClientOptions = {
 export type ApiClient = AdministrationApi & DraftApi &
   ReviewApi &
   PublicationApi &
-  RecoveryApi & {
+  RecoveryApi &
+  NotificationApi & {
   getMe: () => Promise<Me>
   /** nextToken はバックエンドが中継する AWS の値で、SPA では中身を解釈しない */
   listCatalog: (
@@ -275,6 +277,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     ...createReviewApi(request, () => invalidResponse(200)),
     ...createPublicationApi(request, () => invalidResponse(200)),
     ...createRecoveryApi(request, () => invalidResponse(200)),
+    ...createNotificationApi(request, () => invalidResponse(200)),
     getMe: () => request<Me>('GET', '/api/me'),
     listCatalog: (type, nextToken, a2aOnly) => {
       const query = new URLSearchParams({ type })

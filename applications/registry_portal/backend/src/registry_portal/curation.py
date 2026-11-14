@@ -440,7 +440,11 @@ class RecordCuration:
         _SUBJECTS[operation["kind"]].pin(self.reads, operation, record, management)
 
     def _send_decision(self, operation: DecisionOperation) -> None:
-        """意図に記録した決裁（種別・理由）を AWS の状態更新 API に送る。受け付けられたら記録する。"""
+        """意図に記録した決裁（種別・理由）を AWS の状態更新 API に送る。受け付けられたら記録する。
+
+        呼び出し側は、先に送信時刻を記録する（store.record_sent）。補助テーブルのエラーを AWS の
+        状態更新 API のエラーと取り違えないよう、ここでは記録しない。
+        """
         try:
             response = self._registry_client.update_registry_record_status(
                 registryId=self.registry,
@@ -456,6 +460,7 @@ class RecordCuration:
 
     def _call_status_api(self, operation: DecisionOperation) -> DecisionResponse:
         """AWS の状態更新 API を呼び、結果を照合する。"""
+        self.store.record_sent(operation)
         try:
             self._send_decision(operation)
         except ClientError as error:
@@ -523,6 +528,7 @@ class RecordCuration:
             if not allow_reissue:
                 # 管理 handler の操作照会は決裁の権限を持たないため、AWS を呼び直さない
                 return _pending(operation)
+            self.store.record_sent(operation)
             try:
                 self._send_decision(operation)
             except ClientError:

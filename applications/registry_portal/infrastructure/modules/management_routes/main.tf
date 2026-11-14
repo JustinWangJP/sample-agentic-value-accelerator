@@ -24,6 +24,17 @@ locals {
       statement_id = "AllowHttpApiInvokeDeprecationRequest"
       path         = "api/records/*/deprecation-requests"
     }
+    # 画面上の通知（#15）。自分宛ての通知と未読件数の取得と、既読位置の更新
+    notifications = {
+      route_key    = "GET /api/notifications"
+      statement_id = "AllowHttpApiInvokeNotifications"
+      path         = "api/notifications"
+    }
+    notifications_read = {
+      route_key    = "POST /api/notifications/read"
+      statement_id = "AllowHttpApiInvokeNotificationsRead"
+      path         = "api/notifications/read"
+    }
   }
 }
 

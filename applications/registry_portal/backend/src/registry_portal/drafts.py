@@ -334,6 +334,7 @@ class RecordDrafts:
                     return self._replay_create(
                         concurrent, operation["requestHash"]
                     ) or self._settlement.pending(concurrent)
+            self.store.record_sent(operation)
             try:
                 response = self._registry.create_registry_record(
                     registryId=self.registry,
@@ -604,6 +605,7 @@ class RecordDrafts:
             except ApprovalConfigurationChanged:
                 self.store.abort(operation, ApprovalConfigurationChanged.code)
                 return self._settlement.failed(operation)
+        self.store.record_sent(operation)
         try:
             response = self._registry.submit_registry_record_for_approval(
                 registryId=self.registry, recordId=operation["recordId"]
@@ -672,6 +674,7 @@ class RecordDrafts:
                 "publishedVersion": management.published_version(record),
             }
             self.store.save_pending(operation)
+            self.store.record_sent(operation)
             try:
                 response = self._registry.update_registry_record(
                     registryId=self.registry,
