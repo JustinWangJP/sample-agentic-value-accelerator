@@ -191,11 +191,23 @@ class RegistryEventNotifier:
             logger.warning("管理情報の形式が正しくありません: record_id=%s", record_id)
             return None
 
+    def _last_sent_at(self, operation: ObservedOperation) -> datetime | None:
+        """操作の実行制御から、Registry への送信時刻を読む（#38）。
+
+        送信時刻を記録する前の操作と、確定から保持期間（7日）が過ぎて実行制御が消えた操作は None
+        （操作記録の開始・確定時刻で照合する）。補助テーブルの一時的な失敗は例外のまま返し、再試行させる。
+        """
+        control = self.store.get_operation(operation.operation_id)
+        return _parse_time(control.get("lastSentAt")) if control is not None else None
+
     def _plans(
         self, record_id: str, status: str, updated_at: datetime, management: Management | None
     ) -> list[_Plan]:
         operation = explaining_operation(
-            observed_operations(self.store.list_appended_records(record_id)), status, updated_at
+            observed_operations(self.store.list_appended_records(record_id)),
+            status,
+            updated_at,
+            self._last_sent_at,
         )
         if operation is None:
             plans = [_Plan(ADMIN_AUDIENCE, "OUTSIDE_CHANGE")]

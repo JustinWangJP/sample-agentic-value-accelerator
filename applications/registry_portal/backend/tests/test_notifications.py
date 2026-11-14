@@ -37,15 +37,17 @@ from decision_helpers import (
     stub_status_update,
     stub_submit,
 )
-from draft_helpers import RECORD_ID, call, clients, event, handler_for
+from draft_helpers import RECORD_ARN, RECORD_ID, call, clients, event, handler_for
 from notification_helpers import event_handler, registry_event
 from record_fixtures import CUSTOM_DESCRIPTORS, CUSTOM_DRAFT, stub_create
+from registry_portal import recovery
 from registry_portal.app import (
     create_curation_handler,
     create_event_handler,
     create_management_handler,
 )
 from registry_portal.config import ConfigurationError
+from registry_portal.services import supplement_store
 from registry_portal.services.discovery import DiscoveryDependencies
 
 PUBLISHER = "registry-publisher team-payments"
@@ -227,6 +229,321 @@ def test_an_earlier_portal_operation_of_the_same_kind_does_not_explain_a_later_c
         assert [
             item["kind"] for item in _notifications(state["management"], PUBLISHER)[1]["items"]
         ] == ["OUTSIDE_CHANGE"]
+
+
+def _kinds(handler, groups):
+    return [item["kind"] for item in _notifications(handler, groups)[1]["items"]]
+
+
+def _stuck_approval(stub, state):
+    """決裁の AWS 呼び出しが 5xx で結果不明になり、結果確認中のままロックが残る。"""
+    stub.add_response("get_registry_record", {**RECORD, "status": "PENDING_APPROVAL"}, GET)
+    stub_status_update(stub, approved=True, error="InternalServerException")
+    status, pending = decide(state["decision"], snapshot_hash=state["snapshot"]["snapshotHash"])
+    assert (status, pending["operationState"]) == (202, "VERIFYING")
+
+
+@mock_aws
+def test_a_same_kind_change_far_from_the_send_of_a_verifying_operation_is_an_outside_change():
+    """結果確認中の決裁も、Registry への送信時刻の前後の変化だけをポータル内とみなす（#38）。
+
+    送信の直後の承認は、結果不明だった決裁が届いたものとして所有チームに届く。送信から1時間後の承認は、
+    ロックを持つ間にポータル外（break-glass 用ロールなど）で起きた同じ種別の遷移として Admin に届く。
+    """
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        state = setup_pending(stub, registry, db)
+        events = event_handler(registry, db)
+        _stuck_approval(stub, state)
+        _deliver(stub, events, "Approved", "ev-landed", status="APPROVED", updated_at=_now())
+        assert _kinds(state["management"], PUBLISHER) == ["APPROVED"]
+        assert _kinds(state["management"], ADMIN) == []
+
+        _deliver(
+            stub,
+            events,
+            "Approved",
+            "ev-outside",
+            status="APPROVED",
+            updated_at=_now() + timedelta(hours=1),
+        )
+        stub.assert_no_pending_responses()
+        assert _kinds(state["management"], ADMIN) == ["OUTSIDE_CHANGE"]
+        assert _kinds(state["management"], PUBLISHER) == ["OUTSIDE_CHANGE", "APPROVED"]
+
+
+def _later(monkeypatch, delay):
+    """補助テーブルに記録する送信時刻・確定時刻を、操作の開始から delay 後にする。"""
+    later = _now() + delay
+    monkeypatch.setattr(supplement_store, "_utcnow", lambda: later)
+    return later
+
+
+@mock_aws
+def test_a_resent_decision_that_lands_long_after_the_start_is_a_portal_change(monkeypatch):
+    """結果不明の決裁を1時間後に同じ Idempotency-Key で再送し、その送信で反映された承認はポータル内。"""
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        state = setup_pending(stub, registry, db)
+        events = event_handler(registry, db)
+        _stuck_approval(stub, state)
+        resent_at = _later(monkeypatch, timedelta(hours=1))
+        stub.add_response("get_registry_record", {**RECORD, "status": "PENDING_APPROVAL"}, GET)
+        stub_status_update(stub, approved=True)
+        stub.add_response("get_registry_record", {**RECORD, "status": "APPROVED"}, GET)
+        status, _ = decide(state["decision"], snapshot_hash=state["snapshot"]["snapshotHash"])
+        assert status == 200
+
+        _deliver(stub, events, "Approved", "ev-resent", status="APPROVED", updated_at=resent_at)
+        stub.assert_no_pending_responses()
+        assert _kinds(state["management"], PUBLISHER) == ["APPROVED"]
+        assert _kinds(state["management"], ADMIN) == []
+
+
+@mock_aws
+def test_an_operation_settled_by_recovery_is_matched_by_its_send_time(monkeypatch):
+    """回復操作（#12）で確定した決裁も、回復を実行した時刻ではなく送信時刻で照合する。
+
+    結果不明の決裁の30分後にポータル外で承認され、1時間後に Admin が回復で成功と確定した。
+    送信から離れた承認は、確定までの間に起きていても Admin に届く。送信の直後の承認はポータル内。
+    """
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        state = setup_pending(stub, registry, db)
+        events = event_handler(registry, db)
+        sent_at = _now()
+        _stuck_approval(stub, state)
+        recovered_at = _later(monkeypatch, timedelta(hours=1))
+        monkeypatch.setattr(recovery, "_utcnow", lambda: recovered_at)
+        stub.add_response("get_registry_record", {**RECORD, "status": "APPROVED"}, GET)
+        status, body = call(
+            state["decision"],
+            event(
+                "POST",
+                f"/api/records/{RECORD_ID}/recovery",
+                {"reason": "Registry を確認した"},
+                groups=ADMIN,
+                sub="admin-1",
+                key="",
+            ),
+        )
+        assert (status, body["operationState"]) == (200, "SUCCEEDED")
+
+        _deliver(
+            stub,
+            events,
+            "Approved",
+            "ev-outside",
+            status="APPROVED",
+            updated_at=sent_at + timedelta(minutes=30),
+        )
+        assert _kinds(state["management"], ADMIN) == ["OUTSIDE_CHANGE"]
+        _deliver(stub, events, "Approved", "ev-landed", status="APPROVED", updated_at=sent_at)
+        stub.assert_no_pending_responses()
+        assert _kinds(state["management"], ADMIN) == ["OUTSIDE_CHANGE"]
+        assert "APPROVED" in _kinds(state["management"], PUBLISHER)
+
+
+@mock_aws
+def test_a_verifying_operation_without_a_send_time_explains_only_fifteen_minutes_from_its_start():
+    """送信時刻を記録する前の操作は、開始から15分（Lambda の上限）までの変化だけをポータル内とみなす。
+
+    この変更より前に始まり、結果確認中のまま残った公開停止（INTENT だけで、実行制御に送信時刻がない）。
+    """
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        events = event_handler(registry, db)
+        started = _now()
+        put(db, "MANAGEMENT", {"managed": True, "ownerTeam": "team-payments"})
+        put(
+            db,
+            "AUDIT#op-legacy#INTENT",
+            {
+                "operationId": "op-legacy",
+                "kind": "SUSPEND",
+                "principal": {"issuer": ISSUER, "subject": "carol"},
+                "startedAt": started.isoformat(),
+                "ownerTeam": "team-payments",
+                "recordId": RECORD_ID,
+            },
+        )
+        management = handler_for(registry, db)
+        _deliver(
+            stub,
+            events,
+            "Rejected",
+            "ev-landed",
+            status="REJECTED",
+            updated_at=started + timedelta(minutes=1),
+        )
+        assert _kinds(management, PUBLISHER) == ["SUSPENDED"]
+        _deliver(
+            stub,
+            events,
+            "Rejected",
+            "ev-outside",
+            status="REJECTED",
+            updated_at=started + timedelta(hours=1),
+        )
+        stub.assert_no_pending_responses()
+        assert _kinds(management, ADMIN) == ["OUTSIDE_CHANGE"]
+
+
+def _draft(stub, registry, db):
+    """申請前の下書きを作る。発見 API の偽物には、申請1回分の応答（公開中の版なし）を積む。"""
+    transport = FakeTransport(registry=deque([missing_published()]))
+    management = create_management_handler(
+        {**ENV, "SUPPLEMENT_TABLE_NAME": SUPPLEMENT_TABLE},
+        registry_client=registry,
+        supplement_store_client=db,
+        discovery=DiscoveryDependencies(transport=transport, secrets_client=FakeSecrets().client),
+    )
+    stub_create(stub, CUSTOM_DRAFT, CUSTOM_DESCRIPTORS, META)
+    status, created = call(management, event(body=CUSTOM_DRAFT))
+    assert status == 201
+    return management, created
+
+
+def _registry_configuration(stub):
+    """自動承認が無効な Registry の設定（申請・申請の再開の前に確かめる）。"""
+    stub.add_response(
+        "get_registry",
+        {
+            "name": "registry",
+            "registryId": "abcdEFGH1234",
+            "registryArn": REGISTRY_ARN,
+            "status": "ACTIVE",
+            "createdAt": RECORD["createdAt"],
+            "updatedAt": RECORD["updatedAt"],
+            "approvalConfiguration": {"autoApprovalRules": []},
+        },
+        {"registryId": REGISTRY_ARN},
+    )
+
+
+@mock_aws
+def test_a_submission_resumed_long_after_the_start_is_a_portal_change(monkeypatch):
+    """申請 API が結果不明のまま1時間後に操作照会で申請を再開し、その送信で審査待ちになった変化はポータル内。
+
+    再開した申請は反映待ち（DRAFT のまま）で結果確認中だが、送信時刻の直後の変化なので Curator に届く。
+    """
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        management, created = _draft(stub, registry, db)
+        events = event_handler(registry, db)
+        stub.add_response("get_registry_record", RECORD, GET)
+        _registry_configuration(stub)
+        stub.add_client_error(
+            "submit_registry_record_for_approval", "InternalServerException", http_status_code=500
+        )
+        status, pending = call(
+            management,
+            event(
+                "POST",
+                f"/api/records/{RECORD_ID}/submit",
+                {
+                    "expectedContentHash": created["contentHash"],
+                    "reason": "利用者向けに公開する",
+                    "relatedReferences": [],
+                },
+                key="submit-1",
+            ),
+        )
+        assert (status, pending["operationState"]) == (202, "VERIFYING")
+
+        resumed_at = _later(monkeypatch, timedelta(hours=1))
+        stub.add_response("get_registry_record", RECORD, GET)
+        _registry_configuration(stub)
+        stub.add_response(
+            "submit_registry_record_for_approval",
+            {
+                "registryArn": REGISTRY_ARN,
+                "recordArn": RECORD_ARN,
+                "recordId": RECORD_ID,
+                "status": "PENDING_APPROVAL",
+                "updatedAt": RECORD["updatedAt"],
+            },
+            GET,
+        )
+        stub.add_response("get_registry_record", RECORD, GET)
+        lookup = event("GET", f"/api/operations/{pending['operationId']}")
+        assert call(management, lookup)[0] == 202
+
+        _deliver(
+            stub,
+            events,
+            "Pending Approval",
+            "ev-resumed",
+            status="PENDING_APPROVAL",
+            updated_at=resumed_at,
+        )
+        stub.assert_no_pending_responses()
+        assert _kinds(management, CURATOR) == ["SUBMITTED"]
+        assert _kinds(management, ADMIN) == []
+
+
+@mock_aws
+def test_a_create_resent_long_after_the_start_is_a_portal_change(monkeypatch):
+    """作成 API が結果不明のまま、1時間後に同じ Idempotency-Key で再送した作成の下書きはポータル内（通知しない）。"""
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        management = handler_for(registry, db)
+        events = event_handler(registry, db)
+        stub.add_client_error(
+            "create_registry_record", "InternalServerException", http_status_code=500
+        )
+        status, pending = call(management, event(body=CUSTOM_DRAFT, key="create-1"))
+        assert (status, pending["operationState"]) == (202, "VERIFYING")
+
+        resent_at = _later(monkeypatch, timedelta(hours=1))
+        stub_create(
+            stub, CUSTOM_DRAFT, CUSTOM_DESCRIPTORS, META, returned={**RECORD, "status": "CREATING"}
+        )
+        status, pending = call(management, event(body=CUSTOM_DRAFT, key="create-1"))
+        assert (status, pending["operationState"]) == (202, "VERIFYING")
+
+        _deliver(stub, events, "Draft", "ev-created", status="DRAFT", updated_at=resent_at)
+        stub.assert_no_pending_responses()
+        assert _kinds(management, ADMIN) == []
+        assert _kinds(management, PUBLISHER) == []
+
+
+@mock_aws
+def test_an_edit_is_matched_by_its_send_time_not_its_start(monkeypatch):
+    """開始の検査に時間がかかり、開始から14分後に送信した編集（結果不明）。
+
+    送信から16分後の下書きへの変化は、開始から15分を過ぎていても送信の前後なのでポータル内（通知しない）。
+    """
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        management, created = _draft(stub, registry, db)
+        events = event_handler(registry, db)
+        sent_at = _later(monkeypatch, timedelta(minutes=14))
+        stub.add_response("get_registry_record", RECORD, GET)
+        stub.add_client_error(
+            "update_registry_record", "InternalServerException", http_status_code=500
+        )
+        changed = {**CUSTOM_DRAFT, "description": "結果確認を待つ説明"}
+        status, pending = call(
+            management,
+            event(
+                "PATCH",
+                f"/api/records/{RECORD_ID}",
+                {"draft": changed, "expectedContentHash": created["contentHash"]},
+            ),
+        )
+        assert (status, pending["operationState"]) == (202, "VERIFYING")
+
+        _deliver(
+            stub,
+            events,
+            "Draft",
+            "ev-edited",
+            status="DRAFT",
+            updated_at=sent_at + timedelta(minutes=16),
+        )
+        stub.assert_no_pending_responses()
+        assert _kinds(management, ADMIN) == []
 
 
 @mock_aws

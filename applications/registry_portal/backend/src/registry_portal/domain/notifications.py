@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, NamedTuple, get_args
@@ -292,8 +292,8 @@ NOTIFIED_STATUSES: frozenset[str] = frozenset(_STATUS_OPERATIONS)
 
 # Lambda と AWS の時計のずれの許容幅
 CLOCK_SKEW = timedelta(minutes=5)
-# 確定時刻（settledAt）を記録する前に確定した操作を、開始からこの時間までの変化と照合する（Lambda の上限）
-LEGACY_SETTLE_WINDOW = timedelta(minutes=15)
+# Lambda の実行時間の上限。Registry への送信は、送信時刻からこの時間までに AWS に届くか、届かずに終わる
+LAMBDA_MAX_DURATION = timedelta(minutes=15)
 
 ObservedState = Literal["SUCCEEDED", "FAILED", "VERIFYING"]
 
@@ -310,17 +310,26 @@ class ObservedOperation(NamedTuple):
     owner_team: str | None
 
 
+# 操作の Registry への送信時刻（実行制御の lastSentAt）を引く。記録がなければ None
+SentAtLookup = Callable[[ObservedOperation], datetime | None]
+
+
 def explaining_operation(
-    operations: Iterable[ObservedOperation], status: str, updated_at: datetime
+    operations: Iterable[ObservedOperation],
+    status: str,
+    updated_at: datetime,
+    sent_at: SentAtLookup,
 ) -> ObservedOperation | None:
     """観測した AWS の状態（status・updatedAt）を説明するポータルの操作。なければ None（ポータル外の変更）。
 
     状態の変化より前に始まった、AWS の状態を変える操作のうち最も新しいものが、
     - その状態に遷移させる種別であり
     - 失敗しておらず
-    - 確定している場合は、確定までの間に変化が起きている
-    ときだけ、ポータル内の変更とみなす。過去に同じ種別の操作があっても、その後に別の操作や
-    ポータル外の変更が挟まった状態変化は説明できない。
+    - Registry への送信時刻の前後（時計のずれと Lambda の上限）に変化が起きている
+    ときだけ、ポータル内の変更とみなす。結果確認中の操作も、回復操作で確定した操作も、送信時刻で区切る。
+    過去に同じ種別の操作があっても、その後に別の操作やポータル外の変更が挟まった状態変化は説明できない。
+
+    sent_at は、最も新しい操作についてだけ呼ぶ（実行制御の読み取りを1回に抑える）。
     """
     candidates = [
         operation
@@ -335,8 +344,14 @@ def explaining_operation(
         return None
     if latest.state == "FAILED":
         return None
-    if latest.state == "SUCCEEDED":
-        settled = latest.settled_at or latest.started_at + LEGACY_SETTLE_WINDOW
-        if updated_at > settled + CLOCK_SKEW:
-            return None
+    sent = sent_at(latest)
+    if sent is not None:
+        if sent - CLOCK_SKEW <= updated_at <= sent + LAMBDA_MAX_DURATION + CLOCK_SKEW:
+            return latest
+        return None
+    # 送信時刻を記録する前の操作（と、確定から保持期間が過ぎて実行制御が消えた操作）は、開始から確定まで。
+    # 確定時刻がなければ（結果確認中か、確定時刻を記録する前に確定した操作）開始から Lambda の上限まで
+    settled = latest.settled_at or latest.started_at + LAMBDA_MAX_DURATION
+    if updated_at > settled + CLOCK_SKEW:
+        return None
     return latest

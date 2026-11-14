@@ -46,7 +46,15 @@ ADMIN_RECEIPT_SK = "ADMIN_RECEIPT"
 # 作成の操作の INTENT をレコード単位に写すときに含めない項目。
 # recordId と awsRequestId は開始（begin）より後に書き足すため、開始時の意図に揃えるよう除く。
 # 定義の全文（draft）は正本（名前のロック側の INTENT）にだけ残し、無期限に残る写しには重ねて保存しない
-_EXCLUDED_FROM_INTENT_COPY = frozenset({"recordId", "awsRequestId", "draft", "pk", "sk"})
+# 送信時刻（lastSentAt）も開始より後に書き足す実行制御の項目なので、写しに含めない
+_EXCLUDED_FROM_INTENT_COPY = frozenset(
+    {"recordId", "awsRequestId", "lastSentAt", "draft", "pk", "sk"}
+)
+
+
+def _utcnow() -> datetime:
+    """送信時刻と確定時刻に使う現在時刻（UTC）。"""
+    return datetime.now(timezone.utc)
 
 
 def _deserialize(item: Mapping[str, Any]) -> dict[str, Any]:
@@ -518,6 +526,44 @@ class SupplementStore:
             ]
         )
 
+    def record_sent(self, operation: OperationRecord) -> None:
+        """Registry の状態を変える API を呼ぶ直前に、送信時刻（lastSentAt）を実行制御に記録する（#38）。
+
+        通知のイベント処理は、Registry の状態変化がこの時刻の前後に起きたかで、ポータル内の変更かを照合する。
+        書き換えるのは実行制御の送信時刻だけで、操作記録（追記記録）には書かない。未確定の操作でなければ
+        StoreConflict。記録できなければ呼び出し側は API を呼ばずに結果確認中を返す（送らなかった操作になる）。
+        以降の実行制御の書き込みが送信時刻を消さないよう、operation にも同じ値を持たせる。
+        """
+        sent_at = _utcnow().isoformat()
+        op_id = operation["operationId"]
+        values = {
+            ":sent": sent_at,
+            ":op": op_id,
+            ":running": "IN_PROGRESS",
+            ":verifying": "VERIFYING",
+        }
+        self._transact(
+            [
+                {
+                    "Update": {
+                        "TableName": self.table,
+                        "Key": self._key(self._operation_pk(op_id), "CONTROL"),
+                        "UpdateExpression": "SET lastSentAt = :sent",
+                        # state は DynamoDB の予約語のため、属性名を置き換える
+                        "ConditionExpression": (
+                            "operationId = :op AND #state IN (:running, :verifying)"
+                        ),
+                        "ExpressionAttributeNames": {"#state": "state"},
+                        "ExpressionAttributeValues": {
+                            name: TypeSerializer().serialize(value)
+                            for name, value in values.items()
+                        },
+                    }
+                }
+            ]
+        )
+        operation["lastSentAt"] = sent_at
+
     def save_pending(self, operation: OperationRecord) -> None:
         op_id = operation["operationId"]
         control = self._put_control(
@@ -601,7 +647,7 @@ class SupplementStore:
             outcome = {**outcome, **recorded}
         # 操作記録には確定した時刻も残す。通知のイベント処理が、Registry の状態変化が
         # この操作の間に起きたか（ポータル内の変更か）を照合するのに使う
-        audit_outcome = {**outcome, "settledAt": datetime.now(timezone.utc).isoformat()}
+        audit_outcome = {**outcome, "settledAt": _utcnow().isoformat()}
         audit_items = [
             self._put(
                 {
