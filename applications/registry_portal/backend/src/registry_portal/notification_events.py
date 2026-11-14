@@ -36,6 +36,7 @@ from registry_portal.domain.notifications import (
     ADMIN_AUDIENCE,
     CURATOR_AUDIENCE,
     NOTIFIED_STATUSES,
+    BrokenSendTime,
     Notification,
     NotificationKind,
     ObservedOperation,
@@ -195,10 +196,19 @@ class RegistryEventNotifier:
         """操作の実行制御から、Registry への送信時刻を読む（#38）。
 
         送信時刻を記録する前の操作と、確定から保持期間（7日）が過ぎて実行制御が消えた操作は None
-        （操作記録の開始・確定時刻で照合する）。補助テーブルの一時的な失敗は例外のまま返し、再試行させる。
+        （操作記録の開始・確定時刻で照合する）。記録した送信時刻の型・形式が崩れていれば BrokenSendTime
+        （その操作は照合に使わない）。補助テーブルの一時的な失敗は例外のまま返し、再試行させる。
         """
         control = self.store.get_operation(operation.operation_id)
-        return _parse_time(control.get("lastSentAt")) if control is not None else None
+        if control is None or "lastSentAt" not in control:
+            return None
+        sent_at = _parse_time(control["lastSentAt"])
+        if sent_at is None:
+            logger.warning(
+                "送信時刻の形式が正しくありません: operation_id=%s", operation.operation_id
+            )
+            raise BrokenSendTime(operation.operation_id)
+        return sent_at
 
     def _plans(
         self, record_id: str, status: str, updated_at: datetime, management: Management | None

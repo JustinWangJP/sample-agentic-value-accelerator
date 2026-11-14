@@ -530,39 +530,16 @@ class SupplementStore:
         """Registry の状態を変える API を呼ぶ直前に、送信時刻（lastSentAt）を実行制御に記録する（#38）。
 
         通知のイベント処理は、Registry の状態変化がこの時刻の前後に起きたかで、ポータル内の変更かを照合する。
-        書き換えるのは実行制御の送信時刻だけで、操作記録（追記記録）には書かない。未確定の操作でなければ
-        StoreConflict。記録できなければ呼び出し側は API を呼ばずに結果確認中を返す（送らなかった操作になる）。
-        以降の実行制御の書き込みが送信時刻を消さないよう、operation にも同じ値を持たせる。
+        送信時刻のほかは実行制御を変えず（状態も operation が持つ現在の状態のまま）、操作記録（追記記録）には
+        書かない。実行制御の状態が operation と異なれば（並行するリクエストが進めた・確定した）StoreConflict。
+        記録できなければ呼び出し側は API を呼ばずに結果確認中を返す（送らなかった操作になる）。
+        実行ロールのポリシーが UpdateItem を持たないため、ほかの実行制御の書き込みと同じ条件付き Put で書く。
+        以降の実行制御の書き込みが送信時刻を消さないよう、記録できたら operation にも同じ値を持たせる。
         """
-        sent_at = _utcnow().isoformat()
-        op_id = operation["operationId"]
-        values = {
-            ":sent": sent_at,
-            ":op": op_id,
-            ":running": "IN_PROGRESS",
-            ":verifying": "VERIFYING",
-        }
-        self._transact(
-            [
-                {
-                    "Update": {
-                        "TableName": self.table,
-                        "Key": self._key(self._operation_pk(op_id), "CONTROL"),
-                        "UpdateExpression": "SET lastSentAt = :sent",
-                        # state は DynamoDB の予約語のため、属性名を置き換える
-                        "ConditionExpression": (
-                            "operationId = :op AND #state IN (:running, :verifying)"
-                        ),
-                        "ExpressionAttributeNames": {"#state": "state"},
-                        "ExpressionAttributeValues": {
-                            name: TypeSerializer().serialize(value)
-                            for name, value in values.items()
-                        },
-                    }
-                }
-            ]
-        )
-        operation["lastSentAt"] = sent_at
+        sent: OperationRecord = {**operation, "lastSentAt": _utcnow().isoformat()}
+        state = operation["state"]
+        self._transact([self._put_control(sent, state, {":current": state})])
+        operation["lastSentAt"] = sent["lastSentAt"]
 
     def save_pending(self, operation: OperationRecord) -> None:
         op_id = operation["operationId"]
@@ -606,6 +583,8 @@ class SupplementStore:
             )
             items = [control, owner]
         self._transact(items)
+        # 実行制御と同じ状態を operation にも持たせる（送信時刻の記録が、現在の状態を条件に書くため）
+        operation["state"] = "VERIFYING"
 
     def save_submission(self, operation: DraftOperation, snapshot: Mapping[str, Any]) -> None:
         control = self._put_control(operation, "VERIFYING", {":running": "IN_PROGRESS"})
@@ -621,6 +600,7 @@ class SupplementStore:
                 ),
             ]
         )
+        operation["state"] = "VERIFYING"
 
     def _close(
         self,

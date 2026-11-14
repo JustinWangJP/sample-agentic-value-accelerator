@@ -8,6 +8,7 @@ import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
 
+from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 from botocore.stub import Stubber
 from moto import mock_aws
@@ -544,6 +545,116 @@ def test_an_edit_is_matched_by_its_send_time_not_its_start(monkeypatch):
         )
         stub.assert_no_pending_responses()
         assert _kinds(management, ADMIN) == []
+
+
+class _SendTimeDenied:
+    """補助テーブルのクライアント。送信時刻（lastSentAt）を含む書き込みだけを AccessDenied で拒否する。
+
+    実行ロールに書き込みの権限がない、などで送信時刻を記録できない状況を、DynamoDB の境界で再現する。
+    """
+
+    def __init__(self, client):
+        self._client = client
+
+    def transact_write_items(self, *, TransactItems):
+        if any("lastSentAt" in item.get("Put", {}).get("Item", {}) for item in TransactItems):
+            raise ClientError(
+                {"Error": {"Code": "AccessDeniedException", "Message": "denied"}},
+                "TransactWriteItems",
+            )
+        return self._client.transact_write_items(TransactItems=TransactItems)
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
+
+
+def _control(db, op_id):
+    """操作の実行制御（OP#…/CONTROL）。"""
+    item = db.get_item(
+        TableName=SUPPLEMENT_TABLE,
+        Key={"pk": {"S": f"OP#{op_id}"}, "sk": {"S": "CONTROL"}},
+    ).get("Item")
+    return None if item is None else {k: TypeDeserializer().deserialize(v) for k, v in item.items()}
+
+
+@mock_aws
+def test_a_create_whose_send_time_cannot_be_recorded_is_not_sent_to_the_registry():
+    """送信時刻を記録できなければ、作成 API を呼ばずに結果確認中（202）を返す（#38）。
+
+    Stubber には作成 API の応答を積まない。呼べば Stubber が未定義の呼び出しとして失敗させる。
+    """
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        management = handler_for(registry, _SendTimeDenied(db))
+        status, pending = call(management, event(body=CUSTOM_DRAFT, key="create-1"))
+        assert (status, pending["operationState"]) == (202, "VERIFYING")
+        stub.assert_no_pending_responses()
+        assert "lastSentAt" not in _control(db, pending["operationId"])
+
+
+@mock_aws
+def test_a_decision_whose_send_time_cannot_be_recorded_is_not_sent_to_the_registry():
+    """送信時刻を記録できなければ、決裁の状態更新 API を呼ばずに結果確認中（202）を返す（#38）。"""
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        state = setup_pending(stub, registry, db)
+        decision = create_curation_handler(
+            {**ENV, "SUPPLEMENT_TABLE_NAME": SUPPLEMENT_TABLE},
+            registry_client=registry,
+            store_client=_SendTimeDenied(db),
+        )
+        stub.add_response("get_registry_record", {**RECORD, "status": "PENDING_APPROVAL"}, GET)
+        status, pending = decide(decision, snapshot_hash=state["snapshot"]["snapshotHash"])
+        assert (status, pending["operationState"]) == (202, "VERIFYING")
+        stub.assert_no_pending_responses()
+        assert "lastSentAt" not in _control(db, pending["operationId"])
+
+
+@mock_aws
+def test_the_send_time_is_kept_only_in_the_execution_control():
+    """送信時刻は実行制御にだけ記録し、操作記録（INTENT・RESULT と、作成の INTENT の写し）には書かない。"""
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        state = setup_pending(stub, registry, db)
+        stub.assert_no_pending_responses()
+    items = [
+        {k: TypeDeserializer().deserialize(v) for k, v in item.items()}
+        for item in db.scan(TableName=SUPPLEMENT_TABLE)["Items"]
+    ]
+    audits = [item for item in items if item["sk"].startswith("AUDIT#")]
+    # 作成（名前のロック側の正本とレコード単位の写し）と申請の、それぞれの INTENT と RESULT
+    assert len(audits) == 6
+    assert all("lastSentAt" not in item for item in audits)
+    assert "lastSentAt" in _control(db, state["submitted"]["submissionId"])
+
+
+@pytest.mark.parametrize("broken", [12345, "", "送信時刻ではない"])
+@mock_aws
+def test_an_operation_with_a_broken_send_time_does_not_explain_a_change(broken):
+    """実行制御の送信時刻の型・形式が崩れた操作は、照合に使わない（説明できない変化として届く）。
+
+    送信時刻のない操作として開始からの窓に置き換えると、保存内容の異常をポータル内の変更として隠してしまう。
+    """
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        state = setup_pending(stub, registry, db)
+        events = event_handler(registry, db)
+        _stuck_approval(stub, state)
+        (op_id,) = [
+            item["operationId"]["S"]
+            for item in db.scan(TableName=SUPPLEMENT_TABLE)["Items"]
+            if item["sk"]["S"] == "CONTROL" and item.get("kind", {}).get("S") == "APPROVE"
+        ]
+        db.update_item(
+            TableName=SUPPLEMENT_TABLE,
+            Key={"pk": {"S": f"OP#{op_id}"}, "sk": {"S": "CONTROL"}},
+            UpdateExpression="SET lastSentAt = :broken",
+            ExpressionAttributeValues={":broken": TypeSerializer().serialize(broken)},
+        )
+        _deliver(stub, events, "Approved", "ev-landed", status="APPROVED", updated_at=_now())
+        stub.assert_no_pending_responses()
+        assert _kinds(state["management"], ADMIN) == ["OUTSIDE_CHANGE"]
+        assert _kinds(state["management"], PUBLISHER) == ["OUTSIDE_CHANGE"]
 
 
 @mock_aws
