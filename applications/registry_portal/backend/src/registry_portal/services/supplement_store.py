@@ -211,7 +211,7 @@ class SupplementStore:
         self,
         request: DeprecationRequest,
         audit: InstantOperation,
-        notification: Mapping[str, Any] | None = None,
+        notification: Mapping[str, Any],
     ) -> None:
         """廃止依頼を保存し、操作記録を追記する。notification はアプリ内の通知の項目（同じトランザクションで書く）。
 
@@ -233,7 +233,7 @@ class SupplementStore:
         self,
         declined: DeprecationRequest,
         audit: InstantOperation,
-        notification: Mapping[str, Any] | None = None,
+        notification: Mapping[str, Any],
     ) -> None:
         """未解決の廃止依頼を見送りとして解決し、操作記録を追記する。
 
@@ -246,19 +246,17 @@ class SupplementStore:
         self,
         write: dict[str, Any],
         audit: InstantOperation,
-        notification: Mapping[str, Any] | None = None,
+        notification: Mapping[str, Any],
     ) -> None:
         """レコードのロックがないことを確かめながら、1件の書き込みと操作記録の追記を行う。
 
-        notification（アプリ内の通知の項目）を渡すと、同じトランザクションで書く。書き込みが
+        notification（アプリ内の通知の項目）も同じトランザクションで書く。書き込みが
         取り消されれば通知も残らず、書き込みが成功すれば通知も必ず残る。
 
         トランザクションの項目の位置はこのメソッドの中だけで扱い、呼び出し側には例外の種類で伝える。
         """
         lock_check = self._no_lock(audit["recordId"])
-        items = [write, lock_check, *self._instant_audit(audit)]
-        if notification is not None:
-            items.append(dict(notification))
+        items = [write, lock_check, *self._instant_audit(audit), dict(notification)]
         try:
             self._transact(items)
         except StoreConflict as conflict:

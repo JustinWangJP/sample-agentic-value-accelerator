@@ -365,7 +365,7 @@ def create_management_handler(
         return inbox
 
     def get_notifications(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
-        return inbox_for().list(caller, _query_of(event))
+        return inbox_for().list_notifications(caller, _query_of(event))
 
     def read_notifications(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
         return inbox_for().mark_read(caller, _json_body(event, READ_BODY_MAX_LENGTH))

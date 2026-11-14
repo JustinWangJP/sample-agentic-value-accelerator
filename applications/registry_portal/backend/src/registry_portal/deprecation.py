@@ -51,9 +51,7 @@ from registry_portal.domain.notifications import (
     CURATOR_AUDIENCE,
     Notification,
     NotificationKind,
-    notification_id,
-    notification_message,
-    notification_time,
+    operation_key,
     team_audience,
 )
 from registry_portal.drafts import require_publisher
@@ -122,15 +120,14 @@ def _in_app_notification(
     record_name: str | None,
 ) -> Notification:
     """操作記録と同じトランザクションで書くアプリ内の通知。出来事は操作 ID で表す。"""
-    record_id = audit["recordId"]
-    return Notification(
-        notification_id=notification_id(f"OPERATION#{audit['operationId']}", audience, kind),
-        audience=audience,
-        kind=kind,
-        record_id=record_id,
-        record_name=record_name,
-        message=notification_message(kind, record_id, record_name, reason=audit["reason"]),
-        created_at=notification_time(audit["startedAt"]),
+    return Notification.create(
+        operation_key(audit["operationId"]),
+        audience,
+        kind,
+        audit["recordId"],
+        record_name,
+        audit["startedAt"],
+        reason=audit["reason"],
     )
 
 

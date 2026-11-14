@@ -16,7 +16,12 @@ from registry_portal.domain.drafts import (
     APPROVE_KIND,
     CREATE_KIND,
     DEPRECATE_KIND,
+    DEPRECATED_STATUS,
+    DRAFT_STATUS,
+    PENDING_APPROVAL_STATUS,
+    PUBLISHED_STATUS,
     REJECT_KIND,
+    REJECTED_STATUS,
     SUBMIT_KIND,
     SUSPEND_KIND,
     UPDATE_KIND,
@@ -78,6 +83,19 @@ def notification_time(value: datetime | str) -> str:
     return moment.astimezone(timezone.utc).strftime(_TIME_FORMAT)
 
 
+def transition_key(record_id: str, status: str, updated_at: datetime) -> str:
+    """Registry の状態変化（レコード・状態・AWS の updatedAt）を表す出来事のキー。
+
+    別の event ID で届いても、同じ状態変化からは宛先・種別ごとに1件しか通知を作らない。
+    """
+    return f"TRANSITION#{record_id}#{status}#{notification_time(updated_at)}"
+
+
+def operation_key(operation_id: str) -> str:
+    """アプリ内の操作（廃止依頼・見送り）を表す出来事のキー。"""
+    return f"OPERATION#{operation_id}"
+
+
 def notification_id(dedup_key: str, audience: str, kind: NotificationKind) -> str:
     """同じ出来事・宛先・種別には同じ ID を割り当てる（再処理で別の通知を作らない）。"""
     return digest(["NOTIFICATION", dedup_key, audience, kind])
@@ -105,6 +123,38 @@ class Notification:
     def position(self) -> str:
         """既読位置と比べる値。時刻の順に並び、同じ時刻なら通知 ID で決まる。"""
         return f"{self.created_at}#{self.notification_id}"
+
+    @classmethod
+    def create(
+        cls,
+        dedup_key: str,
+        audience: str,
+        kind: NotificationKind,
+        record_id: str,
+        record_name: str | None,
+        created_at: datetime | str,
+        *,
+        reason: str | None = None,
+        status: str | None = None,
+        agents: Iterable[str] = (),
+        event_id: str | None = None,
+    ) -> Notification:
+        """出来事（dedup_key）・宛先・種別から通知を作る。ID・本文・時刻の形式はここだけで決める。
+
+        dedup_key は、Registry のイベントなら状態変化（transition_key）、アプリ内の通知なら操作（operation_key）。
+        """
+        return cls(
+            notification_id=notification_id(dedup_key, audience, kind),
+            audience=audience,
+            kind=kind,
+            record_id=record_id,
+            record_name=record_name,
+            message=notification_message(
+                kind, record_id, record_name, reason=reason, status=status, agents=agents
+            ),
+            created_at=notification_time(created_at),
+            event_id=event_id,
+        )
 
     def to_item(self) -> dict[str, Any]:
         item: dict[str, Any] = {
@@ -216,11 +266,11 @@ def notification_message(
 # AWS の状態を変えるポータルの操作と、その操作が成功したときの AWS の状態。
 # 廃止依頼・見送り・取り込み・所有変更は AWS の状態を変えないため、照合の対象にしない
 _STATUS_OPERATIONS: Mapping[str, frozenset[OperationKind]] = {
-    "DRAFT": frozenset({CREATE_KIND, UPDATE_KIND}),
-    "PENDING_APPROVAL": frozenset({SUBMIT_KIND}),
-    "APPROVED": frozenset({APPROVE_KIND}),
-    "REJECTED": frozenset({REJECT_KIND, SUSPEND_KIND}),
-    "DEPRECATED": frozenset({DEPRECATE_KIND}),
+    DRAFT_STATUS: frozenset({CREATE_KIND, UPDATE_KIND}),
+    PENDING_APPROVAL_STATUS: frozenset({SUBMIT_KIND}),
+    PUBLISHED_STATUS: frozenset({APPROVE_KIND}),
+    REJECTED_STATUS: frozenset({REJECT_KIND, SUSPEND_KIND}),
+    DEPRECATED_STATUS: frozenset({DEPRECATE_KIND}),
 }
 STATE_CHANGING_KINDS: frozenset[OperationKind] = frozenset().union(*_STATUS_OPERATIONS.values())
 # 通知の対象にする AWS の状態（Registry のイベントが出る状態）。処理中・失敗の状態は対象にしない

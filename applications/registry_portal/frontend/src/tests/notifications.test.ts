@@ -141,3 +141,14 @@ it('想定外の種別や必須の項目を欠いた応答は、通知として�
   await click('通知')
   expect(container.querySelector('[role="alert"]')).not.toBeNull()
 })
+
+it('通知の準備中（503）は、サーバーの案内を表示し、0件とは区別する', async () => {
+  const notConfigured = {
+    error: { code: 'NOTIFICATIONS_NOT_CONFIGURED', message: '通知は準備中です。管理者に連絡してください。' },
+  }
+  await mount([jsonResponse(503, notConfigured)])
+  expect(button('通知').textContent).toBe('通知（未読件数を取得できません）')
+  await click('通知')
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain('通知は準備中です')
+  expect(container.textContent).not.toContain('通知はありません。')
+})

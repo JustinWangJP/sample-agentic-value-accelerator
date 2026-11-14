@@ -24,7 +24,7 @@ from registry_portal.errors import ApiError, RequestValidationError
 from registry_portal.operations import principal_of
 from registry_portal.services.notification_store import NotificationStore
 
-# 一覧に返す通知の上限（宛先グループをまたいで新しい順）。SPA の NOTIFICATION_LIST_LIMIT と揃える
+# 一覧に返す通知の上限（宛先グループをまたいで新しい順）。SPA の NotificationInbox の説明と揃える
 NOTIFICATION_LIST_LIMIT = 50
 # 既読位置の更新の本文の上限
 READ_BODY_MAX_LENGTH = 1024
@@ -67,7 +67,9 @@ class NotificationInbox:
     def __init__(self, store: NotificationStore) -> None:
         self.store = store
 
-    def list(self, caller: Caller, query: Mapping[str, str]) -> tuple[int, dict[str, Any]]:
+    def list_notifications(
+        self, caller: Caller, query: Mapping[str, str]
+    ) -> tuple[int, dict[str, Any]]:
         if query:
             raise RequestValidationError("通知の一覧にクエリパラメーターは指定できません。")
         return 200, self._inbox(caller)

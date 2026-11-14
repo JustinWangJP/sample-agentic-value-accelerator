@@ -19,9 +19,7 @@ from botocore.exceptions import ClientError
 
 from registry_portal.domain.drafts import PrincipalRecord
 from registry_portal.domain.notifications import NOTIFICATION_RETENTION_SECONDS, Notification
-
-# 補助テーブルの TTL 属性名（supplement_store.TTL_ATTRIBUTE と同じ値）
-_TTL_ATTRIBUTE = "expiresAt"
+from registry_portal.services.supplement_store import TTL_ATTRIBUTE as _TTL_ATTRIBUTE
 
 
 class NotificationStoreClient(Protocol):

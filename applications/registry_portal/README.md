@@ -669,7 +669,7 @@ Registry の状態変化と廃止依頼・見送りを、画面の通知欄に�
 EventBridge の default バスに Registry が送るイベント（source `aws.agent-registry`、detail-type `Registry Record State changed to Draft`・`Pending Approval`・`Approved`・`Rejected`・`Deprecated`）を、ルール1本でイベント処理 Lambda（`handlers/events.py`）に流します。イベントの `detail` には `registryRecordId` と `registryId` しかなく、操作者は含まれません（[Registry EventBridge イベント](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-eventbridge.html)、[イベントの形式](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-notifications-approvals.html)）。ルールは借用する Registry の ID（`detail.registryId`）に絞り、handler も source・detail-type・Registry ID・record ID の形式を確かめ、対象外のイベントは Registry を読まずに無視します。
 
 1. **重複除去**: 処理を終えた event ID は補助テーブルに印を残し、同じ event ID の再配信は Registry を読まずに終えます。印は通知をすべて書いた後に書くため、途中で失敗したイベントは再配信で処理し直せます。
-2. **再取得**: `GetRegistryRecord` でレコードを読み直し、イベントの detail-type ではなく、再取得した状態（`status`）と更新時刻（`updatedAt`）を使います。順序が入れ替わって申請のイベントが承認の後に届いても、承認として扱います。処理中・失敗の状態（`CREATING`・`UPDATING`・`CREATE_FAILED`・`UPDATE_FAILED`）は遷移が確定していないため通知せず、確定した後の遷移のイベントで通知します。レコードが削除されていれば（`ResourceNotFoundException`）通知せずに処理済みにします。
+2. **再取得**: [`GetRegistryRecord`](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_GetRegistryRecord.html) でレコードを読み直し、イベントの detail-type ではなく、再取得した状態（`status`）と更新時刻（`updatedAt`）を使います。順序が入れ替わって申請のイベントが承認の後に届いても、承認として扱います。`status`（値の一覧は固定版 botocore のモデル `agent-registry-control/2025-12-01` の `RegistryRecordStatus`）と `updatedAt` は応答の必須項目です。処理中・失敗の状態（`CREATING`・`UPDATING`・`CREATE_FAILED`・`UPDATE_FAILED`）は遷移が確定していないため通知せず、確定した後の遷移のイベントで通知します。レコードが削除されていれば（`ResourceNotFoundException`）通知せずに処理済みにします。
 3. **照合**: レコードの操作記録（`AUDIT#…`）のうち、AWS の状態を変える操作（作成・編集・申請・公開承認・却下・公開停止・廃止）で、状態の変化より前に始まった最も新しいものが、次をすべて満たすときだけ、ポータル内の変更とみなします。満たさなければ「ポータル外の変更」として Admin に届けます。
    - 観測した状態に遷移させる種別である（`DRAFT` は作成・編集、`PENDING_APPROVAL` は申請、`APPROVED` は公開承認、`REJECTED` は却下・公開停止、`DEPRECATED` は廃止）
    - 失敗していない（強制解除した操作を含む）
@@ -679,7 +679,13 @@ EventBridge の default バスに Registry が送るイベント（source `aws.a
 4. **宛先**: 所有チームは管理情報の `ownerTeam`（正本）から決めます。公開停止と却下は、照合した操作の種別（`SUSPEND` / `REJECT`）で区別します。廃止はポータル外の変更でも元に戻せないため、Admin に加えて参照先を使う Agent の所有チームにも届けます。
 5. **書き込み**: 同じ状態変化（レコード・状態・`updatedAt`）から作る通知は、宛先グループと種別ごとに重複除去の印と通知を1つのトランザクションで書きます。別の event ID で届いた同じ状態変化からは、通知を作り直しません。
 
-Registry・補助テーブルの一時的な失敗（スロットリング・5xx など）では、handler は例外を返して Lambda の非同期呼び出しの再試行（最大2回、イベントの経過時間1時間まで）に任せます（[非同期呼び出しのエラー処理](https://docs.aws.amazon.com/lambda/latest/dg/invocation-async-error-handling.html)）。再試行しても通知は増えません。再試行を使い切ったイベントは失われるため、障害が続いた後は Admin が操作履歴と Registry を確認してください。
+Registry・補助テーブルの一時的な失敗（スロットリング・5xx など）では、handler は例外を返して Lambda の非同期呼び出しの再試行（最大2回、イベントの経過時間1時間まで）に任せます（[非同期呼び出しのエラー処理](https://docs.aws.amazon.com/lambda/latest/dg/invocation-async-error-handling.html)）。再試行しても通知は増えません。再試行を使い切ったイベントは、元のイベントの本文のまま DLQ（SQS、`<name_prefix>-dlq`、14日保持）に残ります。原因を取り除いた後、Admin がメッセージの本文をイベント処理 Lambda に非同期で送り直してください（`aws lambda invoke --invocation-type Event --payload file://event.json --cli-binary-format raw-in-base64-out <関数名> /dev/null`）。処理済みのイベントと同じ状態変化からは通知を作り直さないため、送り直しで重複は起きません。
+
+#### 照合の限界
+
+- **結果確認中の操作**: 結果確認中（RESULT がない）の操作は、決裁の再送や申請の再開で AWS への反映が開始から遅れることがあるため、時間で区切らずにポータル内とみなします。そのため、操作が結果確認中のままロックを持っている間に、同じ種別の遷移がポータル外で起きても検出できません。回復操作（#12）で確定した操作も、確定時刻は回復を実行した時刻になるため、開始から回復までの変化をポータル内とみなします。ロックがある間はポータルの書き込みが止まり、回復操作で Admin が Registry を確認するため、この範囲は回復の手順で補います。
+- **宛先**: ポータル外の変更は Admin 全員にだけ届け、申請・決裁の宛先（Curator・所有チーム）には届けません。ポータル外の審査待ちはそのまま決裁せず、取り込み・保存・再申請から進めるためです（「A2A metadata の補完と有効化」）。例外として、元に戻せない廃止だけは、参照先を使う Agent の所有チームにも届けます。
+- **途中の遷移**: 順序が入れ替わったり処理が遅れたりして、再取得した時点で次の遷移が済んでいれば、途中の遷移（例: 承認済みの申請）は通知しません。
 
 ### 参照先の逆引き
 
@@ -709,7 +715,7 @@ Registry・補助テーブルの一時的な失敗（スロットリング・5xx
 
 ### IaC
 
-- [イベント処理モジュール](infrastructure/modules/notification_events/main.tf): イベント処理 Lambda、専用の実行ロール、ロググループ（365日）、EventBridge ルール（default バス、source・detail-type・`detail.registryId` で絞る）とターゲット、ルールからだけの呼び出し許可、非同期呼び出しの再試行設定。実行ロールは `agent-registry:GetRegistryRecord` と、補助テーブルの `dynamodb:GetItem`・`PutItem`・`Query` だけを持ちます。Registry の状態変更や descriptor の書き込みの権限は持ちません。
+- [イベント処理モジュール](infrastructure/modules/notification_events/main.tf): イベント処理 Lambda、専用の実行ロール、ロググループ（365日）、DLQ（SQS、SSE）、EventBridge ルール（default バス、source・detail-type・`detail.registryId` で絞る）とターゲット、ルールからだけの呼び出し許可、非同期呼び出しの再試行設定。実行ロールが持つのは、`agent-registry:GetRegistryRecord`、補助テーブルの読み取り（`dynamodb:GetItem`・`Query`）、DLQ への `sqs:SendMessage` だけです。補助テーブルへの書き込み（`dynamodb:PutItem`）は、`dynamodb:LeadingKeys` の条件で通知・重複除去の印・処理済みのイベントのパーティションキーに限ります（[条件キーによる項目単位の制御](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/specifying-conditions.html)）。管理情報や操作記録は書けず、Registry の状態変更や descriptor の書き込みの権限も持ちません。
 - ルートモジュール [`infrastructure/notification_events`](infrastructure/notification_events/main.tf): `terraform.tfvars.example` をコピーし、リージョン（Registry と同じ）、Lambda の zip、Registry ARN、補助テーブルの名前と ARN を設定します。
 - 通知 API の route（`GET /api/notifications`・`POST /api/notifications/read`）は、[管理 handler の route 用モジュール](infrastructure/modules/management_routes/main.tf) で既存の管理 Lambda の統合に割り当てます。管理 Lambda と決裁 Lambda のロールは、既存の `dynamodb:GetItem`・`PutItem`・`Query` で通知と既読位置を読み書きできるため、権限は追加しません。
 - 補助テーブルの TTL（属性 `expiresAt`）が有効であることを前提にします（#5 の IaC が持つ）。
@@ -724,8 +730,8 @@ Seam 1 の Stubber と moto で、EventBridge イベントを入力に、次を�
 - 廃止依頼と見送りのアプリ内の通知、拒否された依頼で通知が残らないこと
 - 既読位置がユーザー単位で、グループの通知を共有すること、既読位置が戻らないこと、本文の検査、90日の TTL と期限切れの除外、Viewer の0件、503・502 の区別
 - 対象外のイベントの無視、Registry の一時的な失敗での例外と再配信での処理、削除済みのレコード、ポータル内の作成の `DRAFT` と処理中の状態を通知しないこと、設定不足での起動エラー
-- IaC: 実行ロールの権限、Lambda・ルール・呼び出し許可、ルールの detail-type と handler が受け付ける種別の一致、ルートモジュール、通知 API の route
+- IaC: 実行ロールの権限（書き込みを許すパーティションキーが、通知の補助ストアが書くキーと一致すること）、Lambda・DLQ・ルール・呼び出し許可、ルールの detail-type と handler が受け付ける種別の一致、ルートモジュール、通知 API の route
 
-Seam 2 の Vitest で、ヘッダーの未読件数、一覧を開くまで表示しないこと、約60秒ごとのポーリングと表示をやめたときの停止、既読の本文と更新、0件と取得失敗・401 の区別、応答の検査を確認します（`frontend/src/tests/notifications.test.ts`）。
+Seam 2 の Vitest で、ヘッダーの未読件数、一覧を開くまで表示しないこと、約60秒ごとのポーリングと表示をやめたときの停止、既読の本文と更新、0件と取得失敗・準備中（503）・401 の区別、応答の検査を確認します（`frontend/src/tests/notifications.test.ts`）。
 
 実 AWS への反映と、実環境での EventBridge イベントの受信は行っていません。デプロイ後に実環境で、ルールがイベントを受け取ること（`detail.registryId` が ARN の末尾の ID であること）、IAM の境界、TTL による削除を確認してください。

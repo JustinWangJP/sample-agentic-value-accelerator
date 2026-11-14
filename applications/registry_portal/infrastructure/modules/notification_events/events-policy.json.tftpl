@@ -14,10 +14,31 @@
       "Resource": ["${registry_arn}", "${registry_arn}/record/*"]
     },
     {
-      "Sid": "NotificationSupplement",
+      "Sid": "SupplementRead",
       "Effect": "Allow",
-      "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query"],
+      "Action": ["dynamodb:GetItem", "dynamodb:Query"],
       "Resource": "${supplement_table_arn}"
+    },
+    {
+      "Sid": "NotificationWrite",
+      "Effect": "Allow",
+      "Action": ["dynamodb:PutItem"],
+      "Resource": "${supplement_table_arn}",
+      "Condition": {
+        "ForAllValues:StringLike": {
+          "dynamodb:LeadingKeys": [
+            "REGISTRY#${registry_arn}#NOTIFICATION#*",
+            "REGISTRY#${registry_arn}#NOTIFIED#*",
+            "REGISTRY#${registry_arn}#EVENT#*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "EventsDeadLetter",
+      "Effect": "Allow",
+      "Action": ["sqs:SendMessage"],
+      "Resource": "${dead_letter_queue_arn}"
     }
   ]
 }

@@ -21,6 +21,14 @@ resource "aws_cloudwatch_log_group" "events" {
   retention_in_days = 365
 }
 
+# 再試行を使い切ったイベント（元のイベントの本文）を残す。Admin が原因を取り除いた後、
+# 本文をイベント処理 Lambda に非同期で送り直す（README「画面上の通知」）
+resource "aws_sqs_queue" "events_dead_letter" {
+  name                      = "${local.name}-dlq"
+  message_retention_seconds = 1209600
+  sqs_managed_sse_enabled   = true
+}
+
 resource "aws_iam_role" "events" {
   name = local.name
   assume_role_policy = jsonencode({
@@ -37,9 +45,10 @@ resource "aws_iam_role_policy" "events" {
   name = local.name
   role = aws_iam_role.events.name
   policy = templatefile("${path.module}/events-policy.json.tftpl", {
-    registry_arn         = var.registry_arn
-    supplement_table_arn = var.supplement_table_arn
-    log_group_arn        = aws_cloudwatch_log_group.events.arn
+    registry_arn          = var.registry_arn
+    supplement_table_arn  = var.supplement_table_arn
+    log_group_arn         = aws_cloudwatch_log_group.events.arn
+    dead_letter_queue_arn = aws_sqs_queue.events_dead_letter.arn
   })
 }
 
@@ -53,6 +62,9 @@ resource "aws_lambda_function" "events" {
   handler          = "registry_portal.handlers.events.handler"
   timeout          = 30
   memory_size      = 256
+  dead_letter_config {
+    target_arn = aws_sqs_queue.events_dead_letter.arn
+  }
   environment {
     variables = {
       REGISTRY_ARN          = var.registry_arn
@@ -63,7 +75,7 @@ resource "aws_lambda_function" "events" {
 }
 
 # 非同期呼び出しの再試行。Registry・補助テーブルの一時的な失敗では handler が例外を返し、Lambda が再試行する。
-# 重複は event ID と状態変化のキーで除くため、再試行しても通知は増えない
+# 重複は event ID と状態変化のキーで除くため、再試行しても通知は増えない。使い切ったイベントは DLQ に残る
 resource "aws_lambda_function_event_invoke_config" "events" {
   function_name                = aws_lambda_function.events.function_name
   maximum_retry_attempts       = 2

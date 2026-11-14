@@ -20,15 +20,17 @@ from botocore.exceptions import ClientError
 
 from registry_portal.curation_reads import RegistryReadClient, display_name
 from registry_portal.domain.drafts import (
+    APPROVE_KIND,
     AUDIT_RESULT,
+    DEPRECATE_KIND,
     DEPRECATED_STATUS,
     OPERATION_KINDS,
     PENDING_APPROVAL_STATUS,
-    PUBLISHED_STATUS,
     RECORD_ID_PATTERN,
-    REJECTED_STATUS,
+    REJECT_KIND,
     SUSPEND_KIND,
     Management,
+    OperationKind,
 )
 from registry_portal.domain.notifications import (
     ADMIN_AUDIENCE,
@@ -38,10 +40,8 @@ from registry_portal.domain.notifications import (
     NotificationKind,
     ObservedOperation,
     explaining_operation,
-    notification_id,
-    notification_message,
-    notification_time,
     team_audience,
+    transition_key,
 )
 from registry_portal.services.notification_store import NotificationStore
 from registry_portal.services.supplement_store import AppendedRecord, SupplementStore
@@ -52,6 +52,15 @@ EVENT_SOURCE = "aws.agent-registry"
 # Registry レコードのイベントの detail-type（[Registry EventBridge イベント] の表）
 RECORD_EVENT_PREFIX = "Registry Record State changed to "
 RECORD_EVENT_STATES = ("Draft", "Pending Approval", "Approved", "Rejected", "Deprecated")
+
+
+# 照合した操作の種別ごとの、所有チームへの通知の種別と、参照先を使う Agent の所有チームへの通知の種別
+_OWNER_NOTIFICATIONS: Mapping[OperationKind, tuple[NotificationKind, NotificationKind | None]] = {
+    APPROVE_KIND: ("APPROVED", None),
+    REJECT_KIND: ("REJECTED", None),
+    SUSPEND_KIND: ("SUSPENDED", "REFERENCE_SUSPENDED"),
+    DEPRECATE_KIND: ("DEPRECATED", "REFERENCE_DEPRECATED"),
+}
 
 
 class _Plan(NamedTuple):
@@ -194,26 +203,24 @@ class RegistryEventNotifier:
             if status == DEPRECATED_STATUS:
                 plans.extend(self._reference_plans(record_id, "REFERENCE_DEPRECATED"))
             return plans
+        if status == PENDING_APPROVAL_STATUS:
+            return [_Plan(CURATOR_AUDIENCE, "SUBMITTED")]
         owner = (
             management.owner_team
             if management is not None and management.is_managed
             else operation.owner_team
         )
-        owner_plans: list[_Plan] = []
-        if status == PENDING_APPROVAL_STATUS:
-            return [_Plan(CURATOR_AUDIENCE, "SUBMITTED")]
-        if status == PUBLISHED_STATUS:
-            owner_plans = [_Plan(team_audience(owner), "APPROVED")] if owner else []
-        elif status == REJECTED_STATUS and operation.kind == SUSPEND_KIND:
-            owner_plans = [_Plan(team_audience(owner), "SUSPENDED")] if owner else []
-            owner_plans.extend(self._reference_plans(record_id, "REFERENCE_SUSPENDED"))
-        elif status == REJECTED_STATUS:
-            owner_plans = [_Plan(team_audience(owner), "REJECTED")] if owner else []
-        elif status == DEPRECATED_STATUS:
-            owner_plans = [_Plan(team_audience(owner), "DEPRECATED")] if owner else []
-            owner_plans.extend(self._reference_plans(record_id, "REFERENCE_DEPRECATED"))
-        # 下書き（DRAFT）への変化は、ポータル内の作成・編集なら通知しない
-        return owner_plans
+        # 照合した操作の種別から、所有チームへの通知と参照先を使う Agent への通知の種別を決める。
+        # 却下と公開停止はどちらも REJECTED なので、状態ではなく操作の種別で区別する。
+        # ポータル内の作成・編集による下書き（DRAFT）は通知しない
+        kinds = _OWNER_NOTIFICATIONS.get(operation.kind)
+        if kinds is None:
+            return []
+        owner_kind, reference_kind = kinds
+        plans = [_Plan(team_audience(owner), owner_kind)] if owner else []
+        if reference_kind is not None:
+            plans.extend(self._reference_plans(record_id, reference_kind))
+        return plans
 
     def _reference_plans(self, target_id: str, kind: NotificationKind) -> list[_Plan]:
         """参照先（target_id）を公開中の版で使う Agent の所有チームごとの通知。"""
@@ -251,27 +258,22 @@ class RegistryEventNotifier:
         management = self._management(record_id)
         plans = self._plans(record_id, status, updated_at, management)
         # 同じ状態変化は、別の event ID で届いても（順序の入れ替わりで再取得の結果が同じでも）1回だけ通知する
-        transition = f"TRANSITION#{record_id}#{status}#{notification_time(updated_at)}"
+        transition = transition_key(record_id, status, updated_at)
         name = display_name(record)
         reason = record.get("statusReason")
-        created_at = notification_time(self.clock())
+        created_at = self.clock()
         published = 0
         for plan in plans:
-            notification = Notification(
-                notification_id=notification_id(transition, plan.audience, plan.kind),
-                audience=plan.audience,
-                kind=plan.kind,
-                record_id=record_id,
-                record_name=name,
-                message=notification_message(
-                    plan.kind,
-                    record_id,
-                    name,
-                    reason=reason if isinstance(reason, str) else None,
-                    status=status,
-                    agents=plan.agents,
-                ),
-                created_at=created_at,
+            notification = Notification.create(
+                transition,
+                plan.audience,
+                plan.kind,
+                record_id,
+                name,
+                created_at,
+                reason=reason if isinstance(reason, str) else None,
+                status=status,
+                agents=plan.agents,
                 event_id=event_id,
             )
             if self.notifications.publish(notification, transition):
