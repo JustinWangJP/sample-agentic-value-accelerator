@@ -140,8 +140,10 @@ class RecordState:
 
 
 # 公開中の版を残したまま新しい版が下書き・審査待ち・却下済みになっている状態（二重リビジョン）。
-# この状態で却下したときに旧版が発見されなくなるかは AWS の文書になく、実環境でも未確認のため、
-# 公開停止を受け付けない（README「公開停止・廃止・廃止依頼」）
+# AWS の文書は、この状態で発見 API と MCP endpoint が承認済みの版を返すこと（Record lifecycle の
+# 「Dual-revision behavior」）まで明記する。この状態で却下したときに旧版が発見されなくなるかの
+# 記載は依然としてなく、実環境でも未確認のため、公開停止を受け付けない
+# （README「公開停止・廃止・廃止依頼」。検証は scripts/verify_suspend_dual_revision.py と #33）
 DUAL_REVISION_STATUSES: frozenset[RecordStatus] = frozenset(
     {DRAFT_STATUS, PENDING_APPROVAL_STATUS, REJECTED_STATUS}
 )
