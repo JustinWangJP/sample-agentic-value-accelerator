@@ -52,6 +52,34 @@ const publicationView = {
     deprecate: { allowed: true, message: null },
   },
 }
+/** 公開中のレコード（mcpPAY789012）の照会。一覧から公開停止を実行するときに使う */
+const approvedPublicationView = {
+  ...publicationView,
+  recordId: 'mcpPAY789012',
+  name: 'payments-mcp',
+  displayName: '決済 MCP サーバー',
+  recordType: 'MCP',
+  recordVersion: '2.0.0',
+  status: 'APPROVED',
+  ownerTeam: 'team-settlement',
+  publishedVersion: '2.0.0',
+  suspended: false,
+}
+/** 公開停止の実行の結果（決裁 handler の操作。公開停止で REJECTED になり、発見できる版は null になる） */
+const suspendOperation = {
+  recordId: 'mcpPAY789012',
+  name: 'payments-mcp',
+  displayName: '決済 MCP サーバー',
+  recordType: 'MCP',
+  recordVersion: '2.0.0',
+  status: 'REJECTED',
+  ownerTeam: 'team-settlement',
+  publishedVersion: null,
+  operationId: 'decision-1',
+  operationState: 'SUCCEEDED',
+  submissionId: null,
+  snapshotHash: null,
+}
 
 let container: HTMLDivElement
 let root: Root
@@ -98,6 +126,14 @@ async function submit(name: string) {
   await act(() =>
     formOf(name).dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
   )
+}
+/** legend の文言でフォームを送る（公開管理のパネルの操作フォーム） */
+async function submitLegend(legend: string) {
+  const form = [...container.querySelectorAll('form')].find(
+    (element) => element.querySelector('legend')?.textContent === legend,
+  )
+  if (!form) throw new Error(`フォームがありません ${legend}`)
+  await act(() => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
 }
 /** displayName を持つ一覧の項目（li）を返す */
 function listItem(displayName: string): HTMLLIElement {
@@ -226,4 +262,35 @@ it('次のページを同じ条件の nextToken で読み、最初のページ�
   await act(() => buttonIn(container, '最初のページ').click())
   expect(calls[2]?.url).toBe('/api/records/publication?name=payment&status=SUSPENDED')
   expect(listItem('決済 Agent').textContent).toContain('公開停止中')
+})
+
+it('検索結果の項目に公開停止中の区別がなければ、不正な応答として扱う', async () => {
+  const broken: Record<string, unknown> = { ...suspendedItem }
+  delete broken.suspended
+  await search([jsonResponse(200, { items: [broken], nextToken: null })])
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+    'API から想定外の応答が返されました。',
+  )
+})
+
+it('一覧から開いた公開管理の操作が済んだら、同じ条件で一覧を読み込み直す', async () => {
+  const calls = await search(
+    [
+      jsonResponse(200, { items: [approvedItem], nextToken: null }),
+      jsonResponse(200, approvedPublicationView),
+      jsonResponse(200, suspendOperation),
+      jsonResponse(200, {
+        items: [{ ...approvedItem, status: 'REJECTED', suspended: true, publishedVersion: null }],
+        nextToken: null,
+      }),
+    ],
+    'payment',
+    'APPROVED',
+  )
+  await act(() => itemButton('決済 MCP サーバー', '公開管理を開く').click())
+  await setValue('suspendReason', '問題が見つかったため')
+  await submitLegend('公開停止')
+  expect(calls[2]?.url).toBe('/api/records/mcpPAY789012/suspend')
+  expect(calls[3]?.url).toBe('/api/records/publication?name=payment&status=APPROVED')
+  expect(listItem('決済 MCP サーバー').textContent).toContain('公開停止中')
 })

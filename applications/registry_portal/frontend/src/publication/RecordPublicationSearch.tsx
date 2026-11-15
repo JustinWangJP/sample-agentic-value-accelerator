@@ -57,8 +57,8 @@ export function RecordPublicationSearch({ api, onRelogin }: Props) {
     }
   }, [api, query, token, revision])
 
-  /** 失敗のあとの再試行。同じ条件と同じページを読み直す */
-  function retry() {
+  /** 同じ条件と同じページで読み直す。失敗の再試行と、公開管理の操作が済んだあとの更新で使う */
+  function reload() {
     setState({ kind: 'loading' })
     setRevision((value) => value + 1)
   }
@@ -105,7 +105,7 @@ export function RecordPublicationSearch({ api, onRelogin }: Props) {
       </form>
       {state.kind === 'loading' && <p role="status">管理レコードを検索しています…</p>}
       {state.kind === 'error' && (
-        <RequestErrorAlert error={state.error} onRelogin={onRelogin} onRetry={retry} />
+        <RequestErrorAlert error={state.error} onRelogin={onRelogin} onRetry={reload} />
       )}
       {state.kind === 'ready' && state.page.items.length === 0 && (
         <p>
@@ -128,7 +128,12 @@ export function RecordPublicationSearch({ api, onRelogin }: Props) {
                 {item.suspended ? '・公開停止中' : ''} /{' '}
                 {item.publishedVersion ? `発見できる版 ${item.publishedVersion}` : '発見できる版なし'}
               </p>
-              <RecordPublicationToggle api={api} recordId={item.recordId} onRelogin={onRelogin} />
+              <RecordPublicationToggle
+                api={api}
+                recordId={item.recordId}
+                onRelogin={onRelogin}
+                onChanged={reload}
+              />
             </li>
           ))}
         </ul>
