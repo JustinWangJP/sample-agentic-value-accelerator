@@ -57,7 +57,7 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 | `registry-admin` | Admin |
 | `team-*` | 所属チーム |
 
-`registry-publisher` を持てば、`team-*` がなくても業務ロールは Publisher と表示します。下書きの作成・編集・申請・廃止依頼では、対象の所有チームが所属チームに含まれることを別途検査します（いずれも実装済み。設計書「ロールと所有」）。審査待ちの閲覧と決裁（公開承認・却下）、公開停止・廃止・廃止依頼の見送り・公開管理の照会は Curator の業務ロールだけが行え、チームでは絞り込みません（実装済み。設計書「ロールと所有」）。
+`registry-publisher` を持てば、`team-*` がなくても業務ロールは Publisher と表示します。下書きの作成・編集・申請・廃止依頼では、対象の所有チームが所属チームに含まれることを別途検査します（いずれも実装済み。設計書「ロールと所有」）。審査待ちの閲覧と決裁（公開承認・却下）、公開停止・廃止・廃止依頼の見送り・公開管理の照会・管理レコードの検索は Curator の業務ロールだけが行え、チームでは絞り込みません（実装済み。設計書「ロールと所有」）。
 
 メールアドレスや `x-user-email` などのリクエストヘッダーは、主体や権限の判定に使いません。
 
@@ -76,6 +76,7 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 | `POST /api/records/{recordId}/suspend` | 公開停止（却下で発見できなくする。廃止依頼は閉じない）。Curator のみ（決裁 handler。詳細は #13 の節） |
 | `POST /api/records/{recordId}/deprecate` | 廃止（元に戻せない DEPRECATED）。理由の入力と確認（confirm）が必須。Curator のみ（決裁 handler。詳細は #13 の節） |
 | `GET /api/records/{recordId}/publication` | 公開管理の照会（状態・公開中の版・未解決の廃止依頼・実行できる操作）。Curator のみ（決裁 handler。詳細は #13 の節） |
+| `GET /api/records/publication` | 管理レコードの検索。管理下のレコードを名前の一部と状態（`SUSPENDED` を含む閉じた集合）で探す一覧。Curator のみ（決裁 handler。詳細は #34 の節） |
 | `POST /api/records/{recordId}/deprecation-requests/decline` | 廃止依頼の見送り（理由が必須。レコードの状態は変えない）。Curator のみ（決裁 handler。詳細は #13 の節） |
 | `GET /api/notifications` | 自分宛ての通知（新しい順に最大50件）・未読件数・既読位置。宛先グループを持たない Viewer は0件（詳細は #15 の節） |
 | `POST /api/notifications/read` | 既読位置の更新。本文は `{ "readUpTo": 通知の position }`（詳細は #15 の節） |
@@ -476,6 +477,29 @@ AWS の状態遷移は [Record lifecycle](https://docs.aws.amazon.com/bedrock-ag
 | `GET /api/records/{recordId}/publication` | 公開管理の照会。Curator のみ。現在の状態、公開中の版（公開停止中と廃止済みは `null`）、公開停止中か（`suspended`）、処理中の操作（`operationId`）、未解決の廃止依頼、操作ごとの可否（`actions.suspend` / `actions.deprecate` の `allowed` と、できない理由の `message`）を返す |
 | `POST /api/records/{recordId}/deprecation-requests` | 廃止依頼。管理 handler。対象の所有チームを所属チームに持つ Publisher のみ（所属チームのない Publisher・他チーム・Curator・Viewer は403 `FORBIDDEN`）。所有チームは AWS のレコードを読む前に検査し、所有チームに属さない呼び出し元にはレコードの有無や管理状態を見せない（管理情報がない・管理下にないレコードも、下書きの操作と同じく403）。本文は `{ "reason": 理由 }`（1〜255文字、必須） |
 | `POST /api/records/{recordId}/deprecation-requests/decline` | 廃止依頼の見送り。Curator のみ。本文は `{ "requestId": 依頼 ID, "reason": 理由 }`（理由は1〜255文字、必須）。画面で確認した依頼と現在の未解決の依頼が一致するときだけ見送る。レコードの状態は変えない |
+| `GET /api/records/publication` | 管理レコードの検索（#34）。Curator のみ。管理下のレコードを名前の一部と状態で探し、公開管理を開くための一覧（詳細は「管理レコードの検索」の節） |
+
+### 管理レコードの検索（#34）
+
+`GET /api/records/publication` は、Curator が管理下のレコードを名前の一部と状態で探し、公開管理（`GET /api/records/{recordId}/publication`）を開くための一覧です。決裁 handler で処理します。公開停止中のレコードはカタログに出ないため、名前で探して廃止するといった運用の入口になります。呼び出しは Curator のみで、それ以外のロールは 403 です。所有チームでは絞り込みません。
+
+クエリパラメーターはいずれも省略可で、未知のキーと不正な値は 400 `VALIDATION_ERROR` です。
+
+- `name`: 1〜255文字。`name` と `displayName` に対する、大文字小文字を区別しない部分一致です
+- `status`: 次の閉じた集合から1つです
+- `nextToken`: 他の管理 API と同じ検査に従います（空・2048文字超・空白を含む値は 400）
+
+| `status` の値 | 一致するレコード |
+| --- | --- |
+| `SUSPENDED` | 管理情報（MANAGEMENT）に `suspendedVersion` があり公開停止中（`Management.is_suspended`）。AWS の状態とは対応しないため、ポータル側で判断します |
+| `REJECTED` | AWS の状態が `REJECTED` かつ公開停止中ではない（却下済みだけ。公開停止中は含めない） |
+| その他（`DRAFT` / `PENDING_APPROVAL` / `APPROVED` / `DEPRECATED` / `CREATING` / `UPDATING` / `CREATE_FAILED` / `UPDATE_FAILED`） | AWS の状態との完全一致（AWS の `status` フィルターを使用） |
+
+応答は `{ "items": [...], "nextToken": 文字列または null }` です。各項目はレコードの要約（`recordId`・`name`・`displayName`・`recordType`・`recordVersion`・`status`・`managed`・`ownerTeam`）に、公開停止中か（`suspended`）と発見できる版（`publishedVersion`。公開停止中と廃止済みは `null`）を加えたものです。**管理下（managed）のレコードだけを返します。**未管理レコードは Admin の取り込み（#16）の対象のため含めません。
+
+ページングは AWS の `ListRegistryRecords`（`maxResults` 20）の `nextToken` をそのまま中継します。名前の絞り込みと管理下の絞り込みはポータル側で行うため、`items` が0件でも `nextToken` があり得ます（Publisher の下書き一覧と同じ契約。SPA は次のページを促します）。Registry と補助ストアの読み取りに失敗したときは 502 `REGISTRY_UNAVAILABLE` とし、空の結果にはしません。
+
+AWS の `ListRegistryRecords` の `name` フィルターは[公式文書](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_ListRegistryRecords.html)に一致方法（完全一致・前方一致・部分一致のいずれか）の記載がないため、名前の絞り込みはポータル側で行います。
 
 ### 廃止依頼のしくみ
 
@@ -535,8 +559,8 @@ AWS の状態遷移は [Record lifecycle](https://docs.aws.amazon.com/bedrock-ag
 
 公開停止・廃止・公開管理の照会・見送りの route は、[決裁用 Terraform モジュール](infrastructure/modules/decision/main.tf) に追加しました。
 
-- route: `POST /api/records/{recordId}/suspend`、`POST /api/records/{recordId}/deprecate`、`GET /api/records/{recordId}/publication`、`POST /api/records/{recordId}/deprecation-requests/decline`
-- Lambda の呼び出し許可: path ごとに `local.curator_record_paths` で管理します。route も同じ定義（メソッドと path）から作るので、操作を足すときはここに1件加えます。バックエンドでは、パラメーターを含む route をルート表のキー（`app.py`）そのものと照合するため、別の一覧は持ちません。
+- route: `POST /api/records/{recordId}/suspend`、`POST /api/records/{recordId}/deprecate`、`GET /api/records/{recordId}/publication`、`POST /api/records/{recordId}/deprecation-requests/decline` に加えて、管理レコードの検索（#34）の `GET /api/records/publication`
+- Lambda の呼び出し許可: path ごとに `local.decision_record_paths` で管理します。route も同じ定義（メソッドと path）から作るので、操作を足すときはここに1件加えます。バックエンドでは、パラメーターを含む route をルート表のキー（`app.py`）そのものと照合するため、別の一覧は持ちません。検索の route は `{recordId}` を含まない静的な path のため、`decision_record_paths` のワイルドカード（`/api/records/*/…`）の呼び出し許可には一致しません。完全一致の許可（`AllowHttpApiInvokePublicationSearch`）を別に追加しています。HTTP API では完全一致する静的な route が parameterized route（`GET /api/records/{recordId}`）より優先されるため（[ルーティングの優先順位](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-routes.html)）、`publication` はレコード ID とは解釈されません。レコード ID は12文字の英数字に限られるため、衝突もありません。
 
 決裁 Lambda の実行ロールは、状態遷移（`UpdateRegistryRecordStatus`）に必要な権限をすでに持ちます。補助テーブルについては、決裁ロールに次の2つを追加しています。
 
@@ -559,6 +583,7 @@ Seam 1 の Stubber と moto で、次を検証します。
 - 廃止: 確認の必須化、依頼の解決と理由の記録、審査待ちからの廃止、廃止後の公開停止・廃止・依頼の409
 - 見送り: 解決と履歴への記録、状態を変えないこと、見送り後の再依頼、認可・本文・依頼 ID の不一致・ロック中の拒否
 - 公開管理の照会: 状態・依頼・操作の可否、二重リビジョンとロック中と未管理の理由、認可、404 と 502 の区別
+- 管理レコードの検索（#34）: 認可（Curator 以外の403）、クエリの検査（未知のキー・`status` の集合外・`name` の空と255文字超・不正な `nextToken` の400）、`name` の部分一致（大文字小文字を区別しない。`displayName` にも一致）、`SUSPENDED` と `REJECTED` の区別、未管理レコードの除外、項目の形、`nextToken` の中継（`items` が0件でも保持）、Registry と補助ストアの障害の502
 - Publisher・Viewer・Admin の403、`Idempotency-Key` の必須化
 
 IaC は `test_draft_permissions.py` で、route 用モジュールが履歴と廃止依頼の route だけを既存の管理 Lambda の統合に割り当てること、呼び出し許可がその path に限られること、ルートモジュールから適用されることを検査します。
