@@ -1,5 +1,6 @@
-// 公開管理（Seam 2: SPA の fetch 境界）。Curator の公開停止・廃止・廃止依頼の見送りと、その判断に使う照会。
-// バックエンドの publication.py・curation.py・deprecation.py と契約を揃える。クライアントから AWS の status は送らない。
+// 公開管理（Seam 2: SPA の fetch 境界）。Curator の公開停止・廃止・廃止依頼の見送りと、その判断に使う照会・検索。
+// バックエンドの publication.py・curation.py・deprecation.py と契約を揃える。操作の本文には AWS の status を
+// 送らない（検索条件の状態（SUSPENDED と AWS の状態の語彙）は、絞り込みのためだけに送る）。
 import { hasStrings, isObject } from '../api/guards'
 import { isCatalogRecordType, type CatalogRecordType } from '../api/recordType'
 import { createResponseChecker, type ApiRequest } from '../api/request'
