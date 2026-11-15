@@ -1,0 +1,2877 @@
+openapi: 3.1.0
+info:
+  title: Registry ポータル API
+  version: 0.1.0
+  summary: AWS Agent Registry 管理ポータル（Registry ポータル）のバックエンド API
+  description: |
+    AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skill の登録、公開承認、発見を扱う
+    管理ポータルの HTTP API です。この文書は `backend/src/registry_portal/` の実装から書き起こした
+    リバース仕様で、実装（`app.py` のルート表）と README の契約に従います。
+
+    ## 構成
+
+    API Gateway HTTP API（payload format 2.0）の route を、2つの Lambda handler に割り当てます。
+    各 operation の `x-handler` が担当する handler を示します。
+
+    | `x-handler` | Lambda エントリーポイント | 担当 |
+    | --- | --- | --- |
+    | `management` | `handlers/management.py` | 自分の情報、カタログ、下書き・申請、操作照会、履歴、廃止依頼、通知、Admin の一覧・接続診断 |
+    | `curation` | `handlers/curation.py` | 審査・決裁、公開停止・廃止、公開管理、廃止依頼の見送り、回復操作、取り込み・所有変更 |
+
+    イベント処理 handler（`handlers/events.py`）は EventBridge から呼ばれ、HTTP API を持たないため対象外です。
+
+    ## 認証と認可
+
+    すべての API に、Cognito User Pool が人間用 SPA client へ発行したアクセストークンが必要です。
+    HTTP API の JWT authorizer が署名を検証し、Lambda が claims（`token_use=access`、`iss`、`client_id`、`sub`）を
+    再検査します。業務ロールは Cognito グループから導出します。
+
+    | Cognito グループ | 業務ロール |
+    | --- | --- |
+    | （なし。ログインした全員） | `Viewer` |
+    | `registry-publisher` | `Publisher` |
+    | `registry-curator` | `Curator` |
+    | `registry-admin` | `Admin` |
+    | `team-*` | 所属チーム |
+
+    - 認証できないトークン（なし、ID トークン、別 issuer、`sub` なし）は 401 `UNAUTHENTICATED`。
+    - 署名は正しいが人間用 SPA client 以外に発行されたトークン（別 client、発見用 M2M client）は 403 `FORBIDDEN`。
+    - API Gateway の JWT authorizer 自身が返す 401 は、共通エラー DTO ではありません。
+
+    ## 共通の約束
+
+    - 応答はすべて `application/json; charset=utf-8` で、`cache-control: no-store` を付けます。
+    - エラーは共通エラー DTO（`ErrorResponse`）で返します。AWS や内部の例外メッセージはそのまま返しません。
+    - ルート表にない method と path の組は 404 `NOT_FOUND` です。
+    - リクエスト本文は JSON オブジェクトに限ります。operation ごとに本文の文字数上限があり、超えると 400 `VALIDATION_ERROR` です。
+    - リクエスト本文の未知の項目は 400 `VALIDATION_ERROR` です（`additionalProperties: false`）。応答には今後項目が増えることがあるため、
+      クライアントは未知の項目を無視してください。
+    - 書き込み操作の多くは、AWS の結果が確定するまで 202 `VERIFYING`（結果確認中）を返します。
+      `GET /api/operations/{operationId}` で照合するか、同じ `Idempotency-Key` で再送して確定します。
+    - 下書きの作成・申請と決裁は、AWS への書き込みが処理されなかったと確定した場合に、200 で
+      `operationState: FAILED` の `OperationStatus` を返すことがあります。
+  contact:
+    name: Registry ポータルの Issue
+    url: https://github.com/JustinWangJP/sample-agentic-value-accelerator/issues
+  license:
+    name: MIT-0
+    identifier: MIT-0
+servers:
+  - url: https://{apiId}.execute-api.{region}.amazonaws.com
+    description: 既存の API Gateway HTTP API（借用）。カスタムドメインを使う場合はそのホスト名に置き換えてください。
+    variables:
+      apiId:
+        default: example
+        description: HTTP API の ID
+      region:
+        default: us-east-1
+        description: HTTP API のリージョン
+security:
+  - bearerAuth: []
+tags:
+  - name: me
+    description: 自分の主体・業務ロール・所属チーム
+  - name: catalog
+    description: カタログ（公開承認済みの Registry レコード）の一覧・検索・詳細。ログインした全員（Viewer）が使えます。
+  - name: drafts
+    description: 下書きの作成・取得・一覧・編集・申請（Publisher）
+  - name: operations
+    description: 書き込み操作の結果の照会
+  - name: history
+    description: 操作と審査の履歴
+  - name: deprecation-requests
+    description: 廃止依頼（Publisher）と見送り（Curator）
+  - name: reviews
+    description: 審査待ちの一覧・詳細と決裁（Curator）
+  - name: publication
+    description: 公開停止・廃止・公開管理の照会・管理レコードの検索（Curator）
+  - name: recovery
+    description: 結果確認中のまま止まった操作の回復（Admin）
+  - name: administration
+    description: 既存レコードの取り込み・所有変更・接続診断（Admin）
+  - name: notifications
+    description: 画面上の通知
+
+paths:
+  /api/me:
+    get:
+      operationId: getMe
+      tags: [me]
+      summary: 自分の主体・業務ロール・所属チームを取得する
+      description: |
+        検証済みの claims から導出した主体（`iss` と `sub`）、業務ロール、所属チームを返します。
+        業務ロールは Cognito グループから導出し、ログインした全員が `Viewer` を持ちます。
+      x-handler: management
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/catalog:
+    get:
+      operationId: listCatalog
+      tags: [catalog]
+      summary: カタログ項目を種別ごとに1ページ取得する
+      description: |
+        公開承認済みの Registry レコードを、種別ごとに1ページ（最大50件）返します。ポータルは発見用 M2M トークンで
+        Registry の `ListDiscoverableRegistryRecords` を代理で呼び出します。AWS はページが疎であることを保証しないため、
+        `items` が0件でも `nextToken` があれば次のページがあり得ます。
+      x-handler: management
+      parameters:
+        - name: type
+          in: query
+          required: true
+          description: 種別
+          schema:
+            $ref: "#/components/schemas/CatalogRecordType"
+        - name: a2a
+          in: query
+          required: false
+          description: "`true` で A2A の Agent（descriptor が `a2aAgentCard`）だけに絞ります。`type=AGENT` のときだけ指定でき、`true` 以外の値は 400 です。"
+          schema:
+            type: string
+            enum: ["true"]
+        - $ref: "#/components/parameters/CatalogNextTokenParam"
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CatalogListResponse"
+        "400":
+          description: |
+            クエリの誤り。
+            - `VALIDATION_ERROR`: 未知のクエリ、`type` の誤り、`a2a` の誤り
+            - `INVALID_PAGE_TOKEN`: `nextToken` の形式の誤り、または Registry が token を拒否した
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/DiscoveryUnavailable"
+
+  /api/catalog/search:
+    post:
+      operationId: searchCatalog
+      tags: [catalog]
+      summary: カタログを検索する
+      description: |
+        自然言語・キーワード（必須）と絞り込み条件で検索し、関連度順に最大20件を返します（`SearchDiscoverableRegistryRecords`）。
+        検索語のない「条件だけの検索」はできません。条件だけで探す場合は `GET /api/catalog` を使います。
+        クエリパラメーターを指定すると 400 です。本文は8,192文字までです。
+
+        A2A 検索で、検索用の写し（`isA2A`）と descriptor が食い違うレコードは結果から除き、その件数を
+        `inconsistentA2ACount` で返します。
+      x-handler: management
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CatalogSearchRequest"
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CatalogSearchResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/DiscoveryUnavailable"
+        "503":
+          description: "`A2A_SEARCH_NOT_READY`: A2A 検索は準備中（環境変数 `A2A_SEARCH_ENABLED` が無効）で、`a2a` を指定した検索を受け付けない"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/catalog/{recordId}:
+    parameters:
+      - $ref: "#/components/parameters/RecordIdParam"
+    get:
+      operationId: getCatalogItem
+      tags: [catalog]
+      summary: カタログ項目の詳細を取得する
+      description: |
+        指定したレコード ID の公開中の版、所有チーム、その版の連絡先・利用条件・接続先の参照・関連参照を返します。
+        クエリパラメーターを指定すると 400 です。
+      x-handler: management
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CatalogDetail"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: "`CATALOG_ITEM_NOT_FOUND`: 公開承認済みの版が見つからない"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/DiscoveryUnavailable"
+
+  /api/records:
+    post:
+      operationId: createRecordDraft
+      tags: [drafts]
+      summary: 下書きを作成する
+      description: |
+        所属チームを所有チームに指定して、下書き（Registry レコード）を作成します。`Publisher` で、`ownerTeam` を
+        所属チームに持つ呼び出し元だけが実行できます。本文は262,144文字までです。
+
+        同じ主体・`Idempotency-Key`・本文は同じ結果を返します。同じキーに異なる本文は 409 です。
+        失敗が確定した後は、新しいキーで作成し直してください。
+      x-handler: management
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecordDraftInput"
+      responses:
+        "201":
+          description: 作成が確定した
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DraftResult"
+        "200":
+          description: AWS が作成に失敗した（`CREATE_FAILED` を確認した）。`operationState` は `FAILED`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperationStatus"
+        "202":
+          $ref: "#/components/responses/OperationVerifying"
+        "400":
+          $ref: "#/components/responses/DraftValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/ContentConflict"
+        "429":
+          $ref: "#/components/responses/RegistryThrottled"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/RegistryUnavailable"
+        "503":
+          $ref: "#/components/responses/DraftsNotConfigured"
+    get:
+      operationId: listRecordDrafts
+      tags: [drafts]
+      summary: 所属チームの管理レコードを一覧する
+      description: |
+        所属チームが所有する管理レコード（`AGENT`・`MCP`・`SKILL`）を一覧します。AWS の `ListRegistryRecords`（20件）の
+        `nextToken` をそのまま中継し、所有チームの絞り込みはポータル側で行うため、`items` が0件でも次のページがあり得ます。
+      x-handler: management
+      parameters:
+        - $ref: "#/components/parameters/NextTokenParam"
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DraftListResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/RegistryUnavailable"
+        "503":
+          $ref: "#/components/responses/DraftsNotConfigured"
+
+  /api/records/{recordId}:
+    parameters:
+      - $ref: "#/components/parameters/RecordIdParam"
+    get:
+      operationId: getRecordDraft
+      tags: [drafts]
+      summary: 下書きを取得する
+      description: |
+        下書きのフォーム入力、内容ハッシュ（`contentHash`）、AWS の状態、公開中の版を返します。所属チームが所有する
+        管理レコードだけを取得できます。未管理レコードと他チームのレコードは 403 です。
+      x-handler: management
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DraftView"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/RegistryUnavailable"
+        "503":
+          $ref: "#/components/responses/DraftsNotConfigured"
+    patch:
+      operationId: updateRecordDraft
+      tags: [drafts]
+      summary: 下書きを編集する
+      description: |
+        取得した内容ハッシュを添えて下書きを保存します。所有チーム・`name`・種別（`recordType`）は変更できません
+        （Agent だけは `custom` と `a2aAgentCard` の descriptor を切り替えられます）。本文は262,144文字までです。
+
+        内容ハッシュが一致しない、別の操作が処理中、または AWS の状態が `CREATING`・`UPDATING`・`DEPRECATED` なら 409 です。
+        この API は `Idempotency-Key` を使いません。結果不明の更新は再送せず、操作照会で確定します。
+      x-handler: management
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateDraftRequest"
+      responses:
+        "200":
+          description: |
+            更新が確定した（`DraftResult`）、または AWS が更新に失敗した・更新が AWS に届かなかったと確定した
+            （`OperationStatus`、`operationState: FAILED`）
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/DraftResult"
+                  - $ref: "#/components/schemas/OperationStatus"
+        "202":
+          $ref: "#/components/responses/OperationVerifying"
+        "400":
+          $ref: "#/components/responses/DraftValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: "`FORBIDDEN`: Publisher でない、所属チームがない、他チームまたは未管理のレコード、所有チームを変更しようとした"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          $ref: "#/components/responses/ContentConflict"
+        "429":
+          $ref: "#/components/responses/RegistryThrottled"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/RegistryUnavailable"
+        "503":
+          $ref: "#/components/responses/DraftsNotConfigured"
+
+  /api/records/{recordId}/submit:
+    parameters:
+      - $ref: "#/components/parameters/RecordIdParam"
+    post:
+      operationId: submitRecordDraft
+      tags: [drafts]
+      summary: 下書きを申請する
+      description: |
+        所属チームが所有する保存済みの `DRAFT` を申請します。申請は下書きの保存を兼ねません。本文は16,384文字までです。
+
+        - AWS の状態が `DRAFT` でない、または内容ハッシュが一致しなければ 409 です。
+        - `recordVersion` は公開中の版より大きい semver である必要があります。
+        - 関連参照は Agent だけが指定でき、参照先は公開承認済みの Skill または MCP サーバーに限ります。MCP・Skill は空の配列を指定します。
+        - Registry に自動承認の規則があれば、AWS に書き込まずに 503 `APPROVAL_CONFIGURATION_CHANGED` で止めます。
+
+        同じキーの再送は、先の操作の結果（照合を含む）を返します。同じキーに異なる本文は 409 です。
+      x-handler: management
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitDraftRequest"
+      responses:
+        "200":
+          description: |
+            申請が確定した（`SubmissionResult`）、または申請が成立しなかったと確定した（`OperationStatus`、`operationState: FAILED`）
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/SubmissionResult"
+                  - $ref: "#/components/schemas/OperationStatus"
+        "202":
+          $ref: "#/components/responses/OperationVerifying"
+        "400":
+          $ref: "#/components/responses/DraftValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/ContentConflict"
+        "429":
+          $ref: "#/components/responses/RegistryThrottled"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/RegistryUnavailable"
+        "503":
+          description: |
+            - `DRAFTS_NOT_CONFIGURED`: 補助テーブル（`SUPPLEMENT_TABLE_NAME`）が未設定
+            - `APPROVAL_CONFIGURATION_CHANGED`: Registry の自動承認設定が想定外（有効または取得できない）。AWS へは書き込んでいない
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/records/{recordId}/history:
+    parameters:
+      - $ref: "#/components/parameters/RecordIdParam"
+    get:
+      operationId: getRecordHistory
+      tags: [history]
+      summary: 操作と審査の履歴を取得する
+      description: |
+        レコードごとの操作と審査の履歴を、開始時刻の順に返します。`Curator` と `Admin` はすべてのレコード、`Publisher` は
+        所属チームが所有するレコードだけを読めます。`Viewer` だけの利用者は 403 です。
+
+        結果確認中の決裁（公開承認・却下・公開停止・廃止）は、決裁した Curator 本人以外には中身を伏せて返します
+        （`withheld: true`、`operationId` と `targetHash` は `null`）。取り込み前から公開されていた版には、主体が不明な
+        公開承認の項目（`state: UNKNOWN`、`principal: null`）を先頭に返します。
+      x-handler: management
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HistoryResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: "`RECORD_NOT_FOUND`: 管理下にないレコード（管理情報がない）"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          description: "`HISTORY_UNAVAILABLE`: 補助テーブルを読めない、または保存された操作記録・管理情報の形式が崩れている"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          $ref: "#/components/responses/DraftsNotConfigured"
+
+  /api/operations/{operationId}:
+    parameters:
+      - $ref: "#/components/parameters/OperationIdParam"
+    get:
+      operationId: getOperation
+      tags: [operations]
+      summary: 書き込み操作の結果を照会する
+      description: |
+        書き込み操作の結果を Registry の現物と照合し、確定できれば確定します。参照できる主体は操作の種別で変わります。
+
+        - 下書きの操作（作成・更新・申請）: 所有チームの `Publisher`。申請の照合は、受け付けを確認できていない申請 API を呼び直すことがあります。
+        - 決裁の操作（公開承認・却下・公開停止・廃止）: その操作を行った `Curator` 本人だけ。AWS を呼び直しません。
+
+        操作が存在しない場合も、存在の有無を見せないため 403 です。補助ストアを読めない場合は、`VERIFYING` ではなく 502 です。
+      x-handler: management
+      responses:
+        "200":
+          description: |
+            操作の結果が確定している。成功なら種別に応じた結果（`DraftResult`・`SubmissionResult`・`DecisionResult`）、
+            失敗なら `OperationStatus`（`operationState: FAILED`）
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/DraftResult"
+                  - $ref: "#/components/schemas/SubmissionResult"
+                  - $ref: "#/components/schemas/DecisionResult"
+                  - $ref: "#/components/schemas/OperationStatus"
+        "202":
+          $ref: "#/components/responses/OperationVerifying"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/RegistryUnavailable"
+        "503":
+          $ref: "#/components/responses/DraftsNotConfigured"
+
+  /api/records/{recordId}/deprecation-requests:
+    parameters:
+      - $ref: "#/components/parameters/RecordIdParam"
+    post:
+      operationId: createDeprecationRequest
+      tags: [deprecation-requests]
+      summary: 廃止を依頼する
+      description: |
+        対象の所有チームを所属チームに持つ `Publisher` が、Curator に廃止を依頼します。AWS の状態は変えません。
+        所有チームは AWS のレコードを読む前に検査し、所有チームに属さない呼び出し元には管理情報がない・管理下にない
+        レコードも 403 を返します。本文は1,024文字までです。
+
+        未解決の依頼の重複、別の操作の処理中、廃止済みのレコードは 409 です。
+
+        実装は作成でも 200 を返します（201 ではありません）。
+      x-handler: management
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReasonRequest"
+      responses:
+        "200":
+          description: 依頼を保存した
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeprecationRequest"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RecordNotFound"
+        "409":
+          $ref: "#/components/responses/ContentConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/RegistryUnavailable"
+        "503":
+          $ref: "#/components/responses/DraftsNotConfigured"
+
+  /api/records/{recordId}/deprecation-requests/decline:
+    parameters:
+      - $ref: "#/components/parameters/RecordIdParam"
+    post:
+      operationId: declineDeprecationRequest
+      tags: [deprecation-requests]
+      summary: 廃止依頼を見送る
+      description: |
+        `Curator` が理由を付けて未解決の廃止依頼を閉じます（`resolution: DECLINED`）。レコードの状態は変えません。
+        画面で確認した依頼（`requestId`）と現在の未解決の依頼が一致するときだけ見送ります。本文は1,024文字までです。
+      x-handler: curation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeclineDeprecationRequest"
+      responses:
+        "200":
+          description: 依頼を見送った（解決済みの依頼）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeprecationRequest"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RecordNotFound"
+        "409":
+          $ref: "#/components/responses/ContentConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/RegistryUnavailable"
+
+  /api/reviews:
+    get:
+      operationId: listReviews
+      tags: [reviews]
+      summary: 審査待ちを一覧する
+      description: |
+        AWS の承認待ち（`PENDING_APPROVAL`、20件ごと）に申請の補助情報を結合して返します。未解決の廃止依頼は、最初のページ
+        （`nextToken` なし）にだけ古い順に先頭へ並べます。項目の形は `reviewKind` ごとに異なります。`Curator` のみ。
+      x-handler: curation
+      parameters:
+        - $ref: "#/components/parameters/NextTokenParam"
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewListResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/RegistryUnavailable"
+
+  /api/reviews/{recordId}:
+    parameters:
+      - $ref: "#/components/parameters/RecordIdParam"
+    get:
+      operationId: getReview
+      tags: [reviews]
+      summary: 審査対象の詳細を取得する
+      description: |
+        申請のスナップショット全体と、差分の比較対象（公開中の版のスナップショット）を返します。未解決の廃止依頼があれば
+        `deprecationRequest` に添えます。`Curator` のみ。クエリパラメーターを指定すると 400 です。
+      x-handler: curation
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewDetail"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PendingApprovalNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/RegistryUnavailable"
+
+  /api/reviews/{recordId}/approve:
+    parameters:
+      - $ref: "#/components/parameters/RecordIdParam"
+    post:
+      operationId: approveReview
+      tags: [reviews]
+      summary: 公開承認する
+      description: |
+        Curator が審査したスナップショットのハッシュと理由を添えて公開承認します。AWS の遷移先は API で決まり、本文から
+        `status` は受け取りません。本文は2,048文字までです。`Curator` のみ。
+
+        次のいずれかに当たれば、AWS を呼ばずに 409 `CONTENT_CONFLICT` です: AWS の状態が `PENDING_APPROVAL` でない、
+        申請が `activeSubmissionId` と一致しないか無効化済み、保存済みスナップショットのハッシュが一致しない、送られた
+        `snapshotHash` が一致しない、現物の内容ハッシュが一致しない、ポータルで管理されていないレコード。
+        申請者または最終編集者による決裁（自己承認）は 403 です。
+      x-handler: curation
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecisionRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/DecisionSettled"
+        "202":
+          $ref: "#/components/responses/OperationVerifying"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PendingApprovalNotFound"
+        "409":
+          $ref: "#/components/responses/ContentConflict"
+        "429":
+          $ref: "#/components/responses/RegistryThrottled"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/RegistryUnavailable"
+
+  /api/reviews/{recordId}/reject:
+    parameters:
+      - $ref: "#/components/parameters/RecordIdParam"
+    post:
+      operationId: rejectReview
+      tags: [reviews]
+      summary: 却下する
+      description: |
+        公開承認と同じ本文・同じ照合で却下します。却下理由は必須です。本文は2,048文字までです。`Curator` のみ。
+      x-handler: curation
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecisionRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/DecisionSettled"
+        "202":
+          $ref: "#/components/responses/OperationVerifying"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PendingApprovalNotFound"
+        "409":
+          $ref: "#/components/responses/ContentConflict"
+        "429":
+          $ref: "#/components/responses/RegistryThrottled"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/RegistryUnavailable"
+
+  /api/records/{recordId}/suspend:
+    parameters:
+      - $ref: "#/components/parameters/RecordIdParam"
+    post:
+      operationId: suspendRecord
+      tags: [publication]
+      summary: 公開停止する
+      description: |
+        最新の版が公開中（`APPROVED`）の管理下のレコードを、AWS で `REJECTED` に遷移させて発見できなくします。
+        廃止依頼は閉じません。再公開には Publisher による編集と再申請が必要です。それ以外の状態は 409 です。
+        本文は2,048文字までです。`Curator` のみ。
+      x-handler: curation
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReasonRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/DecisionSettled"
+        "202":
+          $ref: "#/components/responses/OperationVerifying"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RecordNotFound"
+        "409":
+          $ref: "#/components/responses/ContentConflict"
+        "429":
+          $ref: "#/components/responses/RegistryThrottled"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/RegistryUnavailable"
+
+  /api/records/{recordId}/deprecate:
+    parameters:
+      - $ref: "#/components/parameters/RecordIdParam"
+    post:
+      operationId: deprecateRecord
+      tags: [publication]
+      summary: 廃止する
+      description: |
+        レコードを元に戻せない `DEPRECATED` に遷移させます。理由に加えて確認（`confirm: true`）が必須です。
+        AWS の処理中（`CREATING`・`UPDATING`）と廃止済み以外は、どの状態からも廃止できます。未解決の廃止依頼は、
+        成功と同じトランザクションで解決済み（`resolution: DEPRECATED`）にします。本文は2,048文字までです。`Curator` のみ。
+      x-handler: curation
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeprecateRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/DecisionSettled"
+        "202":
+          $ref: "#/components/responses/OperationVerifying"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RecordNotFound"
+        "409":
+          $ref: "#/components/responses/ContentConflict"
+        "429":
+          $ref: "#/components/responses/RegistryThrottled"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/RegistryUnavailable"
+
+  /api/records/{recordId}/publication:
+    parameters:
+      - $ref: "#/components/parameters/RecordIdParam"
+    get:
+      operationId: getRecordPublication
+      tags: [publication]
+      summary: 公開管理の状態を照会する
+      description: |
+        現在の状態、公開中の版（公開停止中と廃止済みは `null`）、公開停止中か、処理中の操作、未解決の廃止依頼と、
+        操作ごとの可否（できない理由）を返します。`Curator` のみ。クエリパラメーターを指定すると 400 です。
+      x-handler: curation
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicationStatus"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RecordNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/RegistryUnavailable"
+
+  /api/records/publication:
+    get:
+      operationId: searchPublicationRecords
+      tags: [publication]
+      summary: 管理レコードを検索する
+      description: |
+        管理下のレコードを名前の一部と状態で探し、公開管理を開くための一覧です。未管理レコードは含めません。
+        AWS の `ListRegistryRecords`（20件）の `nextToken` をそのまま中継し、名前と管理下の絞り込みはポータル側で行うため、
+        `items` が0件でも `nextToken` があり得ます。`Curator` のみ。所有チームでは絞り込みません。
+
+        HTTP API では静的な route が `GET /api/records/{recordId}` より優先され、`publication` はレコード ID と解釈されません。
+      x-handler: curation
+      parameters:
+        - name: name
+          in: query
+          required: false
+          description: "`name` と `displayName` に対する、大文字小文字を区別しない部分一致"
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+        - name: status
+          in: query
+          required: false
+          description: |
+            状態。`SUSPENDED` は AWS の状態ではなく、管理情報の公開停止の印で判断する値です（公開停止の後に廃止したものは含めない）。
+            `REJECTED` は公開停止中を含みません。それ以外は AWS の状態との完全一致です。
+          schema:
+            $ref: "#/components/schemas/PublicationSearchStatus"
+        - $ref: "#/components/parameters/NextTokenParam"
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicationSearchResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/RegistryUnavailable"
+
+  /api/records/{recordId}/recovery:
+    parameters:
+      - $ref: "#/components/parameters/RecordIdParam"
+    get:
+      operationId: getRecoveryStatus
+      tags: [recovery]
+      summary: 回復の対象となる操作を照会する
+      description: |
+        レコードのロックを持つ操作の概要を返します。操作 ID・理由・ハッシュなど操作の中身は返しません。
+        結果確認中の操作がなければ `operation: null` です。AWS は呼びません。`Admin` のみ。
+        クエリパラメーターを指定すると 400 です。
+      x-handler: curation
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoveryStatus"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/SupplementUnavailable"
+    post:
+      operationId: recoverOperation
+      tags: [recovery]
+      summary: 結果確認中の操作を回復する
+      description: |
+        Registry を再取得して、ロックを持つ操作を確定します。申請 API・状態更新 API は呼び直しません。
+        `release: true` を指定し、Registry を再取得できても確定できないときだけ、操作を失敗（`ADMIN_RELEASED`）として確定し、
+        ロックを解除します（強制解除）。開始から5分が過ぎていない操作は回復できません。本文は2,048文字までです。`Admin` のみ。
+      x-handler: curation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecoveryRequest"
+      responses:
+        "200":
+          description: 確定した（`SUCCEEDED`、または強制解除・照合による `FAILED`）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoveryResult"
+        "202":
+          description: "確定できず、結果確認中のまま（`operationState: VERIFYING`、`recovery: null`）"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoveryResult"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: |
+            - `NO_RECOVERABLE_OPERATION`: ロックを持つ操作がない
+            - `OPERATION_STILL_RUNNING`: 開始から5分が過ぎていない
+            - `RECORD_STILL_PROCESSING`: 強制解除の指定時に、AWS が処理中（`CREATING`・`UPDATING`）
+            - `ACCEPTED_BY_REGISTRY`: 強制解除の指定時に、AWS が受け付けを返したと記録済みの決裁・申請
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          description: |
+            - `REGISTRY_UNAVAILABLE`: 強制解除の指定時に、Registry を読めない
+            - `SUPPLEMENT_UNAVAILABLE`: 補助テーブルを読み書きできない、またはロックが指す操作がない
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/admin/records:
+    get:
+      operationId: listAdminRecords
+      tags: [administration]
+      summary: 取り込み・所有変更の対象を一覧する
+      description: |
+        Registry 管理 API の1ページ（最大50件）と管理情報を照合し、未管理（`unmanaged`、既定）または管理済み（`managed`）の
+        レコードを返します。ページ内の全件が条件に合わなくても `nextToken` が残ることがあります。`Admin` のみ。
+      x-handler: management
+      parameters:
+        - name: management
+          in: query
+          required: false
+          description: 未管理（取り込みの対象）か管理済み（所有変更の対象）か
+          schema:
+            type: string
+            enum: [unmanaged, managed]
+            default: unmanaged
+        - $ref: "#/components/parameters/NextTokenParam"
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminRecordListResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/RegistryUnavailable"
+
+  /api/admin/connection:
+    get:
+      operationId: getAdminConnection
+      tags: [administration]
+      summary: Registry の接続情報と設定逸脱を診断する
+      description: |
+        設定由来の Registry ARN・リージョンと、`GetRegistry` で観測した認可方式・自動承認の状態を返します。
+        `GetRegistry` に失敗しても 200 で、`connection.state` を `ERROR` にします。`Admin` のみ。
+        クエリパラメーターを指定すると 400 です。
+      x-handler: management
+      responses:
+        "200":
+          description: 成功（接続エラーを含む）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectionReport"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/records/{recordId}/adopt:
+    parameters:
+      - $ref: "#/components/parameters/RecordIdParam"
+    post:
+      operationId: adoptRecord
+      tags: [administration]
+      summary: 未管理レコードを取り込む
+      description: |
+        未管理レコードを所有チームへ割り当てて管理下に置きます。Registry は更新しません。本文は8,192文字までです。`Admin` のみ。
+
+        すでに管理下、別の操作の処理中、AWS の処理中、公開版の発見 API への反映待ち、保存時の衝突は 409 です。
+        同じキーの再送は保存した結果を返し、同じキーに異なる本文は 409 です。
+      x-handler: curation
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdoptRecordRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/AdministrationSucceeded"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RecordNotFound"
+        "409":
+          $ref: "#/components/responses/AdministrationConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/RegistryUnavailable"
+        "503":
+          $ref: "#/components/responses/AdministrationUnavailable"
+
+  /api/records/{recordId}/reassign-owner:
+    parameters:
+      - $ref: "#/components/parameters/RecordIdParam"
+    post:
+      operationId: reassignRecordOwner
+      tags: [administration]
+      summary: 管理済みレコードの所有チームを変更する
+      description: |
+        管理情報全体を保持して `ownerTeam` だけを変更します。一覧で取得した `managementHash` が現在の管理情報と一致しなければ
+        409 です。Registry と公開版スナップショットは変更しません。本文は8,192文字までです。`Admin` のみ。
+      x-handler: curation
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReassignOwnerRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/AdministrationSucceeded"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RecordNotFound"
+        "409":
+          $ref: "#/components/responses/AdministrationConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/RegistryUnavailable"
+        "503":
+          $ref: "#/components/responses/AdministrationUnavailable"
+
+  /api/notifications:
+    get:
+      operationId: listNotifications
+      tags: [notifications]
+      summary: 自分宛ての通知を取得する
+      description: |
+        呼び出し元の宛先グループ（Curator・Admin・所属チームの Publisher）の通知を新しい順に最大50件、未読件数
+        （50件を超えても全件を数える）、既読位置を返します。宛先グループを持たない Viewer と所属チームのない Publisher は0件です。
+        クエリパラメーターを指定すると 400 です。
+      x-handler: management
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationInbox"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/NotificationsUnavailable"
+        "503":
+          $ref: "#/components/responses/NotificationsNotConfigured"
+
+  /api/notifications/read:
+    post:
+      operationId: markNotificationsRead
+      tags: [notifications]
+      summary: 既読位置を更新する
+      description: |
+        指定した通知の位置（`position`）までの通知を既読にします。既読位置は前にだけ進み、古い位置を送っても戻りません。
+        応答は一覧と同じ形です。本文は1,024文字までです。
+      x-handler: management
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MarkReadRequest"
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationInbox"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/NotificationsUnavailable"
+        "503":
+          $ref: "#/components/responses/NotificationsNotConfigured"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Cognito User Pool が人間用 SPA client に発行したアクセストークン（Authorization Code + PKCE で取得）。
+        ID トークンと、発見用 M2M client などほかの client に発行されたトークンは受け付けません。
+
+  parameters:
+    RecordIdParam:
+      name: recordId
+      in: path
+      required: true
+      description: Registry レコード ID（英数字12文字）
+      schema:
+        $ref: "#/components/schemas/RecordId"
+    OperationIdParam:
+      name: operationId
+      in: path
+      required: true
+      description: 書き込み操作の ID（小文字16進数32〜64文字）
+      schema:
+        type: string
+        pattern: "^[a-f0-9]{32,64}$"
+      example: 3f2a9c4e0b7d4a1c9e8f6b5a4d3c2b1a
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        冪等キー。省略または形式の誤りは 400 です。同じ主体・同じキー・同じ本文の再送は同じ操作として扱い、
+        同じキーに異なる本文は 409 です。失敗が確定した後は新しいキーを使います。
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9_-]{1,128}$"
+      example: 9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d
+    NextTokenParam:
+      name: nextToken
+      in: query
+      required: false
+      description: 前のページの応答で受け取った `nextToken`（AWS の値をそのまま中継する不透明な値）。空・2,048文字超・空白を含む値は 400 です。
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 2048
+        pattern: "^\\S+$"
+    CatalogNextTokenParam:
+      name: nextToken
+      in: query
+      required: false
+      description: |
+        前のページの応答で受け取った `nextToken`。空白・制御文字を含まない1〜4,096文字の ASCII に限り、それ以外は
+        Registry を呼ばずに 400 `INVALID_PAGE_TOKEN` です。
+      schema:
+        type: string
+        pattern: "^[\\x21-\\x7e]{1,4096}$"
+
+  responses:
+    ValidationError:
+      description: "`VALIDATION_ERROR`: リクエストの値・本文・クエリ・path・`Idempotency-Key` の誤り"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: リクエストの指定が正しくありません。
+              requestId: 8f14e45f-ceea-467a-9575-2b0a1e7c8d33
+    DraftValidationError:
+      description: |
+        `VALIDATION_ERROR`: 入力の誤り（必須項目・文字数・semver・descriptor の組合せ・schema version・秘密情報らしき値など）、
+        または AWS が入力や設定を理由に保存を拒否した（`ValidationException`・`AccessDeniedException`・
+        `ResourceNotFoundException`・`ServiceQuotaExceededException`）。入力を直して保存し直す
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: |
+        `UNAUTHENTICATED`: トークンがない、ID トークン、別 issuer、`sub` がない。ログインし直すと解決し得る。
+        API Gateway の JWT authorizer が返す 401 は共通エラー DTO ではない（`{"message": "Unauthorized"}`）
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - $ref: "#/components/schemas/GatewayErrorResponse"
+          example:
+            error:
+              code: UNAUTHENTICATED
+              message: 認証が必要です。ログインし直してください。
+              requestId: 8f14e45f-ceea-467a-9575-2b0a1e7c8d33
+    Forbidden:
+      description: |
+        `FORBIDDEN`: 人間用 SPA client 以外に発行されたトークン、業務ロールまたは所属チームが足りない、
+        対象のレコードの所有チームに属さない、自己承認など。ログインし直しても解決しない
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: FORBIDDEN
+              message: この操作を行う権限がありません。
+              requestId: 8f14e45f-ceea-467a-9575-2b0a1e7c8d33
+    RecordNotFound:
+      description: "`RECORD_NOT_FOUND`: Registry のレコードが見つからない、またはポータルで管理されていない"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    PendingApprovalNotFound:
+      description: "`PENDING_APPROVAL_NOT_FOUND`: 審査待ち（`PENDING_APPROVAL`）のレコードが見つからない"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ContentConflict:
+      description: |
+        `CONTENT_CONFLICT`: 内容ハッシュの不一致、別の操作が処理中、状態が操作の前提を満たさない、
+        同じ `Idempotency-Key` に異なる本文、失敗が確定した操作のキーの再利用など。再読み込みしてから実行し直す
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RegistryThrottled:
+      description: "`REGISTRY_THROTTLED`: AWS が混雑で処理しなかった（`ThrottlingException`）。時間をおいて同じ内容で再実行する"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RegistryUnavailable:
+      description: "`REGISTRY_UNAVAILABLE`: Registry や補助テーブルを読めない、または保存内容の型が壊れている。0件や未公開とは区別する"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    DiscoveryUnavailable:
+      description: "`DISCOVERY_UNAVAILABLE`: Registry の発見 API・トークンエンドポイント・補助テーブルから結果を得られなかった。0件とは区別する"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    SupplementUnavailable:
+      description: "`SUPPLEMENT_UNAVAILABLE`: 補助テーブルを読めない、またはロックが指す操作がない"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    DraftsNotConfigured:
+      description: "`DRAFTS_NOT_CONFIGURED`: 補助テーブル（`SUPPLEMENT_TABLE_NAME`）が未設定で、下書きの管理を提供していない"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotificationsUnavailable:
+      description: "`NOTIFICATIONS_UNAVAILABLE`: 補助テーブルを読めない、または保存された通知の形式が崩れている"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotificationsNotConfigured:
+      description: "`NOTIFICATIONS_NOT_CONFIGURED`: 補助テーブルが未設定"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    AdministrationConflict:
+      description: |
+        `ADMINISTRATION_CONFLICT`: すでに管理下（取り込み）、管理情報ハッシュの不一致（所有変更）、別の操作が処理中、
+        AWS の処理中、公開版の発見 API への反映待ち、同じ `Idempotency-Key` に異なる本文
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    AdministrationUnavailable:
+      description: "`ADMINISTRATION_UNAVAILABLE`: 保存の結果を確認できない。同じ内容・同じキーで再試行する"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: "`INTERNAL_ERROR`: 想定外のエラー"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    OperationVerifying:
+      description: |
+        結果確認中（`operationState: VERIFYING`）。確認が終わるまで、このレコードへの書き込みを停止しています。
+        `GET /api/operations/{operationId}` で照合するか、同じ `Idempotency-Key` で再送して確定します
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OperationStatus"
+          example:
+            operationId: 6d0f3b0c8f6c4f9a8a2b1c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f
+            operationState: VERIFYING
+            message: 結果確認中です。確認が終わるまで、このレコードへの書き込みを停止しています。
+    DecisionSettled:
+      description: |
+        操作が確定した。成功は `DecisionResult`、AWS に反映されなかった・別の内容が確定していたと判断した場合は
+        `OperationStatus`（`operationState: FAILED`）
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: "#/components/schemas/DecisionResult"
+              - $ref: "#/components/schemas/OperationStatus"
+    AdministrationSucceeded:
+      description: 成功（同じキーの再送では保存した結果）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AdministrationResult"
+
+  schemas:
+    # ---- 共通 ----
+    ErrorResponse:
+      type: object
+      description: 共通エラー DTO
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, requestId]
+          properties:
+            code:
+              $ref: "#/components/schemas/ErrorCode"
+            message:
+              type: string
+              description: 利用者に表示する日本語のメッセージ
+            requestId:
+              type: [string, "null"]
+              description: API Gateway の request ID
+      example:
+        error:
+          code: UNAUTHENTICATED
+          message: 認証が必要です。ログインし直してください。
+          requestId: 8f14e45f-ceea-467a-9575-2b0a1e7c8d33
+    GatewayErrorResponse:
+      type: object
+      description: API Gateway の JWT authorizer が返すエラー（共通エラー DTO ではない）
+      required: [message]
+      properties:
+        message:
+          type: string
+      example:
+        message: Unauthorized
+    ErrorCode:
+      type: string
+      description: エラーコード
+      enum:
+        - UNAUTHENTICATED
+        - FORBIDDEN
+        - NOT_FOUND
+        - VALIDATION_ERROR
+        - INVALID_PAGE_TOKEN
+        - CATALOG_ITEM_NOT_FOUND
+        - RECORD_NOT_FOUND
+        - PENDING_APPROVAL_NOT_FOUND
+        - CONTENT_CONFLICT
+        - ADMINISTRATION_CONFLICT
+        - NO_RECOVERABLE_OPERATION
+        - OPERATION_STILL_RUNNING
+        - RECORD_STILL_PROCESSING
+        - ACCEPTED_BY_REGISTRY
+        - REGISTRY_THROTTLED
+        - DISCOVERY_UNAVAILABLE
+        - REGISTRY_UNAVAILABLE
+        - SUPPLEMENT_UNAVAILABLE
+        - HISTORY_UNAVAILABLE
+        - NOTIFICATIONS_UNAVAILABLE
+        - A2A_SEARCH_NOT_READY
+        - APPROVAL_CONFIGURATION_CHANGED
+        - DRAFTS_NOT_CONFIGURED
+        - NOTIFICATIONS_NOT_CONFIGURED
+        - ADMINISTRATION_UNAVAILABLE
+        - INTERNAL_ERROR
+    RecordId:
+      type: string
+      description: Registry レコード ID（英数字12文字）
+      pattern: "^[A-Za-z0-9]{12}$"
+      example: agentABC1234
+    ContentHash:
+      type: string
+      description: SHA-256 の小文字16進数64文字
+      pattern: "^[a-f0-9]{64}$"
+      example: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+    Principal:
+      type: object
+      description: 主体。検証済み JWT の `iss` と `sub` の組
+      required: [issuer, subject]
+      properties:
+        issuer:
+          type: string
+          example: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_EXAMPLE
+        subject:
+          type: string
+          example: 3c1b2a90-1234-4abc-9def-0123456789ab
+    Role:
+      type: string
+      description: 業務ロール
+      enum: [Viewer, Publisher, Curator, Admin]
+    CatalogRecordType:
+      type: string
+      description: Registry レコードの種別。A2A は独立した種別ではなく、Agent の descriptor（`a2aAgentCard`）
+      enum: [AGENT, MCP, SKILL]
+    DescriptorType:
+      type: string
+      description: primary descriptor の種類
+      enum: [custom, a2aAgentCard, mcpServer, agentSkillsDefinition]
+    DataClassification:
+      type: string
+      description: データ分類（custom metadata の `dataClassification`）。可視性は制御しない
+      enum: [public, private]
+    RecordStatus:
+      type: string
+      description: AWS の Registry レコードの状態
+      enum:
+        - DRAFT
+        - PENDING_APPROVAL
+        - APPROVED
+        - REJECTED
+        - DEPRECATED
+        - CREATING
+        - UPDATING
+        - CREATE_FAILED
+        - UPDATE_FAILED
+    OperationKind:
+      type: string
+      description: ポータルの操作の種別
+      enum:
+        - CREATE
+        - UPDATE
+        - SUBMIT
+        - APPROVE
+        - REJECT
+        - SUSPEND
+        - DEPRECATE
+        - REQUEST_DEPRECATION
+        - DECLINE_DEPRECATION
+        - ADOPT
+        - REASSIGN_OWNER
+    RecordReference:
+      type: object
+      description: 関連参照（参照先のレコード ID と版）
+      additionalProperties: false
+      required: [recordId, recordVersion]
+      properties:
+        recordId:
+          $ref: "#/components/schemas/RecordId"
+        recordVersion:
+          type: string
+          description: semver の版
+          maxLength: 255
+          example: 1.2.3
+    RecoveryRecord:
+      type: object
+      description: Admin の回復操作が結果を確定した、または強制解除したときの記録
+      required: [mode, by, at, reason]
+      properties:
+        mode:
+          type: string
+          description: "`RECONCILED` は Registry の再取得で確定、`RELEASED` は強制解除"
+          enum: [RECONCILED, RELEASED]
+        by:
+          $ref: "#/components/schemas/Principal"
+        at:
+          type: string
+          format: date-time
+        reason:
+          type: string
+    RecordSummary:
+      type: object
+      description: 一覧・審査・公開管理に並べるレコードの要約
+      required: [recordId, name, displayName, recordType, recordVersion, status, managed, ownerTeam]
+      properties:
+        recordId:
+          $ref: "#/components/schemas/RecordId"
+        name:
+          type: string
+        displayName:
+          type: string
+          description: 表示名。AWS が返さないレコードは `name` で代用する
+        recordType:
+          $ref: "#/components/schemas/CatalogRecordType"
+        recordVersion:
+          type: string
+          description: 最新の版。AWS が返さなければ空文字
+        status:
+          $ref: "#/components/schemas/RecordStatus"
+        managed:
+          type: boolean
+          description: ポータルの管理下か
+        ownerTeam:
+          type: [string, "null"]
+          description: 所有チーム（補助テーブルの管理情報が正本）。管理情報がなければ `null`
+    DeprecationRequest:
+      type: object
+      description: 廃止依頼。未解決（`OPEN`）の依頼の解決の項目は `null`
+      required:
+        - requestId
+        - recordId
+        - reason
+        - requestedBy
+        - requestedAt
+        - state
+        - resolution
+        - resolutionReason
+        - resolvedBy
+        - resolvedAt
+      properties:
+        requestId:
+          type: string
+        recordId:
+          $ref: "#/components/schemas/RecordId"
+        reason:
+          type: string
+        requestedBy:
+          $ref: "#/components/schemas/Principal"
+        requestedAt:
+          type: string
+          format: date-time
+        state:
+          type: string
+          enum: [OPEN, RESOLVED]
+        resolution:
+          type: [string, "null"]
+          description: "`DEPRECATED`（廃止で解決）または `DECLINED`（見送り）"
+          enum: [DEPRECATED, DECLINED, null]
+        resolutionReason:
+          type: [string, "null"]
+        resolvedBy:
+          oneOf:
+            - $ref: "#/components/schemas/Principal"
+            - type: "null"
+        resolvedAt:
+          type: [string, "null"]
+          format: date-time
+
+    # ---- 自分 ----
+    MeResponse:
+      type: object
+      required: [principal, roles, teams]
+      properties:
+        principal:
+          type: object
+          required: [type, issuer, subject]
+          properties:
+            type:
+              type: string
+              const: human
+            issuer:
+              type: string
+            subject:
+              type: string
+        roles:
+          type: array
+          items:
+            $ref: "#/components/schemas/Role"
+        teams:
+          type: array
+          description: 所属チーム（`team-*` の Cognito グループ名）
+          items:
+            type: string
+      example:
+        principal:
+          type: human
+          issuer: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_EXAMPLE
+          subject: 3c1b2a90-1234-4abc-9def-0123456789ab
+        roles: [Viewer, Publisher]
+        teams: [team-payments]
+
+    # ---- カタログ ----
+    CatalogItem:
+      type: object
+      description: カタログ項目の要約（公開承認済みの版）
+      required:
+        - recordId
+        - name
+        - displayName
+        - description
+        - recordType
+        - descriptorTypes
+        - isA2A
+        - recordVersion
+        - updatedAt
+      properties:
+        recordId:
+          $ref: "#/components/schemas/RecordId"
+        name:
+          type: string
+        displayName:
+          type: string
+        description:
+          type: string
+        recordType:
+          $ref: "#/components/schemas/CatalogRecordType"
+        descriptorTypes:
+          type: array
+          items:
+            type: string
+        isA2A:
+          type: boolean
+          description: Agent で descriptor に `a2aAgentCard` を持つか
+        recordVersion:
+          type: string
+        updatedAt:
+          type: string
+          description: AWS の更新日時（ISO 8601）。AWS が返さなければ空文字
+    CatalogListResponse:
+      type: object
+      required: [items, nextToken]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: "#/components/schemas/CatalogItem"
+        nextToken:
+          type: [string, "null"]
+          description: 次のページの token。次のページがなければ `null`
+    CatalogSearchRequest:
+      type: object
+      additionalProperties: false
+      required: [query]
+      properties:
+        query:
+          type: string
+          description: 検索語。前後の空白を除いて1〜256文字
+          minLength: 1
+          maxLength: 256
+        type:
+          $ref: "#/components/schemas/CatalogRecordType"
+        a2a:
+          type: boolean
+          description: A2A の Agent に絞る（`true`）か、A2A でない Agent に絞る（`false`）か。`type` を省略するか `AGENT` のときだけ指定できる
+        dataClassification:
+          $ref: "#/components/schemas/DataClassification"
+      example:
+        query: 請求書の処理
+        type: AGENT
+        a2a: true
+    CatalogSearchResponse:
+      type: object
+      required: [items, inconsistentA2ACount]
+      properties:
+        items:
+          type: array
+          maxItems: 20
+          description: AWS の関連度順
+          items:
+            $ref: "#/components/schemas/CatalogItem"
+        inconsistentA2ACount:
+          type: integer
+          minimum: 0
+          description: 検索用の写し（`isA2A`）と descriptor が食い違うため結果から除いた件数
+    CatalogDetail:
+      description: カタログ項目の詳細
+      allOf:
+        - $ref: "#/components/schemas/CatalogItem"
+        - type: object
+          required:
+            - definition
+            - ownerTeam
+            - dataClassification
+            - skillMarkdown
+            - contact
+            - termsOfUse
+            - connectionReference
+            - relatedReferences
+          properties:
+            definition:
+              type: object
+              description: 公開中の版の定義（primary descriptor の中身）。画面はテキストとして表示し、実行しない
+            ownerTeam:
+              type: string
+              description: 所有チーム。管理下のレコードは管理情報（正本）、未管理レコードは custom metadata の写し
+            dataClassification:
+              oneOf:
+                - $ref: "#/components/schemas/DataClassification"
+                - type: "null"
+              description: "`public`・`private` 以外の値は `null`"
+            skillMarkdown:
+              type: string
+              description: Skill の SKILL.md。Skill 以外は空文字
+            contact:
+              type: [string, "null"]
+              description: 連絡先。公開版スナップショットがなければ `null`（未取得）、値がなければ空文字（未登録）
+            termsOfUse:
+              type: [string, "null"]
+              description: 利用条件。`contact` と同じ規則
+            connectionReference:
+              type: [string, "null"]
+              description: 接続先の参照。`contact` と同じ規則
+            relatedReferences:
+              type: [array, "null"]
+              description: 関連参照。Agent 以外は常に空の配列。Agent で公開版スナップショットがなければ `null`
+              items:
+                $ref: "#/components/schemas/RecordReference"
+
+    # ---- 下書き ----
+    RecordDraftInput:
+      type: object
+      description: |
+        下書きのフォーム入力（値はすべて文字列）。`recordType` と `descriptorType` で入力項目が変わります。
+        どちらも省略すると custom Agent、`recordType` だけを指定するとその種別の既定の descriptor です。
+
+        | `recordType` | `descriptorType` | 必須の固有項目 | 任意の固有項目 |
+        | --- | --- | --- | --- |
+        | `AGENT` | `custom`（既定） | `purpose`、`authentication` | |
+        | `AGENT` | `a2aAgentCard` | `schemaVersion`（`0.3`）、`definition`（Agent Card の JSON） | |
+        | `MCP` | `mcpServer`（既定） | `schemaVersion`、`definition`（server.json）、`toolsSchemaVersion`、`toolsDefinition` | |
+        | `SKILL` | `agentSkillsDefinition`（既定） | `schemaVersion`（`0.1.0`）、`skillRepositoryUrl`、`skillRepositorySource`、`skillMd` | `skillCommit`・`skillVersion`（少なくとも一方は必須）、`skillDigest` |
+
+        その descriptor で受け付けない項目は 400 です。`isA2A` は入力できません（descriptor から導出します）。
+        秘密情報らしき値（API キー・JWT・パスワードなど）は保存せずに 400 で拒否します。
+      additionalProperties: false
+      required:
+        - name
+        - displayName
+        - description
+        - recordVersion
+        - ownerTeam
+        - dataClassification
+        - contact
+        - termsOfUse
+        - connectionReference
+      properties:
+        recordType:
+          $ref: "#/components/schemas/CatalogRecordType"
+        descriptorType:
+          $ref: "#/components/schemas/DescriptorType"
+        name:
+          type: string
+          description: 作成後は変更できない
+          minLength: 1
+          maxLength: 255
+          pattern: "^[a-zA-Z0-9][a-zA-Z0-9_./-]*$"
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        recordVersion:
+          type: string
+          description: semver 2.0.0 の版。ビルドメタデータ（`+` 以降）は指定できない
+          minLength: 1
+          maxLength: 255
+          example: 1.0.0
+        ownerTeam:
+          type: string
+          description: 所有チーム。呼び出し元の所属チームから選ぶ。編集では変更できない
+          minLength: 1
+          maxLength: 128
+        environment:
+          type: string
+          enum: [dev]
+          default: dev
+        dataClassification:
+          $ref: "#/components/schemas/DataClassification"
+        contact:
+          type: string
+          description: 連絡先
+          minLength: 1
+          maxLength: 1024
+        termsOfUse:
+          type: string
+          description: 利用条件
+          minLength: 1
+          maxLength: 4096
+        connectionReference:
+          type: string
+          description: 接続先の参照（秘密情報の値ではなく保管先への参照を記載する）
+          minLength: 1
+          maxLength: 2048
+        purpose:
+          type: string
+          description: "`custom` の目的"
+          maxLength: 4096
+        authentication:
+          type: string
+          description: "`custom` の認証方式"
+          maxLength: 1024
+        schemaVersion:
+          type: string
+          description: |
+            descriptor の schema version。`a2aAgentCard` は `0.3`、`mcpServer`（server 定義）は `2025-12-11`・`2025-10-17`・
+            `2025-10-11`・`2025-09-29`・`2025-09-16`・`2025-07-09`、`agentSkillsDefinition` は `0.1.0`
+          maxLength: 32
+        definition:
+          type: string
+          description: Agent Card または server.json の JSON（文字列）
+          maxLength: 24000
+        toolsSchemaVersion:
+          type: string
+          description: MCP の tools 定義の版（`2025-11-25`・`2025-06-18`・`2025-03-26`・`2024-11-05`）
+          maxLength: 32
+        toolsDefinition:
+          type: string
+          description: MCP の tools 定義の JSON（文字列）。ツールを1個以上含む
+          maxLength: 24000
+        skillRepositoryUrl:
+          type: string
+          description: Skill のリポジトリ URL（`https://`、資格情報とクエリを含まない）
+          maxLength: 2048
+        skillRepositorySource:
+          type: string
+          description: リポジトリの種類
+          maxLength: 64
+          pattern: "^[a-z][a-z0-9-]{0,63}$"
+        skillCommit:
+          type: string
+          description: 固定した commit（40 または 64 文字の小文字16進数）。空文字可
+          maxLength: 64
+        skillVersion:
+          type: string
+          description: 固定した version（数字、または `v` と数字で始まる特定の版）。空文字可
+          maxLength: 128
+        skillDigest:
+          type: string
+          description: "`sha256:` と64文字の小文字16進数。空文字可"
+          maxLength: 71
+        skillMd:
+          type: string
+          description: SKILL.md。先頭の frontmatter に `name` と `description` が必要
+          maxLength: 32000
+      example:
+        recordType: AGENT
+        descriptorType: custom
+        name: invoice-triage
+        displayName: 請求書トリアージ
+        description: 受け取った請求書を分類し、担当部署へ振り分けます。
+        recordVersion: 1.0.0
+        ownerTeam: team-payments
+        environment: dev
+        dataClassification: private
+        contact: payments-team@example.com
+        termsOfUse: 社内利用に限ります。
+        connectionReference: arn:aws:bedrock-agentcore:us-east-1:111122223333:runtime/invoice-triage
+        purpose: 請求書の分類と振り分け
+        authentication: SigV4（IAM ロール）
+    RecordDraft:
+      type: object
+      description: |
+        API が返す下書きのフォーム入力（値はすべて文字列）。`recordType`・`descriptorType`・`environment` は常に補われます。
+        取り込みレコードでは、未設定の `description` と `dataClassification` が空文字のことがあり、`recordVersion` が semver でないことがあります。
+      required:
+        - recordType
+        - descriptorType
+        - name
+        - displayName
+        - description
+        - recordVersion
+        - ownerTeam
+        - environment
+        - dataClassification
+        - contact
+        - termsOfUse
+        - connectionReference
+      additionalProperties:
+        type: string
+      properties:
+        recordType:
+          $ref: "#/components/schemas/CatalogRecordType"
+        descriptorType:
+          $ref: "#/components/schemas/DescriptorType"
+        name:
+          type: string
+        displayName:
+          type: string
+        description:
+          type: string
+        recordVersion:
+          type: string
+        ownerTeam:
+          type: string
+        environment:
+          type: string
+          enum: [dev]
+        dataClassification:
+          type: string
+          description: 取り込みレコードで未選択なら空文字
+          enum: [public, private, ""]
+        contact:
+          type: string
+        termsOfUse:
+          type: string
+        connectionReference:
+          type: string
+    DraftView:
+      type: object
+      description: 下書きの詳細
+      required: [recordId, draft, contentHash, status, hasDraft, publishedVersion]
+      properties:
+        recordId:
+          $ref: "#/components/schemas/RecordId"
+        draft:
+          $ref: "#/components/schemas/RecordDraft"
+        contentHash:
+          $ref: "#/components/schemas/ContentHash"
+        status:
+          $ref: "#/components/schemas/RecordStatus"
+        hasDraft:
+          type: boolean
+          description: 下書きを持つ状態か（`APPROVED`・`DEPRECATED` 以外）
+        publishedVersion:
+          type: [string, "null"]
+          description: 公開中の版。公開版がない、公開停止中、廃止済みなら `null`
+        initializationNotice:
+          type: string
+          description: 取り込みレコードで、所有チームに確認を求める案内。確認することがなければ項目自体がない
+    DraftResult:
+      description: 結果が確定した下書きの書き込み操作（作成・更新）の応答
+      allOf:
+        - $ref: "#/components/schemas/DraftView"
+        - type: object
+          required: [operationId, operationState]
+          properties:
+            operationId:
+              type: string
+            operationState:
+              type: string
+              const: SUCCEEDED
+            recovery:
+              $ref: "#/components/schemas/RecoveryRecord"
+    SubmissionResult:
+      description: 結果が確定した申請の応答
+      allOf:
+        - $ref: "#/components/schemas/DraftResult"
+        - type: object
+          required: [submissionId, snapshotHash]
+          properties:
+            submissionId:
+              type: string
+              description: 申請 ID（申請操作の操作 ID と同じ）
+            snapshotHash:
+              $ref: "#/components/schemas/ContentHash"
+    OperationStatus:
+      type: object
+      description: 結果確認中、または失敗が確定した書き込み操作の応答
+      required: [operationId, operationState, message]
+      properties:
+        operationId:
+          type: string
+        operationState:
+          type: string
+          enum: [VERIFYING, FAILED]
+        message:
+          type: string
+          description: 日本語のメッセージ。強制解除された操作の失敗には強制解除と理由を含む
+        recovery:
+          $ref: "#/components/schemas/RecoveryRecord"
+    DraftListItem:
+      type: object
+      required:
+        - recordId
+        - name
+        - recordType
+        - displayName
+        - recordVersion
+        - ownerTeam
+        - status
+        - hasDraft
+        - publishedVersion
+        - operationId
+      properties:
+        recordId:
+          $ref: "#/components/schemas/RecordId"
+        name:
+          type: string
+        recordType:
+          $ref: "#/components/schemas/CatalogRecordType"
+        displayName:
+          type: string
+        recordVersion:
+          type: string
+        ownerTeam:
+          type: string
+        status:
+          $ref: "#/components/schemas/RecordStatus"
+        hasDraft:
+          type: boolean
+        publishedVersion:
+          type: [string, "null"]
+        operationId:
+          type: [string, "null"]
+          description: レコードのロックを持つ処理中の操作。なければ `null`
+    DraftListResponse:
+      type: object
+      required: [items, nextToken]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DraftListItem"
+        nextToken:
+          type: [string, "null"]
+    UpdateDraftRequest:
+      type: object
+      additionalProperties: false
+      required: [draft, expectedContentHash]
+      properties:
+        draft:
+          $ref: "#/components/schemas/RecordDraftInput"
+        expectedContentHash:
+          $ref: "#/components/schemas/ContentHash"
+    SubmitDraftRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedContentHash, reason, relatedReferences]
+      properties:
+        expectedContentHash:
+          $ref: "#/components/schemas/ContentHash"
+        reason:
+          type: string
+          description: 申請理由。前後の空白を除いて1〜4,096文字。秘密情報らしき値は 400
+          minLength: 1
+          maxLength: 4096
+        relatedReferences:
+          type: array
+          description: 関連参照。Agent のみ指定でき、MCP・Skill は空の配列。重複・自身の参照は 400
+          maxItems: 20
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/RecordReference"
+      example:
+        expectedContentHash: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+        reason: 初回公開の申請です。
+        relatedReferences:
+          - recordId: skillABC1234
+            recordVersion: 1.2.3
+
+    # ---- 履歴 ----
+    HistoryEntry:
+      type: object
+      description: |
+        履歴の1項目。必須の項目は値がなくても `null` として必ず返します。結果確認中の決裁を決裁した Curator 以外が読む場合は
+        `withheld: true` で、任意の項目（理由・版・AWS request ID）を含みません。
+      required: [operationId, kind, principal, startedAt, targetHash, state]
+      properties:
+        operationId:
+          type: [string, "null"]
+        kind:
+          $ref: "#/components/schemas/OperationKind"
+        principal:
+          oneOf:
+            - $ref: "#/components/schemas/Principal"
+            - type: "null"
+        startedAt:
+          type: [string, "null"]
+          format: date-time
+        targetHash:
+          type: [string, "null"]
+          description: 操作の対象の内容ハッシュ（またはスナップショットのハッシュ）。作成の結果が確定するまでは `null`
+        state:
+          type: string
+          description: "`UNKNOWN` は取り込み前の公開承認（主体が不明）"
+          enum: [SUCCEEDED, FAILED, VERIFYING, UNKNOWN]
+        withheld:
+          type: boolean
+          const: true
+        awsRequestId:
+          type: string
+        errorCode:
+          type: string
+          description: 失敗した操作のエラーコード（`AWS_REJECTED`・`CONTENT_CHANGED`・`ADMIN_RELEASED` など）
+        reason:
+          type: string
+        recordVersion:
+          type: string
+        recovery:
+          $ref: "#/components/schemas/RecoveryRecord"
+    HistoryResponse:
+      type: object
+      required: [recordId, ownerTeam, entries]
+      properties:
+        recordId:
+          $ref: "#/components/schemas/RecordId"
+        ownerTeam:
+          type: string
+        entries:
+          type: array
+          description: 開始時刻の順
+          items:
+            $ref: "#/components/schemas/HistoryEntry"
+
+    # ---- 廃止依頼 ----
+    ReasonRequest:
+      type: object
+      description: 理由だけを指定する本文（公開停止・廃止依頼）
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          description: 理由。前後の空白を除いて1〜255文字。秘密情報らしき値は 400
+          minLength: 1
+          maxLength: 255
+      example:
+        reason: 後継の Agent に移行したため
+    DeclineDeprecationRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, reason]
+      properties:
+        requestId:
+          type: string
+          description: 画面で確認した依頼の ID
+        reason:
+          type: string
+          description: 見送りの理由。前後の空白を除いて1〜255文字
+          minLength: 1
+          maxLength: 255
+
+    # ---- 審査・決裁 ----
+    AttachmentState:
+      type: string
+      description: |
+        スナップショットの取得状態。`NONE` は存在しない（ポータル外の申請、初回公開）、`AVAILABLE` は取得できた、
+        `MISSING` は存在するはずなのに読めない（保存内容の異常）
+      enum: [NONE, AVAILABLE, MISSING]
+    SubmissionReviewItem:
+      description: 審査待ちの申請
+      allOf:
+        - $ref: "#/components/schemas/RecordSummary"
+        - type: object
+          required:
+            - reviewKind
+            - submissionState
+            - submissionId
+            - snapshotHash
+            - reason
+            - submittedAt
+            - submittedBy
+            - invalidated
+            - operationId
+          properties:
+            reviewKind:
+              type: string
+              const: SUBMISSION
+            submissionState:
+              $ref: "#/components/schemas/AttachmentState"
+            submissionId:
+              type: [string, "null"]
+            snapshotHash:
+              type: [string, "null"]
+            reason:
+              type: [string, "null"]
+            submittedAt:
+              type: [string, "null"]
+              format: date-time
+            submittedBy:
+              oneOf:
+                - $ref: "#/components/schemas/Principal"
+                - type: "null"
+            invalidated:
+              type: boolean
+              description: 申請後にポータルで編集され、申請が無効になったか
+            operationId:
+              type: [string, "null"]
+    DeprecationRequestReviewItem:
+      description: 未解決の廃止依頼
+      allOf:
+        - $ref: "#/components/schemas/RecordSummary"
+        - type: object
+          required: [reviewKind, requestId, reason, requestedAt, requestedBy, suspended, operationId]
+          properties:
+            reviewKind:
+              type: string
+              const: DEPRECATION_REQUEST
+            requestId:
+              type: string
+            reason:
+              type: string
+            requestedAt:
+              type: string
+              format: date-time
+            requestedBy:
+              $ref: "#/components/schemas/Principal"
+            suspended:
+              type: boolean
+              description: 公開停止済みで、廃止するか見送るかの判断を待っている
+            operationId:
+              type: [string, "null"]
+    ReviewItem:
+      oneOf:
+        - $ref: "#/components/schemas/SubmissionReviewItem"
+        - $ref: "#/components/schemas/DeprecationRequestReviewItem"
+      discriminator:
+        propertyName: reviewKind
+        mapping:
+          SUBMISSION: "#/components/schemas/SubmissionReviewItem"
+          DEPRECATION_REQUEST: "#/components/schemas/DeprecationRequestReviewItem"
+    ReviewListResponse:
+      type: object
+      required: [items, nextToken]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReviewItem"
+        nextToken:
+          type: [string, "null"]
+    SubmissionSnapshot:
+      type: object
+      description: 申請時点の内容を固定したスナップショット
+      required:
+        - submissionId
+        - submittedBy
+        - lastEditedBy
+        - submittedAt
+        - reason
+        - record
+        - ownerTeam
+        - supplement
+        - relatedReferences
+        - contact
+        - termsOfUse
+        - connectionReference
+        - contentHash
+        - snapshotHash
+      properties:
+        submissionId:
+          type: string
+        submittedBy:
+          $ref: "#/components/schemas/Principal"
+        lastEditedBy:
+          $ref: "#/components/schemas/Principal"
+        submittedAt:
+          type: string
+          format: date-time
+        reason:
+          type: string
+        record:
+          type: object
+          description: 申請時の AWS 現物（`updatedAt` は申請前の更新日時）
+          properties:
+            recordId:
+              $ref: "#/components/schemas/RecordId"
+            name:
+              type: string
+            displayName:
+              type: [string, "null"]
+            description:
+              type: [string, "null"]
+            recordType:
+              $ref: "#/components/schemas/CatalogRecordType"
+            recordVersion:
+              type: string
+            descriptors:
+              type: object
+            customMetadata:
+              type: [object, "null"]
+            updatedAt:
+              type: [string, "null"]
+        ownerTeam:
+          type: string
+        supplement:
+          type: object
+          description: 所有チーム、連絡先など、Skill の commit・version・digest を含む補助情報
+          additionalProperties: true
+        relatedReferences:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecordReference"
+        contact:
+          type: string
+        termsOfUse:
+          type: string
+        connectionReference:
+          type: string
+        contentHash:
+          $ref: "#/components/schemas/ContentHash"
+        snapshotHash:
+          type: [string, "null"]
+    PublishedSnapshotView:
+      type: object
+      description: 差分の比較対象としての公開中の版のスナップショット
+      required:
+        - recordVersion
+        - contact
+        - termsOfUse
+        - connectionReference
+        - relatedReferences
+        - record
+        - approvedBy
+      properties:
+        recordVersion:
+          type: string
+        contact:
+          type: [string, "null"]
+        termsOfUse:
+          type: [string, "null"]
+        connectionReference:
+          type: [string, "null"]
+        relatedReferences:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecordReference"
+        record:
+          type: [object, "null"]
+          description: 公開承認した定義と metadata。記録する前に作られたスナップショットでは `null`（未取得）
+        approvedBy:
+          description: 公開承認した Curator。記録がなければ `null`（不明）
+          oneOf:
+            - $ref: "#/components/schemas/Principal"
+            - type: "null"
+    ReviewDetail:
+      description: 審査対象の詳細
+      allOf:
+        - $ref: "#/components/schemas/RecordSummary"
+        - type: object
+          required:
+            - description
+            - publishedVersion
+            - submissionState
+            - submissionId
+            - snapshotHash
+            - snapshotIntact
+            - invalidated
+            - snapshot
+            - publishedState
+            - published
+            - deprecationRequest
+          properties:
+            description:
+              type: string
+            publishedVersion:
+              type: [string, "null"]
+            submissionState:
+              $ref: "#/components/schemas/AttachmentState"
+            submissionId:
+              type: [string, "null"]
+            snapshotHash:
+              type: [string, "null"]
+            snapshotIntact:
+              type: boolean
+              description: 保存済みの申請スナップショットから計算し直したハッシュが申請時と一致するか。偽なら決裁は 409
+            invalidated:
+              type: boolean
+            snapshot:
+              oneOf:
+                - $ref: "#/components/schemas/SubmissionSnapshot"
+                - type: "null"
+            publishedState:
+              $ref: "#/components/schemas/AttachmentState"
+            published:
+              oneOf:
+                - $ref: "#/components/schemas/PublishedSnapshotView"
+                - type: "null"
+            deprecationRequest:
+              oneOf:
+                - $ref: "#/components/schemas/DeprecationRequest"
+                - type: "null"
+    DecisionRequest:
+      type: object
+      description: 決裁（公開承認・却下）の本文。AWS の `status` は API ごとに決まるため指定できない
+      additionalProperties: false
+      required: [snapshotHash, reason]
+      properties:
+        snapshotHash:
+          $ref: "#/components/schemas/ContentHash"
+        reason:
+          type: string
+          description: 決裁理由。前後の空白を除いて1〜255文字（AWS の `statusReason` の上限）。秘密情報らしき値は 400
+          minLength: 1
+          maxLength: 255
+      example:
+        snapshotHash: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+        reason: 定義と連絡先を確認しました。
+    DeprecateRequest:
+      type: object
+      description: "廃止の本文。廃止は元に戻せないため `confirm: true` が必須"
+      additionalProperties: false
+      required: [reason, confirm]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 255
+        confirm:
+          type: boolean
+          const: true
+      example:
+        reason: 後継の Agent に移行済みのため
+        confirm: true
+    DecisionResult:
+      description: 結果が確定した決裁・公開停止・廃止の応答
+      allOf:
+        - $ref: "#/components/schemas/RecordSummary"
+        - type: object
+          required: [publishedVersion, operationId, operationState, submissionId, snapshotHash]
+          properties:
+            publishedVersion:
+              type: [string, "null"]
+            operationId:
+              type: string
+            operationState:
+              type: string
+              const: SUCCEEDED
+            submissionId:
+              type: [string, "null"]
+              description: 決裁した申請の ID。公開停止・廃止は `null`
+            snapshotHash:
+              type: [string, "null"]
+              description: 決裁したスナップショットのハッシュ。公開停止・廃止は `null`
+            recovery:
+              $ref: "#/components/schemas/RecoveryRecord"
+
+    # ---- 公開管理 ----
+    PublicationAction:
+      type: object
+      required: [allowed, message]
+      properties:
+        allowed:
+          type: boolean
+        message:
+          type: [string, "null"]
+          description: 実行できない理由。実行できれば `null`
+    PublicationStatus:
+      description: 公開管理の状態
+      allOf:
+        - $ref: "#/components/schemas/RecordSummary"
+        - type: object
+          required: [publishedVersion, suspended, operationId, deprecationRequest, actions]
+          properties:
+            publishedVersion:
+              type: [string, "null"]
+              description: 公開中の版。公開停止中と廃止済みは `null`
+            suspended:
+              type: boolean
+            operationId:
+              type: [string, "null"]
+              description: 処理中の操作
+            deprecationRequest:
+              oneOf:
+                - $ref: "#/components/schemas/DeprecationRequest"
+                - type: "null"
+            actions:
+              type: object
+              required: [suspend, deprecate]
+              properties:
+                suspend:
+                  $ref: "#/components/schemas/PublicationAction"
+                deprecate:
+                  $ref: "#/components/schemas/PublicationAction"
+    PublicationSearchStatus:
+      type: string
+      description: 管理レコード検索の状態。`SUSPENDED` はポータルが管理情報で区別する値で、AWS の状態ではない
+      enum:
+        - SUSPENDED
+        - DRAFT
+        - PENDING_APPROVAL
+        - APPROVED
+        - REJECTED
+        - DEPRECATED
+        - CREATING
+        - UPDATING
+        - CREATE_FAILED
+        - UPDATE_FAILED
+    PublicationSearchItem:
+      allOf:
+        - $ref: "#/components/schemas/RecordSummary"
+        - type: object
+          required: [suspended, publishedVersion]
+          properties:
+            suspended:
+              type: boolean
+            publishedVersion:
+              type: [string, "null"]
+              description: 公開中の版。公開停止中と廃止済みは `null`
+    PublicationSearchResponse:
+      type: object
+      required: [items, nextToken]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PublicationSearchItem"
+        nextToken:
+          type: [string, "null"]
+
+    # ---- 回復 ----
+    RecoveryStatus:
+      type: object
+      required: [recordId, operation]
+      properties:
+        recordId:
+          $ref: "#/components/schemas/RecordId"
+        operation:
+          description: ロックを持つ操作の概要。なければ `null`
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [kind, operationState, principal, startedAt, recoverableAt, recoverable]
+              properties:
+                kind:
+                  $ref: "#/components/schemas/OperationKind"
+                operationState:
+                  type: string
+                  const: VERIFYING
+                principal:
+                  $ref: "#/components/schemas/Principal"
+                startedAt:
+                  type: string
+                  format: date-time
+                recoverableAt:
+                  type: string
+                  format: date-time
+                  description: 回復できるようになる時刻（開始から5分後）
+                recoverable:
+                  type: boolean
+    RecoveryRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          description: 回復の理由（1〜255文字）
+          minLength: 1
+          maxLength: 255
+        release:
+          type: boolean
+          default: false
+          description: 確定できないときに強制解除するか
+      example:
+        reason: 決裁した Curator が不在のため、Registry の状態から確定する
+        release: false
+    RecoveryResult:
+      type: object
+      description: 回復の応答。操作 ID と操作の中身は含めない
+      required: [recordId, operationState, message, recovery]
+      properties:
+        recordId:
+          $ref: "#/components/schemas/RecordId"
+        operationState:
+          type: string
+          enum: [SUCCEEDED, FAILED, VERIFYING]
+        message:
+          type: string
+        recovery:
+          description: 回復の記録。確定できなかった（`VERIFYING`）場合は `null`
+          oneOf:
+            - $ref: "#/components/schemas/RecoveryRecord"
+            - type: "null"
+
+    # ---- 取り込み・所有変更・接続診断 ----
+    OwnerTeam:
+      type: string
+      description: 所有チーム。`team-` で始まる128文字以内の Cognito グループ名（存在の確認はしない）
+      pattern: "^team-[A-Za-z0-9_./-]{1,123}$"
+      example: team-payments
+    AdminRecordSummary:
+      allOf:
+        - $ref: "#/components/schemas/RecordSummary"
+        - type: object
+          required: [managementHash]
+          properties:
+            managementHash:
+              type: [string, "null"]
+              description: 管理情報の全項目のハッシュ。所有変更の `expectedManagementHash` に使う。未管理なら `null`
+    AdminRecordListResponse:
+      type: object
+      required: [items, nextToken]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminRecordSummary"
+        nextToken:
+          type: [string, "null"]
+    AdoptRecordRequest:
+      type: object
+      additionalProperties: false
+      required: [ownerTeam, reason]
+      properties:
+        ownerTeam:
+          $ref: "#/components/schemas/OwnerTeam"
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 255
+    ReassignOwnerRequest:
+      type: object
+      additionalProperties: false
+      required: [ownerTeam, reason, expectedManagementHash]
+      properties:
+        ownerTeam:
+          $ref: "#/components/schemas/OwnerTeam"
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 255
+        expectedManagementHash:
+          $ref: "#/components/schemas/ContentHash"
+    AdministrationResult:
+      type: object
+      required: [recordId, ownerTeam, operationId, operationState, publishedVersion, a2aBackfillRequired]
+      properties:
+        recordId:
+          $ref: "#/components/schemas/RecordId"
+        ownerTeam:
+          type: string
+        operationId:
+          type: string
+        operationState:
+          type: string
+          const: SUCCEEDED
+        publishedVersion:
+          type: [string, "null"]
+        a2aBackfillRequired:
+          type: boolean
+          description: 取り込み時の公開 Agent に、descriptor と一致する真偽値の `isA2A` がないか
+    ConnectionReport:
+      type: object
+      required: [registryArn, region, authorization, connection, autoApproval, warnings]
+      properties:
+        registryArn:
+          type: string
+          description: 設定（環境変数 `REGISTRY_ARN`）由来の Registry ARN
+        region:
+          type: string
+        authorization:
+          type: [string, "null"]
+          description: "`GetRegistry` の `discoveryConfiguration.authorizerType`。取得できなければ `null`"
+          enum: [CUSTOM_JWT, AWS_IAM, null]
+        connection:
+          oneOf:
+            - type: object
+              required: [state]
+              properties:
+                state:
+                  type: string
+                  const: CONNECTED
+            - type: object
+              required: [state, code, message, cause]
+              properties:
+                state:
+                  type: string
+                  const: ERROR
+                code:
+                  type: string
+                  const: REGISTRY_CONNECTION_ERROR
+                message:
+                  type: string
+                cause:
+                  type: string
+                  description: AWS のエラーコード（`AccessDeniedException` など）か、通信の例外名（`EndpointConnectionError` など）
+        autoApproval:
+          type: object
+          required: [state]
+          properties:
+            state:
+              type: string
+              description: "`DISABLED` のときだけ申請できる"
+              enum: [DISABLED, ENABLED, UNKNOWN]
+        warnings:
+          type: array
+          items:
+            type: string
+
+    # ---- 通知 ----
+    NotificationPosition:
+      type: string
+      description: 通知の位置（既読位置）。`{UTC 時刻（マイクロ秒）}#{通知 ID}`
+      pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z#[0-9a-f]{64}$"
+      example: 2026-11-15T03:04:05.123456Z#9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+    InboxNotification:
+      type: object
+      required: [notificationId, position, kind, recordId, recordName, message, createdAt, read]
+      properties:
+        notificationId:
+          type: string
+        position:
+          $ref: "#/components/schemas/NotificationPosition"
+        kind:
+          type: string
+          enum:
+            - SUBMITTED
+            - DEPRECATION_REQUESTED
+            - APPROVED
+            - REJECTED
+            - SUSPENDED
+            - DEPRECATED
+            - DEPRECATION_DECLINED
+            - REFERENCE_SUSPENDED
+            - REFERENCE_DEPRECATED
+            - OUTSIDE_CHANGE
+        recordId:
+          $ref: "#/components/schemas/RecordId"
+        recordName:
+          type: [string, "null"]
+          description: 表示名。アプリ内の見送りの通知は持たない
+        message:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        read:
+          type: boolean
+    NotificationInbox:
+      type: object
+      required: [items, unreadCount, readUpTo]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          description: 新しい順
+          items:
+            $ref: "#/components/schemas/InboxNotification"
+        unreadCount:
+          type: integer
+          minimum: 0
+          description: 既読位置より後の通知の数（50件を超えても全件を数える）
+        readUpTo:
+          description: 既読位置。未設定なら `null`
+          oneOf:
+            - $ref: "#/components/schemas/NotificationPosition"
+            - type: "null"
+    MarkReadRequest:
+      type: object
+      additionalProperties: false
+      required: [readUpTo]
+      properties:
+        readUpTo:
+          $ref: "#/components/schemas/NotificationPosition"
