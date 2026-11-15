@@ -459,7 +459,7 @@ class Management:
     def published_version(self, record: Mapping[str, Any]) -> str | None:
         """公開中の版。AWS が新しい下書きを返している間は、補助ストアに保持した版を返す。
 
-        公開停止中（再承認まで）と廃止済みのレコードには、発見できる版がないため None を返す。
+        公開停止中（再承認まで）と廃止済みのレコードには、公開中の版がないため None を返す。
         「新しい版の却下で、旧版は公開中」の場合と区別するため、公開停止は管理情報の印で判断する。
         """
         if record["status"] == PUBLISHED_STATUS:
@@ -490,12 +490,16 @@ class Management:
         return version if isinstance(version, str) else None
 
     def is_suspended(self, record: Mapping[str, Any]) -> bool:
-        """公開停止中か。公開停止の印があり、AWS が公開中（APPROVED）を返していない。
+        """公開停止中か。公開停止の印があり、AWS が公開中（APPROVED）も廃止済み（DEPRECATED）も返していない。
 
-        AWS が公開中を返すなら、印が残っていても公開停止中ではない
-        （ポータルの外で再承認された場合。印はポータルの公開承認でしか消えない）。
+        印はポータルの公開承認でしか消えないため、印が残っていても次の場合は公開停止中ではない。
+        AWS が公開中を返す場合（ポータルの外で再承認された）と、廃止済みを返す場合（公開停止の後に廃止した。
+        廃止は元に戻せない終端の状態で、公開停止中の区別は意味を持たない）。
         """
-        return self.suspended_version is not None and record["status"] != PUBLISHED_STATUS
+        return self.suspended_version is not None and record["status"] not in (
+            PUBLISHED_STATUS,
+            DEPRECATED_STATUS,
+        )
 
     @property
     def is_adopted(self) -> bool:

@@ -65,7 +65,7 @@ const approvedPublicationView = {
   publishedVersion: '2.0.0',
   suspended: false,
 }
-/** 公開停止の実行の結果（決裁 handler の操作。公開停止で REJECTED になり、発見できる版は null になる） */
+/** 公開停止の実行の結果（決裁 handler の操作。公開停止で REJECTED になり、公開中の版は null になる） */
 const suspendOperation = {
   recordId: 'mcpPAY789012',
   name: 'payments-mcp',
@@ -178,15 +178,15 @@ async function search(responses: (Response | Error)[], name = 'payment', status 
   return calls
 }
 
-it('Curator は名前の一部と状態で管理レコードを探し、項目に公開停止中の区別と発見できる版を表示する', async () => {
+it('Curator は名前の一部と状態で管理レコードを探し、項目に公開停止中の区別と公開中の版を表示する', async () => {
   const calls = await search([jsonResponse(200, { items: [suspendedItem, approvedItem], nextToken: null })])
   expect(calls[0]?.url).toBe('/api/records/publication?name=payment&status=SUSPENDED')
   expect(listItem('決済 Agent').textContent).toContain('payments-a2a')
   expect(listItem('決済 Agent').textContent).toContain('team-payments')
   expect(listItem('決済 Agent').textContent).toContain('公開停止中')
-  expect(listItem('決済 Agent').textContent).toContain('発見できる版なし')
+  expect(listItem('決済 Agent').textContent).toContain('公開中の版なし')
   expect(listItem('決済 MCP サーバー').textContent).toContain('MCP サーバー')
-  expect(listItem('決済 MCP サーバー').textContent).toContain('発見できる版 2.0.0')
+  expect(listItem('決済 MCP サーバー').textContent).toContain('公開中の版 2.0.0')
   // 公開停止中でない項目には区別の表示が出ない
   expect(listItem('決済 MCP サーバー').textContent).not.toContain('公開停止中')
 })
@@ -256,7 +256,7 @@ it('次のページを同じ条件の nextToken で読み、最初のページ�
   expect(calls[1]?.url).toBe(
     '/api/records/publication?name=payment&status=SUSPENDED&nextToken=token-2',
   )
-  expect(listItem('決済 MCP サーバー').textContent).toContain('発見できる版 2.0.0')
+  expect(listItem('決済 MCP サーバー').textContent).toContain('公開中の版 2.0.0')
   expect(buttonIn(container, '次のページ').disabled).toBe(true)
   expect(buttonIn(container, '最初のページ').disabled).toBe(false)
   await act(() => buttonIn(container, '最初のページ').click())
@@ -273,16 +273,12 @@ it('検索結果の項目に公開停止中の区別がなければ、不正な�
   )
 })
 
-it('一覧から開いた公開管理の操作が済んだら、同じ条件で一覧を読み込み直す', async () => {
+it('一覧から開いた公開管理の操作が済んでも、公開管理と結果の表示を閉じない', async () => {
   const calls = await search(
     [
       jsonResponse(200, { items: [approvedItem], nextToken: null }),
       jsonResponse(200, approvedPublicationView),
       jsonResponse(200, suspendOperation),
-      jsonResponse(200, {
-        items: [{ ...approvedItem, status: 'REJECTED', suspended: true, publishedVersion: null }],
-        nextToken: null,
-      }),
     ],
     'payment',
     'APPROVED',
@@ -291,6 +287,8 @@ it('一覧から開いた公開管理の操作が済んだら、同じ条件で�
   await setValue('suspendReason', '問題が見つかったため')
   await submitLegend('公開停止')
   expect(calls[2]?.url).toBe('/api/records/mcpPAY789012/suspend')
-  expect(calls[3]?.url).toBe('/api/records/publication?name=payment&status=APPROVED')
-  expect(listItem('決済 MCP サーバー').textContent).toContain('公開停止中')
+  // 一覧を読み直すと公開管理が外れて結果の表示が消えるため、操作後に検索を呼び直さない
+  expect(calls).toHaveLength(3)
+  expect(listItem('決済 MCP サーバー').textContent).toContain('公開停止しました。')
+  expect(itemButton('決済 MCP サーバー', '公開管理を閉じる').getAttribute('aria-expanded')).toBe('true')
 })

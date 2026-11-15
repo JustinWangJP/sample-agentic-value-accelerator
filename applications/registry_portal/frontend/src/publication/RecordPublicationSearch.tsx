@@ -23,9 +23,12 @@ type PageState =
   | { kind: 'ready'; page: PublicationRecordPage }
   | { kind: 'error'; error: ApiError }
 
+/** 公開停止中の表示。検索条件の選択肢と、一覧の項目の区別で同じ文言を使う */
+const SUSPENDED_LABEL = '公開停止中'
+
 /** 検索条件の状態のラベル。公開停止中だけポータルの区別の表示で、他は AWS の状態の既存の表示（recordStatusLabel）に合わせる */
 function searchStatusLabel(status: PublicationSearchStatus): string {
-  return status === SUSPENDED_SEARCH_STATUS ? '公開停止中' : recordStatusLabel(status)
+  return status === SUSPENDED_SEARCH_STATUS ? SUSPENDED_LABEL : recordStatusLabel(status)
 }
 
 /**
@@ -57,7 +60,10 @@ export function RecordPublicationSearch({ api, onRelogin }: Props) {
     }
   }, [api, query, token, revision])
 
-  /** 同じ条件と同じページで読み直す。失敗の再試行と、公開管理の操作が済んだあとの更新で使う */
+  /**
+   * 同じ条件と同じページで読み直す。検索失敗の再試行で使う。読み直しの間は一覧を外すため、
+   * 開いている公開管理（操作の結果表示を含む）も閉じる。そのため公開管理の操作後には呼ばない
+   */
   function reload() {
     setState({ kind: 'loading' })
     setRevision((value) => value + 1)
@@ -125,15 +131,10 @@ export function RecordPublicationSearch({ api, onRelogin }: Props) {
               </p>
               <p>
                 状態 {searchStatusLabel(item.status)}
-                {item.suspended ? '・公開停止中' : ''} /{' '}
-                {item.publishedVersion ? `発見できる版 ${item.publishedVersion}` : '発見できる版なし'}
+                {item.suspended ? `・${SUSPENDED_LABEL}` : ''} /{' '}
+                {item.publishedVersion ? `公開中の版 ${item.publishedVersion}` : '公開中の版なし'}
               </p>
-              <RecordPublicationToggle
-                api={api}
-                recordId={item.recordId}
-                onRelogin={onRelogin}
-                onChanged={reload}
-              />
+              <RecordPublicationToggle api={api} recordId={item.recordId} onRelogin={onRelogin} />
             </li>
           ))}
         </ul>
