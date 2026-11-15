@@ -48,6 +48,16 @@ WAIT_INTERVAL_SECONDS = 5.0
 WAIT_ATTEMPTS = 12
 
 
+def parse_registry_arn(registry_arn: str) -> tuple[str, str]:
+    """Registry の ARN から（region, registryId）を取り出す。
+
+    arn:aws:agent-registry:<region>:<account>:registry/<registryId> を想定する。
+    """
+    region = registry_arn.split(":")[3]
+    registry_id = registry_arn.rsplit("/", 1)[1]
+    return region, registry_id
+
+
 def discovery_endpoint(region: str) -> str:
     """発見 API と MCP endpoint のホスト。ポータルの DiscoverySettings と同じ構成。"""
     return f"https://agent-registry.{region}.api.aws"
@@ -64,8 +74,7 @@ def mcp_endpoint_url(registry_arn: str) -> str:
     AWS 文書「Using the Registry MCP endpoint」:
     https://agent-registry.<region>.api.aws/registry/<registryId>/mcp
     """
-    registry_id = registry_arn.rsplit("/", 1)[1]
-    region = registry_arn.split(":")[3]
+    region, registry_id = parse_registry_arn(registry_arn)
     return f"{discovery_endpoint(region)}/registry/{registry_id}/mcp"
 
 
@@ -138,6 +147,8 @@ def mcp_batch_get_call(call_id: int, record_id: str) -> dict[str, Any]:
 
 
 # --- HTTP トランスポート（ポータルの services/http.py と同じ関数型。runbook として単体で動かす） ---
+# services/http.py との重複はレビューで確認済みで、backend パッケージに依存せず単体で
+# 動かすという設計意図のため、意図的に共有せず独立させている。
 
 
 @dataclass(frozen=True)
@@ -194,6 +205,14 @@ class Sighting:
     found: bool
     record_version: str | None
     detail: str  # 人間が読む補足（エラーコード・想定外の理由）
+
+
+@dataclass(frozen=True)
+class Observation:
+    """ある時点での発見 API と MCP endpoint の観測の組。"""
+
+    discovery: Sighting  # 発見 API（BatchGetDiscoverableRegistryRecord）
+    mcp: Sighting  # MCP endpoint（tools/call）
 
 
 def _json_object(raw: bytes | Mapping[str, Any] | None) -> Mapping[str, Any] | None:
@@ -321,6 +340,11 @@ def fetch_access_token(
 # --- 検証の記録 ---
 
 
+def client_error_code(error: ClientError) -> str:
+    """ClientError からエラーコードを取り出す。なければ「不明なエラー」にする。"""
+    return str(error.response.get("Error", {}).get("Code", "不明なエラー"))
+
+
 @dataclass(frozen=True)
 class StatusAttempt:
     """UpdateRegistryRecordStatus(REJECTED) の試行結果。"""
@@ -339,8 +363,8 @@ class CaseResult:
     latest_version: str
     approved_version: str | None
     attempt: StatusAttempt | None
-    before: tuple[Sighting, Sighting]
-    after: tuple[Sighting, Sighting] | None
+    before: Observation
+    after: Observation | None
 
 
 @dataclass(frozen=True)
@@ -454,19 +478,19 @@ class Probes:
             return Sighting("MCP endpoint", False, None, f"HTTP {response.status}")
         return parse_mcp_response(response.body, record_id)
 
-    def observe(self, record_id: str) -> tuple[Sighting, Sighting]:
+    def observe(self, record_id: str) -> Observation:
         """発見 API と MCP endpoint の両方を観測する。"""
-        return (self.batch(record_id), self.mcp(record_id))
+        return Observation(discovery=self.batch(record_id), mcp=self.mcp(record_id))
 
 
 def _attempt_reject(
     control: RegistryControl, probes: Probes, record_id: str, reason: str
-) -> tuple[StatusAttempt, tuple[Sighting, Sighting] | None]:
+) -> tuple[StatusAttempt, Observation | None]:
     """REJECT を試み、受け付け可否と（受理された場合の）観測を返す。"""
     try:
         control.set_status(record_id, "REJECTED", reason)
     except ClientError as error:
-        code = str(error.response.get("Error", {}).get("Code", "不明なエラー"))
+        code = client_error_code(error)
         return StatusAttempt(False, code, f"AWS が拒否しました（{code}）"), None
     control.wait_status(record_id, {"REJECTED"})
     return StatusAttempt(True, None, "受け付けられました"), probes.observe(record_id)
@@ -497,7 +521,7 @@ def run_verification(
             "必要です。自動承認を無効にしてから再実行してください。"
         )
 
-    region = control.registry.split(":")[3]
+    region, _ = parse_registry_arn(control.registry)
     probes = Probes(transport, token, control.registry, region)
     record_id = control.create_record(name, "1.0.0")
     control.wait_status(record_id, {"DRAFT"})
@@ -505,15 +529,15 @@ def run_verification(
     control.wait_status(record_id, {"PENDING_APPROVAL"})
     control.set_status(record_id, "APPROVED", APPROVE_REASON)
     control.wait_status(record_id, {"APPROVED"})
-    baseline_sightings = probes.observe(record_id)
+    baseline_observation = probes.observe(record_id)
     baseline = CaseResult(
         label="事前確認（承認済みのみ）",
         latest_status="APPROVED",
         latest_version="1.0.0",
-        approved_version=baseline_sightings[0].record_version,
+        approved_version=baseline_observation.discovery.record_version,
         attempt=None,
-        before=baseline_sightings,
-        after=baseline_sightings,
+        before=baseline_observation,
+        after=baseline_observation,
     )
 
     notes: list[str] = []
@@ -531,7 +555,7 @@ def run_verification(
             label="A: 最新版 DRAFT",
             latest_status="DRAFT",
             latest_version=version_a,
-            approved_version=before_a[0].record_version,
+            approved_version=before_a.discovery.record_version,
             attempt=attempt_a,
             before=before_a,
             after=after_a,
@@ -553,7 +577,7 @@ def run_verification(
             label="B: 最新版 PENDING_APPROVAL",
             latest_status="PENDING_APPROVAL",
             latest_version=version_b,
-            approved_version=before_b[0].record_version,
+            approved_version=before_b.discovery.record_version,
             attempt=attempt_b,
             before=before_b,
             after=after_b,
@@ -567,7 +591,7 @@ def run_verification(
                 label="C: 最新版 REJECTED",
                 latest_status="REJECTED",
                 latest_version=version_b,
-                approved_version=before_b[0].record_version,
+                approved_version=before_b.discovery.record_version,
                 attempt=None,
                 before=before_b,
                 after=after_b,
@@ -583,7 +607,7 @@ def run_verification(
                 label="C: 最新版 REJECTED",
                 latest_status="PENDING_APPROVAL",
                 latest_version=version_b,
-                approved_version=before_b[0].record_version,
+                approved_version=before_b.discovery.record_version,
                 attempt=None,
                 before=before_b,
                 after=None,
@@ -614,7 +638,7 @@ def cleanup_record(control: RegistryControl, record_id: str) -> str:
     try:
         control.try_delete(record_id)
     except ClientError as error:
-        code = str(error.response.get("Error", {}).get("Code", "不明なエラー"))
+        code = client_error_code(error)
         control.set_status(record_id, "DEPRECATED", CLEANUP_REASON)
         return f"削除は拒否されました（{code}）。DEPRECATED にしました"
     return "削除しました"
@@ -623,10 +647,8 @@ def cleanup_record(control: RegistryControl, record_id: str) -> str:
 # --- レポート整形 ---
 
 
-def _format_sighting(sighting: Sighting | None, approved_version: str | None) -> str:
+def _format_sighting(sighting: Sighting, approved_version: str | None) -> str:
     """観測を表の单元格の文字列にする。承認済み版と異なる版は注記を付ける。"""
-    if sighting is None:
-        return "観測なし"
     if not sighting.found:
         return f"返さなかった（{sighting.detail}）"
     version = sighting.record_version or "不明な版"
@@ -659,13 +681,13 @@ def render_report(report: Report, *, cleanup_note: str) -> str:
         "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for case in (report.baseline, *report.cases):
-        before_api = _format_sighting(case.before[0], case.approved_version)
-        before_mcp = _format_sighting(case.before[1], case.approved_version)
+        before_api = _format_sighting(case.before.discovery, case.approved_version)
+        before_mcp = _format_sighting(case.before.mcp, case.approved_version)
         if case.after is None:
             after_api = after_mcp = "—"
         else:
-            after_api = _format_sighting(case.after[0], case.approved_version)
-            after_mcp = _format_sighting(case.after[1], case.approved_version)
+            after_api = _format_sighting(case.after.discovery, case.approved_version)
+            after_mcp = _format_sighting(case.after.mcp, case.approved_version)
         lines.append(
             f"| {case.label} | {case.latest_status} {case.latest_version} "
             f"| {before_api} | {before_mcp} | {_format_attempt(case.attempt)} "
@@ -746,7 +768,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     """検証を実行し、README に貼れる結果を stdout に出す。実行手順は README を参照。"""
     args = parse_args(argv)
-    region = args.registry_arn.split(":")[3]
+    region, _ = parse_registry_arn(args.registry_arn)
     client = boto3.client("agent-registry-control", region_name=region)
     control = RegistryControl(client, args.registry_arn)
     if args.token is not None:
