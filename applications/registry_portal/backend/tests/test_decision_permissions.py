@@ -84,7 +84,8 @@ def test_module_creates_the_decision_lambda_with_its_own_role_and_log_group():
         "aws_lambda_function",
         "aws_apigatewayv2_integration",
         "aws_apigatewayv2_route",
-        # 審査と決裁、Curator のレコード単位の path（for_each）、回復の path
+        # 審査と決裁、Curator のレコード単位の path（for_each）、管理レコードの検索、回復の path
+        "aws_lambda_permission",
         "aws_lambda_permission",
         "aws_lambda_permission",
         "aws_lambda_permission",
@@ -101,7 +102,7 @@ def test_module_creates_the_decision_lambda_with_its_own_role_and_log_group():
 
 
 def test_module_routes_only_curator_and_recovery_apis_to_the_decision_lambda():
-    """審査・決裁・公開管理・見送りの route と Admin の回復の route だけを決裁 Lambda に割り当てる。
+    """審査・決裁・公開管理・見送り・管理レコードの検索と Admin の回復の route だけを決裁 Lambda に割り当てる。
 
     既存の JWT authorizer を適用し、HTTP API と authorizer は作らない。
     """
@@ -127,6 +128,7 @@ def test_module_routes_only_curator_and_recovery_apis_to_the_decision_lambda():
         "GET /api/reviews/{recordId}",
         "POST /api/reviews/{recordId}/approve",
         "POST /api/reviews/{recordId}/reject",
+        "GET /api/records/publication",
         "GET /api/records/{recordId}/recovery",
         "POST /api/records/{recordId}/recovery",
     ]
@@ -136,11 +138,13 @@ def test_module_routes_only_curator_and_recovery_apis_to_the_decision_lambda():
     # HTTP API と authorizer は借用し、作成しない
     assert 'resource "aws_apigatewayv2_api"' not in main
     assert 'resource "aws_apigatewayv2_authorizer"' not in main
-    # 呼び出し許可は審査と決裁、Curator のレコード単位の path、回復の path だけに限る
+    # 呼び出し許可は審査と決裁、Curator のレコード単位の path、管理レコードの検索、回復の path
+    # だけに限る。検索の path は静的なので完全一致で許可する
     source_arns = re.findall(r"source_arn\s*=\s*\"([^\"]+)\"", main)
     assert [arn.split("/*/*")[1] for arn in source_arns] == [
         "/api/reviews*",
         "/api/records/*/${each.value.path}",
+        "/api/records/publication",
         "/api/records/*/recovery",
     ]
 
