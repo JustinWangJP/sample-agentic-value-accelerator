@@ -208,3 +208,22 @@ it('検索の失敗は0件とは別のエラー表示にして、再試行でき
   expect(calls[1]?.url).toBe('/api/records/publication?name=payment&status=SUSPENDED')
   expect(listItem('決済 Agent').textContent).toContain('公開停止中')
 })
+
+it('次のページを同じ条件の nextToken で読み、最初のページに戻れる', async () => {
+  const calls = await search([
+    jsonResponse(200, { items: [suspendedItem], nextToken: 'token-2' }),
+    jsonResponse(200, { items: [approvedItem], nextToken: null }),
+    jsonResponse(200, { items: [suspendedItem], nextToken: null }),
+  ])
+  expect(buttonIn(container, '最初のページ').disabled).toBe(true)
+  await act(() => buttonIn(container, '次のページ').click())
+  expect(calls[1]?.url).toBe(
+    '/api/records/publication?name=payment&status=SUSPENDED&nextToken=token-2',
+  )
+  expect(listItem('決済 MCP サーバー').textContent).toContain('発見できる版 2.0.0')
+  expect(buttonIn(container, '次のページ').disabled).toBe(true)
+  expect(buttonIn(container, '最初のページ').disabled).toBe(false)
+  await act(() => buttonIn(container, '最初のページ').click())
+  expect(calls[2]?.url).toBe('/api/records/publication?name=payment&status=SUSPENDED')
+  expect(listItem('決済 Agent').textContent).toContain('公開停止中')
+})

@@ -133,6 +133,32 @@ export function RecordPublicationSearch({ api, onRelogin }: Props) {
           ))}
         </ul>
       )}
+      {state.kind === 'ready' && (
+        <nav className="pager" aria-label="管理レコード検索のページ">
+          <button
+            type="button"
+            disabled={token === undefined}
+            onClick={() => {
+              setToken(undefined)
+              setState({ kind: 'loading' })
+            }}
+          >
+            最初のページ
+          </button>
+          <button
+            type="button"
+            disabled={state.page.nextToken === null}
+            onClick={() => {
+              if (state.page.nextToken) {
+                setToken(state.page.nextToken)
+                setState({ kind: 'loading' })
+              }
+            }}
+          >
+            次のページ
+          </button>
+        </nav>
+      )}
     </section>
   )
 }
