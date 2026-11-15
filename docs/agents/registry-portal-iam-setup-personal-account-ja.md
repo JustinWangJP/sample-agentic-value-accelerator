@@ -2,6 +2,8 @@
 
 [Issue #2](https://github.com/JustinWangJP/sample-agentic-value-accelerator/issues/2) の事前準備のうち、IAM ユーザーと IAM ロールの作成だけを扱う手順書です。IAM Identity Center を使わず、個人の AWS アカウント 1 つで作業する場合を対象にします。操作は日本語表示の AWS マネジメントコンソールで行います。
 
+Registry、Cognito、レコードの確認と break-glass の手順は、作成後に[既存の AWS Agent Registry の確認手順](registry-portal-existing-registry-check-ja.md)で行います。
+
 画面の表記は「日本語（English）」の形で示します。コンソールの更新で日本語の表記が変わることがあります（例: 「許可」と「アクセス許可」）。見つからない場合は英語名を手がかりにしてください。
 
 ## 作成するもの
