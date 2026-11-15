@@ -24,7 +24,7 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 | `backend/src/registry_portal/deprecation.py` | Publisher の廃止依頼（管理 handler）と Curator の見送り（決裁 handler）。所有チームの検査、ロックの確認、依頼の保存・解決と操作記録の追記を担う |
 | `backend/src/registry_portal/curation_reads.py` | 審査・決裁・公開管理・廃止依頼が共通で使う Registry と補助ストアの読み取り、レコードの要約、例外（502・404）、Curator の認可 |
 | `backend/src/registry_portal/review_queue.py` | 審査待ちの一覧（申請と未解決の廃止依頼）と審査の詳細 API |
-| `backend/src/registry_portal/publication.py` | Curator の公開管理の照会 API。現在の状態・公開中の版・未解決の廃止依頼・処理中の操作と、実行できる操作（できない理由）を返す |
+| `backend/src/registry_portal/publication.py` | Curator の公開管理の照会 API と管理レコードの検索 API。照会は現在の状態・公開中の版・未解決の廃止依頼・処理中の操作と、実行できる操作（できない理由）を返す。検索は名前の一部と状態で管理下のレコードを探す一覧 |
 | `backend/src/registry_portal/curation.py` | Curator の決裁（公開承認・却下）と公開停止・廃止の実行。対象（申請スナップショットか公開中の現物か）ごとの照合と、共通の手順（意図の記録→AWS→再取得→確定）を担う。決裁 handler と管理 handler の操作照会（`app.py` が操作の種別で振り分ける）の両方から使う |
 | `backend/src/registry_portal/domain/drafts.py` | 下書きのフォーム入力・管理情報のモデル、AWS の作成用・更新用 payload への変換、状態と environment の値。SPA の `frontend/src/drafts/api.ts` と値を揃える |
 | `backend/src/registry_portal/domain/submissions.py` | 申請入力、semver の比較、`isA2A`・公開中の版・関連参照の参照先の検査、申請スナップショットの構築と、保存済みスナップショットからのハッシュの再計算 |
