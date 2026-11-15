@@ -16,6 +16,7 @@ from registry_portal.domain.drafts import (
     IN_FLIGHT_STATUSES,
     PENDING_APPROVAL_STATUS,
     PUBLISHED_STATUS,
+    RECORD_STATUSES,
     REJECT_KIND,
     REJECTED_STATUS,
     SUSPEND_KIND,
@@ -34,6 +35,41 @@ REASON_MAX_LENGTH = 255
 PUBLICATION_ACTIONS: Mapping[str, OperationKind] = {
     "suspend": SUSPEND_KIND,
     "deprecate": DEPRECATE_KIND,
+}
+# 管理レコード検索（GET /api/records/publication）の status の閉じた集合。ポータルの「公開停止中」
+# （管理情報の suspendedVersion で区別する値で、AWS の状態ではない）を先頭に、AWS の状態の語彙
+# （RecordStatus）を続ける。SPA の `PUBLICATION_SEARCH_STATUSES`（frontend/src/publication/api.ts）と
+# 値も並びも揃える
+SuspendedSearchStatus = Literal["SUSPENDED"]
+PublicationSearchStatus = Literal[SuspendedSearchStatus, RecordStatus]
+PUBLICATION_SEARCH_STATUSES: tuple[PublicationSearchStatus, ...] = get_args(PublicationSearchStatus)
+SUSPENDED_SEARCH_STATUS: SuspendedSearchStatus = "SUSPENDED"
+
+
+@dataclass(frozen=True)
+class SearchStatusRule:
+    """管理レコード検索の status 1つ分の規則。AWS に渡す状態と、ポータル側で求める公開停止中の区別。"""
+
+    # AWS の ListRegistryRecords の status フィルターに渡す値。None なら状態では絞り込まない
+    aws_status: RecordStatus | None
+    # 公開停止中（Management.is_suspended）であることを求めるか。None なら問わない
+    suspended: bool | None
+
+    def accepts(self, suspended: bool) -> bool:
+        """AWS から返ったレコードを、公開停止中の区別でポータル側に残すか。"""
+        return self.suspended is None or self.suspended == suspended
+
+
+# status を指定しない検索の規則（状態でも公開停止中の区別でも絞り込まない）
+ANY_STATUS_SEARCH_RULE = SearchStatusRule(aws_status=None, suspended=None)
+# 管理レコード検索の status ごとの規則（README「管理レコードの検索」の表と一致させる）。
+# - SUSPENDED: 管理情報の印で判断するため AWS には状態を渡さず、公開停止中だけを残す
+# - REJECTED: 公開停止中のレコードも AWS では REJECTED になるため、公開停止中を除いて却下済みだけを残す
+# - その他の AWS の状態: AWS の状態との完全一致
+PUBLICATION_SEARCH_RULES: Mapping[str, SearchStatusRule] = {
+    SUSPENDED_SEARCH_STATUS: SearchStatusRule(aws_status=None, suspended=True),
+    **{status: SearchStatusRule(aws_status=status, suspended=None) for status in RECORD_STATUSES},
+    REJECTED_STATUS: SearchStatusRule(aws_status=REJECTED_STATUS, suspended=False),
 }
 
 # 審査待ちの一覧の項目の種別。申請（AWS の承認待ち）と廃止依頼（ポータル内で発生）を並べる。
@@ -132,7 +168,7 @@ class PublicationInput:
 class RecordState:
     """決裁・公開停止・廃止の前提を検査するときの、Registry レコードの現在の状態。
 
-    status は AWS の状態（管理 API が返す最新版）、published_version は発見できる版（なければ None）。
+    status は AWS の状態（管理 API が返す最新版）、published_version は公開中の版（なければ None）。
     """
 
     status: RecordStatus

@@ -2,12 +2,14 @@ import { useState, type FormEvent } from 'react'
 import type { ApiClient } from '../api/client'
 import { RECORD_ID_LENGTH, RECORD_ID_PATTERN } from '../drafts/api'
 import { RecordPublicationPanel } from './RecordPublicationPanel'
+import { RecordPublicationSearch } from './RecordPublicationSearch'
 
 type Props = { api: ApiClient; roles: string[]; onRelogin: () => void }
 
 /**
- * Curator がレコード ID を指定して公開管理を開く入口。公開停止中などカタログに出ないレコードも扱える。
- * 公開中のレコードはカタログの詳細から、廃止依頼は審査待ちの一覧から、同じ公開管理を開ける
+ * Curator が公開管理を開く入口。管理レコードの検索（名前の一部と状態）とレコード ID の指定の2つがあり、
+ * 公開停止中などカタログに出ないレコードも扱える。公開中のレコードはカタログの詳細から、廃止依頼は
+ * 審査待ちの一覧から、同じ公開管理を開ける
  */
 export function RecordPublicationView({ api, roles, onRelogin }: Props) {
   const [recordId, setRecordId] = useState('')
@@ -24,9 +26,10 @@ export function RecordPublicationView({ api, roles, onRelogin }: Props) {
     <section aria-labelledby="publication-heading">
       <h2 id="publication-heading">公開管理</h2>
       <p className="note">
-        レコード ID を指定して、公開停止・廃止・廃止依頼の見送りを行います。公開停止中のレコードは
-        カタログに表示されないため、ここから開いてください。
+        公開停止・廃止・廃止依頼の見送りを行います。公開停止中のレコードはカタログに表示されないため、
+        検索で探すか、レコード ID を指定して開いてください。
       </p>
+      <RecordPublicationSearch api={api} onRelogin={onRelogin} />
       <form onSubmit={open}>
         <label>
           Registry レコード ID

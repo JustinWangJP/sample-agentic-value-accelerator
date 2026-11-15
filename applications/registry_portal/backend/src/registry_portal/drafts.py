@@ -8,7 +8,6 @@ from uuid import uuid4
 from botocore.exceptions import BotoCoreError, ClientError
 
 from registry_portal.auth import Caller, Role
-from registry_portal.domain.catalog import CATALOG_RECORD_TYPES
 from registry_portal.domain.drafts import (
     AWS_FAILED_STATUSES,
     CREATE_KIND,
@@ -46,9 +45,11 @@ from registry_portal.errors import ApiError, ForbiddenError, RequestValidationEr
 from registry_portal.operations import (
     AWS_REJECTED_ERRORS as _AWS_REJECTED_ERRORS,
     AWS_THROTTLED_ERRORS,
+    catalog_record_type_filter,
     check_idempotency_key,
-    check_next_token,
+    check_list_query,
     check_record_id,
+    list_page_params,
     operation_status,
     principal_of,
     record_request_id,
@@ -416,17 +417,11 @@ class RecordDrafts:
 
     def list_drafts(self, caller: Caller, query: Mapping[str, str]) -> tuple[int, dict[str, Any]]:
         require_publisher(caller)
-        if set(query) - {"nextToken"}:
-            raise RequestValidationError("一覧には nextToken のみ指定できます。")
-        token = query.get("nextToken")
-        check_next_token(token)
+        token = check_list_query(query, ("nextToken",))
         params: dict[str, Any] = {
             "registryId": self.registry,
-            "maxResults": 20,
-            "filters": [{"name": "recordType", "values": list(CATALOG_RECORD_TYPES)}],
+            **list_page_params(20, [catalog_record_type_filter()], token),
         }
-        if token is not None:
-            params["nextToken"] = token
         try:
             response = self._registry.list_registry_records(**params)
             items = []

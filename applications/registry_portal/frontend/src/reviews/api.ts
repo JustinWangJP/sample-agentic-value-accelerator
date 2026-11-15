@@ -45,10 +45,10 @@ export type RecordReference = { recordId: string; recordVersion: string }
 export type { Principal }
 
 /**
- * 一覧の項目に共通する、レコードの要約（バックエンドの record_summary（curation_reads.py））と、
- * 一覧と審査で添える処理中の操作（review_queue.py が record_summary に加える operationId）
+ * 審査待ちの一覧・公開管理の照会・管理レコードの検索に共通する、レコードの要約
+ * （バックエンドの record_summary（curation_reads.py））
  */
-type ReviewRecordSummary = {
+export type RecordSummary = {
   recordId: string
   name: string
   displayName: string
@@ -57,6 +57,10 @@ type ReviewRecordSummary = {
   status: RecordStatus
   managed: boolean
   ownerTeam: string | null
+}
+
+/** 一覧と審査で添える処理中の操作（review_queue.py が record_summary に加える operationId） */
+type ReviewRecordSummary = RecordSummary & {
   /** レコードのロックを持つ操作。結果確認中の間は値を持つ */
   operationId: string | null
 }
@@ -197,14 +201,13 @@ function isReferenceList(value: unknown): value is RecordReference[] {
   return Array.isArray(value) && value.every(isReference)
 }
 
-function isRecordSummary(value: Record<string, unknown>): boolean {
+export function isRecordSummary(value: Record<string, unknown>): boolean {
   return (
     hasStrings(value, ['recordId', 'name', 'displayName', 'recordVersion']) &&
     isCatalogRecordType(value.recordType) &&
     isRecordStatus(value.status) &&
     typeof value.managed === 'boolean' &&
-    isStringOrNull(value.ownerTeam) &&
-    isStringOrNull(value.operationId)
+    isStringOrNull(value.ownerTeam)
   )
 }
 function isSubmissionSummary(value: Record<string, unknown>): boolean {
@@ -227,7 +230,13 @@ function isDeprecationRequestSummary(value: Record<string, unknown>): boolean {
 }
 /** 一覧の項目。種別（reviewKind）ごとに必須の項目が異なる（バックエンドの ReviewQueue と揃える） */
 function isReviewItem(value: unknown): value is ReviewItem {
-  if (!isObject(value) || !isReviewKind(value.reviewKind) || !isRecordSummary(value)) return false
+  if (
+    !isObject(value) ||
+    !isReviewKind(value.reviewKind) ||
+    !isRecordSummary(value) ||
+    !isStringOrNull(value.operationId)
+  )
+    return false
   return value.reviewKind === 'SUBMISSION'
     ? isSubmissionSummary(value)
     : isDeprecationRequestSummary(value)
