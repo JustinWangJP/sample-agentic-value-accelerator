@@ -465,9 +465,27 @@ AWS の状態遷移は [Record lifecycle](https://docs.aws.amazon.com/bedrock-ag
 
 - 廃止（`DEPRECATED`）は、どの状態からも遷移でき、元に戻せない終端の状態である（「Any status → DEPRECATED (terminal)」）
 - 承認済みのレコードを一時的に発見できなくするには、却下（`REJECTED`）する。再び発見できるようにするには、編集して再承認する
-- 承認済みのレコードを編集すると新しい `DRAFT` の版ができ、承認済みの版は再承認まで発見 API に残る（二重リビジョン）
+- 承認済みのレコードを編集すると新しい `DRAFT` の版ができ、発見 API と MCP endpoint は再承認まで承認済みの版を返す（二重リビジョン。「Dual-revision behavior」と「Visibility rules」の節が明記）
 
-**実環境で未確認の範囲**: 二重リビジョン（承認済みの版を残したまま、最新の版が `DRAFT`・`PENDING_APPROVAL`・`REJECTED`）のときに却下すると、承認済みの版が発見されなくなるかは、文書に記載がなく、実環境でも確認していません。そのため公開停止は、最新の版が `APPROVED` のときだけ受け付けます。それ以外は 409 で拒否し（AWS での作成・更新が失敗した `CREATE_FAILED`・`UPDATE_FAILED` も同じ。理由には失敗した状態であることを示します）、公開管理の画面に理由と手順を表示します。これは [#33](https://github.com/JustinWangJP/sample-agentic-value-accelerator/issues/33) で実環境の挙動を確かめるまでの暫定の制約で、#13 の受入条件（Curator は理由を付けて公開停止できる）の範囲として Issue #13 で合意しています。#33 の結果に応じて、受付条件を広げるか、この制約を維持します。それまで二重リビジョンのレコードを緊急に止める必要があるときは、審査待ちなら先に申請を却下し、カタログに表示されなくなったかを確かめてください。
+**実環境で未確認の範囲**: Record lifecycle の文書は更新され、編集中（最新の版が `DRAFT`・`PENDING_APPROVAL`）でも発見 API と MCP endpoint が承認済みの版を返すことが明記されました（前項）。それでも、承認済みの版を残したまま最新の版（`DRAFT`・`PENDING_APPROVAL`・`REJECTED`）を `UpdateRegistryRecordStatus`（`REJECTED`）で却下したときの受け付け可否と、承認済みの版の発見への影響は文書に記載がなく、実環境でも確認していません。そのため公開停止は、最新の版が `APPROVED` のときだけ受け付けます。それ以外は 409 で拒否し（AWS での作成・更新が失敗した `CREATE_FAILED`・`UPDATE_FAILED` も同じ。理由には失敗した状態であることを示します）、公開管理の画面に理由と手順を表示します。これは [#33](https://github.com/JustinWangJP/sample-agentic-value-accelerator/issues/33) で実環境の挙動を確かめるまでの暫定の制約で、#13 の受入条件（Curator は理由を付けて公開停止できる）の範囲として Issue #13 で合意しています。#33 の結果に応じて、受付条件を広げるか、この制約を維持します。それまで二重リビジョンのレコードを緊急に止める必要があるときは、審査待ちなら先に申請を却下し、カタログに表示されなくなったかを確かめてください。
+
+### 二重リビジョンの実機検証（#33）
+
+上記の未確認の範囲は、dev 環境で [scripts/verify_suspend_dual_revision.py](scripts/verify_suspend_dual_revision.py) を人間が実行して確認します。ポータルを経由せず、管理 API は boto3（`agent-registry-control`）、発見 API と MCP endpoint は発見用 M2M トークンで HTTP を直接呼びます。MCP endpoint の呼び出しは JSON-RPC 2.0 の `tools/call`（`batch_get_discoverable_registry_record` ツール）で、[Using the Registry MCP endpoint](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-mcp-endpoint.html) の例によります。
+
+- 前提: 対象の Registry は自動承認が無効（手動審査）であること（スクリプトが始めに確認します）。管理 API に必要な IAM 権限（レコードの作成・編集・申請・状態更新・取得・削除）を持つ認証情報を設定しておくこと
+- トークンは `--token`（または環境変数 `SUSPEND_VERIFY_TOKEN`）で直接渡すか、`--token-url`・`--client-id`・`--client-secret`（または `SUSPEND_VERIFY_TOKEN_URL`・`SUSPEND_VERIFY_CLIENT_ID`・`SUSPEND_VERIFY_CLIENT_SECRET`）で client credentials として取得します
+
+```bash
+cd applications/registry_portal/backend
+.venv/bin/python ../scripts/verify_suspend_dual_revision.py \
+  --registry-arn arn:aws:agent-registry:<region>:<account>:registry/<id> \
+  --token <発見用 M2M アクセストークン>
+```
+
+- スクリプトは、固定の prefix（既定 `suspend-verify`）に実行日時を付けた名前のレコードを作り、承認した上で、ケース A（最新版 `DRAFT`）/ B（同 `PENDING_APPROVAL`）/ C（同 `REJECTED`）を順に試します。各ケースで `UpdateRegistryRecordStatus`（`REJECTED`）の受け付け可否と、発見 API（BatchGetDiscoverableRegistryRecord）と MCP endpoint が承認済みの版を返すかを確認します
+- 後始末はレコードの削除（DeleteRegistryRecord）です。削除が状態によって拒否された場合だけ、`DEPRECATED`（不可逆）にします。実行ごとに新しい名前のレコードを作るため、残ったレコードは削除し直さなくても再実行できます
+- stdout に README に貼れる Markdown の表が出力されるので、結果をこの節に貼り付け、受付条件を広げるか維持するかを #33 で判断します（Issue #33 は実証が終わるまでクローズしません）
 
 | API | 内容 |
 | --- | --- |
