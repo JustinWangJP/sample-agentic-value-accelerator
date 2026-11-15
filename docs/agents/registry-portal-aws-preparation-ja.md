@@ -9,6 +9,27 @@
 3. `RegistryPortalDeployer` を作成する IAM Identity Center 管理者、デプロイ担当者、break-glass の運用責任者を確認します。発見用 M2M の認証情報は、既存の管理担当者が扱います。
 4. 人間の作業端末で、`agent-registry-control` に対応した AWS CLI v2、Bash、`jq`、Python 3 を用意します。以降のシェル例は同じ Bash セッションで実行します。コマンドが失敗したら、エラーを確認してから次の手順へ進みます。
 
+### 必要なユーザーとロール
+
+通常の構成で、新規に作成する IAM ユーザーは **0 人**です。AWS を操作する担当者は、組織の IAM Identity Center ユーザーでサインインします。既存のユーザーとグループに担当を割り当てます。
+
+| 用途 | 必要なユーザー・権限・ロール | Issue #2 で行うこと |
+| --- | --- | --- |
+| AWS 環境の確認 | Registry、Cognito、secret のメタデータ、CloudTrail を確認できる担当者と読み取り権限。 | 既存の SSO 権限を確認します。対象が別アカウントにある場合は、そのアカウントの権限を持つ担当者が確認します。 |
+| デプロイ | IAM Identity Center の管理者、デプロイ担当者、専用の permission set `RegistryPortalDeployer`。 | permission set を用意して対象アカウントのデプロイ担当者に割り当てます。既存なら割り当てと明示的な拒否を検証します。対応する `AWSReservedSSO_RegistryPortalDeployer_…` ロールは IAM Identity Center が作成・管理します。 |
+| 緊急対応 | break-glass 用の IAM ロール、利用担当者、承認・監査の担当者。 | `RegistryPortalDeployer` と別のロールを指定します。対象 Registry への必要な権限と監査手順を備えた既存ロールを使えます。該当するロールがなければ新設します。 |
+| ポータルの実行 | 管理 Lambda、決裁 Lambda、イベント処理 Lambda のそれぞれに対応する実行ロール。 | 3 つのロールはポータルのデプロイで用意します。Issue #2 の手作業では作成しません。 |
+
+[IAM Identity Center の permission set と IAM ロール](https://docs.aws.amazon.com/singlesignon/latest/userguide/permissionsetsconcept.html) · [Registry ポータル MVP1 設計書](../../plan/aws-agent-registry-mvp1-design-ja.md) · [ADR-0001](../adr/0001-registry-writes-only-through-portal.md)
+
+### 作成が不要なユーザーとロール
+
+- **確認・デプロイ・通常運用のための IAM ユーザーと長期アクセスキー。** 既存の IAM Identity Center ユーザーを使います。IAM Identity Center の障害時にも緊急対応するなど、組織が IAM ユーザーを必要と判断した場合に限り、後述の作成手順を使います。
+- **`RegistryPortalReadOnly` などの専用読み取り IAM ロール。** 必要な読み取り権限が既存の SSO 割り当てにあれば、追加は不要です。同じアカウントと権限で確認できるサービスには、同じ AWS CLI プロファイルを使えます。
+- **デプロイ用 IAM ロールの手動作成。** `AWSReservedSSO_RegistryPortalDeployer_…` は permission set の割り当てで用意します。
+- **ポータル利用者や M2M クライアント用の IAM ユーザー・ロール。** Viewer、Publisher、Curator、Admin の認証とアプリ内の権限には Cognito を使います。発見用 M2M と CI のポータル API 用の認証にも Cognito クライアントを使います。
+- **GitHub Actions から AWS へデプロイする IAM ロール。** AWS への反映はデプロイ担当者がローカル端末から行います。[ADR-0004](../adr/0004-no-aws-deployment-from-ci.md)
+
 ### AWS CLI プロファイルに使う情報をそろえる
 
 AWS CLI のプロファイルは、接続する AWS アカウントと、そのアカウントで使う権限を名前で選ぶためのローカル設定です。各担当者が自分の作業端末で作成します。事前に次の情報をそろえます。
