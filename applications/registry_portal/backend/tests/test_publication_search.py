@@ -132,3 +132,40 @@ def test_name_filter_matches_name_and_display_name_case_insensitively():
         assert status == 200, body
         assert [item["recordId"] for item in body["items"]] == ["agentABC1234", "mcpEFGH5678I"]
         stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_status_filter_distinguishes_suspension_from_rejection():
+    """status は閉じた集合。SUSPENDED は公開停止中、REJECTED は却下済みだけに一致する。"""
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        decision = decision_for(registry, db)
+        suspended = listed_record("agentABC1234", "payments-agent", status="REJECTED")
+        rejected = listed_record(
+            "mcpEFGH5678I", "logging-mcp", status="REJECTED", record_type="MCP"
+        )
+        draft = listed_record(
+            "sklEFGH5678I", "translate-skill", status="DRAFT", record_type="SKILL"
+        )
+        managed(db, "agentABC1234", suspendedVersion="2.0.0")
+        managed(db, "mcpEFGH5678I")
+        managed(db, "sklEFGH5678I")
+        # SUSPENDED は管理情報の印で判断するため、AWS には状態を渡さない
+        stub_publication_list(stub, [suspended, rejected, draft])
+        status, body = search(decision, {"status": "SUSPENDED"})
+        assert status == 200, body
+        assert [item["recordId"] for item in body["items"]] == ["agentABC1234"]
+        assert body["items"][0]["suspended"] is True
+        assert body["items"][0]["publishedVersion"] is None
+        # REJECTED は AWS の状態で問い合わせ、公開停止中は除外する
+        stub_publication_list(stub, [suspended, rejected], status="REJECTED")
+        status, body = search(decision, {"status": "REJECTED"})
+        assert status == 200, body
+        assert [item["recordId"] for item in body["items"]] == ["mcpEFGH5678I"]
+        assert body["items"][0]["suspended"] is False
+        # それ以外は AWS の状態との完全一致
+        stub_publication_list(stub, [draft], status="DRAFT")
+        status, body = search(decision, {"status": "DRAFT"})
+        assert status == 200, body
+        assert [item["recordId"] for item in body["items"]] == ["sklEFGH5678I"]
+        stub.assert_no_pending_responses()

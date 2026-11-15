@@ -9,7 +9,7 @@ SPA の isPublicationView（frontend/src/publication/api.ts）と揃える。
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 from registry_portal.auth import Caller
 from registry_portal.curation_reads import (
@@ -22,7 +22,7 @@ from registry_portal.curation_reads import (
 )
 from registry_portal.domain.catalog import CATALOG_RECORD_TYPES, display_name
 from registry_portal.domain.curation import PUBLICATION_ACTIONS, precondition_failure
-from registry_portal.domain.drafts import OperationKind
+from registry_portal.domain.drafts import REJECTED_STATUS, RECORD_STATUSES, OperationKind
 from registry_portal.errors import RequestValidationError
 from registry_portal.operations import check_record_id
 
@@ -35,6 +35,30 @@ PUBLICATION_SEARCH_PAGE_SIZE = 20
 # 検索の name に指定できる長さ（AWS の ListRegistryRecords のフィルター値と同じ上限）
 NAME_QUERY_MAX_LENGTH = 255
 _ALLOWED_QUERY_KEYS = {"name", "status", "nextToken"}
+# 検索の status で「公開停止中」を表す、ポータル側の語彙
+SUSPENDED_QUERY_STATUS = "SUSPENDED"
+# 検索の status の閉じた集合。AWS の状態の語彙（domain/drafts.py の RecordStatus、SPA の
+# AWS_RECORD_STATUSES と同じ綴り）に SUSPENDED を加えたもの
+PublicationSearchStatus = Literal[
+    "DRAFT",
+    "PENDING_APPROVAL",
+    "APPROVED",
+    "REJECTED",
+    "DEPRECATED",
+    "CREATING",
+    "UPDATING",
+    "CREATE_FAILED",
+    "UPDATE_FAILED",
+    "SUSPENDED",
+]
+PUBLICATION_SEARCH_STATUSES: tuple[PublicationSearchStatus, ...] = (
+    *RECORD_STATUSES,
+    SUSPENDED_QUERY_STATUS,
+)
+_STATUS_QUERY_ERROR = (
+    "status は DRAFT・PENDING_APPROVAL・APPROVED・REJECTED・DEPRECATED・CREATING・UPDATING・"
+    "CREATE_FAILED・UPDATE_FAILED・SUSPENDED のいずれかを指定してください。"
+)
 
 
 def _action(failure: str | None) -> dict[str, Any]:
@@ -90,21 +114,33 @@ class PublicationSearch:
             raise RequestValidationError(
                 f"name は1〜{NAME_QUERY_MAX_LENGTH}文字で指定してください。"
             )
-        page = self.reads.list_records(
-            maxResults=PUBLICATION_SEARCH_PAGE_SIZE,
-            filters=[{"name": "recordType", "values": list(CATALOG_RECORD_TYPES)}],
-        )
+        status = query.get("status")
+        if status is not None and status not in PUBLICATION_SEARCH_STATUSES:
+            raise RequestValidationError(_STATUS_QUERY_ERROR)
+        filters: list[dict[str, Any]] = [
+            {"name": "recordType", "values": list(CATALOG_RECORD_TYPES)}
+        ]
+        # SUSPENDED は管理情報の印（suspendedVersion）で判断するため AWS には状態を渡せない。
+        # REJECTED は公開停止中のレコードも AWS では REJECTED になるため、ポータル側で除外する
+        if status is not None and status != SUSPENDED_QUERY_STATUS:
+            filters.append({"name": "status", "values": [status]})
+        page = self.reads.list_records(maxResults=PUBLICATION_SEARCH_PAGE_SIZE, filters=filters)
         items: list[dict[str, Any]] = []
         for record in page["registryRecords"]:
             management = self.reads.load_management(str(record["recordId"]))
             if not is_managed(management):
+                continue
+            suspended = management.is_suspended(record)
+            if status == SUSPENDED_QUERY_STATUS and not suspended:
+                continue
+            if status == REJECTED_STATUS and suspended:
                 continue
             if name is not None and not _matches_name(record, name):
                 continue
             items.append(
                 {
                     **record_summary(record, management),
-                    "suspended": management.is_suspended(record),
+                    "suspended": suspended,
                     "publishedVersion": management.published_version(record),
                 }
             )
