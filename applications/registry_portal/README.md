@@ -495,6 +495,8 @@ AWS の状態遷移は [Record lifecycle](https://docs.aws.amazon.com/bedrock-ag
 | `REJECTED` | AWS の状態が `REJECTED` かつ公開停止中ではない（却下済みだけ。公開停止中は含めない） |
 | その他（`DRAFT` / `PENDING_APPROVAL` / `APPROVED` / `DEPRECATED` / `CREATING` / `UPDATING` / `CREATE_FAILED` / `UPDATE_FAILED`） | AWS の状態との完全一致（AWS の `status` フィルターを使用） |
 
+この表の規則（AWS の `status` フィルターに渡す値と、ポータル側で求める公開停止中の区別）は、バックエンドの `PUBLICATION_SEARCH_RULES`（`backend/src/registry_portal/domain/curation.py`）の1か所にまとめてあります。`status` の値を足すときや規則を変えるときは、表と対応表を合わせて直します。
+
 応答は `{ "items": [...], "nextToken": 文字列または null }` です。各項目はレコードの要約（`recordId`・`name`・`displayName`・`recordType`・`recordVersion`・`status`・`managed`・`ownerTeam`）に、公開停止中か（`suspended`）と公開中の版（`publishedVersion`。公開停止中と廃止済みは `null`）を加えたものです。**管理下（managed）のレコードだけを返します。**未管理レコードは Admin の取り込み（#16）の対象のため含めません。
 
 ページングは AWS の `ListRegistryRecords`（`maxResults` 20）の `nextToken` をそのまま中継します。名前の絞り込みと管理下の絞り込みはポータル側で行うため、`items` が0件でも `nextToken` があり得ます（Publisher の下書き一覧と同じ契約。SPA は次のページを促します）。Registry と補助ストアの読み取りに失敗したときは 502 `REGISTRY_UNAVAILABLE` とし、空の結果にはしません。
