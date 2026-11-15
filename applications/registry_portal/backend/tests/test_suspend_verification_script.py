@@ -10,13 +10,17 @@ import json
 
 import boto3
 import pytest
+from botocore.exceptions import EndpointConnectionError
 from botocore.stub import ANY, Stubber
 
 import verify_suspend_dual_revision as verify
+from registry_portal.domain.drafts import RecordDraft
+from registry_portal.services.http import TransportError, TransportResponse
 
 REGISTRY_ARN = "arn:aws:agent-registry:us-east-1:123456789012:registry/abcd0123efgh4567"
 REGISTRY_ID = "abcd0123efgh4567"
 RECORD_ID = "test0123abcd"
+NAME = "suspend-verify-20261115"
 
 
 def registry_client():
@@ -42,45 +46,25 @@ def test_batch_and_mcp_urls_follow_aws_documented_shapes():
     )
 
 
-def test_create_record_payload_matches_create_registry_record():
-    payload = verify.create_record_payload(REGISTRY_ARN, "suspend-verify-20261115", "1.0.0")
-    assert payload["registryId"] == REGISTRY_ARN
-    assert payload["name"] == "suspend-verify-20261115"
-    assert payload["recordType"] == "CUSTOM"
-    assert payload["recordVersion"] == "1.0.0"
-    # custom descriptor は canonical JSON を data に持つ（ポータルの下書きと同じ形）
-    data = json.loads(payload["descriptors"]["custom"]["data"])
-    assert data["purpose"] != ""
-    assert "clientToken" in payload
-    assert payload["customMetadata"]["environment"] == "dev"
+def test_verification_record_is_a_portal_custom_agent_draft():
+    """検証用レコードは、ポータルが作る custom Agent と同じ形（RecordDraft）にする。
 
-
-def test_edit_record_payload_matches_update_registry_record_shape():
-    """編集の payload は、ポータルの RecordDraft.update_payload と同じ構造にする。
-
-    ポータルの実装は AWS の UpdateRegistryRecord の契約に沿って動いているため、
-    optionalValue の入れ子などの構造が一致することが独立した根拠になる。
+    種別・データ分類・environment はポータルの定義に従い、スクリプトに独自の値を持たない。
     """
-    payload = verify.edit_record_payload("1.0.1")
-    # recordVersion はプレーン、他は optionalValue で包む
-    assert payload["recordVersion"] == "1.0.1"
-    assert set(payload) == {
-        "displayName",
-        "description",
-        "recordVersion",
-        "customMetadata",
-        "descriptors",
-    }
-    assert payload["displayName"] == {"optionalValue": verify.DISPLAY_NAME}
-    assert payload["description"] == {"optionalValue": verify.DESCRIPTION}
-    assert set(payload["customMetadata"]["optionalValue"]) == {
-        "environment",
-        "dataClassification",
-    }
-    descriptor = payload["descriptors"]["optionalValue"]["custom"]["optionalValue"]
-    assert set(descriptor) == {"data"}
-    data = json.loads(descriptor["data"]["optionalValue"])
-    assert data == verify.custom_definition()
+    draft = verify.verification_draft(NAME, "1.0.0")
+    assert isinstance(draft, RecordDraft)
+    payload = verify.create_record_payload(REGISTRY_ARN, draft)
+    assert payload["registryId"] == REGISTRY_ARN
+    assert {
+        key: value for key, value in payload.items() if key not in ("registryId", "clientToken")
+    } == (draft.create_payload())
+    assert payload["recordType"] == "AGENT"
+    assert set(payload["descriptors"]) == {"custom"}
+    assert json.loads(payload["descriptors"]["custom"]["data"]) == verify.CUSTOM_DEFINITION
+    assert payload["customMetadata"]["environment"] == "dev"
+    assert payload["customMetadata"]["dataClassification"] == "private"
+    # AWS の clientToken は 33〜256 文字
+    assert 33 <= len(payload["clientToken"]) <= 256
 
 
 def test_mcp_tool_call_is_jsonrpc_tools_call():
@@ -106,65 +90,67 @@ def test_discovery_batch_payload_identifies_the_registry_and_record():
 # --- 応答の解釈 ---
 
 
-def batch_body(version="1.0.0"):
-    record = {
-        "recordId": RECORD_ID,
-        "recordVersion": version,
-        "status": "APPROVED",
-        "name": "suspend-verify-20261115",
-    }
+def batch_body(version="1.0.0", status="APPROVED"):
+    record = {"recordId": RECORD_ID, "recordVersion": version, "status": status, "name": NAME}
     return {"registryRecords": [record], "errors": []}
 
 
-def test_batch_sighting_reads_the_returned_version():
-    sighting = verify.parse_batch_response(batch_body("1.0.0"), RECORD_ID)
-    assert sighting.found is True
-    assert sighting.record_version == "1.0.0"
-
-
-def test_batch_sighting_reports_resource_not_found():
-    body = {
+def error_body(code):
+    return {
         "registryRecords": [],
-        "errors": [
-            {"recordId": RECORD_ID, "errorCode": "RESOURCE_NOT_FOUND", "errorMessage": "not found"}
-        ],
+        "errors": [{"recordId": RECORD_ID, "errorCode": code, "errorMessage": "x"}],
     }
-    sighting = verify.parse_batch_response(body, RECORD_ID)
-    assert sighting.found is False
+
+
+def mcp_body(inner):
+    return {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "content": [{"type": "text", "text": json.dumps(inner, ensure_ascii=False)}],
+            "isError": False,
+        },
+    }
+
+
+def test_batch_sighting_reads_the_returned_version_and_status():
+    sighting = verify.parse_batch_response(batch_body("1.0.0"), RECORD_ID)
+    assert sighting.outcome == verify.FOUND
+    assert sighting.record_version == "1.0.0"
+    assert sighting.status == "APPROVED"
+    assert sighting.source == verify.DISCOVERY_SOURCE
+
+
+def test_batch_sighting_treats_only_resource_not_found_as_absent():
+    # ポータルの発見アダプターと同じく、RESOURCE_NOT_FOUND だけを「発見できない」とする
+    sighting = verify.parse_batch_response(error_body("RESOURCE_NOT_FOUND"), RECORD_ID)
+    assert sighting.outcome == verify.ABSENT
     assert sighting.record_version is None
     assert "RESOURCE_NOT_FOUND" in sighting.detail
+    # それ以外のエラーコードは判定できなかったものとして区別する
+    sighting = verify.parse_batch_response(error_body("ACCESS_DENIED"), RECORD_ID)
+    assert sighting.outcome == verify.FAILED
+    assert "ACCESS_DENIED" in sighting.detail
 
 
-def test_batch_sighting_reports_unexpected_shapes_and_http_errors():
-    # 形の異なる応答は「見つからない」にせず、想定外として区別する
-    sighting = verify.parse_batch_response({"unexpected": True}, RECORD_ID)
-    assert sighting.found is False and "想定外" in sighting.detail
-    # bytes（HTTP 応答本文）も同じ扱い
-    sighting = verify.parse_batch_response(b"not json", RECORD_ID)
-    assert sighting.found is False and "想定外" in sighting.detail
+def test_batch_sighting_reports_unexpected_shapes_as_failed():
+    # 形の異なる応答・対象を含まない応答は「見つからない」にせず、判定できなかったとして区別する
+    for body in ({"unexpected": True}, b"not json", {"registryRecords": [], "errors": []}):
+        sighting = verify.parse_batch_response(body, RECORD_ID)
+        assert sighting.outcome == verify.FAILED
 
 
 def test_mcp_sighting_reads_the_tool_result_text():
     # MCP endpoint は result.content[].text に JSON を返す。batch と同じ中身と仮定して解釈する
-    body = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "result": {
-            "content": [
-                {
-                    "type": "text",
-                    "text": json.dumps(batch_body("1.0.0"), ensure_ascii=False),
-                }
-            ],
-            "isError": False,
-        },
-    }
-    sighting = verify.parse_mcp_response(body, RECORD_ID)
-    assert sighting.found is True
+    sighting = verify.parse_mcp_response(mcp_body(batch_body("1.0.0")), RECORD_ID)
+    assert sighting.outcome == verify.FOUND
     assert sighting.record_version == "1.0.0"
+    assert sighting.source == verify.MCP_SOURCE
+    sighting = verify.parse_mcp_response(mcp_body(error_body("RESOURCE_NOT_FOUND")), RECORD_ID)
+    assert sighting.outcome == verify.ABSENT
 
 
-def test_mcp_sighting_reports_tool_errors_and_plain_text():
+def test_mcp_sighting_reports_tool_errors_and_plain_text_as_failed():
     # ツールがエラーを返した場合（isError: true）は本文をそのまま記録する
     body = {
         "jsonrpc": "2.0",
@@ -175,16 +161,16 @@ def test_mcp_sighting_reports_tool_errors_and_plain_text():
         },
     }
     sighting = verify.parse_mcp_response(body, RECORD_ID)
-    assert sighting.found is False
+    assert sighting.outcome == verify.FAILED
     assert "Error: Invalid request parameters" in sighting.detail
     # JSON-RPC の error も記録する
     rpc_error = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "x"}}
     sighting = verify.parse_mcp_response(rpc_error, RECORD_ID)
-    assert sighting.found is False
+    assert sighting.outcome == verify.FAILED and "JSON-RPC" in sighting.detail
     # text が JSON でなければ生の本文を記録する
     body["result"]["isError"] = False
     sighting = verify.parse_mcp_response(body, RECORD_ID)
-    assert sighting.found is False
+    assert sighting.outcome == verify.FAILED
     assert "Error: Invalid request parameters" in sighting.detail
 
 
@@ -208,28 +194,119 @@ def test_parse_token_response_returns_the_access_token():
         verify.parse_token_response(b'{"error": "invalid_client"}')
 
 
+# --- 発見 API と MCP endpoint の観測（フェイクの transport） ---
+
+
+class FakeTransport:
+    """URL ごとに並べた応答（または例外）を順に返し、呼び出しを記録するフェイク。"""
+
+    def __init__(self):
+        self.calls: list[tuple[str, str, dict, bytes]] = []
+        self.responses: dict[str, list[TransportResponse | Exception]] = {}
+
+    def queue(self, url_suffix: str, response: TransportResponse | Exception) -> "FakeTransport":
+        self.responses.setdefault(url_suffix, []).append(response)
+        return self
+
+    def __call__(self, method, url, headers, body, timeout):
+        self.calls.append((method, url, dict(headers), body))
+        for suffix, pending in self.responses.items():
+            if url.endswith(suffix) and pending:
+                response = pending.pop(0)
+                if isinstance(response, Exception):
+                    raise response
+                return response
+        raise AssertionError(f"フェイクが想定していない URL です: {url}")
+
+    def calls_to(self, suffix):
+        return [call for call in self.calls if call[1].endswith(suffix)]
+
+
+def json_http_response(payload) -> TransportResponse:
+    return TransportResponse(200, json.dumps(payload, ensure_ascii=False).encode())
+
+
+def sighting_responses(transport, version):
+    """発見 API と MCP endpoint が指定の版を返す応答を1回分並べる。"""
+    transport.queue("/discoverable-records-batch", json_http_response(batch_body(version)))
+    transport.queue("/mcp", json_http_response(mcp_body(batch_body(version))))
+
+
+def settled_sightings(transport, version):
+    """観測が安定する（2回続けて同じ結果になる）だけの応答を並べる。"""
+    sighting_responses(transport, version)
+    sighting_responses(transport, version)
+
+
+def make_probes(transport, sleeps=None):
+    return verify.Probes(
+        transport,
+        "token-value",
+        REGISTRY_ARN,
+        settle_seconds=7.0,
+        sleep=(sleeps.append if sleeps is not None else lambda _: None),
+    )
+
+
+def test_observe_waits_and_repeats_until_two_observations_agree():
+    transport = FakeTransport()
+    sleeps: list[float] = []
+    # 反映の途中で 1 回目だけ古い版が返り、2・3 回目が一致する
+    sighting_responses(transport, "1.0.0")
+    settled_sightings(transport, "1.0.1")
+    observation = make_probes(transport, sleeps).observe(RECORD_ID)
+    assert observation.stable is True
+    assert observation.discovery.record_version == "1.0.1"
+    # 観測の前ごとに settle_seconds 待つ
+    assert sleeps == [7.0, 7.0, 7.0]
+    assert all(call[2]["authorization"] == "Bearer token-value" for call in transport.calls)
+
+
+def test_observe_marks_unstable_observations():
+    transport = FakeTransport()
+    for version in ("1.0.0", "1.0.1", "1.0.2"):
+        sighting_responses(transport, version)
+    observation = make_probes(transport).observe(RECORD_ID)
+    assert observation.stable is False
+    assert observation.discovery.record_version == "1.0.2"
+
+
+def test_probes_turn_transport_failures_and_http_errors_into_failed_sightings():
+    transport = FakeTransport()
+    transport.queue("/discoverable-records-batch", TransportError("URLError"))
+    transport.queue("/mcp", TransportResponse(406, b"Not Acceptable"))
+    probes = make_probes(transport)
+    discovery = probes.discovery_api(RECORD_ID)
+    assert discovery.outcome == verify.FAILED and "URLError" in discovery.detail
+    mcp = probes.mcp_endpoint(RECORD_ID)
+    # 200 以外は本文も捨てずに記録する
+    assert mcp.outcome == verify.FAILED and mcp.detail == "HTTP 406: Not Acceptable"
+
+
+def test_http_error_detail_prefers_json_messages_and_truncates_long_bodies():
+    body = json.dumps({"message": "Session ID required"}).encode()
+    assert verify.http_error_detail(400, body) == "HTTP 400: Session ID required"
+    long_text = ("x" * (verify.ERROR_EXCERPT_LIMIT + 50)).encode()
+    detail = verify.http_error_detail(500, long_text)
+    assert detail.startswith("HTTP 500: xxx") and detail.endswith("…")
+    assert len(detail) == len("HTTP 500: ") + verify.ERROR_EXCERPT_LIMIT + 1
+    assert verify.http_error_detail(502, b"") == "HTTP 502"
+
+
 # --- ケース A/B/C のシーケンス（boto3 は Stubber、HTTP はフェイクに差し替える） ---
 
-NAME = "suspend-verify-20261115"
 RECORD_ARN = f"{REGISTRY_ARN}/record/{RECORD_ID}"
 GET_PARAMS = {"registryId": REGISTRY_ARN, "recordId": RECORD_ID}
-APPROVE_REASON = "Issue #33 の検証のため承認する"
-REJECT_REASON = "Issue #33 の検証のため却下する"
 
 
 def aws_record(status, version):
+    payload = verify.verification_draft(NAME, version).create_payload()
     return {
+        **payload,
         "registryArn": REGISTRY_ARN,
         "recordArn": RECORD_ARN,
         "recordId": RECORD_ID,
-        "name": NAME,
-        "displayName": verify.DISPLAY_NAME,
-        "description": verify.DESCRIPTION,
-        "recordType": "CUSTOM",
-        "recordVersion": version,
         "status": status,
-        "descriptors": {"custom": {"data": json.dumps(verify.custom_definition())}},
-        "customMetadata": {"environment": "dev", "dataClassification": "private"},
         "createdAt": "2026-11-15T00:00:00Z",
         "updatedAt": "2026-11-15T00:00:00Z",
     }
@@ -264,57 +341,15 @@ def mutate_response(status="UPDATING"):
         "recordArn": RECORD_ARN,
         "recordId": RECORD_ID,
         "name": NAME,
-        "recordType": "CUSTOM",
+        "recordType": "AGENT",
         "status": status,
         "createdAt": "2026-11-15T00:00:00Z",
         "updatedAt": "2026-11-15T00:00:00Z",
     }
 
 
-class FakeTransport:
-    """URL ごとに並べた応答を順に返し、呼び出しを記録するフェイク。"""
-
-    def __init__(self):
-        self.calls: list[tuple[str, str, dict, bytes]] = []
-        self.responses: dict[str, list[verify.TransportResponse]] = {}
-
-    def queue(self, url_suffix: str, response: verify.TransportResponse) -> "FakeTransport":
-        self.responses.setdefault(url_suffix, []).append(response)
-        return self
-
-    def __call__(self, method, url, headers, body, timeout):
-        self.calls.append((method, url, dict(headers), body))
-        for suffix, pending in self.responses.items():
-            if url.endswith(suffix) and pending:
-                return pending.pop(0)
-        raise AssertionError(f"フェイクが想定していない URL です: {url}")
-
-
-def json_http_response(payload) -> verify.TransportResponse:
-    return verify.TransportResponse(200, json.dumps(payload, ensure_ascii=False).encode())
-
-
-def sighting_responses(transport, version):
-    """発見 API と MCP endpoint が承認済み版を返す応答を並べる。"""
-    transport.queue("/discoverable-records-batch", json_http_response(batch_body(version)))
-    transport.queue(
-        "/mcp",
-        json_http_response(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "result": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": json.dumps(batch_body(version), ensure_ascii=False),
-                        }
-                    ],
-                    "isError": False,
-                },
-            }
-        ),
-    )
+def stub_get(stub, status, version):
+    stub.add_response("get_registry_record", aws_record(status, version), GET_PARAMS)
 
 
 def stub_status(stub, target, reason, error=None):
@@ -325,26 +360,17 @@ def stub_status(stub, target, reason, error=None):
     stub.add_response("update_registry_record_status", status_response(target, reason), params)
 
 
-def stub_edit(stub, version):
+def stub_new_revision(stub, version):
+    """編集して最新版を DRAFT にする（ポータルの update_payload と同じ引数）。"""
     stub.add_response(
         "update_registry_record",
         mutate_response(),
-        {
-            **GET_PARAMS,
-            "displayName": {"optionalValue": verify.DISPLAY_NAME},
-            "description": {"optionalValue": verify.DESCRIPTION},
-            "recordVersion": version,
-            "customMetadata": {
-                "optionalValue": {"environment": "dev", "dataClassification": "private"}
-            },
-            "descriptors": {
-                "optionalValue": {"custom": {"optionalValue": {"data": {"optionalValue": ANY}}}}
-            },
-        },
+        {**GET_PARAMS, **verify.verification_draft(NAME, version).update_payload()},
     )
+    stub_get(stub, "DRAFT", version)
 
 
-def stub_submit(stub):
+def stub_submit(stub, version):
     stub.add_response(
         "submit_registry_record_for_approval",
         {
@@ -356,187 +382,248 @@ def stub_submit(stub):
         },
         GET_PARAMS,
     )
+    stub_get(stub, "PENDING_APPROVAL", version)
 
 
-def stub_setup(stub):
-    """検証用レコードを作り、承認してベースラインの観測を作る応答を並べる。"""
+def stub_approve(stub, version):
+    stub_status(stub, "APPROVED", verify.APPROVE_REASON)
+    stub_get(stub, "APPROVED", version)
+
+
+def stub_reject(stub, version, error=None, resulting_status="REJECTED"):
+    """REJECT の試行。受理後の読み直しは resulting_status になるまで（ならなければ上限まで）続く。"""
+    stub_status(stub, "REJECTED", verify.REJECT_REASON, error=error)
+    if error is not None:
+        return
+    reads = 1 if resulting_status == "REJECTED" else verify.WAIT_ATTEMPTS
+    for _ in range(reads):
+        stub_get(stub, resulting_status, version)
+
+
+def stub_baseline(stub, transport):
+    """作成済みのレコード（1.0.0）を公開承認し、事前確認の観測までの応答を並べる。"""
+    stub_get(stub, "DRAFT", "1.0.0")
+    stub_submit(stub, "1.0.0")
+    stub_approve(stub, "1.0.0")
+    settled_sightings(transport, "1.0.0")
+
+
+def stub_through_case_b(stub, transport, *, a_error=None, b_error=None, a_status="REJECTED"):
+    """事前確認 → ケース A → 公開承認済みの版の作り直し → ケース B までの応答を並べる。
+
+    版は 1.0.0（事前確認）、1.0.1（A）、1.0.2（作り直し）、1.0.3（B）。
+    a_status は、A の REJECT が受理された後に管理 API が返す最新版の状態。
+    """
+    stub_baseline(stub, transport)
+    # ケース A: 編集して DRAFT にし、REJECT を試みる
+    stub_new_revision(stub, "1.0.1")
+    settled_sightings(transport, "1.0.0")  # REJECT 前
+    stub_reject(stub, "1.0.1", error=a_error, resulting_status=a_status)
+    if a_error is None:
+        settled_sightings(transport, "1.0.0")  # REJECT 後
+    # 公開承認済みの版を作り直す
+    stub_new_revision(stub, "1.0.2")
+    stub_submit(stub, "1.0.2")
+    stub_approve(stub, "1.0.2")
+    # ケース B: 編集して申請し、REJECT を試みる
+    stub_new_revision(stub, "1.0.3")
+    stub_submit(stub, "1.0.3")
+    settled_sightings(transport, "1.0.2")  # REJECT 前
+    stub_reject(stub, "1.0.3", error=b_error)
+    if b_error is None:
+        settled_sightings(transport, "1.0.2")  # REJECT 後
+
+
+def run(stub, control, transport):
+    with stub:
+        report = verify.run_verification(control, make_probes(transport), NAME, RECORD_ID)
+        stub.assert_no_pending_responses()
+    return report
+
+
+def make_control():
+    registry = registry_client()
+    return Stubber(registry), verify.RegistryControl(registry, REGISTRY_ARN, sleep=lambda _: None)
+
+
+def test_create_verification_record_checks_manual_approval_then_creates():
+    stub, control = make_control()
     stub.add_response("get_registry", registry_info(), {"registryId": REGISTRY_ARN})
     stub.add_response(
         "create_registry_record",
         {"recordArn": RECORD_ARN, "status": "CREATING"},
         {
             "registryId": REGISTRY_ARN,
-            "name": NAME,
-            "displayName": verify.DISPLAY_NAME,
-            "description": verify.DESCRIPTION,
-            "recordType": "CUSTOM",
-            "recordVersion": "1.0.0",
-            "descriptors": {"custom": {"data": ANY}},
-            "customMetadata": {"environment": "dev", "dataClassification": "private"},
+            **verify.verification_draft(NAME, verify.INITIAL_VERSION).create_payload(),
             "clientToken": ANY,
         },
     )
-    stub.add_response("get_registry_record", aws_record("DRAFT", "1.0.0"), GET_PARAMS)
-    stub_submit(stub)
-    stub.add_response("get_registry_record", aws_record("PENDING_APPROVAL", "1.0.0"), GET_PARAMS)
-    stub_status(stub, "APPROVED", APPROVE_REASON)
-    stub.add_response("get_registry_record", aws_record("APPROVED", "1.0.0"), GET_PARAMS)
-
-
-def stub_reapprove(stub, version):
-    """承認済み版を作り直す応答を並べる（編集 → 申請 → 承認）。"""
-    stub_edit(stub, version)
-    stub.add_response("get_registry_record", aws_record("DRAFT", version), GET_PARAMS)
-    stub_submit(stub)
-    stub.add_response("get_registry_record", aws_record("PENDING_APPROVAL", version), GET_PARAMS)
-    stub_status(stub, "APPROVED", APPROVE_REASON)
-    stub.add_response("get_registry_record", aws_record("APPROVED", version), GET_PARAMS)
-
-
-def make_control():
-    registry = registry_client()
-    stub = Stubber(registry)
-    control = verify.RegistryControl(registry, REGISTRY_ARN)
-    return registry, stub, control
-
-
-def test_run_verification_executes_cases_when_rejections_are_accepted():
-    registry, stub, control = make_control()
-    transport = FakeTransport()
-    stub_setup(stub)
-    sighting_responses(transport, "1.0.0")  # ベースライン
-    # ケース A: 編集して DRAFT にする
-    stub_edit(stub, "1.0.1")
-    stub.add_response("get_registry_record", aws_record("DRAFT", "1.0.1"), GET_PARAMS)
-    sighting_responses(transport, "1.0.0")  # REJECT 前
-    stub_status(stub, "REJECTED", REJECT_REASON)
-    stub.add_response("get_registry_record", aws_record("REJECTED", "1.0.1"), GET_PARAMS)
-    sighting_responses(transport, "1.0.0")  # REJECT 後（承認済み版が消えるか）
-    # 復旧: 新しい版を承認し直す
-    stub_reapprove(stub, "1.0.2")
-    # ケース B: 編集して申請する（PENDING_APPROVAL）
-    stub_edit(stub, "1.0.3")
-    stub.add_response("get_registry_record", aws_record("DRAFT", "1.0.3"), GET_PARAMS)
-    stub_submit(stub)
-    stub.add_response("get_registry_record", aws_record("PENDING_APPROVAL", "1.0.3"), GET_PARAMS)
-    sighting_responses(transport, "1.0.2")  # REJECT 前
-    stub_status(stub, "REJECTED", REJECT_REASON)
-    stub.add_response("get_registry_record", aws_record("REJECTED", "1.0.3"), GET_PARAMS)
-    sighting_responses(transport, "1.0.2")  # REJECT 後（ケース C の観測を兼ねる）
-
     with stub:
-        report = verify.run_verification(control, transport, NAME, token="token-value")
+        assert verify.create_verification_record(control, NAME) == RECORD_ID
         stub.assert_no_pending_responses()
 
-    # ベースライン: 承認した版が発見 API と MCP endpoint の両方に現れる
-    assert report.baseline.after.discovery.record_version == "1.0.0"
-    assert report.baseline.after.mcp.record_version == "1.0.0"
-    # ケース A: 最新版 DRAFT への REJECT は受け付けられ、承認済み版の観測を記録する
-    case_a = report.cases[0]
-    assert "DRAFT" in case_a.label
-    assert case_a.attempt is not None and case_a.attempt.accepted is True
-    assert case_a.before.discovery.record_version == "1.0.0"
+
+def test_run_verification_attempts_reject_in_every_case_when_accepted():
+    stub, control = make_control()
+    transport = FakeTransport()
+    stub_through_case_b(stub, transport)
+    # ケース C: B の受理で最新版 REJECTED。公開承認済みの版の発見を見て、さらに REJECT を試みる
+    settled_sightings(transport, "1.0.2")  # REJECT 前（新しい版を却下した後）
+    stub_reject(stub, "1.0.3")
+    settled_sightings(transport, "1.0.2")  # REJECT 後
+
+    report = run(stub, control, transport)
+
+    # ベースライン: 公開承認した版が発見 API と MCP endpoint の両方に現れる
+    assert report.baseline.before.discovery.record_version == "1.0.0"
+    assert report.baseline.before.mcp.record_version == "1.0.0"
+    assert report.baseline.after is None
+    assert report.baseline is not None
+    case_a, case_b, case_c = report.cases
+    # 公開承認済みの版は、観測ではなくスクリプトが公開承認した版
+    assert case_a.revision == verify.RevisionState("DRAFT", "1.0.1", "1.0.0")
+    assert case_a.attempt == verify.StatusAttempt(True, resulting_status="REJECTED")
     assert case_a.after is not None and case_a.after.discovery.record_version == "1.0.0"
-    # ケース B: 最新版 PENDING_APPROVAL への REJECT
-    case_b = report.cases[1]
-    assert "PENDING_APPROVAL" in case_b.label
-    assert case_b.attempt is not None and case_b.attempt.accepted is True
-    assert case_b.before.discovery.record_version == "1.0.2"
-    assert case_b.after is not None and case_b.after.mcp.record_version == "1.0.2"
-    # ケース C: 最新版 REJECTED のときの観測（B の受理後に見たもの）
-    case_c = report.cases[2]
-    assert "REJECTED" in case_c.label
-    assert case_c.attempt is None
-    assert case_c.after is not None and case_c.after.discovery.record_version == "1.0.2"
-    # 発見 API と MCP endpoint の宛先と認証
-    batch_calls = [c for c in transport.calls if c[1].endswith("/discoverable-records-batch")]
-    mcp_calls = [c for c in transport.calls if c[1].endswith("/mcp")]
-    assert len(batch_calls) == 5 and len(mcp_calls) == 5
-    assert all(c[2]["authorization"] == "Bearer token-value" for c in transport.calls)
+    assert case_b.revision == verify.RevisionState("PENDING_APPROVAL", "1.0.3", "1.0.2")
+    assert case_b.attempt is not None and case_b.attempt.reached_rejected is True
+    # ケース C も REJECT（公開停止）を試み、受付可否を記録する
+    assert case_c.revision == verify.RevisionState("REJECTED", "1.0.3", "1.0.2")
+    assert case_c.attempt is not None and case_c.attempt.accepted is True
+    assert case_c.before.discovery.record_version == "1.0.2"
+    assert case_c.after is not None
+    assert report.notes == ()
+    # 観測は 7 回（ベースライン・A 前後・B 前後・C 前後）、それぞれ安定するまで 2 回ずつ問い合わせる
+    assert len(transport.calls_to("/discoverable-records-batch")) == 14
+    assert len(transport.calls_to("/mcp")) == 14
 
 
-def test_run_verification_uses_case_a_observation_for_c_when_only_b_is_rejected():
-    """B の REJECT が拒否されても、A の受理で同じ状態（最新版 REJECTED）が観測できていれば C に記録する。"""
-    registry, stub, control = make_control()
+def test_run_verification_recreates_case_c_by_case_a_route_when_only_b_is_rejected():
+    """B の REJECT が拒否されても A が受理されていれば、A と同じ手順で C の状態を作って試す。"""
+    stub, control = make_control()
     transport = FakeTransport()
-    stub_setup(stub)
-    sighting_responses(transport, "1.0.0")  # ベースライン
-    # ケース A: REJECT は受け付けられ、REJECTED 後の観測も取れている
-    stub_edit(stub, "1.0.1")
-    stub.add_response("get_registry_record", aws_record("DRAFT", "1.0.1"), GET_PARAMS)
-    sighting_responses(transport, "1.0.0")  # REJECT 前
-    stub_status(stub, "REJECTED", REJECT_REASON)
-    stub.add_response("get_registry_record", aws_record("REJECTED", "1.0.1"), GET_PARAMS)
-    sighting_responses(transport, "1.0.0")  # REJECT 後
-    # 復旧: 新しい版を承認し直す
-    stub_reapprove(stub, "1.0.2")
-    # ケース B: 申請してから REJECT を試みるが、こちらは拒否される
-    stub_edit(stub, "1.0.3")
-    stub.add_response("get_registry_record", aws_record("DRAFT", "1.0.3"), GET_PARAMS)
-    stub_submit(stub)
-    stub.add_response("get_registry_record", aws_record("PENDING_APPROVAL", "1.0.3"), GET_PARAMS)
-    sighting_responses(transport, "1.0.2")  # REJECT 前
-    stub_status(stub, "REJECTED", REJECT_REASON, error="ConflictException")
+    stub_through_case_b(stub, transport, b_error="ConflictException")
+    # B の版（審査待ち）を公開承認し、下書きの版を作って却下する
+    stub_approve(stub, "1.0.3")
+    stub_new_revision(stub, "1.0.4")
+    stub_reject(stub, "1.0.4")
+    # ケース C
+    settled_sightings(transport, "1.0.3")
+    stub_reject(stub, "1.0.4", error="ConflictException")
 
-    with stub:
-        report = verify.run_verification(control, transport, NAME, token="token-value")
-        stub.assert_no_pending_responses()
+    report = run(stub, control, transport)
 
     case_a, case_b, case_c = report.cases
     assert case_a.attempt is not None and case_a.attempt.accepted is True
-    assert case_b.attempt is not None and case_b.attempt.accepted is False
-    # ケース C は A の却下で作られた状態（A の REJECT 後の観測）から記録する
-    assert case_c.attempt is None
-    assert case_c.latest_version == "1.0.1"
-    assert case_c.after is not None and case_c.after.discovery.record_version == "1.0.0"
-    assert any("A の却下で作られた状態" in note for note in report.notes)
-    assert not any("作れませんでした" in note for note in report.notes)
-
-
-def test_run_verification_records_rejected_status_updates_without_after_sightings():
-    registry, stub, control = make_control()
-    transport = FakeTransport()
-    stub_setup(stub)
-    sighting_responses(transport, "1.0.0")
-    # ケース A: REJECT が受け付けられない（ConflictException）
-    stub_edit(stub, "1.0.1")
-    stub.add_response("get_registry_record", aws_record("DRAFT", "1.0.1"), GET_PARAMS)
-    sighting_responses(transport, "1.0.0")
-    stub_status(stub, "REJECTED", REJECT_REASON, error="ConflictException")
-    # 復旧: DRAFT のままなので、編集して承認し直す
-    stub_reapprove(stub, "1.0.2")
-    # ケース B: 申請してから REJECT を試みるが、やはり受け付けられない
-    stub_edit(stub, "1.0.3")
-    stub.add_response("get_registry_record", aws_record("DRAFT", "1.0.3"), GET_PARAMS)
-    stub_submit(stub)
-    stub.add_response("get_registry_record", aws_record("PENDING_APPROVAL", "1.0.3"), GET_PARAMS)
-    sighting_responses(transport, "1.0.2")
-    stub_status(stub, "REJECTED", REJECT_REASON, error="ConflictException")
-
-    with stub:
-        report = verify.run_verification(control, transport, NAME, token="token-value")
-        stub.assert_no_pending_responses()
-
-    case_a, case_b, case_c = report.cases
-    assert case_a.attempt is not None and case_a.attempt.accepted is False
-    assert case_a.attempt.error_code == "ConflictException"
-    assert case_a.after is None  # 受け付けられていないため、REJECT 後の観測はない
     assert case_b.attempt is not None and case_b.attempt.accepted is False
     assert case_b.after is None
-    # ケース C の状態（最新版 REJECTED）は作れなかったことを記録する
+    assert case_c.revision == verify.RevisionState("REJECTED", "1.0.4", "1.0.3")
+    assert case_c.attempt is not None and case_c.attempt.error_code == "ConflictException"
     assert case_c.after is None
+    assert any("A と同じ手順" in note for note in report.notes)
+
+
+def test_run_verification_records_when_case_c_cannot_be_recreated():
+    stub, control = make_control()
+    transport = FakeTransport()
+    stub_through_case_b(stub, transport, b_error="ConflictException")
+    stub_approve(stub, "1.0.3")
+    stub_new_revision(stub, "1.0.4")
+    stub_reject(stub, "1.0.4", error="ValidationException")
+
+    report = run(stub, control, transport)
+
+    # 状態を作れなかったケース C は行にせず、備考に理由を残す
+    assert [case.label for case in report.cases] == [
+        "A: 最新版 DRAFT",
+        "B: 最新版 PENDING_APPROVAL",
+    ]
+    assert any(
+        "作れませんでした" in note and "ValidationException" in note for note in report.notes
+    )
+
+
+def test_run_verification_skips_case_c_when_both_rejections_are_refused():
+    stub, control = make_control()
+    transport = FakeTransport()
+    stub_through_case_b(stub, transport, a_error="ConflictException", b_error="ConflictException")
+
+    report = run(stub, control, transport)
+
+    case_a, case_b = report.cases
+    assert case_a.attempt is not None and case_a.attempt.error_code == "ConflictException"
+    assert case_a.after is None  # 受け付けられていないため、REJECT 後の観測はない
+    assert case_b.attempt is not None and case_b.attempt.accepted is False
     assert any("作れませんでした" in note for note in report.notes)
 
 
-def test_run_verification_stops_when_auto_approval_is_enabled():
-    registry, stub, control = make_control()
+def test_run_verification_records_acceptance_that_leaves_latest_not_rejected(monkeypatch):
+    """REJECT が受理されても最新版が REJECTED にならない（公開承認済みの版の側が却下された可能性）。
+
+    これは検証で知りたい結果の一つのため、例外で止めずに記録して先へ進む。
+    """
+    monkeypatch.setattr(verify, "WAIT_ATTEMPTS", 2)
+    stub, control = make_control()
     transport = FakeTransport()
+    stub_through_case_b(stub, transport, a_status="DRAFT", b_error="ConflictException")
+
+    report = run(stub, control, transport)
+
+    case_a, case_b = report.cases
+    assert case_a.attempt == verify.StatusAttempt(True, resulting_status="DRAFT")
+    assert case_a.attempt.reached_rejected is False
+    assert case_a.after is not None  # 受理されたため、受け付け後の観測は残す
+    assert case_b.attempt is not None and case_b.attempt.accepted is False
+    # A・B のどちらでも最新版が REJECTED にならなければ、ケース C の状態は作れない
+    assert any("REJECTED にならなかった" in note for note in report.notes)
+    line = next(line for line in verify.render_report(report).splitlines() if "| A:" in line)
+    assert "受け付けられた（最新版の状態は DRAFT。REJECTED になりませんでした）" in line
+
+
+def test_run_verification_keeps_partial_results_when_interrupted():
+    """途中で例外が起きても、それまでの結果と中断の理由を Report に残す。"""
+    stub, control = make_control()
+    transport = FakeTransport()
+    stub_baseline(stub, transport)
+    stub.add_client_error("update_registry_record", "ThrottlingException")  # ケース A の編集
+
+    report = run(stub, control, transport)
+
+    assert report.baseline is not None
+    assert report.baseline.before.discovery.record_version == "1.0.0"
+    assert report.cases == ()
+    assert any(
+        "途中で中断しました" in note and "ThrottlingException" in note for note in report.notes
+    )
+    # 中断しても表は出力できる
+    assert "| 事前確認" in verify.render_report(report)
+
+
+def test_run_verification_warns_when_baseline_does_not_show_the_approved_version():
+    stub, control = make_control()
+    transport = FakeTransport()
+    stub_get(stub, "DRAFT", "1.0.0")
+    stub_submit(stub, "1.0.0")
+    stub_approve(stub, "1.0.0")
+    for _ in range(2):  # 事前確認: 発見 API は返すが、MCP endpoint は判定できない
+        transport.queue("/discoverable-records-batch", json_http_response(batch_body("1.0.0")))
+        transport.queue("/mcp", TransportResponse(406, b"Not Acceptable"))
+    stub.add_client_error("update_registry_record", "ThrottlingException")
+
+    report = run(stub, control, transport)
+
+    baseline_notes = [note for note in report.notes if note.startswith("事前確認で")]
+    assert len(baseline_notes) == 1
+    assert "MCP endpoint" in baseline_notes[0] and "断定できません" in baseline_notes[0]
+
+
+def test_create_verification_record_stops_when_auto_approval_is_enabled():
+    stub, control = make_control()
     stub.add_response(
         "get_registry", registry_info(rules=["APPROVE_ALL"]), {"registryId": REGISTRY_ARN}
     )
 
     with stub, pytest.raises(RuntimeError) as excinfo:
-        verify.run_verification(control, transport, NAME, token="token-value")
+        verify.create_verification_record(control, NAME)
     assert "自動承認" in str(excinfo.value)
 
 
@@ -544,7 +631,7 @@ def test_run_verification_stops_when_auto_approval_is_enabled():
 
 
 def test_cleanup_deletes_the_record_when_allowed():
-    registry, stub, control = make_control()
+    stub, control = make_control()
     stub.add_response("delete_registry_record", {}, GET_PARAMS)
     with stub:
         result = verify.cleanup_record(control, RECORD_ID)
@@ -553,37 +640,94 @@ def test_cleanup_deletes_the_record_when_allowed():
 
 
 def test_cleanup_deprecates_the_record_when_delete_is_rejected():
-    registry, stub, control = make_control()
+    stub, control = make_control()
     stub.add_client_error("delete_registry_record", "ConflictException", expected_params=GET_PARAMS)
-    stub_status(stub, "DEPRECATED", "Issue #33 の検証の後始末")
+    stub_status(stub, "DEPRECATED", verify.CLEANUP_REASON)
     with stub:
         result = verify.cleanup_record(control, RECORD_ID)
         stub.assert_no_pending_responses()
     assert "DEPRECATED" in result
 
 
+def test_cleanup_asks_for_manual_cleanup_instead_of_raising():
+    # 削除も DEPRECATED も拒否されたら、例外にせず手動での後始末を促す（結果の出力を妨げない）
+    stub, control = make_control()
+    stub.add_client_error("delete_registry_record", "ConflictException", expected_params=GET_PARAMS)
+    stub_status(stub, "DEPRECATED", verify.CLEANUP_REASON, error="AccessDeniedException")
+    with stub:
+        result = verify.cleanup_record(control, RECORD_ID)
+        stub.assert_no_pending_responses()
+    assert "ConflictException" in result and "AccessDeniedException" in result
+    assert RECORD_ID in result and "手動" in result
+
+
+def test_cleanup_reports_connection_failures_for_manual_cleanup():
+    class Unreachable:
+        def delete_registry_record(self, **_):
+            raise EndpointConnectionError(endpoint_url="https://example.com")
+
+    result = verify.cleanup_record(verify.RegistryControl(Unreachable(), REGISTRY_ARN), RECORD_ID)
+    assert "EndpointConnectionError" in result and RECORD_ID in result
+
+
+# --- main（出力と後始末の順序） ---
+
+
+def stub_main(monkeypatch, run_verification):
+    """main の外部依存を差し替え、出力と後始末の呼び出しを記録する。"""
+    events: list[str] = []
+    monkeypatch.setattr(verify.boto3, "client", lambda *args, **kwargs: object())
+    monkeypatch.setattr(verify, "create_verification_record", lambda control, name: RECORD_ID)
+    monkeypatch.setattr(verify, "run_verification", run_verification)
+    monkeypatch.setattr(verify, "render_report", lambda report: events.append("report") or "表")
+    monkeypatch.setattr(
+        verify,
+        "cleanup_record",
+        lambda control, record_id: events.append("cleanup") or "削除しました",
+    )
+    return events
+
+
+def test_main_prints_the_report_before_cleanup(monkeypatch, capsys):
+    events = stub_main(monkeypatch, lambda *args: make_report())
+    assert verify.main(["--registry-arn", REGISTRY_ARN, "--token", "t"]) == 0
+    # 後始末が失敗・中断しても結果を失わないよう、表を先に出力する
+    assert events == ["report", "cleanup"]
+    out = capsys.readouterr().out
+    assert out.index("表") < out.index(f"後始末（レコード {RECORD_ID}）: 削除しました")
+
+
+def test_main_cleans_up_even_when_interrupted(monkeypatch):
+    def interrupted(*args):
+        raise KeyboardInterrupt
+
+    events = stub_main(monkeypatch, interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        verify.main(["--registry-arn", REGISTRY_ARN, "--token", "t"])
+    assert events == ["cleanup"]
+
+
 # --- レポート整形 ---
 
 
-def sighting(source, found, version, detail=""):
-    return verify.Sighting(source, found, version, detail)
+def found(source, version, status="APPROVED"):
+    return verify.Sighting(source, verify.FOUND, version, status)
 
 
-def observation(version="1.0.0") -> verify.Observation:
+def observation(version="1.0.0", stable=True) -> verify.Observation:
     """発見 API と MCP endpoint が同じ版を返す観測。"""
     return verify.Observation(
-        discovery=sighting("発見 API", True, version),
-        mcp=sighting("MCP endpoint", True, version),
+        discovery=found(verify.DISCOVERY_SOURCE, version),
+        mcp=found(verify.MCP_SOURCE, version),
+        stable=stable,
     )
 
 
 def make_report(**case_overrides) -> verify.Report:
     defaults = dict(
         label="A: 最新版 DRAFT",
-        latest_status="DRAFT",
-        latest_version="1.0.1",
-        approved_version="1.0.0",
-        attempt=verify.StatusAttempt(True, None, "受け付けられました"),
+        revision=verify.RevisionState("DRAFT", "1.0.1", "1.0.0"),
+        attempt=verify.StatusAttempt(True, resulting_status="REJECTED"),
         before=observation("1.0.0"),
         after=observation("1.0.0"),
     )
@@ -594,75 +738,91 @@ def make_report(**case_overrides) -> verify.Report:
         record_id=RECORD_ID,
         executed_at="2026-11-15T05:30:00Z",
         auto_approval="無効（手動審査）",
+        settle_seconds=15.0,
         baseline=verify.CaseResult(
-            label="事前確認（承認済みのみ）",
-            latest_status="APPROVED",
-            latest_version="1.0.0",
-            approved_version="1.0.0",
+            label="事前確認（公開承認済みの版のみ）",
+            revision=verify.RevisionState("APPROVED", "1.0.0", "1.0.0"),
             attempt=None,
             before=observation("1.0.0"),
-            after=observation("1.0.0"),
+            after=None,
         ),
         cases=(case,),
     )
 
 
+def case_line(text):
+    return next(line for line in text.splitlines() if line.startswith("| A: 最新版 DRAFT"))
+
+
 def test_render_report_produces_a_markdown_table_for_readme():
-    report = make_report()
-    text = verify.render_report(report, cleanup_note="削除しました")
+    text = verify.render_report(make_report())
     lines = text.strip().splitlines()
-    # README に貼れる Markdown: 見出し・メタ情報・表・後始末
+    # README に貼れる Markdown: 見出し・メタ情報・表（後始末の結果は main が続けて出力する）
     assert lines[0].startswith("# ")
     assert any(REGISTRY_ARN in line for line in lines)
     assert any(RECORD_ID in line for line in lines)
     assert any(NAME in line for line in lines)
+    assert any("15 秒待ち" in line for line in lines)
     header = next(line for line in lines if line.startswith("| ケース"))
-    assert "REJECT の受け付け" in header
+    assert "REJECT の受け付け" in header and "公開承認済みの版" in header
     assert any(line.startswith("| --- ") for line in lines)
-    case_line = next(line for line in lines if line.startswith("| A: 最新版 DRAFT"))
-    assert "DRAFT 1.0.1" in case_line
-    assert "受け付けられた" in case_line
-    assert "1.0.0 を返した" in case_line
-    assert "削除しました" in text
+    line = case_line(text)
+    assert "DRAFT 1.0.1 | 1.0.0 |" in line
+    assert "受け付けられた" in line
+    assert "1.0.0 を返した" in line
+    # 「返さなかった」と「確認できなかった」の意味を表の下に示す
+    assert "確認できなかった" in text and "RESOURCE_NOT_FOUND" in text
 
 
-def test_render_report_distinguishes_all_outcomes():
-    # 承認済み版と異なる版・見つからない・拒否された REJECT を区別して並べる
+def test_render_report_distinguishes_absent_from_failed_sightings():
     report = make_report(
-        attempt=verify.StatusAttempt(False, "ConflictException", "AWS が拒否しました"),
-        after=verify.Observation(
-            discovery=sighting("発見 API", False, None, "RESOURCE_NOT_FOUND"),
-            mcp=sighting("MCP endpoint", False, None, "RESOURCE_NOT_FOUND"),
+        attempt=verify.StatusAttempt(False, error_code="ConflictException"),
+        before=verify.Observation(
+            discovery=verify.Sighting(
+                verify.DISCOVERY_SOURCE, verify.ABSENT, detail="RESOURCE_NOT_FOUND"
+            ),
+            mcp=verify.Sighting.failed(verify.MCP_SOURCE, "HTTP 406"),
         ),
+        after=None,
     )
-    text = verify.render_report(report, cleanup_note="DEPRECATED にしました")
-    case_line = next(line for line in text.splitlines() if line.startswith("| A: 最新版 DRAFT"))
-    assert "拒否された（ConflictException）" in case_line
-    assert "返さなかった（RESOURCE_NOT_FOUND）" in case_line
-    # 承認済み版と異なる版を返した場合は注記を付ける
+    line = case_line(verify.render_report(report))
+    assert "拒否された（ConflictException）" in line
+    assert "返さなかった（RESOURCE_NOT_FOUND）" in line
+    # 通信や形式の異常は「返さなかった」にしない
+    assert "確認できなかった（HTTP 406）" in line
+
+
+def test_render_report_annotates_other_versions_statuses_and_unstable_observations():
     report = make_report(
         before=verify.Observation(
-            discovery=sighting("発見 API", True, "1.0.1"),
-            mcp=sighting("MCP endpoint", True, "1.0.0"),
+            discovery=found(verify.DISCOVERY_SOURCE, "1.0.1", status="DRAFT"),
+            mcp=found(verify.MCP_SOURCE, "1.0.0"),
         ),
+        after=observation("1.0.0", stable=False),
     )
-    text = verify.render_report(report, cleanup_note="削除しました")
-    case_line = next(line for line in text.splitlines() if line.startswith("| A: 最新版 DRAFT"))
-    assert "1.0.1 を返した" in case_line and "承認済み版" in case_line
+    line = case_line(verify.render_report(report))
+    assert "1.0.1 を返した（公開承認済みの版 1.0.0 と異なる、status=DRAFT）" in line
+    assert "観測が安定しませんでした" in line
 
 
-def test_render_report_lists_notes_when_a_case_could_not_be_set_up():
+def test_render_report_keeps_response_text_inside_one_cell():
+    # 応答由来の文字列に改行や | があっても、表の1行・1セルに収める
     report = make_report(
-        after=None,
-        attempt=verify.StatusAttempt(False, "ConflictException", "AWS が拒否しました"),
-    )
-    report = dataclasses.replace(
-        report,
-        notes=(
-            "ケース B の REJECT が受け付けられなかったため、C（最新版 REJECTED）の状態は作れませんでした。",
+        before=verify.Observation(
+            discovery=found(verify.DISCOVERY_SOURCE, "1.0.0"),
+            mcp=verify.Sighting.failed(verify.MCP_SOURCE, "HTTP 400: a | b\nc"),
         ),
     )
-    text = verify.render_report(report, cleanup_note="削除しました")
+    line = case_line(verify.render_report(report))
+    assert "確認できなかった（HTTP 400: a \\| b c）" in line
+    assert line.count(" | ") == 7  # 8 列の区切り
+
+
+def test_render_report_lists_notes():
+    report = dataclasses.replace(
+        make_report(), notes=("ケース C の状態（最新版 REJECTED）は作れませんでした。",)
+    )
+    text = verify.render_report(report)
     assert "備考" in text
     assert "作れませんでした" in text
 
@@ -677,13 +837,15 @@ def test_parse_args_reads_the_registry_and_token_sources():
     assert args.registry_arn == REGISTRY_ARN
     assert args.token == "direct-token"
     assert args.name_prefix == "ops-verify"
+    assert args.settle_seconds == verify.DEFAULT_SETTLE_SECONDS
     assert args.keep_record is False
 
 
 def test_parse_args_reads_credentials_from_the_environment(monkeypatch):
     monkeypatch.setenv("SUSPEND_VERIFY_TOKEN", "env-token")
-    args = verify.parse_args(["--registry-arn", REGISTRY_ARN])
+    args = verify.parse_args(["--registry-arn", REGISTRY_ARN, "--settle-seconds", "30"])
     assert args.token == "env-token"
+    assert args.settle_seconds == 30.0
     monkeypatch.delenv("SUSPEND_VERIFY_TOKEN")
     monkeypatch.setenv("SUSPEND_VERIFY_CLIENT_ID", "id")
     monkeypatch.setenv("SUSPEND_VERIFY_CLIENT_SECRET", "secret")
@@ -693,7 +855,7 @@ def test_parse_args_reads_credentials_from_the_environment(monkeypatch):
     assert args.token_url == "https://example.com/token"
 
 
-def test_help_and_missing_required_options_exit_cleanly(capsys, monkeypatch):
+def test_help_and_invalid_options_exit_cleanly(capsys, monkeypatch):
     with pytest.raises(SystemExit) as exit_info:
         verify.parse_args(["--help"])
     assert exit_info.value.code == 0
@@ -710,3 +872,9 @@ def test_help_and_missing_required_options_exit_cleanly(capsys, monkeypatch):
         verify.parse_args(["--registry-arn", REGISTRY_ARN])
     assert exit_info.value.code == 2
     assert "--token" in capsys.readouterr().err
+    # 負の待ち時間は受け付けない
+    with pytest.raises(SystemExit) as exit_info:
+        verify.parse_args(
+            ["--registry-arn", REGISTRY_ARN, "--token", "t", "--settle-seconds", "-1"]
+        )
+    assert exit_info.value.code == 2

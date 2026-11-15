@@ -6,7 +6,8 @@ requires-python = ">=3.13"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+# ../scripts は運用スクリプト（検証スクリプトなど）をテストから import するため
+pythonpath = ["src", "../scripts"]
 
 [tool.black]
 line-length = 100
@@ -15,5 +16,6 @@ target-version = ["py313"]
 [tool.mypy]
 python_version = "3.13"
 mypy_path = "src"
-packages = ["registry_portal"]
+# 運用スクリプトのうち、registry_portal の定義を使う検証スクリプトも strict で検査する
+files = ["src/registry_portal", "../scripts/verify_suspend_dual_revision.py"]
 strict = true
