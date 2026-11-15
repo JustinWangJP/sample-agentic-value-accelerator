@@ -10,7 +10,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal, NamedTuple, get_args
+from typing import Any, Literal, NamedTuple, NewType, get_args
 
 from registry_portal.domain.drafts import (
     APPROVE_KIND,
@@ -42,7 +42,8 @@ NotificationKind = Literal[
     "DEPRECATED",
     # 廃止依頼の見送り（アプリ内で発生。AWS の状態を変えないためイベントは出ない）。所有チームの Publisher 全員へ
     "DEPRECATION_DECLINED",
-    # 参照先の Skill・MCP サーバーの公開停止・廃止。その参照先を使う Agent の所有チームへ
+    # 参照先の Skill・MCP サーバーの公開停止・廃止。その参照先を使う Agent の所有チームへ。
+    # 所有チームや関連参照を読めない Agent があれば、その Agent を Admin 全員に知らせる
     "REFERENCE_SUSPENDED",
     "REFERENCE_DEPRECATED",
     # 操作記録と照合できない状態変化（ポータル外の変更）。Admin 全員へ
@@ -53,15 +54,17 @@ NOTIFICATION_KINDS: tuple[NotificationKind, ...] = get_args(NotificationKind)
 # 通知と既読位置の保持期間（設計書「補助テーブルに保存するもの」）。TTL の属性に書く
 NOTIFICATION_RETENTION_SECONDS = 90 * 24 * 60 * 60
 
-# 宛先グループ。Curator 全員・Admin 全員・所有チーム（team-*）の Publisher 全員の3種類
-CURATOR_AUDIENCE = "CURATOR"
-ADMIN_AUDIENCE = "ADMIN"
+# 宛先グループ（GLOSSARY「宛先グループ」）。Curator 全員・Admin 全員・所有チーム（team-*）の
+# Publisher 全員の3種類。保存するキーの一部になる文字列だが、ほかの文字列と取り違えないよう型を分ける
+Audience = NewType("Audience", str)
+CURATOR_AUDIENCE = Audience("CURATOR")
+ADMIN_AUDIENCE = Audience("ADMIN")
 _TEAM_AUDIENCE_PREFIX = "TEAM#"
 
 
-def team_audience(team: str) -> str:
+def team_audience(team: str) -> Audience:
     """所有チームの Publisher 全員を表す宛先グループ。"""
-    return f"{_TEAM_AUDIENCE_PREFIX}{team}"
+    return Audience(f"{_TEAM_AUDIENCE_PREFIX}{team}")
 
 
 def _is_audience(value: object) -> bool:
@@ -86,7 +89,7 @@ def notification_time(value: datetime | str) -> str:
 def transition_key(record_id: str, status: str, updated_at: datetime) -> str:
     """Registry の状態変化（レコード・状態・AWS の updatedAt）を表す出来事のキー。
 
-    別の event ID で届いても、同じ状態変化からは宛先・種別ごとに1件しか通知を作らない。
+    別の event ID で届いても、同じ状態変化からは宛先グループ・種別ごとに1件しか通知を作らない。
     """
     return f"TRANSITION#{record_id}#{status}#{notification_time(updated_at)}"
 
@@ -96,8 +99,8 @@ def operation_key(operation_id: str) -> str:
     return f"OPERATION#{operation_id}"
 
 
-def notification_id(dedup_key: str, audience: str, kind: NotificationKind) -> str:
-    """同じ出来事・宛先・種別には同じ ID を割り当てる（再処理で別の通知を作らない）。"""
+def notification_id(dedup_key: str, audience: Audience, kind: NotificationKind) -> str:
+    """同じ出来事・宛先グループ・種別には同じ ID を割り当てる（再処理で別の通知を作らない）。"""
     return digest(["NOTIFICATION", dedup_key, audience, kind])
 
 
@@ -109,7 +112,7 @@ class Notification:
     """宛先グループ1つへの通知1件。"""
 
     notification_id: str
-    audience: str
+    audience: Audience
     kind: NotificationKind
     record_id: str
     # 表示名（AWS の displayName、なければ name）。Registry を読まないアプリ内の通知では None
@@ -128,7 +131,7 @@ class Notification:
     def create(
         cls,
         dedup_key: str,
-        audience: str,
+        audience: Audience,
         kind: NotificationKind,
         record_id: str,
         record_name: str | None,
@@ -139,7 +142,7 @@ class Notification:
         agents: Iterable[str] = (),
         event_id: str | None = None,
     ) -> Notification:
-        """出来事（dedup_key）・宛先・種別から通知を作る。ID・本文・時刻の形式はここだけで決める。
+        """出来事（dedup_key）・宛先グループ・種別から通知を作る。ID・本文・時刻の形式はここだけで決める。
 
         dedup_key は、Registry のイベントなら状態変化（transition_key）、アプリ内の通知なら操作（operation_key）。
         """
@@ -151,12 +154,12 @@ class Notification:
             record_name=record_name,
             message=notification_message(
                 kind,
+                audience,
                 record_id,
                 record_name,
                 reason=reason,
                 status=status,
                 agents=agents,
-                audience=audience,
             ),
             created_at=notification_time(created_at),
             event_id=event_id,
@@ -195,7 +198,7 @@ class Notification:
             raise ValueError("保存された通知の形式が正しくありません。")
         notification = cls(
             notification_id=item["notificationId"],
-            audience=item["audience"],
+            audience=Audience(item["audience"]),
             kind=item["kind"],
             record_id=item["recordId"],
             record_name=record_name,
@@ -208,7 +211,7 @@ class Notification:
         return notification
 
     def view(self, read_up_to: str | None) -> dict[str, Any]:
-        """API が返す形。SPA の isNotification（frontend/src/notifications/api.ts）と揃える。"""
+        """API が返す形。SPA の isInboxNotification（frontend/src/notifications/api.ts）と揃える。"""
         return {
             "notificationId": self.notification_id,
             "position": self.position,
@@ -231,20 +234,29 @@ def _with_reason(text: str, reason: str | None) -> str:
 
 def notification_message(
     kind: NotificationKind,
+    audience: Audience,
     record_id: str,
     record_name: str | None,
     *,
     reason: str | None = None,
     status: str | None = None,
     agents: Iterable[str] = (),
-    audience: str = ADMIN_AUDIENCE,
 ) -> str:
     """通知の本文（日本語）。理由は Registry の statusReason または操作記録の理由。
 
-    ポータル外の変更は、変更経路を調べる Admin と、経緯を Admin に確かめる所有チームとで文面を分ける。
+    宛先グループで文面を分ける種別がある。ポータル外の変更は、変更経路を調べる Admin と、経緯を Admin に
+    確かめる所有チームとで分ける。参照先の公開停止・廃止は、参照先を使う Agent の所有チームには Agent の
+    確認を、所有チームを決められなかった Agent を知らされる Admin には補助テーブルの確認を促す。
     """
     label = f"「{_label(record_name, record_id)}」"
     agent_list = "、".join(agents)
+    for_admin = audience == ADMIN_AUDIENCE
+    check_agents = (
+        f"この参照先を使う Agent（{agent_list}）の管理情報または公開版スナップショットの形式が"
+        "正しくないため、所有チームに届けられませんでした。補助テーブルの内容を確認してください。"
+        if for_admin
+        else f"この参照先を使う Agent（{agent_list}）を確認してください。"
+    )
     texts: dict[NotificationKind, str] = {
         "SUBMITTED": f"{label}の公開申請が届きました。審査待ちから確認してください。",
         "DEPRECATION_REQUESTED": _with_reason(
@@ -255,19 +267,13 @@ def notification_message(
         "SUSPENDED": _with_reason(f"{label}が公開停止されました。", reason),
         "DEPRECATED": _with_reason(f"{label}が廃止されました。", reason),
         "DEPRECATION_DECLINED": _with_reason(f"{label}の廃止依頼が見送られました。", reason),
-        "REFERENCE_SUSPENDED": (
-            f"参照先の{label}が公開停止されました。"
-            f"この参照先を使う Agent（{agent_list}）を確認してください。"
-        ),
-        "REFERENCE_DEPRECATED": (
-            f"参照先の{label}が廃止されました。"
-            f"この参照先を使う Agent（{agent_list}）を確認してください。"
-        ),
+        "REFERENCE_SUSPENDED": f"参照先の{label}が公開停止されました。{check_agents}",
+        "REFERENCE_DEPRECATED": f"参照先の{label}が廃止されました。{check_agents}",
         "OUTSIDE_CHANGE": (
             f"{label}の状態がポータルの外で {status} に変わりました。"
             + (
                 "操作記録と照合できないため、Registry の変更経路を確認してください。"
-                if audience == ADMIN_AUDIENCE
+                if for_admin
                 else "ポータルの操作ではないため、経緯は Admin に確認してください。"
             )
         ),

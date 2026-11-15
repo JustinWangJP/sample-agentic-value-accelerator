@@ -34,7 +34,8 @@ export const NOTIFICATION_KIND_LABELS: Record<NotificationKind, string> = {
 /** ポーリングの間隔（設計書「画面と機能の範囲」の通知欄: 約60秒ごと） */
 export const NOTIFICATION_POLL_INTERVAL_MS = 60_000
 
-export type Notification = {
+/** 通知欄に表示する通知1件。DOM 標準の Notification（デスクトップ通知）と区別するため名前を分ける */
+export type InboxNotification = {
   notificationId: string
   /** 既読位置と比べる値（時刻#通知 ID）。既読にするときはこの値を送る */
   position: string
@@ -49,7 +50,7 @@ export type Notification = {
 
 export type NotificationInbox = {
   /** 新しい順。宛先グループをまたいで最大50件 */
-  items: Notification[]
+  items: InboxNotification[]
   unreadCount: number
   /** 自分の既読位置。まだ既読にしていなければ null */
   readUpTo: string | null
@@ -60,7 +61,7 @@ export type NotificationApi = {
   markNotificationsRead: (readUpTo: string) => Promise<NotificationInbox>
 }
 
-function isNotification(value: unknown): value is Notification {
+function isInboxNotification(value: unknown): value is InboxNotification {
   return (
     isObject(value) &&
     hasStrings(value, ['notificationId', 'position', 'recordId', 'message', 'createdAt']) &&
@@ -74,7 +75,7 @@ function isInbox(value: unknown): value is NotificationInbox {
   return (
     isObject(value) &&
     Array.isArray(value.items) &&
-    value.items.every(isNotification) &&
+    value.items.every(isInboxNotification) &&
     Number.isInteger(value.unreadCount) &&
     (value.unreadCount as number) >= 0 &&
     (value.readUpTo === null || typeof value.readUpTo === 'string')

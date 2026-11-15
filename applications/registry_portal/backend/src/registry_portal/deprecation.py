@@ -27,11 +27,11 @@ from registry_portal.curation_reads import (
     CurationReads,
     RecordNotFound,
     RegistryUnavailable,
-    display_name,
     is_managed,
     record_state,
     require_curator,
 )
+from registry_portal.domain.catalog import display_name
 from registry_portal.domain.curation import check_deprecatable
 from registry_portal.domain.deprecation import (
     RESOLUTION_DECLINED,
@@ -46,9 +46,11 @@ from registry_portal.domain.drafts import (
     OperationKind,
     PrincipalRecord,
     digest,
+    now,
 )
 from registry_portal.domain.notifications import (
     CURATOR_AUDIENCE,
+    Audience,
     Notification,
     NotificationKind,
     operation_key,
@@ -56,7 +58,7 @@ from registry_portal.domain.notifications import (
 )
 from registry_portal.drafts import require_publisher
 from registry_portal.errors import ApiError, ForbiddenError, RequestValidationError
-from registry_portal.operations import check_record_id, now, principal_of
+from registry_portal.operations import check_record_id, principal_of
 from registry_portal.services.notification_store import NotificationStore
 from registry_portal.services.supplement_store import (
     SupplementStore,
@@ -115,18 +117,22 @@ def _audit(
 
 def _in_app_notification(
     audit: InstantOperation,
-    audience: str,
+    audience: Audience,
     kind: NotificationKind,
     record_name: str | None,
 ) -> Notification:
-    """操作記録と同じトランザクションで書くアプリ内の通知。出来事は操作 ID で表す。"""
+    """操作記録と同じトランザクションで書くアプリ内の通知。出来事は操作 ID で表す。
+
+    通知の時刻は、操作の開始時刻ではなく、書き込みの直前（この関数を呼んだ時点）に取る。開始時刻にすると、
+    書き込みまでの間に利用者が進めた既読位置より前に並び、後から書かれた通知が最初から既読に見えるため。
+    """
     return Notification.create(
         operation_key(audit["operationId"]),
         audience,
         kind,
         audit["recordId"],
         record_name,
-        audit["startedAt"],
+        now(),
         reason=audit["reason"],
     )
 

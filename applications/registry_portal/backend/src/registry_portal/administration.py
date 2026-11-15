@@ -36,6 +36,7 @@ from registry_portal.domain.drafts import (
     OperationKind,
     content_hash,
     digest,
+    now,
 )
 from registry_portal.domain.submissions import auto_approval_state
 from registry_portal.errors import ApiError, ForbiddenError, RequestValidationError
@@ -43,7 +44,6 @@ from registry_portal.operations import (
     check_idempotency_key,
     check_next_token,
     check_record_id,
-    now,
     principal_of,
 )
 from registry_portal.services.discovery import DiscoveryClient, DiscoveryUnavailable

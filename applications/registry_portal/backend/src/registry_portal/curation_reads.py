@@ -14,6 +14,7 @@ from typing import Any, Protocol, TypeGuard, cast
 from botocore.exceptions import BotoCoreError, ClientError
 
 from registry_portal.auth import Caller, Role
+from registry_portal.domain.catalog import display_name
 from registry_portal.domain.curation import (
     ATTACHMENT_AVAILABLE,
     ATTACHMENT_MISSING,
@@ -86,11 +87,6 @@ def require_curator(caller: Caller) -> None:
     """審査・決裁と公開管理は Curator の業務ロールだけが行える（設計書「ロールと所有」）。"""
     if Role.CURATOR not in caller.roles:
         raise ForbiddenError("審査・決裁と公開管理は Curator のみ行えます。")
-
-
-def display_name(record: Mapping[str, Any]) -> str:
-    """表示名。AWS が displayName を返さないレコードは名前で代用する。"""
-    return str(record.get("displayName", record["name"]))
 
 
 def is_managed(management: Management | None) -> TypeGuard[Management]:

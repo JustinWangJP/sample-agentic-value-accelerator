@@ -4,7 +4,7 @@
 補助テーブルの操作記録と照合して「ポータル内の変更か、外の変更か」を判定する（設計書「通知」）。
 EventBridge は重複して配信したり順序が入れ替わったりするので、event ID で重複を除き、
 状態は常に再取得した値を使う。同じ状態変化（レコード・状態・AWS の updatedAt）からは、
-別の event ID で届いても宛先・種別ごとに1件しか通知を作らない。
+別の event ID で届いても宛先グループ・種別ごとに1件しか通知を作らない。
 
 このハンドラーが行うのは、Registry の読み取りと、補助テーブルへの通知の書き込みだけである。
 """
@@ -18,7 +18,8 @@ from typing import Any, NamedTuple
 
 from botocore.exceptions import ClientError
 
-from registry_portal.curation_reads import RegistryReadClient, display_name
+from registry_portal.curation_reads import RegistryReadClient, is_managed
+from registry_portal.domain.catalog import display_name, related_reference_ids, snapshot_label
 from registry_portal.domain.drafts import (
     APPROVE_KIND,
     AUDIT_RESULT,
@@ -28,6 +29,7 @@ from registry_portal.domain.drafts import (
     PENDING_APPROVAL_STATUS,
     RECORD_ID_PATTERN,
     REJECT_KIND,
+    REJECTED_STATUS,
     SUSPEND_KIND,
     Management,
     OperationKind,
@@ -36,6 +38,7 @@ from registry_portal.domain.notifications import (
     ADMIN_AUDIENCE,
     CURATOR_AUDIENCE,
     NOTIFIED_STATUSES,
+    Audience,
     BrokenSendTime,
     Notification,
     NotificationKind,
@@ -45,6 +48,7 @@ from registry_portal.domain.notifications import (
     transition_key,
 )
 from registry_portal.services.notification_store import NotificationStore
+from registry_portal.services.reference_index import ReferenceIndex
 from registry_portal.services.supplement_store import AppendedRecord, SupplementStore
 
 logger = logging.getLogger(__name__)
@@ -63,9 +67,20 @@ _OWNER_NOTIFICATIONS: Mapping[OperationKind, tuple[NotificationKind, Notificatio
     DEPRECATE_KIND: ("DEPRECATED", "REFERENCE_DEPRECATED"),
 }
 
+# ポータル外の変更のうち、参照先を使う Agent の所有チームにも知らせる状態と、その通知の種別。
+# 公開停止（REJECTED）も廃止も、参照先が発見できなくなる点はポータル内の操作と変わらないため。
+# ポータル外の REJECTED は公開停止と却下を区別できないが、参照先を使う Agent があるのは
+# 公開承認された版を持つ参照先だけなので、公開停止として知らせる
+_OUTSIDE_REFERENCE_NOTIFICATIONS: Mapping[str, NotificationKind] = {
+    REJECTED_STATUS: "REFERENCE_SUSPENDED",
+    DEPRECATED_STATUS: "REFERENCE_DEPRECATED",
+}
 
-class _Plan(NamedTuple):
-    audience: str
+
+class _Delivery(NamedTuple):
+    """宛先グループ1つに届ける通知の種別。参照先の通知では、対象の Agent の表示名も持つ。"""
+
+    audience: Audience
     kind: NotificationKind
     agents: tuple[str, ...] = ()
 
@@ -123,6 +138,7 @@ class RegistryEventNotifier:
         registry_arn: str,
         store: SupplementStore,
         notifications: NotificationStore,
+        references: ReferenceIndex,
         client: RegistryReadClient,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
@@ -130,6 +146,7 @@ class RegistryEventNotifier:
         self.registry_id = registry_arn.rsplit("/", 1)[1]
         self.store = store
         self.notifications = notifications
+        self.references = references
         self.client = client
         self.clock = clock
 
@@ -210,9 +227,9 @@ class RegistryEventNotifier:
             raise BrokenSendTime(operation.operation_id)
         return sent_at
 
-    def _plans(
+    def _deliveries(
         self, record_id: str, status: str, updated_at: datetime, management: Management | None
-    ) -> list[_Plan]:
+    ) -> list[_Delivery]:
         operation = explaining_operation(
             observed_operations(self.store.list_appended_records(record_id)),
             status,
@@ -220,23 +237,19 @@ class RegistryEventNotifier:
             self._last_sent_at,
         )
         if operation is None:
-            plans = [_Plan(ADMIN_AUDIENCE, "OUTSIDE_CHANGE")]
+            deliveries = [_Delivery(ADMIN_AUDIENCE, "OUTSIDE_CHANGE")]
             # 管理下のレコードは、所有チームにも自分のレコードの変化を知らせる。通常の決裁と同じ種別にはせず、
-            # Curator にも届けない（ポータル外の審査待ちは、そのまま決裁せず保存・再申請から進める）。
-            # 未管理レコードにはポータル上の所有チームがないため、Admin にだけ届ける
-            if management is not None and management.is_managed:
-                plans.append(_Plan(team_audience(management.owner_team), "OUTSIDE_CHANGE"))
-            # 廃止は元に戻せないため、ポータル外の廃止でも参照先を使う Agent の所有チームに知らせる
-            if status == DEPRECATED_STATUS:
-                plans.extend(self._reference_plans(record_id, "REFERENCE_DEPRECATED"))
-            return plans
+            # Curator にも届けない（ポータル外の審査待ちは、そのまま決裁せず保存・再申請から進める。
+            # 設計書「通知」）。未管理レコードにはポータル上の所有チームがないため、Admin にだけ届ける
+            if is_managed(management):
+                deliveries.append(_Delivery(team_audience(management.owner_team), "OUTSIDE_CHANGE"))
+            reference_kind = _OUTSIDE_REFERENCE_NOTIFICATIONS.get(status)
+            if reference_kind is not None:
+                deliveries.extend(self._reference_deliveries(record_id, reference_kind))
+            return deliveries
         if status == PENDING_APPROVAL_STATUS:
-            return [_Plan(CURATOR_AUDIENCE, "SUBMITTED")]
-        owner = (
-            management.owner_team
-            if management is not None and management.is_managed
-            else operation.owner_team
-        )
+            return [_Delivery(CURATOR_AUDIENCE, "SUBMITTED")]
+        owner = management.owner_team if is_managed(management) else operation.owner_team
         # 照合した操作の種別から、所有チームへの通知と参照先を使う Agent への通知の種別を決める。
         # 却下と公開停止はどちらも REJECTED なので、状態ではなく操作の種別で区別する。
         # ポータル内の作成・編集による下書き（DRAFT）は通知しない
@@ -244,37 +257,60 @@ class RegistryEventNotifier:
         if kinds is None:
             return []
         owner_kind, reference_kind = kinds
-        plans = [_Plan(team_audience(owner), owner_kind)] if owner else []
+        deliveries = [_Delivery(team_audience(owner), owner_kind)] if owner else []
         if reference_kind is not None:
-            plans.extend(self._reference_plans(record_id, reference_kind))
-        return plans
+            deliveries.extend(self._reference_deliveries(record_id, reference_kind))
+        return deliveries
 
-    def _reference_plans(self, target_id: str, kind: NotificationKind) -> list[_Plan]:
-        """参照先（target_id）を公開中の版で使う Agent の所有チームごとの通知。"""
+    def _reference_deliveries(self, target_id: str, kind: NotificationKind) -> list[_Delivery]:
+        """参照先（target_id）を公開中の版で使う Agent の所有チームごとの通知。
+
+        所有チームや公開中の版の関連参照を読めない Agent は、黙って飛ばさず Admin に知らせる
+        （CODING_STANDARDS「保存内容の異常を空の結果に変換しない」）。逆引きは公開承認でしか書かないため、
+        逆引きにある Agent は管理下で、管理情報と公開版スナップショットを持つはずである。
+        """
         agents_by_team: dict[str, list[str]] = {}
-        for agent_id in self.store.referencing_records(target_id):
-            management = self._management(agent_id)
-            if management is None or not management.is_managed:
+        unreadable: list[str] = []
+        for agent_id in self.references.referencing_records(target_id):
+            try:
+                team, label = self._referencing_agent(agent_id, target_id)
+            except ValueError:
+                logger.warning(
+                    "参照先を使う Agent の保存内容を読めません: agent_id=%s target_id=%s",
+                    agent_id,
+                    target_id,
+                )
+                unreadable.append(agent_id)
                 continue
-            # 最後に公開承認した版（管理情報の publishedVersion）の関連参照を正とする
-            version = management.item.get("publishedVersion")
-            snapshot = (
-                self.store.get_published(agent_id, version) if isinstance(version, str) else None
-            )
-            references = snapshot.get("relatedReferences") if snapshot else None
-            if not isinstance(references, list) or not any(
-                isinstance(reference, Mapping) and reference.get("recordId") == target_id
-                for reference in references
-            ):
-                # 新しい版の公開で参照をやめた Agent は対象外（逆引きの項目は消さずに残る）
-                continue
-            agents_by_team.setdefault(management.owner_team, []).append(
-                _agent_label(agent_id, snapshot)
-            )
-        return [
-            _Plan(team_audience(team), kind, tuple(sorted(agents)))
+            if team is not None:
+                agents_by_team.setdefault(team, []).append(label)
+        deliveries = [
+            _Delivery(team_audience(team), kind, tuple(sorted(agents)))
             for team, agents in sorted(agents_by_team.items())
         ]
+        if unreadable:
+            deliveries.append(_Delivery(ADMIN_AUDIENCE, kind, tuple(sorted(unreadable))))
+        return deliveries
+
+    def _referencing_agent(self, agent_id: str, target_id: str) -> tuple[str | None, str]:
+        """逆引きにある Agent の所有チームと表示名。公開中の版が参照先を使っていなければ所有チームは None。
+
+        管理情報・公開版スナップショットがない、または形式が崩れていれば ValueError。
+        """
+        management = self.store.get_management(agent_id)
+        if not is_managed(management):
+            raise ValueError("逆引きにある Agent の管理情報がありません。")
+        version = management.recorded_published_version
+        if version is None:
+            # 廃止した Agent には公開中の版がない（逆引きの項目は消さずに残る）
+            return None, agent_id
+        snapshot = self.store.get_published(agent_id, version)
+        if snapshot is None:
+            raise ValueError("公開中の版の公開版スナップショットがありません。")
+        if target_id not in related_reference_ids(snapshot):
+            # 新しい版の公開で参照をやめた Agent は対象外（逆引きの項目は消さずに残る）
+            return None, agent_id
+        return management.owner_team, snapshot_label(agent_id, snapshot)
 
     def _notify(self, event_id: str, record_id: str, record: Mapping[str, Any]) -> int:
         status = str(record.get("status"))
@@ -283,36 +319,26 @@ class RegistryEventNotifier:
             return 0
         updated_at = _aware(record["updatedAt"])
         management = self._management(record_id)
-        plans = self._plans(record_id, status, updated_at, management)
+        deliveries = self._deliveries(record_id, status, updated_at, management)
         # 同じ状態変化は、別の event ID で届いても（順序の入れ替わりで再取得の結果が同じでも）1回だけ通知する
         transition = transition_key(record_id, status, updated_at)
         name = display_name(record)
         reason = record.get("statusReason")
         created_at = self.clock()
         published = 0
-        for plan in plans:
+        for delivery in deliveries:
             notification = Notification.create(
                 transition,
-                plan.audience,
-                plan.kind,
+                delivery.audience,
+                delivery.kind,
                 record_id,
                 name,
                 created_at,
                 reason=reason if isinstance(reason, str) else None,
                 status=status,
-                agents=plan.agents,
+                agents=delivery.agents,
                 event_id=event_id,
             )
             if self.notifications.publish(notification, transition):
                 published += 1
         return published
-
-
-def _agent_label(agent_id: str, snapshot: Mapping[str, Any] | None) -> str:
-    """公開版スナップショットの定義にある表示名。なければ record ID。"""
-    record = snapshot.get("record") if snapshot else None
-    if isinstance(record, Mapping):
-        for key in ("displayName", "name"):
-            if isinstance(record.get(key), str) and record[key]:
-                return f"{record[key]}（{agent_id}）"
-    return agent_id

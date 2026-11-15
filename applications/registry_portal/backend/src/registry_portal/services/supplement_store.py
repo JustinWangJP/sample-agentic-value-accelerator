@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, NamedTuple, NotRequired, Protocol, TypedDict, Unpack, cast
 
-from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 
 from registry_portal.domain.administration import AdministrationResult
@@ -35,11 +33,19 @@ from registry_portal.domain.drafts import (
     AuditPhase,
     audit_sk,
     is_decision_operation,
+    now,
     parse_audit_sk,
 )
+from registry_portal.services.dynamodb import (
+    TTL_ATTRIBUTE,
+    QueryParams,
+    TransactWriteItem,
+    deserialize as _deserialize,
+    failed_conditions,
+    put_item,
+)
+from registry_portal.services.reference_index import ReferenceIndex
 
-# 補助テーブルの TTL 属性名。テーブルの TTL 設定でこの属性を指定する（README「custom Agent の下書き」）
-TTL_ATTRIBUTE = "expiresAt"
 # 取り込み・所有変更の再送用の結果の sk。保存と読み取りで同じ値を使う
 ADMIN_RECEIPT_SK = "ADMIN_RECEIPT"
 
@@ -50,26 +56,6 @@ ADMIN_RECEIPT_SK = "ADMIN_RECEIPT"
 _EXCLUDED_FROM_INTENT_COPY = frozenset(
     {"recordId", "awsRequestId", "lastSentAt", "draft", "pk", "sk"}
 )
-
-
-def _utcnow() -> datetime:
-    """送信時刻と確定時刻に使う現在時刻（UTC）。"""
-    return datetime.now(timezone.utc)
-
-
-def _deserialize(item: Mapping[str, Any]) -> dict[str, Any]:
-    """DynamoDB の型付きの項目を Python の値に戻す。"""
-    deserializer = TypeDeserializer()
-    return {key: deserializer.deserialize(value) for key, value in item.items()}
-
-
-class QueryParams(TypedDict):
-    """DynamoDB Query に渡す引数。2ページ目以降は ExclusiveStartKey を付ける。"""
-
-    TableName: str
-    KeyConditionExpression: str
-    ExpressionAttributeValues: dict[str, Any]
-    ExclusiveStartKey: NotRequired[dict[str, Any]]
 
 
 class SupplementStoreClient(Protocol):
@@ -160,6 +146,8 @@ class SupplementStore:
         self.table = table
         self.registry = registry
         self._client = client
+        # 公開承認と同じトランザクションで、関連参照の逆引きを書く（キーの組み立ては ReferenceIndex に閉じる）
+        self._references = ReferenceIndex(table, registry, client)
 
     def record_pk(self, record_id: str) -> str:
         return f"REGISTRY#{self.registry}#RECORD#{record_id}"
@@ -219,7 +207,7 @@ class SupplementStore:
         self,
         request: DeprecationRequest,
         audit: InstantOperation,
-        notification: Mapping[str, Any],
+        notification: TransactWriteItem,
     ) -> None:
         """廃止依頼を保存し、操作記録を追記する。notification はアプリ内の通知の項目（同じトランザクションで書く）。
 
@@ -241,7 +229,7 @@ class SupplementStore:
         self,
         declined: DeprecationRequest,
         audit: InstantOperation,
-        notification: Mapping[str, Any],
+        notification: TransactWriteItem,
     ) -> None:
         """未解決の廃止依頼を見送りとして解決し、操作記録を追記する。
 
@@ -254,7 +242,7 @@ class SupplementStore:
         self,
         write: dict[str, Any],
         audit: InstantOperation,
-        notification: Mapping[str, Any],
+        notification: TransactWriteItem,
     ) -> None:
         """レコードのロックがないことを確かめながら、1件の書き込みと操作記録の追記を行う。
 
@@ -264,7 +252,7 @@ class SupplementStore:
         トランザクションの項目の位置はこのメソッドの中だけで扱い、呼び出し側には例外の種類で伝える。
         """
         lock_check = self._no_lock(audit["recordId"])
-        items = [write, lock_check, *self._instant_audit(audit), dict(notification)]
+        items = [write, lock_check, *self._instant_audit(audit), notification]
         try:
             self._transact(items)
         except StoreConflict as conflict:
@@ -444,23 +432,8 @@ class SupplementStore:
         *,
         names: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
-        """条件付きの Put の項目。names は条件式で予約語（state など）を置き換える属性名。
-
-        condition に None を渡すと、条件なしで上書きする（逆引きの索引など、同じ内容を書き直すもの）。
-        """
-        put: dict[str, Any] = {
-            "TableName": self.table,
-            "Item": {key: TypeSerializer().serialize(value) for key, value in item.items()},
-        }
-        if condition is not None:
-            put["ConditionExpression"] = condition
-        if values:
-            put["ExpressionAttributeValues"] = {
-                name: TypeSerializer().serialize(value) for name, value in values.items()
-            }
-        if names:
-            put["ExpressionAttributeNames"] = dict(names)
-        return {"Put": put}
+        """この補助テーブルへの条件付きの Put の項目（services/dynamodb.py の put_item）。"""
+        return put_item(self.table, item, condition, values, names)
 
     def _put_control(
         self,
@@ -502,17 +475,12 @@ class SupplementStore:
             items.append(self._release_lock(self.record_pk(record_id), op_id))
         return items
 
-    def _transact(self, items: list[dict[str, Any]]) -> None:
+    def _transact(self, items: Sequence[dict[str, Any]]) -> None:
         try:
-            self._client.transact_write_items(TransactItems=items)
+            self._client.transact_write_items(TransactItems=list(items))
         except ClientError as error:
-            reasons = error.response.get("CancellationReasons", [])
-            failed = tuple(
-                index
-                for index, reason in enumerate(reasons)
-                if reason.get("Code") == "ConditionalCheckFailed"
-            )
-            if error.response["Error"]["Code"] == "TransactionCanceledException" and failed:
+            failed = failed_conditions(error)
+            if failed:
                 raise StoreConflict(failed) from None
             raise
 
@@ -536,7 +504,7 @@ class SupplementStore:
         実行ロールのポリシーが UpdateItem を持たないため、ほかの実行制御の書き込みと同じ条件付き Put で書く。
         以降の実行制御の書き込みが送信時刻を消さないよう、記録できたら operation にも同じ値を持たせる。
         """
-        sent: OperationRecord = {**operation, "lastSentAt": _utcnow().isoformat()}
+        sent: OperationRecord = {**operation, "lastSentAt": now()}
         state = operation["state"]
         self._transact([self._put_control(sent, state, {":current": state})])
         operation["lastSentAt"] = sent["lastSentAt"]
@@ -627,7 +595,7 @@ class SupplementStore:
             outcome = {**outcome, **recorded}
         # 操作記録には確定した時刻も残す。通知のイベント処理が、Registry の状態変化が
         # この操作の間に起きたか（ポータル内の変更か）を照合するのに使う
-        audit_outcome = {**outcome, "settledAt": _utcnow().isoformat()}
+        audit_outcome = {**outcome, "settledAt": now()}
         audit_items = [
             self._put(
                 {
@@ -729,52 +697,7 @@ class SupplementStore:
                     }
                 )
             )
-            items.extend(self._reference_index(operation["recordId"], published))
+            items.extend(self._references.puts(operation["recordId"], published))
         if resolved_request is not None:
             items.append(self._resolve_deprecation_request(resolved_request))
         self._transact(items)
-
-    def _reference_pk(self, target_id: str) -> str:
-        """参照先から、それを関連参照に持つ Agent を引く逆引きのパーティションキー。ソートキーは Agent の ID。"""
-        return f"REGISTRY#{self.registry}#REFERENCED#{target_id}"
-
-    def _reference_index(
-        self, record_id: str, published: Mapping[str, Any]
-    ) -> list[dict[str, Any]]:
-        """公開承認した版の関連参照を、参照先からの逆引きに書く項目（参照先の公開停止・廃止の通知に使う）。
-
-        新しい版で参照をやめても項目は消さない。通知の側で、公開中の版の関連参照を読み直して確かめる。
-        """
-        references = published.get("relatedReferences")
-        targets = {
-            reference["recordId"]
-            for reference in (references if isinstance(references, list) else [])
-            if isinstance(reference, Mapping) and isinstance(reference.get("recordId"), str)
-        }
-        return [
-            self._put(
-                {"pk": self._reference_pk(target), "sk": record_id, "recordId": record_id},
-                None,
-            )
-            for target in sorted(targets)
-        ]
-
-    def referencing_records(self, target_id: str) -> list[str]:
-        """参照先（target_id）を関連参照に持つ版を公開承認した Agent の ID（逆引き）。"""
-        params: QueryParams = {
-            "TableName": self.table,
-            "KeyConditionExpression": "pk = :pk",
-            "ExpressionAttributeValues": {":pk": {"S": self._reference_pk(target_id)}},
-        }
-        records: list[str] = []
-        while True:
-            response = self._client.query(**params)
-            for raw in response.get("Items", []):
-                record_id = _deserialize(raw).get("sk")
-                if not isinstance(record_id, str):
-                    raise ValueError("保存された関連参照の逆引きの形式が正しくありません。")
-                records.append(record_id)
-            last_key = response.get("LastEvaluatedKey")
-            if not last_key:
-                return records
-            params["ExclusiveStartKey"] = last_key

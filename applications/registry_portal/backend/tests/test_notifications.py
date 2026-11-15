@@ -41,7 +41,7 @@ from decision_helpers import (
 from draft_helpers import RECORD_ARN, RECORD_ID, call, clients, event, handler_for
 from notification_helpers import event_handler, registry_event
 from record_fixtures import CUSTOM_DESCRIPTORS, CUSTOM_DRAFT, stub_create
-from registry_portal import recovery
+from registry_portal import deprecation, recovery
 from registry_portal.app import (
     create_curation_handler,
     create_event_handler,
@@ -276,7 +276,7 @@ def test_a_same_kind_change_far_from_the_send_of_a_verifying_operation_is_an_out
 def _later(monkeypatch, delay):
     """補助テーブルに記録する送信時刻・確定時刻を、操作の開始から delay 後にする。"""
     later = _now() + delay
-    monkeypatch.setattr(supplement_store, "_utcnow", lambda: later)
+    monkeypatch.setattr(supplement_store, "now", lambda: later.isoformat())
     return later
 
 
@@ -821,6 +821,66 @@ def test_agents_whose_published_version_no_longer_uses_the_reference_are_not_not
 
 
 @mock_aws
+def test_outside_suspension_of_a_reference_reaches_admins_and_the_agent_owner_team():
+    """公開停止は、ポータル外の変更でも参照先を使う Agent の所有チームに届く（廃止と同じ扱い）。"""
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        management = _approve_agent_referencing_skill(stub, registry, db)
+        events = event_handler(registry, db)
+        # 参照先の Skill は未管理で、ポータル外で公開停止（APPROVED から REJECTED）された
+        stub.add_response(
+            "get_registry_record", {**SKILL, "status": "REJECTED", "updatedAt": _now()}, SKILL_GET
+        )
+        result = events(registry_event("Rejected", event_id="ev-1", record_id=SKILL_ID), None)
+        assert result == {"result": "PROCESSED", "notified": 2}
+        stub.assert_no_pending_responses()
+
+        assert _kinds(management, ADMIN) == ["OUTSIDE_CHANGE"]
+        (item,) = _notifications(management, PUBLISHER)[1]["items"]
+        assert (item["kind"], item["recordId"]) == ("REFERENCE_SUSPENDED", SKILL_ID)
+        assert "決済スキル" in item["message"] and RECORD_ID in item["message"]
+
+
+def _break_management(db):
+    agent = stored(db, "MANAGEMENT")
+    put(db, "MANAGEMENT", {**agent, "ownerTeam": ""})
+
+
+def _break_references(db):
+    agent = stored(db, "MANAGEMENT")
+    put(db, "MANAGEMENT", {**agent, "publishedVersion": "2.0.0"})
+    put(db, "PUBLISHED#2.0.0", {"relatedReferences": "broken"})
+
+
+def _lose_snapshot(db):
+    agent = stored(db, "MANAGEMENT")
+    put(db, "MANAGEMENT", {**agent, "publishedVersion": "9.9.9"})
+
+
+@pytest.mark.parametrize("corrupt", [_break_management, _break_references, _lose_snapshot])
+@mock_aws
+def test_agents_whose_stored_state_is_broken_are_reported_to_admins(corrupt):
+    """所有チームや関連参照を読めない Agent は黙って飛ばさず、Admin に届けて調べさせる。"""
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        management = _approve_agent_referencing_skill(stub, registry, db)
+        events = event_handler(registry, db)
+        corrupt(db)
+        _suspend_in_portal(db, SKILL_ID, "team-skills")
+        stub.add_response(
+            "get_registry_record", {**SKILL, "status": "REJECTED", "updatedAt": _now()}, SKILL_GET
+        )
+        result = events(registry_event("Rejected", event_id="ev-1", record_id=SKILL_ID), None)
+        assert result == {"result": "PROCESSED", "notified": 2}
+
+        assert _kinds(management, "registry-publisher team-skills") == ["SUSPENDED"]
+        (item,) = _notifications(management, ADMIN)[1]["items"]
+        assert (item["kind"], item["recordId"]) == ("REFERENCE_SUSPENDED", SKILL_ID)
+        assert RECORD_ID in item["message"] and "補助テーブル" in item["message"]
+        assert _notifications(management, PUBLISHER)[1]["items"] == []
+
+
+@mock_aws
 def test_deprecation_request_and_decline_are_notified_in_the_app():
     """廃止依頼は Curator 全員に、見送り（AWS のイベントが出ない）は所有チームの Publisher 全員に届く。"""
     registry, db = clients()
@@ -864,6 +924,33 @@ def test_deprecation_request_and_decline_are_notified_in_the_app():
         assert declined["kind"] == "DEPRECATION_DECLINED"
         assert declined["recordName"] is None and RECORD_ID in declined["message"]
         assert "利用者が残っている" in declined["message"]
+
+
+@mock_aws
+def test_in_app_notifications_take_the_time_of_the_write_not_the_operation_start(monkeypatch):
+    """通知の時刻は書き込みの直前に取る。操作の開始時刻にすると、その間に進めた既読位置より前に並び、
+    後から書かれた通知が最初から既読に見える。"""
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        state = setup_pending(stub, registry, db)
+        _approve(stub, state)
+        started = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        times = iter([started.isoformat(), (started + timedelta(seconds=3)).isoformat()])
+        monkeypatch.setattr(deprecation, "now", lambda: next(times))
+        stub.add_response("get_registry_record", {**RECORD, "status": "APPROVED"}, GET)
+        status, request = call(
+            state["management"],
+            event(
+                "POST",
+                f"/api/records/{RECORD_ID}/deprecation-requests",
+                {"reason": "後継の Agent に移行した"},
+                groups=PUBLISHER,
+            ),
+        )
+        assert status == 200
+        assert request["requestedAt"] == started.isoformat()
+        (item,) = _notifications(state["management"], CURATOR)[1]["items"]
+        assert item["createdAt"] == "2026-01-01T00:00:03.000000Z"
 
 
 NINETY_DAYS = 90 * 24 * 60 * 60

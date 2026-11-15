@@ -18,6 +18,7 @@ from registry_portal.domain.notifications import (
     ADMIN_AUDIENCE,
     CURATOR_AUDIENCE,
     POSITION_PATTERN,
+    Audience,
     team_audience,
 )
 from registry_portal.errors import ApiError, RequestValidationError
@@ -49,9 +50,9 @@ class NotificationsUnavailable(ApiError):
 _STORED_INVALID = "保存された通知の形式が正しくありません。管理者に連絡してください。"
 
 
-def audiences_of(caller: Caller) -> list[str]:
+def audiences_of(caller: Caller) -> list[Audience]:
     """呼び出し元が属する宛先グループ。Publisher は所属チームごとの宛先グループに属する。"""
-    audiences = []
+    audiences: list[Audience] = []
     if Role.CURATOR in caller.roles:
         audiences.append(CURATOR_AUDIENCE)
     if Role.ADMIN in caller.roles:

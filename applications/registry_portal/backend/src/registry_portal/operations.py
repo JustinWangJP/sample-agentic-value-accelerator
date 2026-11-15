@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from datetime import datetime, timezone
 from typing import Any
 
 from registry_portal.auth import Caller
@@ -61,10 +60,6 @@ def check_next_token(token: str | None) -> None:
 def principal_of(caller: Caller) -> PrincipalRecord:
     """操作記録に残す主体。検証済み JWT の issuer と subject だけを使う（設計書「補助テーブルに保存するもの」）。"""
     return {"issuer": caller.principal.issuer, "subject": caller.principal.subject}
-
-
-def now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def record_request_id(operation: OperationRecord, response: Mapping[str, Any]) -> None:

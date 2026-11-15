@@ -58,6 +58,7 @@ from registry_portal.domain.drafts import (
     RecordStatus,
     content_hash,
     digest,
+    now,
 )
 from registry_portal.domain.submissions import recompute_snapshot_hash
 from registry_portal.errors import ApiError, ForbiddenError, RequestValidationError
@@ -66,7 +67,6 @@ from registry_portal.operations import (
     AWS_THROTTLED_ERRORS,
     check_idempotency_key,
     check_record_id,
-    now,
     operation_status,
     principal_of,
     record_request_id,

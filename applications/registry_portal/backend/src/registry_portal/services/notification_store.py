@@ -1,6 +1,8 @@
 """補助テーブルの通知・重複除去の印・既読位置の読み書き（#15）。
 
-キーの組み立てはこのクラスに閉じ込める。項目はすべて90日の TTL（`expiresAt`）を持つ。
+通知に関わる項目のキーの組み立ては、このクラスに閉じ込める。項目はすべて90日の TTL（`expiresAt`）を持つ。
+参照先を使う Agent を引く関連参照の逆引きは、公開承認と一緒に書く公開内容の索引なので
+reference_index.py に置く。
 
 - 通知: `pk` = `REGISTRY#{registryArn}#NOTIFICATION#{宛先グループ}`、`sk` = `{時刻}#{通知 ID}`（既読位置）
 - 重複除去の印: `pk` = `REGISTRY#{registryArn}#NOTIFIED#{出来事のキー}`、`sk` = `{宛先グループ}#{種別}`
@@ -14,12 +16,22 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
-from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 
 from registry_portal.domain.drafts import PrincipalRecord
-from registry_portal.domain.notifications import NOTIFICATION_RETENTION_SECONDS, Notification
-from registry_portal.services.supplement_store import TTL_ATTRIBUTE as _TTL_ATTRIBUTE
+from registry_portal.domain.notifications import (
+    NOTIFICATION_RETENTION_SECONDS,
+    Audience,
+    Notification,
+)
+from registry_portal.services.dynamodb import (
+    TTL_ATTRIBUTE as _TTL_ATTRIBUTE,
+    TransactWriteItem,
+    deserialize as _deserialize,
+    failed_conditions,
+    put_item,
+    serialize as _serialize,
+)
 
 
 class NotificationStoreClient(Protocol):
@@ -34,22 +46,9 @@ class NotificationStoreClient(Protocol):
     def query(self, **kwargs: Any) -> Mapping[str, Any]: ...
 
 
-def _serialize(item: Mapping[str, Any]) -> dict[str, Any]:
-    serializer = TypeSerializer()
-    return {key: serializer.serialize(value) for key, value in item.items()}
-
-
-def _deserialize(item: Mapping[str, Any]) -> dict[str, Any]:
-    deserializer = TypeDeserializer()
-    return {key: deserializer.deserialize(value) for key, value in item.items()}
-
-
 def _condition_failed(error: ClientError) -> bool:
     """トランザクションが条件式（重複・既読位置の後退）で取り消されたか。"""
-    reasons = error.response.get("CancellationReasons", [])
-    return error.response["Error"]["Code"] == "TransactionCanceledException" and any(
-        reason.get("Code") == "ConditionalCheckFailed" for reason in reasons
-    )
+    return bool(failed_conditions(error))
 
 
 class NotificationStore:
@@ -67,7 +66,7 @@ class NotificationStore:
         self._client = client
         self._clock = clock
 
-    def _audience_pk(self, audience: str) -> str:
+    def _audience_pk(self, audience: Audience) -> str:
         return f"REGISTRY#{self.registry}#NOTIFICATION#{audience}"
 
     def _key(self, pk: str, sk: str) -> dict[str, dict[str, str]]:
@@ -81,17 +80,11 @@ class NotificationStore:
         item: Mapping[str, Any],
         condition: str = "attribute_not_exists(pk)",
         values: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        put: dict[str, Any] = {
-            "TableName": self.table,
-            "Item": _serialize({**item, _TTL_ATTRIBUTE: self._expires_at()}),
-            "ConditionExpression": condition,
-        }
-        if values:
-            put["ExpressionAttributeValues"] = _serialize(values)
-        return {"Put": put}
+    ) -> TransactWriteItem:
+        """保持期間（TTL）を付けた条件付きの Put の項目。"""
+        return put_item(self.table, {**item, _TTL_ATTRIBUTE: self._expires_at()}, condition, values)
 
-    def notification_put(self, notification: Notification) -> dict[str, Any]:
+    def notification_put(self, notification: Notification) -> TransactWriteItem:
         """通知を作るトランザクションの項目。アプリ内の通知は、元の操作と同じトランザクションで書く。"""
         return self._put(
             {
@@ -102,7 +95,7 @@ class NotificationStore:
         )
 
     def publish(self, notification: Notification, dedup_key: str) -> bool:
-        """重複除去の印と通知を同時に書く。同じ出来事・宛先・種別の通知がすでにあれば False。"""
+        """重複除去の印と通知を同時に書く。同じ出来事・宛先グループ・種別の通知がすでにあれば False。"""
         marker = self._put(
             {
                 "pk": f"REGISTRY#{self.registry}#NOTIFIED#{dedup_key}",
@@ -140,7 +133,7 @@ class NotificationStore:
             if not _condition_failed(error):
                 raise
 
-    def latest(self, audience: str, limit: int) -> list[Notification]:
+    def latest(self, audience: Audience, limit: int) -> list[Notification]:
         """宛先グループの新しい通知から limit 件。期限切れ（TTL の削除待ち）は除く。"""
         response = self._client.query(
             TableName=self.table,
@@ -154,7 +147,7 @@ class NotificationStore:
         )
         return [Notification.parse(_deserialize(raw)) for raw in response.get("Items", [])]
 
-    def count_after(self, audience: str, position: str | None) -> int:
+    def count_after(self, audience: Audience, position: str | None) -> int:
         """宛先グループの通知のうち、既読位置より後のもの（未読）の件数。期限切れは数えない。"""
         condition = "pk = :pk"
         values: dict[str, Any] = {":pk": self._audience_pk(audience), ":now": int(self._clock())}

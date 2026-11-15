@@ -30,6 +30,7 @@ from registry_portal.domain.drafts import (
     digest,
     draft_view,
     has_draft,
+    now,
 )
 from registry_portal.domain.submissions import (
     Submission,
@@ -48,7 +49,6 @@ from registry_portal.operations import (
     check_idempotency_key,
     check_next_token,
     check_record_id,
-    now,
     operation_status,
     principal_of,
     record_request_id,
