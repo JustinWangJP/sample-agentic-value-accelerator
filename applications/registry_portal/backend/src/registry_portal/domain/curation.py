@@ -35,6 +35,14 @@ PUBLICATION_ACTIONS: Mapping[str, OperationKind] = {
     "suspend": SUSPEND_KIND,
     "deprecate": DEPRECATE_KIND,
 }
+# 管理レコード検索（GET /api/records/publication）の status の閉じた集合。ポータルの「公開停止中」
+# （管理情報の suspendedVersion で区別する値で、AWS の状態ではない）を先頭に、AWS の状態の語彙
+# （RecordStatus）を続ける。SPA の `PUBLICATION_SEARCH_STATUSES`（frontend/src/publication/api.ts）と
+# 値も並びも揃える
+SuspendedSearchStatus = Literal["SUSPENDED"]
+PublicationSearchStatus = Literal[SuspendedSearchStatus, RecordStatus]
+PUBLICATION_SEARCH_STATUSES: tuple[PublicationSearchStatus, ...] = get_args(PublicationSearchStatus)
+SUSPENDED_SEARCH_STATUS: SuspendedSearchStatus = "SUSPENDED"
 
 # 審査待ちの一覧の項目の種別。申請（AWS の承認待ち）と廃止依頼（ポータル内で発生）を並べる。
 # SPA の `REVIEW_KINDS`（frontend/src/reviews/api.ts）と揃える
@@ -132,7 +140,7 @@ class PublicationInput:
 class RecordState:
     """決裁・公開停止・廃止の前提を検査するときの、Registry レコードの現在の状態。
 
-    status は AWS の状態（管理 API が返す最新版）、published_version は発見できる版（なければ None）。
+    status は AWS の状態（管理 API が返す最新版）、published_version は公開中の版（なければ None）。
     """
 
     status: RecordStatus
