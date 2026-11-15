@@ -64,39 +64,47 @@ resource "aws_lambda_function" "decision" {
 # 決裁 handler の route を、借用する既存 HTTP API（#5 の IaC が持つ）に割り当てる。
 # HTTP API と JWT authorizer は作らず ID で受け取る。route はここで定義し、決裁 Lambda だけを統合先にする
 locals {
-  # 決裁 Lambda を呼び出せる /api/records/{recordId} 以下の path の末尾と、そのメソッド、Lambda の呼び出し許可の ID。
-  # Admin の取り込み・所有変更（#16）と、Curator の公開停止・廃止・公開管理の照会・廃止依頼の見送り（#13）。
-  # route と呼び出し許可の両方をこの定義から作る。
-  # 回復操作の許可は下の decision_recovery_api
+  # 決裁 Lambda を呼び出せる /api/records/ 以下の path と、そのメソッド、Lambda の呼び出し許可の ID。
+  # Admin の取り込み・所有変更（#16）、Curator の公開停止・廃止・公開管理の照会・廃止依頼の見送り（#13）と
+  # 管理レコードの検索（#34）。route と呼び出し許可の両方をこの定義から作り、呼び出し許可の source_arn では
+  # {recordId} をワイルドカード（*）に置き換える。{recordId} を含まない静的な path は完全一致で許可する。
+  # 回復操作（同じ path に2つのメソッド）の許可は下の decision_recovery_api
   decision_record_paths = {
     adopt = {
       method       = "POST"
-      path         = "adopt"
+      path         = "{recordId}/adopt"
       statement_id = "AllowHttpApiInvokeAdopt"
     }
     reassign_owner = {
       method       = "POST"
-      path         = "reassign-owner"
+      path         = "{recordId}/reassign-owner"
       statement_id = "AllowHttpApiInvokeReassignOwner"
     }
     suspend = {
       method       = "POST"
-      path         = "suspend"
+      path         = "{recordId}/suspend"
       statement_id = "AllowHttpApiInvokeSuspend"
     }
     deprecate = {
       method       = "POST"
-      path         = "deprecate"
+      path         = "{recordId}/deprecate"
       statement_id = "AllowHttpApiInvokeDeprecate"
     }
     publication = {
       method       = "GET"
-      path         = "publication"
+      path         = "{recordId}/publication"
       statement_id = "AllowHttpApiInvokePublication"
+    }
+    # HTTP API では完全一致する静的な route が parameterized route より優先されるため
+    # （README「IAM と route」のリンクを参照）、publication がレコード ID として解釈されることはない
+    publication_search = {
+      method       = "GET"
+      path         = "publication"
+      statement_id = "AllowHttpApiInvokePublicationSearch"
     }
     decline = {
       method       = "POST"
-      path         = "deprecation-requests/decline"
+      path         = "{recordId}/deprecation-requests/decline"
       statement_id = "AllowHttpApiInvokeDeclineDeprecation"
     }
   }
@@ -108,13 +116,7 @@ locals {
       "POST /api/reviews/{recordId}/approve",
       "POST /api/reviews/{recordId}/reject",
     ],
-    [for entry in values(local.decision_record_paths) : "${entry.method} /api/records/{recordId}/${entry.path}"],
-    # Curator の管理レコードの検索（#34）。HTTP API では完全一致する静的な route が
-    # parameterized route より優先されるため（README「IAM と route」のリンクを参照）、
-    # publication がレコード ID（{recordId}）として解釈されることはない
-    [
-      "GET /api/records/publication",
-    ],
+    [for entry in values(local.decision_record_paths) : "${entry.method} /api/records/${entry.path}"],
     [
       "GET /api/records/{recordId}/recovery",
       "POST /api/records/{recordId}/recovery",
@@ -143,7 +145,7 @@ resource "aws_apigatewayv2_route" "decision" {
 }
 
 # HTTP API から決裁 Lambda を呼び出す許可。審査と決裁の path（/api/reviews 以下）、Admin・Curator の
-# レコード単位の path（local.decision_record_paths）、回復操作の path（/api/records/{recordId}/recovery）だけに限る
+# /api/records/ 以下の path（local.decision_record_paths）、回復操作の path（/api/records/{recordId}/recovery）だけに限る
 resource "aws_lambda_permission" "decision_api" {
   statement_id  = "AllowHttpApiInvokeReviews"
   action        = "lambda:InvokeFunction"
@@ -164,17 +166,7 @@ resource "aws_lambda_permission" "decision_record_api" {
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.decision.function_name
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/*/api/records/*/${each.value.path}"
-}
-
-# Curator の管理レコードの検索（GET /api/records/publication、#34）。静的な path は
-# decision_record_paths のワイルドカード（/api/records/*/…）には一致しないため、完全一致で許可する
-resource "aws_lambda_permission" "decision_publication_search_api" {
-  statement_id  = "AllowHttpApiInvokePublicationSearch"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.decision.function_name
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/*/api/records/publication"
+  source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/*/api/records/${replace(each.value.path, "{recordId}", "*")}"
 }
 
 resource "aws_lambda_permission" "decision_recovery_api" {
