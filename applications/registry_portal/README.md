@@ -471,9 +471,9 @@ AWS の状態遷移は [Record lifecycle](https://docs.aws.amazon.com/bedrock-ag
 
 ### 二重リビジョンの実機検証（#33）
 
-上記の未確認の範囲は、dev 環境で [scripts/verify_suspend_dual_revision.py](scripts/verify_suspend_dual_revision.py) を人間が実行して確認します。ポータルを経由せず、管理 API は boto3（`agent-registry-control`）、発見 API と MCP endpoint は発見用 M2M トークンで HTTP を直接呼びます。MCP endpoint の呼び出しは JSON-RPC 2.0 の `tools/call`（`batch_get_discoverable_registry_record` ツール）で、[Using the Registry MCP endpoint](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-mcp-endpoint.html) の例によります。
+上記の未確認の範囲は、dev 環境で [scripts/verify_suspend_dual_revision.py](scripts/verify_suspend_dual_revision.py) を人間が実行して確認します。ポータルを経由せず、管理 API は boto3（`agent-registry-control`）、発見 API と MCP endpoint は発見用 M2M トークンで HTTP を直接呼びます。MCP endpoint の呼び出しは JSON-RPC 2.0 の `tools/call`（`batch_get_discoverable_registry_record` ツール）で、[Using the Registry MCP endpoint](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-mcp-endpoint.html) の例によります。この呼び出しは initialize なしの単発の `tools/call` で `Accept: application/json` ヘッダーのみのため、Streamable HTTP が SSE やセッション ID を要求する Registry では MCP 列が「想定外の形式」に落ちることがあります（その場合も、表には HTTP ステータスやエラーメッセージなど応答から読み取れた生の内容が記録されます）。
 
-- 前提: 対象の Registry は自動承認が無効（手動審査）であること（スクリプトが始めに確認します）。管理 API に必要な IAM 権限（レコードの作成・編集・申請・状態更新・取得・削除）を持つ認証情報を設定しておくこと
+- 前提: 対象の Registry は自動承認が無効（手動審査）であること（スクリプトが始めに `GetRegistry` で確認します）。管理 API に必要な IAM 権限（`GetRegistry` と、レコードの作成・編集・申請・状態更新・取得・削除）を持つ認証情報を設定しておくこと
 - トークンは `--token`（または環境変数 `SUSPEND_VERIFY_TOKEN`）で直接渡すか、`--token-url`・`--client-id`・`--client-secret`（または `SUSPEND_VERIFY_TOKEN_URL`・`SUSPEND_VERIFY_CLIENT_ID`・`SUSPEND_VERIFY_CLIENT_SECRET`）で client credentials として取得します
 
 ```bash
