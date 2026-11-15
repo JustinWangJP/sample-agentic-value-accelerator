@@ -9,7 +9,7 @@ SPA の isPublicationView（frontend/src/publication/api.ts）と揃える。
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Final, Literal
+from typing import Any
 
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -24,15 +24,19 @@ from registry_portal.curation_reads import (
     require_curator,
 )
 from registry_portal.domain.catalog import CATALOG_RECORD_TYPES, display_name
-from registry_portal.domain.curation import PUBLICATION_ACTIONS, precondition_failure
-from registry_portal.domain.drafts import (
-    REJECTED_STATUS,
-    RECORD_STATUSES,
-    OperationKind,
-    RecordStatus,
+from registry_portal.domain.curation import (
+    PUBLICATION_ACTIONS,
+    PUBLICATION_SEARCH_STATUSES,
+    SUSPENDED_SEARCH_STATUS,
+    precondition_failure,
 )
+from registry_portal.domain.drafts import REJECTED_STATUS, TEXT_LIMITS, OperationKind
 from registry_portal.errors import RequestValidationError
-from registry_portal.operations import check_next_token, check_record_id
+from registry_portal.operations import (
+    check_list_query,
+    check_record_id,
+    list_page_params,
+)
 
 _UNMANAGED = (
     "ポータルで管理されていないレコードは操作できません。管理者に取り込みを依頼してください。"
@@ -40,19 +44,11 @@ _UNMANAGED = (
 
 # 管理レコード検索の1ページに並べる上限（AWS の ListRegistryRecords の maxResults）
 PUBLICATION_SEARCH_PAGE_SIZE = 20
-# 検索の name に指定できる長さ（AWS の ListRegistryRecords のフィルター値と同じ上限）
-NAME_QUERY_MAX_LENGTH = 255
-_ALLOWED_QUERY_KEYS = {"name", "status", "nextToken"}
-# 検索の status で「公開停止中」を表す、ポータル側の語彙
-SUSPENDED_QUERY_STATUS: Final = "SUSPENDED"
-# 検索の status の閉じた集合。AWS の状態の語彙（domain/drafts.py の RecordStatus、SPA の
-# AWS_RECORD_STATUSES と同じ綴り）に SUSPENDED を加えたもの。値は RecordStatus から
-# 再スペルせず、一覧（PUBLICATION_SEARCH_STATUSES）も検証エラーの文言もここから組み立てる
-PublicationSearchStatus = Literal[RecordStatus, "SUSPENDED"]
-PUBLICATION_SEARCH_STATUSES: tuple[PublicationSearchStatus, ...] = (
-    *RECORD_STATUSES,
-    SUSPENDED_QUERY_STATUS,
-)
+# 検索の name に指定できる長さ。name は AWS に渡さずポータル側で name と displayName に部分一致させるため、
+# 両者の上限（AWS の CreateRegistryRecord でいずれも1〜255文字。README「管理レコードの検索」）を
+# 超える値は一致し得ない。上限の定義は下書きの TEXT_LIMITS に一か所にまとめてあり、そこから組み立てる
+NAME_QUERY_MAX_LENGTH = max(TEXT_LIMITS["name"], TEXT_LIMITS["displayName"])
+_ALLOWED_QUERY_KEYS = ("name", "status", "nextToken")
 _STATUS_QUERY_ERROR = (
     f"status は {'・'.join(PUBLICATION_SEARCH_STATUSES)} のいずれかを指定してください。"
 )
@@ -104,8 +100,7 @@ class PublicationSearch:
 
     def search(self, caller: Caller, query: Mapping[str, str]) -> tuple[int, dict[str, Any]]:
         require_curator(caller)
-        if set(query) - _ALLOWED_QUERY_KEYS:
-            raise RequestValidationError("一覧には name・status・nextToken のみ指定できます。")
+        token = check_list_query(query, _ALLOWED_QUERY_KEYS)
         name = query.get("name")
         if name is not None and not (1 <= len(name) <= NAME_QUERY_MAX_LENGTH):
             raise RequestValidationError(
@@ -114,30 +109,24 @@ class PublicationSearch:
         status = query.get("status")
         if status is not None and status not in PUBLICATION_SEARCH_STATUSES:
             raise RequestValidationError(_STATUS_QUERY_ERROR)
-        token = query.get("nextToken")
-        check_next_token(token)
         filters: list[dict[str, Any]] = [
             {"name": "recordType", "values": list(CATALOG_RECORD_TYPES)}
         ]
         # SUSPENDED は管理情報の印（suspendedVersion）で判断するため AWS には状態を渡せない。
         # REJECTED は公開停止中のレコードも AWS では REJECTED になるため、ポータル側で除外する
-        if status is not None and status != SUSPENDED_QUERY_STATUS:
+        if status is not None and status != SUSPENDED_SEARCH_STATUS:
             filters.append({"name": "status", "values": [status]})
-        params: dict[str, Any] = {
-            "maxResults": PUBLICATION_SEARCH_PAGE_SIZE,
-            "filters": filters,
-        }
-        if token is not None:
-            params["nextToken"] = token
         try:
-            page = self.reads.list_records(**params)
+            page = self.reads.list_records(
+                **list_page_params(PUBLICATION_SEARCH_PAGE_SIZE, filters, token)
+            )
             items: list[dict[str, Any]] = []
             for record in page["registryRecords"]:
                 management = self.reads.load_management(str(record["recordId"]))
                 if not is_managed(management):
                     continue
                 suspended = management.is_suspended(record)
-                if status == SUSPENDED_QUERY_STATUS and not suspended:
+                if status == SUSPENDED_SEARCH_STATUS and not suspended:
                     continue
                 if status == REJECTED_STATUS and suspended:
                     continue

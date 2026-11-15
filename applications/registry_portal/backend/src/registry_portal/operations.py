@@ -49,6 +49,28 @@ def check_record_id(record_id: str) -> None:
         raise RequestValidationError("Registry レコード ID の形式が正しくありません。")
 
 
+def check_list_query(query: Mapping[str, str], allowed: tuple[str, ...]) -> str | None:
+    """一覧のクエリを検査し、nextToken（なければ None）を返す。
+
+    allowed にないキーと、形式の崩れた nextToken は 400 にする。allowed には nextToken を含める。
+    """
+    if set(query) - set(allowed):
+        raise RequestValidationError(f"一覧には {'・'.join(allowed)} のみ指定できます。")
+    token = query.get("nextToken")
+    check_next_token(token)
+    return token
+
+
+def list_page_params(
+    page_size: int, filters: list[dict[str, Any]], token: str | None
+) -> dict[str, Any]:
+    """AWS の ListRegistryRecords に渡す、1ページ分の maxResults・filters・nextToken。"""
+    params: dict[str, Any] = {"maxResults": page_size, "filters": filters}
+    if token is not None:
+        params["nextToken"] = token
+    return params
+
+
 def check_next_token(token: str | None) -> None:
     """一覧の nextToken を検査する。AWS が返す不透明な値なので、空・2048文字超・空白を含むものだけを 400 にする。"""
     if token is not None and (

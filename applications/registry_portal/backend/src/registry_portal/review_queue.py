@@ -24,8 +24,7 @@ from registry_portal.domain.curation import REVIEW_DEPRECATION_REQUEST, REVIEW_S
 from registry_portal.domain.deprecation import DeprecationRequest
 from registry_portal.domain.drafts import PENDING_APPROVAL_STATUS
 from registry_portal.domain.submissions import recompute_snapshot_hash, snapshot_fields
-from registry_portal.errors import RequestValidationError
-from registry_portal.operations import check_next_token, check_record_id
+from registry_portal.operations import check_list_query, check_record_id, list_page_params
 
 # 1ページに並べる申請の上限（AWS の ListRegistryRecords の maxResults）
 REVIEW_PAGE_SIZE = 20
@@ -49,18 +48,15 @@ class ReviewQueue:
         表示しないよう、最初のページ（nextToken なし）にだけ古い順に並べる。
         """
         require_curator(caller)
-        if set(query) - {"nextToken"}:
-            raise RequestValidationError("一覧には nextToken のみ指定できます。")
-        token = query.get("nextToken")
-        check_next_token(token)
-        params: dict[str, Any] = {
-            "maxResults": REVIEW_PAGE_SIZE,
-            "filters": [{"name": "status", "values": [PENDING_APPROVAL_STATUS]}],
-        }
-        if token is not None:
-            params["nextToken"] = token
+        token = check_list_query(query, ("nextToken",))
         try:
-            response = self.reads.list_records(**params)
+            response = self.reads.list_records(
+                **list_page_params(
+                    REVIEW_PAGE_SIZE,
+                    [{"name": "status", "values": [PENDING_APPROVAL_STATUS]}],
+                    token,
+                )
+            )
             items = [self._submission_item(record) for record in response["registryRecords"]]
             if token is None:
                 items = [*self._deprecation_request_items(), *items]

@@ -92,7 +92,7 @@ def search(handler, query=None, *, groups=CURATOR):
 
 @mock_aws
 def test_curator_lists_managed_records_with_suspension_and_published_version():
-    """管理下のレコードだけを、公開停止の区別と発見できる版とともに並べる。"""
+    """管理下のレコードだけを、公開停止の区別と公開中の版とともに並べる。"""
     registry, db = clients()
     with Stubber(registry) as stub:
         decision = decision_for(registry, db)
@@ -169,6 +169,28 @@ def test_status_filter_distinguishes_suspension_from_rejection():
         status, body = search(decision, {"status": "DRAFT"})
         assert status == 200, body
         assert [item["recordId"] for item in body["items"]] == ["sklEFGH5678I"]
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_record_deprecated_after_suspension_is_no_longer_suspended():
+    """公開停止の後に廃止したレコードは、印が残っていても公開停止中に数えない（廃止は終端の状態）。"""
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        decision = decision_for(registry, db)
+        retired = listed_record("agentABC1234", "payments-agent", status="DEPRECATED")
+        # 廃止は公開停止の印を消さない（印を消すのはポータルの公開承認だけ）
+        managed(db, "agentABC1234", suspendedVersion="2.0.0")
+        stub_publication_list(stub, [retired])
+        status, body = search(decision, {"status": "SUSPENDED"})
+        assert status == 200, body
+        assert body["items"] == []
+        stub_publication_list(stub, [retired], status="DEPRECATED")
+        status, body = search(decision, {"status": "DEPRECATED"})
+        assert status == 200, body
+        assert [item["recordId"] for item in body["items"]] == ["agentABC1234"]
+        assert body["items"][0]["suspended"] is False
+        assert body["items"][0]["publishedVersion"] is None
         stub.assert_no_pending_responses()
 
 
