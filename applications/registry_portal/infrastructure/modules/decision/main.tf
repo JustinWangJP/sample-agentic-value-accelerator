@@ -1,6 +1,6 @@
 # 決裁 Lambda と専用の実行ロールを定義する。
 # 決裁 handler（handlers/curation.py）は審査待ちの閲覧と、決裁（公開承認・却下）・公開停止・廃止（状態遷移）、
-# 公開管理の照会と廃止依頼の見送り、
+# 公開管理の照会と廃止依頼の見送り、Curator の管理レコードの検索（#34）、
 # Admin による取り込み・所有変更と結果確認中の操作の回復を行う。
 # descriptor の作成・更新（CreateRegistryRecord / UpdateRegistryRecord）と申請の権限は持たない
 # （設計書「最小インフラとセキュリティ」の決裁 Lambda）。既存 Registry と補助テーブルは借用するだけ。
@@ -109,6 +109,11 @@ locals {
       "POST /api/reviews/{recordId}/reject",
     ],
     [for entry in values(local.decision_record_paths) : "${entry.method} /api/records/{recordId}/${entry.path}"],
+    # Curator の管理レコードの検索（#34）。完全一致する静的 route は parameterized route
+    # （GET /api/records/{recordId}）より優先されるため、レコード ID とは解釈されない
+    [
+      "GET /api/records/publication",
+    ],
     [
       "GET /api/records/{recordId}/recovery",
       "POST /api/records/{recordId}/recovery",
@@ -159,6 +164,16 @@ resource "aws_lambda_permission" "decision_record_api" {
   function_name = aws_lambda_function.decision.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/*/api/records/*/${each.value.path}"
+}
+
+# Curator の管理レコードの検索（GET /api/records/publication、#34）。静的な path は
+# decision_record_paths のワイルドカード（/api/records/*/…）には一致しないため、完全一致で許可する
+resource "aws_lambda_permission" "decision_publication_search_api" {
+  statement_id  = "AllowHttpApiInvokePublicationSearch"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.decision.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/*/api/records/publication"
 }
 
 resource "aws_lambda_permission" "decision_recovery_api" {

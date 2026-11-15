@@ -60,7 +60,7 @@ from registry_portal.notifications import (
     NotificationInbox,
     NotificationsNotConfigured,
 )
-from registry_portal.publication import RecordPublication
+from registry_portal.publication import PublicationSearch, RecordPublication
 from registry_portal.recovery import RECOVERY_BODY_MAX_LENGTH, OperationRecovery
 from registry_portal.review_queue import ReviewQueue
 from registry_portal.services.catalog_supplement import CatalogSupplement, SupplementClient
@@ -456,6 +456,7 @@ def create_curation_handler(
     curation = RecordCuration(reads, store, curation_client)
     reviews = ReviewQueue(reads)
     publication = RecordPublication(reads)
+    publication_search = PublicationSearch(reads)
     deprecation_requests = DeprecationRequests(reads, store, stores.notifications)
 
     def list_reviews(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
@@ -470,6 +471,9 @@ def create_curation_handler(
         if _query_of(event):
             raise RequestValidationError("公開管理の照会にクエリパラメーターは指定できません。")
         return publication.inspect(caller, _path_parameter(event))
+
+    def search_publications(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        return publication_search.search(caller, _query_of(event))
 
     def decline_deprecation(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
         return deprecation_requests.decline(
@@ -541,6 +545,10 @@ def create_curation_handler(
             for action, kind in PUBLICATION_ACTIONS.items()
         },
         "GET /api/records/{recordId}/publication": get_publication,
+        # 管理レコードの検索（Curator）。静的な route は API Gateway と _route_template の両方で
+        # parameterized route（GET /api/records/{recordId}/publication など）より優先されるため、
+        # レコード ID の指定とは解釈されない
+        "GET /api/records/publication": search_publications,
         "POST /api/records/{recordId}/deprecation-requests/decline": decline_deprecation,
         "GET /api/records/{recordId}/recovery": get_recovery,
         "POST /api/records/{recordId}/recovery": recover_operation,

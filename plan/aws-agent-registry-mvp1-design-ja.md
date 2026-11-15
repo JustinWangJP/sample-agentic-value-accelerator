@@ -334,7 +334,7 @@ ADR-0004 に従い、GitHub Actions では AWS への反映を一切行わない
 | `GET /api/catalog` | 発見 API を使ったカタログ項目の一覧。nextToken を中継する | 人間 |
 | `POST /api/catalog/search` | 自然言語検索。許可した metadata filter だけを組み立てる | 人間 |
 | `GET /api/catalog/{id}` | カタログ項目の詳細。batch-get に ID を1件渡して取得する | 人間 |
-| `GET /api/records` | 管理用の一覧。業務ロールと所有チームで絞り込む | 人間 |
+| `GET /api/records` | 管理用の一覧。Publisher（所有チーム）の下書き一覧のままで、Curator には公開しない（#34 で Curator 向けに `GET /api/records/publication` を別に設けた） | 人間 |
 | `POST /api/records` | 下書きの作成。Idempotency-Key を必須にする | 人間、サービス主体 |
 | `GET /api/records/{id}` | 管理中の最新版を取得する | 人間、サービス主体 |
 | `PATCH /api/records/{id}` | 種別ごとの編集。expected content hash を必須にする | 人間、サービス主体 |
@@ -346,6 +346,7 @@ ADR-0004 に従い、GitHub Actions では AWS への反映を一切行わない
 | `POST /api/records/{id}/suspend` | 公開停止。却下で発見できなくすることを明示する | Curator |
 | `POST /api/records/{id}/deprecate` | 元に戻せない廃止であることを明示し、二重確認を経て実行する | Curator |
 | `GET /api/records/{id}/publication` | 公開管理の照会。状態・公開中の版・未解決の廃止依頼・実行できる操作（できない理由）を返す。決裁 Lambda が処理する | Curator |
+| `GET /api/records/publication` | 管理下のレコードを名前の一部と状態（ポータルの「公開停止中」を含む閉じた集合）で探す一覧。Curator が公開管理を開く入口。決裁 Lambda が処理する | Curator |
 | `POST /api/records/{id}/deprecation-requests/decline` | 廃止依頼の見送り。理由を必須にし、レコードの状態は変えない。決裁 Lambda が処理する | Curator |
 | `POST /api/records/{id}/adopt` | 未管理レコードの取り込みと所有チームの割り当て | Admin |
 | `GET /api/operations/{id}` | 操作結果、結果確認中の状態、回復結果 | 人間 |
