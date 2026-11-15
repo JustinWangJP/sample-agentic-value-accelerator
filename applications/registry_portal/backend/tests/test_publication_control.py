@@ -592,6 +592,31 @@ def test_suspension_mark_is_ignored_once_aws_shows_the_record_as_approved():
 
 
 @mock_aws
+def test_suspension_mark_is_ignored_once_aws_shows_the_record_as_deprecated():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        state = setup_pending(stub, registry, db)
+        published_and_suspended(stub, state)
+        stub_get(stub, "REJECTED")
+        request_deprecation(state["management"])
+        # 廃止は終端の状態。公開停止の印が残っていても、公開管理の照会は公開停止中と表示しない
+        assert Management(stored(db, "MANAGEMENT")).suspended_version == PUBLISHED_VERSION
+        stub_get(stub, "DEPRECATED")
+        status, body = inspect(state["decision"])
+        assert status == 200
+        assert body["status"] == "DEPRECATED"
+        assert body["suspended"] is False
+        assert body["publishedVersion"] is None
+        # 審査待ちの廃止依頼の項目も、廃止済みのレコードを公開停止中に数えない
+        stub_pending_list(stub, [])
+        stub_get(stub, "DEPRECATED")
+        status, body = call_reviews(state["decision"])
+        assert status == 200
+        assert [item["suspended"] for item in body["items"]] == [False]
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
 def test_suspended_record_cannot_be_approved_directly():
     registry, db = clients()
     with Stubber(registry) as stub:
