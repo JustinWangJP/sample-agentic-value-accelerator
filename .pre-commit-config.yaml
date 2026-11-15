@@ -19,6 +19,12 @@ repos:
         entry: python3 applications/registry_portal/scripts/check_imports.py
         files: ^applications/registry_portal/(backend/.*\.py|scripts/.*\.py)$
         pass_filenames: false
+      - id: registry-portal-openapi
+        name: Registry ポータルの OpenAPI 仕様（Redocly lint）
+        language: system
+        entry: sh -c 'cd applications/registry_portal/backend && npx --yes @redocly/cli@1.34.3 lint'
+        files: ^applications/registry_portal/backend/(openapi|redocly)\.yaml$
+        pass_filenames: false
       - id: registry-portal-eslint
         name: Registry ポータルの ESLint
         language: system

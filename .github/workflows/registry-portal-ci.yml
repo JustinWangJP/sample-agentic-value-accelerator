@@ -53,6 +53,23 @@ jobs:
       - name: mypy
         run: mypy
 
+  openapi:
+    name: OpenAPI 仕様（Redocly lint）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: applications/registry_portal/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      # 設定は backend/redocly.yaml。版は pre-commit と README の「開発」と揃える
+      - name: Redocly lint
+        run: npx --yes @redocly/cli@1.34.3 lint
+
   frontend:
     name: frontend（ESLint / Vitest / typecheck / build）
     runs-on: ubuntu-latest
