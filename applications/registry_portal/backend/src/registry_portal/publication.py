@@ -25,7 +25,12 @@ from registry_portal.curation_reads import (
 )
 from registry_portal.domain.catalog import CATALOG_RECORD_TYPES, display_name
 from registry_portal.domain.curation import PUBLICATION_ACTIONS, precondition_failure
-from registry_portal.domain.drafts import REJECTED_STATUS, RECORD_STATUSES, OperationKind
+from registry_portal.domain.drafts import (
+    REJECTED_STATUS,
+    RECORD_STATUSES,
+    OperationKind,
+    RecordStatus,
+)
 from registry_portal.errors import RequestValidationError
 from registry_portal.operations import check_next_token, check_record_id
 
@@ -41,26 +46,15 @@ _ALLOWED_QUERY_KEYS = {"name", "status", "nextToken"}
 # 検索の status で「公開停止中」を表す、ポータル側の語彙
 SUSPENDED_QUERY_STATUS: Final = "SUSPENDED"
 # 検索の status の閉じた集合。AWS の状態の語彙（domain/drafts.py の RecordStatus、SPA の
-# AWS_RECORD_STATUSES と同じ綴り）に SUSPENDED を加えたもの
-PublicationSearchStatus = Literal[
-    "DRAFT",
-    "PENDING_APPROVAL",
-    "APPROVED",
-    "REJECTED",
-    "DEPRECATED",
-    "CREATING",
-    "UPDATING",
-    "CREATE_FAILED",
-    "UPDATE_FAILED",
-    "SUSPENDED",
-]
+# AWS_RECORD_STATUSES と同じ綴り）に SUSPENDED を加えたもの。値は RecordStatus から
+# 再スペルせず、一覧（PUBLICATION_SEARCH_STATUSES）も検証エラーの文言もここから組み立てる
+PublicationSearchStatus = Literal[RecordStatus, "SUSPENDED"]
 PUBLICATION_SEARCH_STATUSES: tuple[PublicationSearchStatus, ...] = (
     *RECORD_STATUSES,
     SUSPENDED_QUERY_STATUS,
 )
 _STATUS_QUERY_ERROR = (
-    "status は DRAFT・PENDING_APPROVAL・APPROVED・REJECTED・DEPRECATED・CREATING・UPDATING・"
-    "CREATE_FAILED・UPDATE_FAILED・SUSPENDED のいずれかを指定してください。"
+    f"status は {'・'.join(PUBLICATION_SEARCH_STATUSES)} のいずれかを指定してください。"
 )
 
 

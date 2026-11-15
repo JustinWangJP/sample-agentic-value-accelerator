@@ -109,8 +109,9 @@ locals {
       "POST /api/reviews/{recordId}/reject",
     ],
     [for entry in values(local.decision_record_paths) : "${entry.method} /api/records/{recordId}/${entry.path}"],
-    # Curator の管理レコードの検索（#34）。完全一致する静的 route は parameterized route
-    # （GET /api/records/{recordId}）より優先されるため、レコード ID とは解釈されない
+    # Curator の管理レコードの検索（#34）。HTTP API では完全一致する静的な route が
+    # parameterized route より優先されるため（README「IAM と route」のリンクを参照）、
+    # publication がレコード ID（{recordId}）として解釈されることはない
     [
       "GET /api/records/publication",
     ],
