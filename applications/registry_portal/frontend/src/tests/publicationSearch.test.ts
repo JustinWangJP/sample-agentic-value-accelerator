@@ -143,15 +143,10 @@ function listItem(displayName: string): HTMLLIElement {
   if (!node) throw new Error(`一覧の項目がありません ${displayName}`)
   return node
 }
-/** 一覧の項目の中のボタンを返す（画面にはレコード ID 指定のフォームにも同じラベルのボタンがある） */
-function itemButton(displayName: string, label: string): HTMLButtonElement {
-  const node = [...listItem(displayName).querySelectorAll('button')].find(
-    (element) => element.textContent === label,
-  )
-  if (!node) throw new Error(`一覧の項目のボタンがありません ${displayName} ${label}`)
-  return node
-}
-/** 指定した範囲の中のボタンを返す（itemButton と同じ探し方の、一覧の外向け） */
+/**
+ * 指定した範囲の中のボタンを返す。一覧の項目のボタンは buttonIn(listItem(displayName), label) で探す
+ * （画面にはレコード ID 指定のフォームにも同じラベルのボタンがあるため、範囲を項目に限る）
+ */
 function buttonIn(scope: ParentNode, label: string): HTMLButtonElement {
   const node = [...scope.querySelectorAll('button')].find(
     (element) => element.textContent === label,
@@ -196,7 +191,7 @@ it('一覧の項目から、そのレコードの公開管理を開ける', asyn
     jsonResponse(200, { items: [suspendedItem], nextToken: null }),
     jsonResponse(200, publicationView),
   ])
-  await act(() => itemButton('決済 Agent', '公開管理を開く').click())
+  await act(() => buttonIn(listItem('決済 Agent'), '公開管理を開く').click())
   expect(calls[1]?.url).toBe('/api/records/agentSUSP456/publication')
   expect(container.textContent).toContain('公開管理: 決済 Agent')
 })
@@ -283,12 +278,12 @@ it('一覧から開いた公開管理の操作が済んでも、公開管理と�
     'payment',
     'APPROVED',
   )
-  await act(() => itemButton('決済 MCP サーバー', '公開管理を開く').click())
+  await act(() => buttonIn(listItem('決済 MCP サーバー'), '公開管理を開く').click())
   await setValue('suspendReason', '問題が見つかったため')
   await submitLegend('公開停止')
   expect(calls[2]?.url).toBe('/api/records/mcpPAY789012/suspend')
   // 一覧を読み直すと公開管理が外れて結果の表示が消えるため、操作後に検索を呼び直さない
   expect(calls).toHaveLength(3)
   expect(listItem('決済 MCP サーバー').textContent).toContain('公開停止しました。')
-  expect(itemButton('決済 MCP サーバー', '公開管理を閉じる').getAttribute('aria-expanded')).toBe('true')
+  expect(buttonIn(listItem('決済 MCP サーバー'), '公開管理を閉じる').getAttribute('aria-expanded')).toBe('true')
 })
