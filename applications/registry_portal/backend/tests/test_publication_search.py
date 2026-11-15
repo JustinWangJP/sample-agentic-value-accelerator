@@ -8,6 +8,7 @@
 
 from datetime import datetime, timezone
 
+from botocore.exceptions import EndpointConnectionError
 from botocore.stub import Stubber
 from moto import mock_aws
 
@@ -168,4 +169,68 @@ def test_status_filter_distinguishes_suspension_from_rejection():
         status, body = search(decision, {"status": "DRAFT"})
         assert status == 200, body
         assert [item["recordId"] for item in body["items"]] == ["sklEFGH5678I"]
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_search_checks_role_and_rejects_unknown_keys_and_invalid_values():
+    """Curator 以外は 403。未知のクエリキー・不正な値は 400（AWS を呼ばない）。"""
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        decision = decision_for(registry, db)
+        for groups in ("", "registry-publisher team-payments", "registry-admin"):
+            status, body = search(decision, groups=groups)
+            assert status == 403, (groups, body)
+        invalid = (
+            {"team": "team-payments"},
+            {"status": "PUBLISHED"},
+            {"status": "suspended"},
+            {"name": ""},
+            {"name": "a" * 256},
+            {"nextToken": "bad token"},
+        )
+        for query in invalid:
+            status, body = search(decision, query)
+            assert status == 400, (query, body)
+            assert body["error"]["code"] == "VALIDATION_ERROR"
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_search_relays_the_aws_page_token_and_reports_read_failures_as_502():
+    """ポータル側で絞り込むため、items が0件でも nextToken を保持する。読み取りの失敗は 502。"""
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        decision = decision_for(registry, db)
+        matching = listed_record("agentABC1234", "payments-agent")
+        managed(db, "agentABC1234")
+        # 1ページ目は name が一致しないレコードを返し、次のページを指す
+        stub_publication_list(
+            stub, [listed_record("mcpEFGH5678I", "logging-mcp")], next_token="next-page"
+        )
+        status, body = search(decision, {"name": "payments"})
+        assert status == 200, body
+        assert body["items"] == []
+        assert body["nextToken"] == "next-page"
+        # 2ページ目は nextToken を AWS にそのまま渡す
+        stub_publication_list(stub, [matching], token="next-page")
+        status, body = search(decision, {"name": "payments", "nextToken": "next-page"})
+        assert status == 200, body
+        assert [item["recordId"] for item in body["items"]] == ["agentABC1234"]
+        assert body["nextToken"] is None
+        # Registry を読めないときは空の結果にせず 502
+        stub.add_client_error("list_registry_records", "AccessDeniedException")
+        status, body = search(decision)
+        assert status == 502
+        assert body["error"]["code"] == "REGISTRY_UNAVAILABLE"
+        # 補助ストアを読めないときも 502
+        stub_publication_list(stub, [matching])
+
+        def unreachable(**kwargs):
+            raise EndpointConnectionError(endpoint_url="https://dynamodb.example")
+
+        db.get_item = unreachable
+        status, body = search(decision)
+        assert status == 502
+        assert body["error"]["code"] == "REGISTRY_UNAVAILABLE"
         stub.assert_no_pending_responses()
