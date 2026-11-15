@@ -1,4 +1,5 @@
-"""Curator の公開管理の照会（GET /api/records/{recordId}/publication）。
+"""Curator の公開管理の照会（GET /api/records/{recordId}/publication）と
+管理レコードの検索（GET /api/records/publication）。
 
 公開停止・廃止・廃止依頼の見送りを判断する前に、現在の状態・公開中の版・未解決の廃止依頼・処理中の操作と、
 いま実行できる操作（できなければその理由）を1回の照会で返す。決裁 handler が処理する。
@@ -7,6 +8,7 @@ SPA の isPublicationView（frontend/src/publication/api.ts）と揃える。
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from registry_portal.auth import Caller
@@ -18,6 +20,7 @@ from registry_portal.curation_reads import (
     record_summary,
     require_curator,
 )
+from registry_portal.domain.catalog import CATALOG_RECORD_TYPES
 from registry_portal.domain.curation import PUBLICATION_ACTIONS, precondition_failure
 from registry_portal.domain.drafts import OperationKind
 from registry_portal.operations import check_record_id
@@ -25,6 +28,9 @@ from registry_portal.operations import check_record_id
 _UNMANAGED = (
     "ポータルで管理されていないレコードは操作できません。管理者に取り込みを依頼してください。"
 )
+
+# 管理レコード検索の1ページに並べる上限（AWS の ListRegistryRecords の maxResults）
+PUBLICATION_SEARCH_PAGE_SIZE = 20
 
 
 def _action(failure: str | None) -> dict[str, Any]:
@@ -63,3 +69,30 @@ class RecordPublication:
                 action: _action(failure_of(kind)) for action, kind in PUBLICATION_ACTIONS.items()
             },
         }
+
+
+class PublicationSearch:
+    """Curator が公開管理を開く対象を探す、管理下のレコードの一覧。"""
+
+    def __init__(self, reads: CurationReads) -> None:
+        self.reads = reads
+
+    def search(self, caller: Caller, query: Mapping[str, str]) -> tuple[int, dict[str, Any]]:
+        require_curator(caller)
+        page = self.reads.list_records(
+            maxResults=PUBLICATION_SEARCH_PAGE_SIZE,
+            filters=[{"name": "recordType", "values": list(CATALOG_RECORD_TYPES)}],
+        )
+        items: list[dict[str, Any]] = []
+        for record in page["registryRecords"]:
+            management = self.reads.load_management(str(record["recordId"]))
+            if not is_managed(management):
+                continue
+            items.append(
+                {
+                    **record_summary(record, management),
+                    "suspended": management.is_suspended(record),
+                    "publishedVersion": management.published_version(record),
+                }
+            )
+        return 200, {"items": items, "nextToken": page.get("nextToken")}
