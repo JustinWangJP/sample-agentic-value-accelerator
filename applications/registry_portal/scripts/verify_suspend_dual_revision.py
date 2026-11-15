@@ -584,7 +584,9 @@ def run_verification(
         )
     )
 
-    # ケース C: 最新版を REJECTED にした後（B の受理で作れた状態）、承認済み版が発見されるか
+    # ケース C: 最新版を REJECTED にした後、承認済み版が発見されるか。
+    # REJECTED への遷移として文書化されている経路（B の受理）を優先し、B が拒否された
+    # ときは A の受理で同じ状態（最新版 REJECTED + 承認済み版）が観測できていれば使う。
     if attempt_b.accepted and after_b is not None:
         cases.append(
             CaseResult(
@@ -597,9 +599,24 @@ def run_verification(
                 after=after_b,
             )
         )
+    elif attempt_a.accepted and after_a is not None:
+        cases.append(
+            CaseResult(
+                label="C: 最新版 REJECTED",
+                latest_status="REJECTED",
+                latest_version=version_a,
+                approved_version=before_a.discovery.record_version,
+                attempt=None,
+                before=before_a,
+                after=after_a,
+            )
+        )
+        notes.append(
+            "ケース C は A の却下で作られた状態です（B の REJECT は受け付けられなかったため）。"
+        )
     else:
         notes.append(
-            "ケース B の REJECT が受け付けられなかったため、"
+            "ケース A・B のどちらの REJECT も受け付けられなかったため、"
             "C（最新版 REJECTED）の状態は作れませんでした。"
         )
         cases.append(

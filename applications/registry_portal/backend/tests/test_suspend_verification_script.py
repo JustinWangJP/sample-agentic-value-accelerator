@@ -455,6 +455,44 @@ def test_run_verification_executes_cases_when_rejections_are_accepted():
     assert all(c[2]["authorization"] == "Bearer token-value" for c in transport.calls)
 
 
+def test_run_verification_uses_case_a_observation_for_c_when_only_b_is_rejected():
+    """B の REJECT が拒否されても、A の受理で同じ状態（最新版 REJECTED）が観測できていれば C に記録する。"""
+    registry, stub, control = make_control()
+    transport = FakeTransport()
+    stub_setup(stub)
+    sighting_responses(transport, "1.0.0")  # ベースライン
+    # ケース A: REJECT は受け付けられ、REJECTED 後の観測も取れている
+    stub_edit(stub, "1.0.1")
+    stub.add_response("get_registry_record", aws_record("DRAFT", "1.0.1"), GET_PARAMS)
+    sighting_responses(transport, "1.0.0")  # REJECT 前
+    stub_status(stub, "REJECTED", REJECT_REASON)
+    stub.add_response("get_registry_record", aws_record("REJECTED", "1.0.1"), GET_PARAMS)
+    sighting_responses(transport, "1.0.0")  # REJECT 後
+    # 復旧: 新しい版を承認し直す
+    stub_reapprove(stub, "1.0.2")
+    # ケース B: 申請してから REJECT を試みるが、こちらは拒否される
+    stub_edit(stub, "1.0.3")
+    stub.add_response("get_registry_record", aws_record("DRAFT", "1.0.3"), GET_PARAMS)
+    stub_submit(stub)
+    stub.add_response("get_registry_record", aws_record("PENDING_APPROVAL", "1.0.3"), GET_PARAMS)
+    sighting_responses(transport, "1.0.2")  # REJECT 前
+    stub_status(stub, "REJECTED", REJECT_REASON, error="ConflictException")
+
+    with stub:
+        report = verify.run_verification(control, transport, NAME, token="token-value")
+        stub.assert_no_pending_responses()
+
+    case_a, case_b, case_c = report.cases
+    assert case_a.attempt is not None and case_a.attempt.accepted is True
+    assert case_b.attempt is not None and case_b.attempt.accepted is False
+    # ケース C は A の却下で作られた状態（A の REJECT 後の観測）から記録する
+    assert case_c.attempt is None
+    assert case_c.latest_version == "1.0.1"
+    assert case_c.after is not None and case_c.after.discovery.record_version == "1.0.0"
+    assert any("A の却下で作られた状態" in note for note in report.notes)
+    assert not any("作れませんでした" in note for note in report.notes)
+
+
 def test_run_verification_records_rejected_status_updates_without_after_sightings():
     registry, stub, control = make_control()
     transport = FakeTransport()
