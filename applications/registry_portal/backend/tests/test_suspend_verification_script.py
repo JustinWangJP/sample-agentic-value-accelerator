@@ -5,10 +5,11 @@ AWS に触る部分は薄く保ち、ペイロード構築・応答の解釈・�
 botocore Stubber とフェイクの transport に差し替えて検証する。
 """
 
+import dataclasses
 import json
-import os
 
 import boto3
+import pytest
 from botocore.stub import ANY, Stubber
 
 import verify_suspend_dual_revision as verify
@@ -202,7 +203,6 @@ def test_token_request_is_client_credentials_with_basic_auth():
 def test_parse_token_response_returns_the_access_token():
     token = verify.parse_token_response(b'{"access_token": "abc.def", "expires_in": 3600}')
     assert token == "abc.def"
-    import pytest
 
     with pytest.raises(ValueError):
         verify.parse_token_response(b'{"error": "invalid_client"}')
@@ -429,30 +429,68 @@ def test_run_verification_executes_cases_when_rejections_are_accepted():
         stub.assert_no_pending_responses()
 
     # ベースライン: 承認した版が発見 API と MCP endpoint の両方に現れる
-    assert report.baseline.after[0].record_version == "1.0.0"
-    assert report.baseline.after[1].record_version == "1.0.0"
+    assert report.baseline.after.discovery.record_version == "1.0.0"
+    assert report.baseline.after.mcp.record_version == "1.0.0"
     # ケース A: 最新版 DRAFT への REJECT は受け付けられ、承認済み版の観測を記録する
     case_a = report.cases[0]
     assert "DRAFT" in case_a.label
     assert case_a.attempt is not None and case_a.attempt.accepted is True
-    assert case_a.before[0].record_version == "1.0.0"
-    assert case_a.after is not None and case_a.after[0].record_version == "1.0.0"
+    assert case_a.before.discovery.record_version == "1.0.0"
+    assert case_a.after is not None and case_a.after.discovery.record_version == "1.0.0"
     # ケース B: 最新版 PENDING_APPROVAL への REJECT
     case_b = report.cases[1]
     assert "PENDING_APPROVAL" in case_b.label
     assert case_b.attempt is not None and case_b.attempt.accepted is True
-    assert case_b.before[0].record_version == "1.0.2"
-    assert case_b.after is not None and case_b.after[1].record_version == "1.0.2"
+    assert case_b.before.discovery.record_version == "1.0.2"
+    assert case_b.after is not None and case_b.after.mcp.record_version == "1.0.2"
     # ケース C: 最新版 REJECTED のときの観測（B の受理後に見たもの）
     case_c = report.cases[2]
     assert "REJECTED" in case_c.label
     assert case_c.attempt is None
-    assert case_c.after is not None and case_c.after[0].record_version == "1.0.2"
+    assert case_c.after is not None and case_c.after.discovery.record_version == "1.0.2"
     # 発見 API と MCP endpoint の宛先と認証
     batch_calls = [c for c in transport.calls if c[1].endswith("/discoverable-records-batch")]
     mcp_calls = [c for c in transport.calls if c[1].endswith("/mcp")]
     assert len(batch_calls) == 5 and len(mcp_calls) == 5
     assert all(c[2]["authorization"] == "Bearer token-value" for c in transport.calls)
+
+
+def test_run_verification_uses_case_a_observation_for_c_when_only_b_is_rejected():
+    """B の REJECT が拒否されても、A の受理で同じ状態（最新版 REJECTED）が観測できていれば C に記録する。"""
+    registry, stub, control = make_control()
+    transport = FakeTransport()
+    stub_setup(stub)
+    sighting_responses(transport, "1.0.0")  # ベースライン
+    # ケース A: REJECT は受け付けられ、REJECTED 後の観測も取れている
+    stub_edit(stub, "1.0.1")
+    stub.add_response("get_registry_record", aws_record("DRAFT", "1.0.1"), GET_PARAMS)
+    sighting_responses(transport, "1.0.0")  # REJECT 前
+    stub_status(stub, "REJECTED", REJECT_REASON)
+    stub.add_response("get_registry_record", aws_record("REJECTED", "1.0.1"), GET_PARAMS)
+    sighting_responses(transport, "1.0.0")  # REJECT 後
+    # 復旧: 新しい版を承認し直す
+    stub_reapprove(stub, "1.0.2")
+    # ケース B: 申請してから REJECT を試みるが、こちらは拒否される
+    stub_edit(stub, "1.0.3")
+    stub.add_response("get_registry_record", aws_record("DRAFT", "1.0.3"), GET_PARAMS)
+    stub_submit(stub)
+    stub.add_response("get_registry_record", aws_record("PENDING_APPROVAL", "1.0.3"), GET_PARAMS)
+    sighting_responses(transport, "1.0.2")  # REJECT 前
+    stub_status(stub, "REJECTED", REJECT_REASON, error="ConflictException")
+
+    with stub:
+        report = verify.run_verification(control, transport, NAME, token="token-value")
+        stub.assert_no_pending_responses()
+
+    case_a, case_b, case_c = report.cases
+    assert case_a.attempt is not None and case_a.attempt.accepted is True
+    assert case_b.attempt is not None and case_b.attempt.accepted is False
+    # ケース C は A の却下で作られた状態（A の REJECT 後の観測）から記録する
+    assert case_c.attempt is None
+    assert case_c.latest_version == "1.0.1"
+    assert case_c.after is not None and case_c.after.discovery.record_version == "1.0.0"
+    assert any("A の却下で作られた状態" in note for note in report.notes)
+    assert not any("作れませんでした" in note for note in report.notes)
 
 
 def test_run_verification_records_rejected_status_updates_without_after_sightings():
@@ -496,7 +534,6 @@ def test_run_verification_stops_when_auto_approval_is_enabled():
     stub.add_response(
         "get_registry", registry_info(rules=["APPROVE_ALL"]), {"registryId": REGISTRY_ARN}
     )
-    import pytest
 
     with stub, pytest.raises(RuntimeError) as excinfo:
         verify.run_verification(control, transport, NAME, token="token-value")
@@ -532,6 +569,14 @@ def sighting(source, found, version, detail=""):
     return verify.Sighting(source, found, version, detail)
 
 
+def observation(version="1.0.0") -> verify.Observation:
+    """発見 API と MCP endpoint が同じ版を返す観測。"""
+    return verify.Observation(
+        discovery=sighting("発見 API", True, version),
+        mcp=sighting("MCP endpoint", True, version),
+    )
+
+
 def make_report(**case_overrides) -> verify.Report:
     defaults = dict(
         label="A: 最新版 DRAFT",
@@ -539,8 +584,8 @@ def make_report(**case_overrides) -> verify.Report:
         latest_version="1.0.1",
         approved_version="1.0.0",
         attempt=verify.StatusAttempt(True, None, "受け付けられました"),
-        before=(sighting("発見 API", True, "1.0.0"), sighting("MCP endpoint", True, "1.0.0")),
-        after=(sighting("発見 API", True, "1.0.0"), sighting("MCP endpoint", True, "1.0.0")),
+        before=observation("1.0.0"),
+        after=observation("1.0.0"),
     )
     case = verify.CaseResult(**{**defaults, **case_overrides})
     return verify.Report(
@@ -555,8 +600,8 @@ def make_report(**case_overrides) -> verify.Report:
             latest_version="1.0.0",
             approved_version="1.0.0",
             attempt=None,
-            before=(sighting("発見 API", True, "1.0.0"), sighting("MCP endpoint", True, "1.0.0")),
-            after=(sighting("発見 API", True, "1.0.0"), sighting("MCP endpoint", True, "1.0.0")),
+            before=observation("1.0.0"),
+            after=observation("1.0.0"),
         ),
         cases=(case,),
     )
@@ -582,19 +627,24 @@ def test_render_report_produces_a_markdown_table_for_readme():
 
 
 def test_render_report_distinguishes_all_outcomes():
-    # 承認済み版と異なる版・見つからない・観測なし・拒否された REJECT を区別して並べる
+    # 承認済み版と異なる版・見つからない・拒否された REJECT を区別して並べる
     report = make_report(
         attempt=verify.StatusAttempt(False, "ConflictException", "AWS が拒否しました"),
-        after=(sighting("発見 API", False, None, "RESOURCE_NOT_FOUND"), None),
+        after=verify.Observation(
+            discovery=sighting("発見 API", False, None, "RESOURCE_NOT_FOUND"),
+            mcp=sighting("MCP endpoint", False, None, "RESOURCE_NOT_FOUND"),
+        ),
     )
     text = verify.render_report(report, cleanup_note="DEPRECATED にしました")
     case_line = next(line for line in text.splitlines() if line.startswith("| A: 最新版 DRAFT"))
     assert "拒否された（ConflictException）" in case_line
     assert "返さなかった（RESOURCE_NOT_FOUND）" in case_line
-    assert "観測なし" in case_line
     # 承認済み版と異なる版を返した場合は注記を付ける
     report = make_report(
-        before=(sighting("発見 API", True, "1.0.1"), sighting("MCP endpoint", True, "1.0.0")),
+        before=verify.Observation(
+            discovery=sighting("発見 API", True, "1.0.1"),
+            mcp=sighting("MCP endpoint", True, "1.0.0"),
+        ),
     )
     text = verify.render_report(report, cleanup_note="削除しました")
     case_line = next(line for line in text.splitlines() if line.startswith("| A: 最新版 DRAFT"))
@@ -606,8 +656,6 @@ def test_render_report_lists_notes_when_a_case_could_not_be_set_up():
         after=None,
         attempt=verify.StatusAttempt(False, "ConflictException", "AWS が拒否しました"),
     )
-    import dataclasses
-
     report = dataclasses.replace(
         report,
         notes=(
@@ -645,9 +693,7 @@ def test_parse_args_reads_credentials_from_the_environment(monkeypatch):
     assert args.token_url == "https://example.com/token"
 
 
-def test_help_and_missing_required_options_exit_cleanly(capsys):
-    import pytest
-
+def test_help_and_missing_required_options_exit_cleanly(capsys, monkeypatch):
     with pytest.raises(SystemExit) as exit_info:
         verify.parse_args(["--help"])
     assert exit_info.value.code == 0
@@ -659,7 +705,7 @@ def test_help_and_missing_required_options_exit_cleanly(capsys):
         "SUSPEND_VERIFY_CLIENT_ID",
         "SUSPEND_VERIFY_CLIENT_SECRET",
     ):
-        os.environ.pop(stale, None)
+        monkeypatch.delenv(stale, raising=False)
     with pytest.raises(SystemExit) as exit_info:
         verify.parse_args(["--registry-arn", REGISTRY_ARN])
     assert exit_info.value.code == 2
