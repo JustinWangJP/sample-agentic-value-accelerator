@@ -545,9 +545,11 @@ def create_curation_handler(
             for action, kind in PUBLICATION_ACTIONS.items()
         },
         "GET /api/records/{recordId}/publication": get_publication,
-        # 管理レコードの検索（Curator）。静的な route は API Gateway と _route_template の両方で
-        # parameterized route（GET /api/records/{recordId}/publication など）より優先されるため、
-        # レコード ID の指定とは解釈されない
+        # 管理レコードの検索（Curator）。_route_template に静的な route を優先する実装はなく、
+        # 先頭一致で {recordId} を捕まえ得る。決裁 handler のルート表には
+        # GET /api/records/{recordId}/publication しかないため、GET /api/records/publication が
+        # 空の {recordId} として捕まえられることはなく、静的なキーとして直接照合される。
+        # API Gateway 側では静的な route が parameterized route に優先する（README「IAM と route」）
         "GET /api/records/publication": search_publications,
         "POST /api/records/{recordId}/deprecation-requests/decline": decline_deprecation,
         "GET /api/records/{recordId}/recovery": get_recovery,
