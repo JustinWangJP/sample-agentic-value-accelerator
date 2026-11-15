@@ -41,6 +41,8 @@ describe('起動処理の画面表示', () => {
     // ログイン後はカタログを表示する（最初は Agent の1ページ目を読み込み中）
     expect(html).toContain('カタログ')
     expect(html).toContain('読み込んでいます')
+    // ヘッダーに通知欄を出す（未読件数は表示後に取得する）
+    expect(html).toContain('通知（取得中）')
   })
 
   it('所属チームがなければ、所属チームなしと表示する', () => {
@@ -66,5 +68,7 @@ describe('起動処理の画面表示', () => {
     expect(withRetry).toContain('もう一度ログインする')
     expect(withoutRetry).toContain('この操作を行う権限がありません。')
     expect(withoutRetry).not.toContain('もう一度ログインする')
+    // ログインしていない間は通知欄を出さない
+    expect(withRetry).not.toContain('通知（')
   })
 })

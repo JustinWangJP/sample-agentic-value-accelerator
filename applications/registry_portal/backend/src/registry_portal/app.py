@@ -11,7 +11,7 @@ import json
 import logging
 import re
 from collections.abc import Callable, Iterable, Mapping
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 import boto3
 
@@ -31,7 +31,7 @@ from registry_portal.config import (
     load_registry_settings,
 )
 from registry_portal.curation import DECISION_BODY_MAX_LENGTH, RecordCuration
-from registry_portal.curation_reads import CurationReads, RegistryStatusClient
+from registry_portal.curation_reads import CurationReads, RegistryReadClient, RegistryStatusClient
 from registry_portal.deprecation import (
     DEPRECATION_BODY_MAX_LENGTH,
     DeprecationRequests,
@@ -54,11 +54,19 @@ from registry_portal.drafts import (
     require_publisher,
 )
 from registry_portal.history import RecordHistory
+from registry_portal.notification_events import RegistryEventNotifier
+from registry_portal.notifications import (
+    READ_BODY_MAX_LENGTH,
+    NotificationInbox,
+    NotificationsNotConfigured,
+)
 from registry_portal.publication import RecordPublication
 from registry_portal.recovery import RECOVERY_BODY_MAX_LENGTH, OperationRecovery
 from registry_portal.review_queue import ReviewQueue
 from registry_portal.services.catalog_supplement import CatalogSupplement, SupplementClient
 from registry_portal.services.discovery import DiscoveryDependencies, create_discovery_client
+from registry_portal.services.notification_store import NotificationStore, NotificationStoreClient
+from registry_portal.services.reference_index import ReferenceIndex
 from registry_portal.services.supplement_store import SupplementStore, SupplementStoreClient
 
 logger = logging.getLogger(__name__)
@@ -208,6 +216,28 @@ def _serve(routes: Mapping[str, Route], settings: AuthSettings) -> Handler:
     return handler
 
 
+class _SupplementStores(NamedTuple):
+    """同じ補助テーブルを、同じ DynamoDB クライアントで読み書きするストア。"""
+
+    records: SupplementStore
+    notifications: NotificationStore
+    references: ReferenceIndex
+
+
+def _supplement_stores(
+    table: str, registry_arn: str, region: str, store_client: SupplementStoreClient | None
+) -> _SupplementStores:
+    """補助テーブルのストアを作る。store_client を渡さなければ DynamoDB クライアントを作る（通信はしない）。"""
+    client = store_client or cast(
+        SupplementStoreClient, boto3.client("dynamodb", region_name=region)
+    )
+    return _SupplementStores(
+        SupplementStore(table, registry_arn, client),
+        NotificationStore(table, registry_arn, cast(NotificationStoreClient, client)),
+        ReferenceIndex(table, registry_arn, client),
+    )
+
+
 def create_management_handler(
     environ: Mapping[str, str],
     *,
@@ -245,17 +275,20 @@ def create_management_handler(
     curation = None
     history_service = None
     deprecation_requests = None
+    inbox = None
     if catalog_settings.supplement_table_name:
         control_client = registry_client or cast(
             RegistryControlClient,
             boto3.client("agent-registry-control", region_name=region),
         )
-        store = SupplementStore(
+        stores = _supplement_stores(
             catalog_settings.supplement_table_name,
             discovery_settings.registry_arn,
-            supplement_store_client
-            or cast(SupplementStoreClient, boto3.client("dynamodb", region_name=region)),
+            region,
+            supplement_store_client,
         )
+        store = stores.records
+        inbox = NotificationInbox(stores.notifications)
         drafts = RecordDrafts(
             discovery_settings.registry_arn, store, control_client, discovery_client
         )
@@ -265,7 +298,7 @@ def create_management_handler(
         reads = CurationReads(discovery_settings.registry_arn, store, status_client)
         curation = RecordCuration(reads, store, status_client)
         history_service = RecordHistory(store)
-        deprecation_requests = DeprecationRequests(reads, store)
+        deprecation_requests = DeprecationRequests(reads, store, stores.notifications)
 
     def drafts_for(caller: Caller) -> RecordDrafts:
         # 権限のない呼び出し元には、設定の状態より先に 403 を返す
@@ -341,6 +374,19 @@ def create_management_handler(
             return curation.operation_status(caller, operation)
         return drafts.operation_status(caller, operation)
 
+    # 通知は宛先グループに属する主体（Curator・Admin・所属チームの Publisher）が読む。
+    # 宛先グループの判定は通知 API の内側で行い、Viewer には0件を返す
+    def inbox_for() -> NotificationInbox:
+        if inbox is None:
+            raise NotificationsNotConfigured()
+        return inbox
+
+    def get_notifications(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        return inbox_for().list_notifications(caller, _query_of(event))
+
+    def read_notifications(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
+        return inbox_for().mark_read(caller, _json_body(event, READ_BODY_MAX_LENGTH))
+
     admin_reads = AdministrationReads(
         load_registry_settings(environ),
         cast(
@@ -371,6 +417,8 @@ def create_management_handler(
         "GET /api/operations/{operationId}": get_operation,
         "POST /api/records/{recordId}/submit": submit_record,
         "POST /api/records/{recordId}/deprecation-requests": request_deprecation,
+        "GET /api/notifications": get_notifications,
+        "POST /api/notifications/read": read_notifications,
     }
 
     return _serve(routes, settings)
@@ -397,11 +445,10 @@ def create_curation_handler(
         # 決裁 handler は補助テーブルなしではどの API も提供できないため、起動を止める
         raise ConfigurationError("決裁 handler の設定が不足しています: SUPPLEMENT_TABLE_NAME")
     region = registry_settings.region
-    store = SupplementStore(
-        catalog_settings.supplement_table_name,
-        registry_settings.arn,
-        store_client or cast(SupplementStoreClient, boto3.client("dynamodb", region_name=region)),
+    stores = _supplement_stores(
+        catalog_settings.supplement_table_name, registry_settings.arn, region, store_client
     )
+    store = stores.records
     curation_client = registry_client or cast(
         RegistryStatusClient, boto3.client("agent-registry-control", region_name=region)
     )
@@ -409,7 +456,7 @@ def create_curation_handler(
     curation = RecordCuration(reads, store, curation_client)
     reviews = ReviewQueue(reads)
     publication = RecordPublication(reads)
-    deprecation_requests = DeprecationRequests(reads, store)
+    deprecation_requests = DeprecationRequests(reads, store, stores.notifications)
 
     def list_reviews(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
         return reviews.list_reviews(caller, _query_of(event))
@@ -500,3 +547,43 @@ def create_curation_handler(
     }
 
     return _serve(routes, settings)
+
+
+def create_event_handler(
+    environ: Mapping[str, str],
+    *,
+    registry_client: RegistryReadClient | None = None,
+    store_client: SupplementStoreClient | None = None,
+) -> Callable[[Any, Any], dict[str, Any]]:
+    """イベント処理 handler を作る。Registry の ARN と補助テーブルが不足していれば起動エラーにする。
+
+    EventBridge のルールから Registry のレコードのイベントを受け取り、Registry を再取得して
+    補助テーブルに通知を書く。認証設定は使わない（API Gateway からは呼ばれない）。
+    Registry・補助テーブルの一時的な失敗は例外のまま返し、Lambda の非同期呼び出しの再試行に任せる。
+    """
+    registry_settings = load_registry_settings(environ)
+    catalog_settings = load_catalog_settings(environ)
+    if not catalog_settings.supplement_table_name:
+        raise ConfigurationError(
+            "イベント処理 handler の設定が不足しています: SUPPLEMENT_TABLE_NAME"
+        )
+    region = registry_settings.region
+    stores = _supplement_stores(
+        catalog_settings.supplement_table_name, registry_settings.arn, region, store_client
+    )
+    notifier = RegistryEventNotifier(
+        registry_settings.arn,
+        stores.records,
+        stores.notifications,
+        stores.references,
+        registry_client
+        or cast(RegistryReadClient, boto3.client("agent-registry-control", region_name=region)),
+    )
+
+    def handler(event: Any, context: Any) -> dict[str, Any]:
+        if not isinstance(event, Mapping):
+            logger.warning("想定外の形のイベントを無視しました")
+            return {"result": "IGNORED", "notified": 0}
+        return notifier.handle(event)
+
+    return handler

@@ -4,6 +4,7 @@ import hashlib
 import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Literal, NotRequired, TypedDict, TypeIs, cast, get_args
 
 from registry_portal.domain.catalog import (
@@ -271,6 +272,9 @@ class OperationRecord(_OperationRequired, total=False):
     errorCode: str
     # AWS の書き込み API が返した request ID（設計書「操作記録」）
     awsRequestId: str
+    # Registry の状態を変える API を最後に呼んだ時刻（ISO 8601）。実行制御にだけ持ち、操作記録には書かない。
+    # 通知のイベント処理が、状態変化をこの操作で説明できるかの照合に使う（#38）
+    lastSentAt: str
     # 申請: 保存した申請スナップショットのハッシュ。決裁: Curator が審査したスナップショットのハッシュ
     snapshotHash: str
     # Admin の回復操作が確定・解除した操作にだけ付く
@@ -374,6 +378,11 @@ def digest(value: object) -> str:
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 
 
+def now() -> str:
+    """操作記録・実行制御・通知に残す現在時刻（UTC の ISO 8601）。"""
+    return datetime.now(timezone.utc).isoformat()
+
+
 def is_principal(value: object) -> TypeIs[PrincipalRecord]:
     """保存された主体（issuer と subject の組）の形式か。"""
     return (
@@ -463,6 +472,14 @@ class Management:
         """最後に公開承認された版。公開停止中でも保持し、再申請の semver の下限に使う。"""
         if record["status"] == PUBLISHED_STATUS:
             return str(record["recordVersion"])
+        return self.recorded_published_version
+
+    @property
+    def recorded_published_version(self) -> str | None:
+        """管理情報に記録した、最後に公開承認された版。廃止した後や公開承認の前は None。
+
+        Registry のレコードを読まずに使える（関連参照の逆引きから、Agent の公開中の版を引くときなど）。
+        """
         version = self.item.get("publishedVersion")
         return version if isinstance(version, str) else None
 

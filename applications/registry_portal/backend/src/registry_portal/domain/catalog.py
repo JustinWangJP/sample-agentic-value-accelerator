@@ -124,6 +124,33 @@ def published_snapshot_sk(record_version: str) -> str:
     return f"PUBLISHED#{record_version}"
 
 
+def related_reference_ids(snapshot: Mapping[str, Any]) -> frozenset[str]:
+    """公開版スナップショットの関連参照が指す record ID。関連参照のない版（Agent 以外）は空。
+
+    保存内容の型が契約と異なれば ValueError（空の結果に置き換えない）。
+    """
+    references = snapshot.get("relatedReferences", [])
+    if not isinstance(references, list) or not all(
+        isinstance(reference, Mapping) and isinstance(reference.get("recordId"), str)
+        for reference in references
+    ):
+        raise ValueError("公開版スナップショットの関連参照の形式が正しくありません。")
+    return frozenset(reference["recordId"] for reference in references)
+
+
+def display_name(record: Mapping[str, Any]) -> str:
+    """表示名。AWS が displayName を返さないレコードは名前で代用する。"""
+    return str(record.get("displayName", record["name"]))
+
+
+def snapshot_label(record_id: str, snapshot: Mapping[str, Any]) -> str:
+    """公開版スナップショットの定義（record）にある表示名と record ID。定義がなければ record ID。"""
+    record = snapshot.get("record")
+    if isinstance(record, Mapping) and isinstance(record.get("name"), str):
+        return f"{display_name(record)}（{record_id}）"
+    return record_id
+
+
 @dataclass(frozen=True)
 class PublishedSnapshot:
     """補助テーブルに保存した、公開中の版の公開内容のスナップショット。

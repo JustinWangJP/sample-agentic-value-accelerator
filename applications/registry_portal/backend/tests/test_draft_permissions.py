@@ -97,7 +97,7 @@ def _variables(module: Path) -> set[str]:
 
 
 def test_routes_module_assigns_only_portal_added_management_routes():
-    """履歴と廃止依頼の route だけを、既存の管理 Lambda の統合に割り当てる。
+    """Registry 管理・履歴・廃止依頼・通知の route だけを、既存の管理 Lambda の統合に割り当てる。
 
     HTTP API・authorizer・統合は借用し、作らない。呼び出し許可は割り当てた path だけに限る。
     """
@@ -107,6 +107,8 @@ def test_routes_module_assigns_only_portal_added_management_routes():
         "GET /api/admin/connection",
         "GET /api/records/{recordId}/history",
         "POST /api/records/{recordId}/deprecation-requests",
+        "GET /api/notifications",
+        "POST /api/notifications/read",
     ]
     assert re.findall(r'^resource "([^"]+)"', main, re.MULTILINE) == [
         "aws_apigatewayv2_route",
@@ -121,6 +123,8 @@ def test_routes_module_assigns_only_portal_added_management_routes():
         "api/admin/connection",
         "api/records/*/history",
         "api/records/*/deprecation-requests",
+        "api/notifications",
+        "api/notifications/read",
     ]
     (source_arn,) = re.findall(r"source_arn\s*=\s*\"([^\"]+)\"", main)
     assert source_arn.split("/*/*")[1] == "/${each.value.path}"

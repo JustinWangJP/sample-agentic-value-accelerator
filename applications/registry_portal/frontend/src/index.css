@@ -199,3 +199,20 @@ dd {
   text-align: left;
   overflow-wrap: anywhere;
 }
+
+/* ヘッダー。通知欄（未読件数と一覧）をタイトルの横に置く */
+.page-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+}
+
+.notifications ul {
+  padding-left: 1.25rem;
+}
+
+.notifications li p {
+  margin: 0.25rem 0;
+}
