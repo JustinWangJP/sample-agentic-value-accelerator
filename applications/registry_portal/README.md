@@ -12,6 +12,7 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 | `backend/src/registry_portal/handlers/curation.py` | 決裁 handler の Lambda エントリーポイント。認証設定または補助テーブルがなければ初期化に失敗する |
 | `backend/src/registry_portal/handlers/events.py` | イベント処理 handler の Lambda エントリーポイント（#15）。Registry の ARN または補助テーブルがなければ初期化に失敗する |
 | `backend/src/registry_portal/app.py` | API Gateway HTTP API（payload format 2.0）のイベントを受け取り、route を振り分ける |
+| `backend/openapi.yaml` | 管理 handler と決裁 handler の全 API の OpenAPI 3.1.0 仕様。route を足す・変えるときは、`app.py` のルート表と一緒に更新する。Lint の設定は `backend/redocly.yaml` |
 | `backend/src/registry_portal/auth.py` | 認可。検証済みの claims から主体・業務ロール・所属チームを導出する |
 | `backend/src/registry_portal/errors.py` | 共通エラー DTO と日本語メッセージ |
 | `backend/src/registry_portal/catalog.py` | カタログの一覧・検索・詳細 API。入力の検証、DTO への変換、サービス層の失敗の API エラーへの変換 |
@@ -170,6 +171,7 @@ python3.13 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
 pytest && flake8 src tests ../scripts && black --config pyproject.toml --check src tests ../scripts && mypy
 python ../scripts/check_imports.py
+npx --yes @redocly/cli@1.34.3 lint   # OpenAPI 仕様（openapi.yaml）。設定は redocly.yaml
 
 # フロントエンド
 cd applications/registry_portal/frontend

@@ -1,0 +1,73 @@
+# Registry ポータル API の OpenAPI 仕様（openapi.yaml）の Lint 設定。
+# CI（.github/workflows/registry-portal-ci.yml）と pre-commit から、版を固定した Redocly CLI で使う:
+#   npx --yes @redocly/cli@1.34.3 lint
+apis:
+  registry-portal:
+    root: openapi.yaml
+
+extends:
+  - recommended
+
+rules:
+  # 例（example）とスキーマの不一致は、利用者に誤った値を示すため error にする
+  no-invalid-media-type-examples: error
+  no-invalid-schema-examples: error
+  operation-4xx-response: error
+  operation-description: error
+  info-contact: error
+
+  request-mime-type:
+    severity: error
+    allowedValues:
+      - application/json
+  response-mime-type:
+    severity: error
+    allowedValues:
+      - application/json
+
+  # 命名規則（openapi-spec-generation スキルの「命名規則」）
+  rule/operation-id-camel-case:
+    subject:
+      type: Operation
+      property: operationId
+    assertions:
+      casing: camelCase
+    message: operationId は camelCase で書いてください（例 listCatalog）。
+    severity: error
+  rule/schema-name-pascal-case:
+    subject:
+      type: NamedSchemas
+    assertions:
+      casing: PascalCase
+    message: components/schemas の名前は PascalCase で書いてください（例 CatalogItem）。
+    severity: error
+  rule/parameter-name-pascal-case:
+    subject:
+      type: NamedParameters
+    assertions:
+      casing: PascalCase
+    message: components/parameters の名前は PascalCase で書いてください（例 RecordIdParam）。
+    severity: error
+  rule/path-parameter-camel-case:
+    subject:
+      type: Parameter
+      property: name
+    where:
+      - subject:
+          type: Parameter
+          property: in
+        assertions:
+          const: path
+    assertions:
+      casing: camelCase
+    message: path パラメーターは camelCase で書いてください（例 recordId）。
+    severity: error
+  # スキーマのプロパティ名は実装が返す項目名そのもの。小文字で始まる英数字（snake_case や PascalCase を拒否）に限る。
+  # inconsistentA2ACount のように略語を大文字で含む既存の項目名は許す
+  rule/schema-property-camel-case:
+    subject:
+      type: SchemaProperties
+    assertions:
+      pattern: /^[a-z][a-zA-Z0-9]*$/
+    message: スキーマのプロパティ名は camelCase で書いてください（例 createdAt）。
+    severity: error
