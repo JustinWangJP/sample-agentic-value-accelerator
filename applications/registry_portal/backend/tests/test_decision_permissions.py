@@ -84,8 +84,7 @@ def test_module_creates_the_decision_lambda_with_its_own_role_and_log_group():
         "aws_lambda_function",
         "aws_apigatewayv2_integration",
         "aws_apigatewayv2_route",
-        # 審査と決裁、Curator のレコード単位の path（for_each）、管理レコードの検索、回復の path
-        "aws_lambda_permission",
+        # 審査と決裁、/api/records/ 以下の path（for_each。管理レコードの検索を含む）、回復の path
         "aws_lambda_permission",
         "aws_lambda_permission",
         "aws_lambda_permission",
@@ -108,19 +107,21 @@ def test_module_routes_only_curator_and_recovery_apis_to_the_decision_lambda():
     """
     main = (MODULE / "main.tf").read_text()
     (paths,) = re.findall(r"decision_record_paths = \{(.*?)\n  \}\n", main, re.DOTALL)
-    # Curator のレコード単位の path は、route と呼び出し許可の両方を同じ定義から作る
-    curator_paths = re.findall(r'method\s*=\s*"([A-Z]+)"\s*\n\s*path\s*=\s*"([^"]+)"', paths)
-    assert curator_paths == [
-        ("POST", "adopt"),
-        ("POST", "reassign-owner"),
-        ("POST", "suspend"),
-        ("POST", "deprecate"),
+    # /api/records/ 以下の path は、静的な管理レコードの検索も含めて、route と呼び出し許可の両方を
+    # 同じ定義から作る
+    record_paths = re.findall(r'method\s*=\s*"([A-Z]+)"\s*\n\s*path\s*=\s*"([^"]+)"', paths)
+    assert record_paths == [
+        ("POST", "{recordId}/adopt"),
+        ("POST", "{recordId}/reassign-owner"),
+        ("POST", "{recordId}/suspend"),
+        ("POST", "{recordId}/deprecate"),
+        ("GET", "{recordId}/publication"),
         ("GET", "publication"),
-        ("POST", "deprecation-requests/decline"),
+        ("POST", "{recordId}/deprecation-requests/decline"),
     ]
     (routes,) = re.findall(r"routes = concat\((.*?)\n  \)\n", main, re.DOTALL)
     assert (
-        '"${entry.method} /api/records/{recordId}/${entry.path}"' in routes
+        '"${entry.method} /api/records/${entry.path}"' in routes
         and "values(local.decision_record_paths)" in routes
     )
     assert re.findall(r'^\s*"([A-Z]+ /api/[^"]+)",$', routes, re.MULTILINE) == [
@@ -128,7 +129,6 @@ def test_module_routes_only_curator_and_recovery_apis_to_the_decision_lambda():
         "GET /api/reviews/{recordId}",
         "POST /api/reviews/{recordId}/approve",
         "POST /api/reviews/{recordId}/reject",
-        "GET /api/records/publication",
         "GET /api/records/{recordId}/recovery",
         "POST /api/records/{recordId}/recovery",
     ]
@@ -138,13 +138,12 @@ def test_module_routes_only_curator_and_recovery_apis_to_the_decision_lambda():
     # HTTP API と authorizer は借用し、作成しない
     assert 'resource "aws_apigatewayv2_api"' not in main
     assert 'resource "aws_apigatewayv2_authorizer"' not in main
-    # 呼び出し許可は審査と決裁、Curator のレコード単位の path、管理レコードの検索、回復の path
-    # だけに限る。検索の path は静的なので完全一致で許可する
-    source_arns = re.findall(r"source_arn\s*=\s*\"([^\"]+)\"", main)
+    # 呼び出し許可は審査と決裁、/api/records/ 以下の path、回復の path だけに限る。
+    # {recordId} はワイルドカードに置き換え、静的な検索の path は完全一致で許可する
+    source_arns = re.findall(r'source_arn\s*=\s*"(.+)"$', main, re.MULTILINE)
     assert [arn.split("/*/*")[1] for arn in source_arns] == [
         "/api/reviews*",
-        "/api/records/*/${each.value.path}",
-        "/api/records/publication",
+        '/api/records/${replace(each.value.path, "{recordId}", "*")}',
         "/api/records/*/recovery",
     ]
 

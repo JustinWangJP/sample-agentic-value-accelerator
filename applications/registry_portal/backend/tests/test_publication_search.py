@@ -115,6 +115,29 @@ def test_curator_lists_managed_records_with_suspension_and_published_version():
 
 
 @mock_aws
+def test_search_does_not_filter_by_owner_team():
+    """Curator の検索は所有チームで絞り込まない。所属チームのない Curator にも、各チームのレコードがそろって返る。"""
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        decision = decision_for(registry, db)
+        payments = listed_record("agentABC1234", "payments-agent")
+        search_mcp = listed_record("mcpEFGH5678I", "search-mcp", record_type="MCP")
+        translate = listed_record("sklEFGH5678I", "translate-skill", record_type="SKILL")
+        managed(db, "agentABC1234", ownerTeam="team-payments")
+        managed(db, "mcpEFGH5678I", ownerTeam="team-search")
+        managed(db, "sklEFGH5678I", ownerTeam="team-translation")
+        stub_publication_list(stub, [payments, search_mcp, translate])
+        status, body = search(decision)
+        assert status == 200, body
+        assert [(item["recordId"], item["ownerTeam"]) for item in body["items"]] == [
+            ("agentABC1234", "team-payments"),
+            ("mcpEFGH5678I", "team-search"),
+            ("sklEFGH5678I", "team-translation"),
+        ]
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
 def test_name_filter_matches_name_and_display_name_case_insensitively():
     """name は name と displayName に対する、大文字小文字を区別しない部分一致。絞り込みはポータル側。"""
     registry, db = clients()

@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from registry_portal.auth import Caller
+from registry_portal.domain.catalog import CATALOG_RECORD_TYPES
 from registry_portal.domain.drafts import (
     OperationRecord,
     OperationState,
@@ -59,6 +60,11 @@ def check_list_query(query: Mapping[str, str], allowed: tuple[str, ...]) -> str 
     token = query.get("nextToken")
     check_next_token(token)
     return token
+
+
+def catalog_record_type_filter() -> dict[str, Any]:
+    """AWS の ListRegistryRecords で、画面の入口に対応する種別（CATALOG_RECORD_TYPES）に絞り込むフィルター。"""
+    return {"name": "recordType", "values": list(CATALOG_RECORD_TYPES)}
 
 
 def list_page_params(

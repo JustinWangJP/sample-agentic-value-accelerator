@@ -8,7 +8,6 @@ from uuid import uuid4
 from botocore.exceptions import BotoCoreError, ClientError
 
 from registry_portal.auth import Caller, Role
-from registry_portal.domain.catalog import CATALOG_RECORD_TYPES
 from registry_portal.domain.drafts import (
     AWS_FAILED_STATUSES,
     CREATE_KIND,
@@ -46,6 +45,7 @@ from registry_portal.errors import ApiError, ForbiddenError, RequestValidationEr
 from registry_portal.operations import (
     AWS_REJECTED_ERRORS as _AWS_REJECTED_ERRORS,
     AWS_THROTTLED_ERRORS,
+    catalog_record_type_filter,
     check_idempotency_key,
     check_list_query,
     check_record_id,
@@ -420,9 +420,7 @@ class RecordDrafts:
         token = check_list_query(query, ("nextToken",))
         params: dict[str, Any] = {
             "registryId": self.registry,
-            **list_page_params(
-                20, [{"name": "recordType", "values": list(CATALOG_RECORD_TYPES)}], token
-            ),
+            **list_page_params(20, [catalog_record_type_filter()], token),
         }
         try:
             response = self._registry.list_registry_records(**params)

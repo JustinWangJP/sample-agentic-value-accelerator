@@ -495,6 +495,8 @@ AWS の状態遷移は [Record lifecycle](https://docs.aws.amazon.com/bedrock-ag
 | `REJECTED` | AWS の状態が `REJECTED` かつ公開停止中ではない（却下済みだけ。公開停止中は含めない） |
 | その他（`DRAFT` / `PENDING_APPROVAL` / `APPROVED` / `DEPRECATED` / `CREATING` / `UPDATING` / `CREATE_FAILED` / `UPDATE_FAILED`） | AWS の状態との完全一致（AWS の `status` フィルターを使用） |
 
+この表の規則（AWS の `status` フィルターに渡す値と、ポータル側で求める公開停止中の区別）は、バックエンドの `PUBLICATION_SEARCH_RULES`（`backend/src/registry_portal/domain/curation.py`）の1か所にまとめてあります。`status` の値を足すときや規則を変えるときは、表と対応表を合わせて直します。
+
 応答は `{ "items": [...], "nextToken": 文字列または null }` です。各項目はレコードの要約（`recordId`・`name`・`displayName`・`recordType`・`recordVersion`・`status`・`managed`・`ownerTeam`）に、公開停止中か（`suspended`）と公開中の版（`publishedVersion`。公開停止中と廃止済みは `null`）を加えたものです。**管理下（managed）のレコードだけを返します。**未管理レコードは Admin の取り込み（#16）の対象のため含めません。
 
 ページングは AWS の `ListRegistryRecords`（`maxResults` 20）の `nextToken` をそのまま中継します。名前の絞り込みと管理下の絞り込みはポータル側で行うため、`items` が0件でも `nextToken` があり得ます（Publisher の下書き一覧と同じ契約。SPA は次のページを促します）。Registry と補助ストアの読み取りに失敗したときは 502 `REGISTRY_UNAVAILABLE` とし、空の結果にはしません。
@@ -562,7 +564,7 @@ AWS の `ListRegistryRecords` の `name` フィルターは[公式文書](https:
 公開停止・廃止・公開管理の照会・見送りの route は、[決裁用 Terraform モジュール](infrastructure/modules/decision/main.tf) に追加しました。
 
 - route: `POST /api/records/{recordId}/suspend`、`POST /api/records/{recordId}/deprecate`、`GET /api/records/{recordId}/publication`、`POST /api/records/{recordId}/deprecation-requests/decline` に加えて、管理レコードの検索（#34）の `GET /api/records/publication`
-- Lambda の呼び出し許可: path ごとに `local.decision_record_paths` で管理します。route も同じ定義（メソッドと path）から作るので、操作を足すときはここに1件加えます。バックエンドでは、パラメーターを含む route をルート表のキー（`app.py`）そのものと照合するため、別の一覧は持ちません。検索の route は `{recordId}` を含まない静的な path のため、`decision_record_paths` のワイルドカード（`/api/records/*/…`）の呼び出し許可には一致しません。完全一致の許可（`AllowHttpApiInvokePublicationSearch`）を別に追加しています。HTTP API では完全一致する静的な route が parameterized route（`GET /api/records/{recordId}`）より優先されるため（[ルーティングの優先順位](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-routes.html)）、`publication` はレコード ID とは解釈されません。レコード ID は12文字の英数字に限られるため、衝突もありません。
+- Lambda の呼び出し許可: `/api/records/` 以下の path ごとに `local.decision_record_paths` で管理します。各項目は `/api/records/` に続く path（`{recordId}/suspend` のようにレコード ID を含むものと、`publication` のような静的なもの）とメソッド、呼び出し許可の ID です。route も同じ定義（メソッドと path）から作り、呼び出し許可の `source_arn` は `{recordId}` をワイルドカード（`*`）に置き換えて作ります。静的な path は置き換える部分がないため、そのまま完全一致の許可になります。操作を足すときは、レコード ID を含むかどうかにかかわらず、ここに1件加えます（回復操作だけは同じ path に2つのメソッドがあるため、許可を別に持ちます）。バックエンドでは、パラメーターを含む route をルート表のキー（`app.py`）そのものと照合するため、別の一覧は持ちません。HTTP API では完全一致する静的な route が parameterized route（`GET /api/records/{recordId}`）より優先されるため（[ルーティングの優先順位](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-routes.html)）、`publication` はレコード ID とは解釈されません。レコード ID は12文字の英数字に限られるため、衝突もありません。
 
 決裁 Lambda の実行ロールは、状態遷移（`UpdateRegistryRecordStatus`）に必要な権限をすでに持ちます。補助テーブルについては、決裁ロールに次の2つを追加しています。
 

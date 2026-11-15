@@ -23,16 +23,18 @@ from registry_portal.curation_reads import (
     record_summary,
     require_curator,
 )
-from registry_portal.domain.catalog import CATALOG_RECORD_TYPES, display_name
+from registry_portal.domain.catalog import display_name
 from registry_portal.domain.curation import (
+    ANY_STATUS_SEARCH_RULE,
     PUBLICATION_ACTIONS,
+    PUBLICATION_SEARCH_RULES,
     PUBLICATION_SEARCH_STATUSES,
-    SUSPENDED_SEARCH_STATUS,
     precondition_failure,
 )
-from registry_portal.domain.drafts import REJECTED_STATUS, TEXT_LIMITS, OperationKind
+from registry_portal.domain.drafts import TEXT_LIMITS, OperationKind
 from registry_portal.errors import RequestValidationError
 from registry_portal.operations import (
+    catalog_record_type_filter,
     check_list_query,
     check_record_id,
     list_page_params,
@@ -107,15 +109,12 @@ class PublicationSearch:
                 f"name は1〜{NAME_QUERY_MAX_LENGTH}文字で指定してください。"
             )
         status = query.get("status")
-        if status is not None and status not in PUBLICATION_SEARCH_STATUSES:
+        rule = ANY_STATUS_SEARCH_RULE if status is None else PUBLICATION_SEARCH_RULES.get(status)
+        if rule is None:
             raise RequestValidationError(_STATUS_QUERY_ERROR)
-        filters: list[dict[str, Any]] = [
-            {"name": "recordType", "values": list(CATALOG_RECORD_TYPES)}
-        ]
-        # SUSPENDED は管理情報の印（suspendedVersion）で判断するため AWS には状態を渡せない。
-        # REJECTED は公開停止中のレコードも AWS では REJECTED になるため、ポータル側で除外する
-        if status is not None and status != SUSPENDED_SEARCH_STATUS:
-            filters.append({"name": "status", "values": [status]})
+        filters = [catalog_record_type_filter()]
+        if rule.aws_status is not None:
+            filters.append({"name": "status", "values": [rule.aws_status]})
         try:
             page = self.reads.list_records(
                 **list_page_params(PUBLICATION_SEARCH_PAGE_SIZE, filters, token)
@@ -126,9 +125,7 @@ class PublicationSearch:
                 if not is_managed(management):
                     continue
                 suspended = management.is_suspended(record)
-                if status == SUSPENDED_SEARCH_STATUS and not suspended:
-                    continue
-                if status == REJECTED_STATUS and suspended:
+                if not rule.accepts(suspended):
                     continue
                 if name is not None and not _matches_name(record, name):
                     continue

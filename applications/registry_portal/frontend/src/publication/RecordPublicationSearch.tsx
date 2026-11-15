@@ -8,6 +8,7 @@ import {
   SUSPENDED_SEARCH_STATUS,
   isPublicationSearchStatus,
   type PublicationRecordPage,
+  type PublicationSearchRequest,
   type PublicationSearchStatus,
 } from './api'
 import { RecordPublicationToggle } from './RecordPublicationPanel'
@@ -15,7 +16,7 @@ import { RecordPublicationToggle } from './RecordPublicationPanel'
 type Props = { api: ApiClient; onRelogin: () => void }
 
 /** 適用中の検索条件。次のページを読むときも、この条件をそのまま使う */
-type Query = { name: string; status: PublicationSearchStatus | null }
+type Query = Omit<PublicationSearchRequest, 'nextToken'>
 
 type PageState =
   | { kind: 'idle' }
