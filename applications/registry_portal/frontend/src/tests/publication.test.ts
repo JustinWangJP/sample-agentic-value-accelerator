@@ -292,7 +292,10 @@ it('Curator はレコード ID を指定して公開管理を開ける。Curator
   )
   expect(button('公開管理を開く').disabled).toBe(true)
   await setValue('publicationRecordId', 'agentABC1234')
-  const form = container.querySelector('form')
+  // 画面には管理レコードの検索とレコード ID の指定の2つのフォームがあるため、ID の方を送る
+  const form = [...container.querySelectorAll('form')].find((element) =>
+    element.querySelector('[name="publicationRecordId"]'),
+  )
   await act(() => form?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
   expect(calls[0]?.url).toBe('/api/records/agentABC1234/publication')
   expect(container.textContent).toContain('公開管理: 決済 Agent')
