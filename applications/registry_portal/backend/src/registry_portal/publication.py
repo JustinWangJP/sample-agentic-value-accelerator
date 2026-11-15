@@ -20,9 +20,10 @@ from registry_portal.curation_reads import (
     record_summary,
     require_curator,
 )
-from registry_portal.domain.catalog import CATALOG_RECORD_TYPES
+from registry_portal.domain.catalog import CATALOG_RECORD_TYPES, display_name
 from registry_portal.domain.curation import PUBLICATION_ACTIONS, precondition_failure
 from registry_portal.domain.drafts import OperationKind
+from registry_portal.errors import RequestValidationError
 from registry_portal.operations import check_record_id
 
 _UNMANAGED = (
@@ -31,6 +32,9 @@ _UNMANAGED = (
 
 # 管理レコード検索の1ページに並べる上限（AWS の ListRegistryRecords の maxResults）
 PUBLICATION_SEARCH_PAGE_SIZE = 20
+# 検索の name に指定できる長さ（AWS の ListRegistryRecords のフィルター値と同じ上限）
+NAME_QUERY_MAX_LENGTH = 255
+_ALLOWED_QUERY_KEYS = {"name", "status", "nextToken"}
 
 
 def _action(failure: str | None) -> dict[str, Any]:
@@ -79,6 +83,13 @@ class PublicationSearch:
 
     def search(self, caller: Caller, query: Mapping[str, str]) -> tuple[int, dict[str, Any]]:
         require_curator(caller)
+        if set(query) - _ALLOWED_QUERY_KEYS:
+            raise RequestValidationError("一覧には name・status・nextToken のみ指定できます。")
+        name = query.get("name")
+        if name is not None and not (1 <= len(name) <= NAME_QUERY_MAX_LENGTH):
+            raise RequestValidationError(
+                f"name は1〜{NAME_QUERY_MAX_LENGTH}文字で指定してください。"
+            )
         page = self.reads.list_records(
             maxResults=PUBLICATION_SEARCH_PAGE_SIZE,
             filters=[{"name": "recordType", "values": list(CATALOG_RECORD_TYPES)}],
@@ -88,6 +99,8 @@ class PublicationSearch:
             management = self.reads.load_management(str(record["recordId"]))
             if not is_managed(management):
                 continue
+            if name is not None and not _matches_name(record, name):
+                continue
             items.append(
                 {
                     **record_summary(record, management),
@@ -96,3 +109,13 @@ class PublicationSearch:
                 }
             )
         return 200, {"items": items, "nextToken": page.get("nextToken")}
+
+
+def _matches_name(record: Mapping[str, Any], name: str) -> bool:
+    """検索の name は、レコードの name と displayName に対する部分一致（大文字小文字を区別しない）。
+
+    AWS の ListRegistryRecords の name フィルターは一致方法が公式文書に記載がないため、
+    ポータル側で絞り込む（README「管理レコードの検索」）。
+    """
+    needle = name.casefold()
+    return needle in str(record["name"]).casefold() or needle in display_name(record).casefold()

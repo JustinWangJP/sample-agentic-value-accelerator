@@ -111,3 +111,24 @@ def test_curator_lists_managed_records_with_suspension_and_published_version():
         assert item["suspended"] is False
         assert item["publishedVersion"] == "2.0.0"
         stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_name_filter_matches_name_and_display_name_case_insensitively():
+    """name は name と displayName に対する、大文字小文字を区別しない部分一致。絞り込みはポータル側。"""
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        decision = decision_for(registry, db)
+        by_name = listed_record("agentABC1234", "payments-agent")
+        by_display = listed_record(
+            "mcpEFGH5678I", "logging-mcp", display_name="Payments Logging", record_type="MCP"
+        )
+        unrelated = listed_record("sklEFGH5678I", "translate-skill", record_type="SKILL")
+        for record_id in ("agentABC1234", "mcpEFGH5678I", "sklEFGH5678I"):
+            managed(db, record_id)
+        # AWS の name フィルターは一致方法が文書化されていないため、ポータル側で絞り込む
+        stub_publication_list(stub, [by_name, by_display, unrelated])
+        status, body = search(decision, {"name": "PAYMENTS"})
+        assert status == 200, body
+        assert [item["recordId"] for item in body["items"]] == ["agentABC1234", "mcpEFGH5678I"]
+        stub.assert_no_pending_responses()
