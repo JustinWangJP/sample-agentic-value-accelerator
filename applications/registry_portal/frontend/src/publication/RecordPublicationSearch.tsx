@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { toApiError, type ApiClient, type ApiError } from '../api/client'
 import { RECORD_TYPE_LABELS } from '../api/recordType'
+import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { recordStatusLabel } from '../drafts/api'
 import {
   PUBLICATION_SEARCH_STATUSES,
@@ -36,6 +37,7 @@ export function RecordPublicationSearch({ api, onRelogin }: Props) {
   const [status, setStatus] = useState<'' | PublicationSearchStatus>('')
   const [query, setQuery] = useState<Query | null>(null)
   const [token, setToken] = useState<string | undefined>()
+  const [revision, setRevision] = useState(0)
   const [state, setState] = useState<PageState>({ kind: 'idle' })
 
   useEffect(() => {
@@ -53,7 +55,13 @@ export function RecordPublicationSearch({ api, onRelogin }: Props) {
     return () => {
       active = false
     }
-  }, [api, query, token])
+  }, [api, query, token, revision])
+
+  /** 失敗のあとの再試行。同じ条件と同じページを読み直す */
+  function retry() {
+    setState({ kind: 'loading' })
+    setRevision((value) => value + 1)
+  }
 
   function search(event: FormEvent) {
     event.preventDefault()
@@ -95,6 +103,17 @@ export function RecordPublicationSearch({ api, onRelogin }: Props) {
         </label>
         <button type="submit">検索する</button>
       </form>
+      {state.kind === 'loading' && <p role="status">管理レコードを検索しています…</p>}
+      {state.kind === 'error' && (
+        <RequestErrorAlert error={state.error} onRelogin={onRelogin} onRetry={retry} />
+      )}
+      {state.kind === 'ready' && state.page.items.length === 0 && (
+        <p>
+          {state.page.nextToken
+            ? 'このページには条件に一致する管理レコードがありません。次のページを確認してください。'
+            : '条件に一致する管理レコードはありません。'}
+        </p>
+      )}
       {state.kind === 'ready' && (
         <ul className="catalog-items">
           {state.page.items.map((item) => (

@@ -6,7 +6,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createApiClient } from '../api/client'
 import { RecordPublicationView } from '../publication/RecordPublicationView'
-import { fakeFetch, jsonResponse } from './helpers'
+import { fakeFetch, jsonResponse, type FetchCall } from './helpers'
 
 /** 検索一覧の項目（GET /api/records/publication の items の要素。Issue #42 の API 契約） */
 const suspendedItem = {
@@ -115,6 +115,14 @@ function itemButton(displayName: string, label: string): HTMLButtonElement {
   if (!node) throw new Error(`一覧の項目のボタンがありません ${displayName} ${label}`)
   return node
 }
+/** 指定した範囲の中のボタンを返す（itemButton と同じ探し方の、一覧の外向け） */
+function buttonIn(scope: ParentNode, label: string): HTMLButtonElement {
+  const node = [...scope.querySelectorAll('button')].find(
+    (element) => element.textContent === label,
+  )
+  if (!node) throw new Error(`ボタンがありません ${label}`)
+  return node
+}
 function apiFor(responses: (Response | Error)[]) {
   const { fetchImpl, calls } = fakeFetch(responses)
   return { api: createApiClient({ baseUrl: '', fetch: fetchImpl, getAccessToken: () => 'token' }), calls }
@@ -155,4 +163,48 @@ it('一覧の項目から、そのレコードの公開管理を開ける', asyn
   await act(() => itemButton('決済 Agent', '公開管理を開く').click())
   expect(calls[1]?.url).toBe('/api/records/agentSUSP456/publication')
   expect(container.textContent).toContain('公開管理: 決済 Agent')
+})
+
+it('0件は、nextToken の有無で別の文言を表示する', async () => {
+  await search([jsonResponse(200, { items: [], nextToken: 'token-2' })])
+  expect(container.textContent).toContain(
+    'このページには条件に一致する管理レコードがありません。次のページを確認してください。',
+  )
+  expect(container.textContent).not.toContain('条件に一致する管理レコードはありません。')
+})
+
+it('最後のページの0件は、次のページがないことを伝える', async () => {
+  await search([jsonResponse(200, { items: [], nextToken: null })])
+  expect(container.textContent).toContain('条件に一致する管理レコードはありません。')
+})
+
+it('検索中は、結果とは別の状態として表示する', async () => {
+  const calls: FetchCall[] = []
+  // 応答が返らない fetch。検索中の表示だけを確かめる
+  const fetchImpl: typeof fetch = (input, init) => {
+    calls.push({ url: String(input), init })
+    return new Promise<Response>(() => {})
+  }
+  const api = createApiClient({ baseUrl: '', fetch: fetchImpl, getAccessToken: () => 'token' })
+  await act(() =>
+    root.render(createElement(RecordPublicationView, { api, roles: ['Curator'], onRelogin: vi.fn() })),
+  )
+  await setValue('publicationSearchName', 'payment')
+  await submit('publicationSearchName')
+  expect(calls[0]?.url).toBe('/api/records/publication?name=payment')
+  expect(container.querySelector('[role="status"]')?.textContent).toContain('検索しています')
+})
+
+it('検索の失敗は0件とは別のエラー表示にして、再試行できる', async () => {
+  const calls = await search([
+    jsonResponse(502, {
+      error: { code: 'REGISTRY_UNAVAILABLE', message: '取得できませんでした。', requestId: 'r-1' },
+    }),
+    jsonResponse(200, { items: [suspendedItem], nextToken: null }),
+  ])
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain('取得できませんでした。')
+  expect(container.textContent).not.toContain('条件に一致する管理レコードはありません。')
+  await act(() => buttonIn(container, '再試行').click())
+  expect(calls[1]?.url).toBe('/api/records/publication?name=payment&status=SUSPENDED')
+  expect(listItem('決済 Agent').textContent).toContain('公開停止中')
 })
