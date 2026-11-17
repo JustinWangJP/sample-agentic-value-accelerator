@@ -431,14 +431,14 @@ CloudShell は `RegistryPortalReadOnly` でだけ使えます。デプロイと 
 
 ## 10. Issue #2 に記録する
 
-作業記録に次を残します。パスワード、アクセスキー、MFA のシークレットは記録しません。
+[Issue #2 の作業記録テンプレート](registry-portal-issue2-record-template-ja.md#2-記録テンプレート)の「IAM」の欄に、次を記録します。パスワード、アクセスキー、MFA のシークレットは記録しません。このリポジトリは公開されているため、ARN に含まれるアカウント ID は末尾 4 桁だけを残して伏せます。
 
 - [ ] IAM ユーザー `registry-operator` の ARN と、MFA を設定済みであること。
 - [ ] `RegistryPortalReadOnly`、`RegistryPortalDeployer`、`RegistryPortalBreakGlass` の ARN。
-- [ ] 手順 8 のシミュレーション結果（すべての書き込みが `explicitDeny`）。
+- [ ] 手順 8 のシミュレーション結果（書き込みの 12 件がすべて `explicitDeny`、読み取りの 2 件が `allowed`）。Registry ID が分かった後に、実際の ID でもう一度実行した結果を記録します。
 - [ ] break-glass ロールの担当者（本人）と、利用時の手順の保管先。
 
-Issue #2 の受け入れ条件は「IAM Identity Center に permission set `RegistryPortalDeployer` を作成した」です。個人アカウントでは同名の IAM ロールで代替するため、[親 Issue #1](https://github.com/JustinWangJP/sample-agentic-value-accelerator/issues/1) に次の内容をコメントします。
+設計書は IAM Identity Center の permission set `RegistryPortalDeployer` を前提にしています。Issue #2 の受け入れ条件では、個人アカウント向けに同名の IAM ロールで代替することにしています。前提との差分として、[親 Issue #1](https://github.com/JustinWangJP/sample-agentic-value-accelerator/issues/1) に次の内容をコメントします。
 
 - **想定:** IAM Identity Center の permission set `RegistryPortalDeployer`。
 - **確認結果:** IAM Identity Center は使用していない。同じ拒否設定を持つ IAM ロール `RegistryPortalDeployer` を作成し、IAM ユーザーから MFA 付きで引き受ける構成にした。

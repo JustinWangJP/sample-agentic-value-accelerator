@@ -2,7 +2,11 @@
 
 [Issue #2](https://github.com/JustinWangJP/sample-agentic-value-accelerator/issues/2) のチェックリストのうち、IAM ユーザーとロールの作成以外の項目を進める手順書です。個人 AWS アカウントで、[IAM ユーザーとロールの作成手順](registry-portal-iam-setup-personal-account-ja.md)を済ませていることを前提にします。
 
-確認作業では AWS を変更しません。読み取り用ロール `RegistryPortalReadOnly` と CloudShell を使います。手順 7 の break-glass だけは、手順を決めて記録するところまで行い、実際の変更はしません。
+確認作業では AWS を変更しません。読み取り用ロール `RegistryPortalReadOnly` と CloudShell を使います。手順 8 の break-glass だけは、手順を決めて記録するところまで行い、実際の変更はしません。
+
+IAM Identity Center は使いません。Identity Center のアカウントインスタンスは permission set に対応していないため、設計書の permission set `RegistryPortalDeployer` は同じ名前の IAM ロールで代替します（[AWS ドキュメント](https://docs.aws.amazon.com/singlesignon/latest/userguide/account-instances-identity-center.html)）。
+
+ここで確認した値は、ポータルを配信するときに Terraform の変数として使います。手順 7 で、[Terraform ガイド](registry-portal-terraform-guide-ja.md)の `dev.tfvars` に設定する値の形にまとめます。
 
 | Issue #2 のチェック項目 | 手順 |
 | --- | --- |
@@ -12,10 +16,13 @@
 | 発見用 M2M の IdP、User Pool ID、client_id、secret の保管先 ARN、scope | [手順 4](#4-発見用-m2m-の-cognito-設定と-secret-の保管先を確認する) |
 | 既存レコードの件数と作成経路 | [手順 5](#5-レコードの件数と作成経路を調べる) |
 | 公開中の `AGENT` のうち Agent Card あり・なしの件数 | [手順 6](#6-公開中の-agent-を-agent-card-の有無で数える) |
-| break-glass 用の管理ロールと、利用手順の担当者 | [手順 7](#7-break-glass-の担当者と利用手順を決める) |
-| ポータル外で `isA2A` を補完するときの break-glass の手順と担当者 | [手順 7](#7-break-glass-の担当者と利用手順を決める) |
+| （配信の準備）Terraform に渡す値と、ポータル用の名前が既存の資源と重ならないこと | [手順 7](#7-terraform-に渡す値をまとめ名前の重なりを確認する) |
+| break-glass 用の管理ロールと、利用手順の担当者 | [手順 8](#8-break-glass-の担当者と利用手順を決める) |
+| ポータル外で `isA2A` を補完するときの break-glass の手順と担当者 | [手順 8](#8-break-glass-の担当者と利用手順を決める) |
 | permission set `RegistryPortalDeployer`（IAM ロールで代替済み） | [IAM の作成手順](registry-portal-iam-setup-personal-account-ja.md#10-issue-2-に記録する) |
-| 前提と異なる点を親 Issue にコメント | [手順 8](#8-記録して前提との差分を報告する) |
+| 前提と異なる点を親 Issue にコメント | [手順 9](#9-記録して前提との差分を報告する) |
+
+結果は [Issue #2 の作業記録テンプレート](registry-portal-issue2-record-template-ja.md)の書式で記録します。同じ文書に、別の人が結果を再現して確かめる手順もあります。
 
 画面の表記は「日本語（English）」の形で示します。コンソールの日本語表記は更新で変わることがあります。
 
@@ -25,18 +32,27 @@
 2. 右上のユーザー名 → **ロールの切り替え**（Switch role）で `RegistryPortalReadOnly` に切り替えます。
 3. 右上のリージョンを **米国東部（バージニア北部）**（us-east-1）にします。
 4. コンソール上部のツールバーにある CloudShell のアイコンを選び、CloudShell を開きます。
-5. 次のコマンドを実行します。`Arn` に `assumed-role/RegistryPortalReadOnly/` が含まれることと、`list-registries` がエラーにならないことを確認します。
+5. 次のコマンドを実行します。`Arn` に `assumed-role/RegistryPortalReadOnly/` が含まれることと、`list-registries` がエラーにならないことを確認します。`aws --version` の出力と `Arn` は、作業記録の「作業環境」に書きます。
 
 ```bash
 set -o pipefail
 export AWS_REGION=us-east-1
+aws --version
 aws sts get-caller-identity
 aws agent-registry-control list-registries --output json > /dev/null && echo "agent-registry-control: OK"
 ```
 
 `agent-registry-control` が `Invalid choice` になる場合は、CloudShell の AWS CLI が古い状態です。ローカル端末で `registry-read` プロファイルを使い、各コマンドに `--profile registry-read` を付けて実行します（AWS CLI 2.40.3 で動作するコマンドです）。
 
-以降のコマンドは、同じ CloudShell のセッションで続けて実行します。CloudShell はしばらく操作しないとセッションが切れます。切れた場合は、手順の冒頭で設定した変数を設定し直します。
+以降のコマンドは、同じ CloudShell のセッションで続けて実行します。途中で設定する変数（`REGISTRY_ID` など）は、設定するたびに `$HOME/issue2-vars.sh` にも追記します。追記する値は ID と ARN だけで、機密情報は含みません。CloudShell はしばらく操作しないとセッションが切れます。切れた場合は、次のコマンドで変数を戻してから続きを実行します。
+
+```bash
+set -o pipefail
+export AWS_REGION=us-east-1
+source "$HOME/issue2-vars.sh"
+```
+
+作業ファイル（`$HOME/registry.json` など）は CloudShell のホームディレクトリに残るので、作り直す必要はありません。手順 9 の最後にまとめて削除します。
 
 ## 1. Registry を特定する
 
@@ -59,12 +75,13 @@ aws agent-registry-control list-registries --output table \
 
 - **対象が 1 つに決まる:** 次へ進みます。
 - **複数ある:** 用途や名前から対象を決め、選んだ理由を記録します。
-- **1 つもない:** 既存 Registry がないことを前提との差分として記録し、手順 8 で親 Issue に報告します。手順 2〜6 は行いません。Registry の作成は Issue #2 の範囲外です。
+- **1 つもない:** 既存 Registry がないことを前提との差分として記録し、手順 9 で親 Issue に報告します。手順 2〜7 は行いません。Registry の作成は Issue #2 の範囲外です。
 
 対象の ID を変数に設定します。
 
 ```bash
 REGISTRY_ID='一覧で確認した registryId'
+echo "REGISTRY_ID='$REGISTRY_ID'" >> "$HOME/issue2-vars.sh"
 ```
 
 ## 2. Registry の詳細と自動承認を確認する
@@ -90,7 +107,7 @@ jq '{name, registryId, registryArn, status,
 
 - `registryArn` が `arn:aws:agent-registry:us-east-1:<アカウント ID>:registry/<registryId>` の形であること。これで `agent-registry` 名前空間と us-east-1 を確認できます。
 - `status` が `READY` であること。
-- `autoApprovalRules` が `[]` であること。空なら、申請は手動の審査が必要です（自動承認は無効）。`APPROVE_ALL` が含まれていれば自動承認が有効です。差分として記録し、手順 8 で報告します。設定は変更しません。
+- `autoApprovalRules` が `[]` であること。空なら、申請は手動の審査が必要です（自動承認は無効）。`APPROVE_ALL` が含まれていれば自動承認が有効です。差分として記録し、手順 9 で報告します。設定は変更しません。
 
 [レジストリの作成と管理](https://docs.aws.amazon.com/ja_jp/bedrock-agentcore/latest/devguide/registry-create-manage.html)
 
@@ -137,6 +154,8 @@ jq '.discoveryConfiguration | {authorizerType,
 ```bash
 COGNITO_REGION='discoveryUrl のリージョン'
 USER_POOL_ID='discoveryUrl の User Pool ID'
+echo "COGNITO_REGION='$COGNITO_REGION'" >> "$HOME/issue2-vars.sh"
+echo "USER_POOL_ID='$USER_POOL_ID'" >> "$HOME/issue2-vars.sh"
 ```
 
 ### 発見用の app client
@@ -147,6 +166,7 @@ USER_POOL_ID='discoveryUrl の User Pool ID'
 
 ```bash
 DISCOVERY_CLIENT_ID='発見用の client_id'
+echo "DISCOVERY_CLIENT_ID='$DISCOVERY_CLIENT_ID'" >> "$HOME/issue2-vars.sh"
 
 aws cognito-idp describe-user-pool-client --region "$COGNITO_REGION" \
   --user-pool-id "$USER_POOL_ID" --client-id "$DISCOVERY_CLIENT_ID" --output json \
@@ -161,6 +181,7 @@ aws cognito-idp describe-user-pool --region "$COGNITO_REGION" --user-pool-id "$U
 - `oauthEnabled` が `true`、`flows` に `client_credentials` があり、`hasSecret` が `true` であること。M2M として使えるクライアントの条件です。
 - `scopes`（Cognito が発行できる scope）と、Registry の `allowedScopes` が少なくとも 1 つ一致すること。
 - `domain` または `customDomain` があること。トークンの発行に Cognito ドメインが必要です。
+- `COGNITO_REGION` が `us-east-1` であること。ポータルの本体スタック（Issue #5）は、JWT の issuer を `https://cognito-idp.us-east-1.amazonaws.com/<User Pool ID>` に固定しています。別のリージョンなら差分として記録します。
 
 発見用のクライアントが見つからない、または条件を満たさない場合は差分として記録し、手順 6 は行いません。コンソールのクイック作成で作られた Registry では、M2M のクライアントがないことがあります。
 
@@ -176,11 +197,12 @@ aws secretsmanager list-secrets --region "$COGNITO_REGION" --output table \
   --query 'SecretList[].[Name,ARN,Description]'
 
 SECRET_ARN='確認した secret の ARN'
+echo "SECRET_ARN='$SECRET_ARN'" >> "$HOME/issue2-vars.sh"
 aws secretsmanager describe-secret --region "$COGNITO_REGION" --secret-id "$SECRET_ARN" \
-  --query '{arn:ARN,name:Name,description:Description,deletedDate:DeletedDate,tags:Tags}' --output json
+  --query '{arn:ARN,name:Name,description:Description,kmsKeyId:KmsKeyId,deletedDate:DeletedDate,tags:Tags}' --output json
 ```
 
-`deletedDate` がないこと（削除予定でないこと）を確認し、ARN を記録します。値を読めないため、secret と client_id の対応は、名前、説明、タグで判断します。判断できない場合や、secret が Secrets Manager にない場合は差分として記録します。secret が別のリージョンにある場合は `--region` を変えて探します。
+`deletedDate` がないこと（削除予定でないこと）を確認し、ARN と `kmsKeyId` を記録します。`kmsKeyId` がなければ、secret は AWS 管理キー（`aws/secretsmanager`）で暗号化されています。`kmsKeyId` の扱いは手順 7 で決めます。値を読めないため、secret と client_id の対応は、名前、説明、タグで判断します。判断できない場合や、secret が Secrets Manager にない場合は差分として記録します。secret が別のリージョンにある場合は `--region` を変えて探します。
 
 [サポートされている受信認可タイプ](https://docs.aws.amazon.com/ja_jp/bedrock-agentcore/latest/devguide/registry-supported-auth-types.html)
 
@@ -243,7 +265,12 @@ jq -r '.registryRecords[] | [.recordId, .recordType, .status, .createdAt, (.crea
    | `...Terraform/...`、`...HashiCorp...` | Terraform（IaC） |
    | `AWS Internal`、コンソールの UA | コンソール |
 
-4. 90 日より前に作られたレコードは、イベント履歴では調べられません。証跡（trail）を S3 に保存していればそのログを、なければ当時の作業記録を確認します。根拠がなければ「不明」とし、参照した期間と資料を記録します。
+4. 90 日より前に作られたレコードは、イベント履歴では調べられません。証跡（trail）を S3 に保存していればそのログを、なければ当時の作業記録を確認します。根拠がなければ「不明」とし、参照した期間と資料を記録します。個人アカウントには組織の証跡がないので、証跡があるかを次のコマンドで確認します。結果が空なら、証跡はありません。
+
+   ```bash
+   aws cloudtrail describe-trails --region us-east-1 \
+     --query 'trailList[].[Name,S3BucketName,IsMultiRegionTrail,HomeRegion]' --output table
+   ```
 5. 経路ごとの件数を合計し、`total` と一致することを確認します。
 
 [Registry の CloudTrail ログ](https://docs.aws.amazon.com/ja_jp/bedrock-agentcore/latest/devguide/registry-cloudtrail-integration.html) · [CloudTrail のイベント履歴](https://docs.aws.amazon.com/ja_jp/awscloudtrail/latest/userguide/view-cloudtrail-events.html)
@@ -299,11 +326,91 @@ count_published_agents
 - 取得日時と 3 つの件数を記録します。`ID重複` が `0` でなければ、時間をおいて取り直します。
 - 判定には、一覧の各レコードにある `descriptorTypes`（レコードが持つ descriptor の種類）を使います。`a2aAgentCard` を含むものを「Agent Card あり」とします。
 - `curl: (22) ... 400` などでトークンの取得に失敗した場合は、手順 4 のクライアント設定（`client_credentials`、secret の有無、ドメイン）を見直します。発見用 API が 401 や 403 を返す場合は、Registry の `allowedClients`、`allowedAudience`、`allowedScopes`、カスタムクレームと、トークンの内容が合っているかを見直します。
-- 終わったら `rm "$HOME/published-agents.jsonl" "$HOME/records.json" "$HOME/registry.json"` で作業ファイルを削除します。CloudShell のホームディレクトリは、使わないまま 120 日たつと削除されますが、残す必要はありません。
+- `$HOME/published-agents.jsonl` には、公開中レコードの ID と種別だけが入ります。手順 9 の最後に削除します。
 
 [承認済みレコードの参照](https://docs.aws.amazon.com/ja_jp/bedrock-agentcore/latest/devguide/registry-browse-records.html) · [レコードのライフサイクル](https://docs.aws.amazon.com/ja_jp/bedrock-agentcore/latest/devguide/registry-record-lifecycle.html) · [Cognito のトークンエンドポイント](https://docs.aws.amazon.com/ja_jp/cognito/latest/developerguide/token-endpoint.html)
 
-## 7. break-glass の担当者と利用手順を決める
+## 7. Terraform に渡す値をまとめ、名前の重なりを確認する
+
+ポータルを配信するときに `dev.tfvars` に設定する値を、ここまでの結果からまとめます（[Terraform ガイドの 3.2](registry-portal-terraform-guide-ja.md#32-事前に確定する値)）。あわせて、ポータルが作る Cognito の資源と IAM ロールの名前が、既存のものと重ならないかを確認します。ここでも AWS は変更しません。手順 4 で設定した `COGNITO_REGION` と `USER_POOL_ID` を使います。
+
+### Cognito ドメインとトークン URL
+
+```bash
+aws cognito-idp describe-user-pool --region "$COGNITO_REGION" --user-pool-id "$USER_POOL_ID" \
+  --query 'UserPool.{domain:Domain,customDomain:CustomDomain,adminCreateOnly:AdminCreateUserConfig.AllowAdminCreateUserOnly}' \
+  --output json
+```
+
+- `cognito_domain`: `customDomain` があれば `https://<customDomain>`、なければ `https://<domain>.auth.<COGNITO_REGION>.amazoncognito.com` です。末尾に `/` は付けません。人間用のログイン画面と発見用 M2M のトークン発行は、同じ User Pool のこのドメインを使います。
+- `discovery_token_url`: `cognito_domain` の後ろに `/oauth2/token` を付けた値です。手順 6 の `TOKEN_URL` と同じになります。
+- `adminCreateOnly` が `true` であることを確認します。設計では、セルフサインアップを無効にし、ユーザーは Admin が作成します。`false` なら差分として記録します。User Pool の本体は Terraform の管理対象ではないため、変更する場合はポータルの配信とは別に行います。
+
+### 人間用の IdP 名
+
+```bash
+aws cognito-idp list-identity-providers --region "$COGNITO_REGION" --user-pool-id "$USER_POOL_ID" \
+  --query 'Providers[].[ProviderName,ProviderType]' --output table
+```
+
+- `identity_providers`: User Pool のユーザー（ユーザー名とパスワード）でログインする場合は `["COGNITO"]` です。外部 IdP がない個人アカウントでは、通常これになります。
+- 外部の IdP（SAML、OIDC、ソーシャルログイン）でログインさせる場合は、その `ProviderName` を指定します。
+
+### 発見用 M2M の scope と secret の KMS キー
+
+- `discovery_scope`: 手順 4 で確認した、client の `scopes` と Registry の `allowedScopes` の両方に含まれる scope を1つ指定します。Registry に `allowedScopes` がなければ、空文字（client の既定の scope）にできます。
+- `discovery_kms_key_arn`: 手順 4 の `kmsKeyId` がなければ `null` です。ある場合は、キーの完全な ARN（`arn:aws:kms:<リージョン>:<アカウント ID>:key/<キー ID>`）を指定します。`kmsKeyId` がキー ID やエイリアスの場合、`RegistryPortalReadOnly` には KMS の読み取り権限がないので、`aws kms describe-key --key-id <kmsKeyId> --query KeyMetadata.Arn --region <リージョン> --profile registry-deploy` で ARN を確認します。
+
+### 名前の重なり
+
+ポータルの Terraform は、既存の User Pool にグループ・リソースサーバー・人間用 client を追加し、IAM ロールも作ります。同じ名前のものが既にあると、apply が失敗したり、同じ資源を2つの場所で管理することになったりします。
+
+```bash
+# Cognito のグループ（registry-publisher、registry-curator、registry-admin、team-*）
+aws cognito-idp list-groups --region "$COGNITO_REGION" --user-pool-id "$USER_POOL_ID" \
+  --query "Groups[?starts_with(GroupName, 'registry-') || starts_with(GroupName, 'team-')].GroupName" \
+  --output text
+
+# リソースサーバー（識別子 registry-portal）
+aws cognito-idp list-resource-servers --region "$COGNITO_REGION" --user-pool-id "$USER_POOL_ID" \
+  --max-results 50 --query "ResourceServers[?Identifier=='registry-portal'].[Identifier,Name]" --output text
+
+# 人間用 client（名前 registry-portal-dev-human）
+aws cognito-idp list-user-pool-clients --region "$COGNITO_REGION" --user-pool-id "$USER_POOL_ID" \
+  --query "UserPoolClients[?starts_with(ClientName, 'registry-portal')].[ClientName,ClientId]" --output text
+
+# Lambda の実行ロール（registry-portal-dev-management、registry-portal-decision、registry-portal-events）
+aws iam list-roles --query "Roles[?starts_with(RoleName, 'registry-portal')].RoleName" --output text
+```
+
+- 何も表示されなければ、名前は重なっていません。
+- [IAM の作成手順](registry-portal-iam-setup-personal-account-ja.md)で作ったロール（`RegistryPortalReadOnly` など）は、名前が大文字で始まるため、最後のコマンドには表示されません。
+- グループやリソースサーバーが既にある場合は、作った人と用途を確認して記録します。ポータルで使うなら、配信のときに Terraform に取り込みます（[Terraform ガイドの 2.2](registry-portal-terraform-guide-ja.md#22-同じ名前の資源がすでにある場合)）。
+- 同じ名前の IAM ロールや client がある場合は、ポータル以外の用途でないかを確認し、`name_prefix` を変えるかどうかを記録します。
+
+### 所属チーム名を決める
+
+`team_names` には、Publisher が所属するチームの名前を指定します（例: `payments`。`team-` は付けません）。所有チームは Registry レコードの管理情報に保存されるため、後から名前を変えるには移行が必要です。dev で使うチームを決めて記録します。
+
+### まとめる値
+
+| 変数 | 値の出どころ |
+| --- | --- |
+| `aws_account_id` | `aws sts get-caller-identity` の `Account`（手順 0） |
+| `registry_arn` | 手順 2 の `registryArn` |
+| `cognito_user_pool_id` | 手順 4 の `USER_POOL_ID` |
+| `cognito_domain` | この手順の「Cognito ドメインとトークン URL」 |
+| `identity_providers` | この手順の「人間用の IdP 名」 |
+| `team_names` | この手順の「所属チーム名を決める」 |
+| `discovery_token_url` | この手順の「Cognito ドメインとトークン URL」 |
+| `discovery_client_id` | 手順 4 の `DISCOVERY_CLIENT_ID` |
+| `discovery_client_secret_arn` | 手順 4 の `SECRET_ARN`（完全な ARN） |
+| `discovery_kms_key_arn` | この手順の「発見用 M2M の scope と secret の KMS キー」 |
+| `discovery_scope` | 同上 |
+
+これらの値は機密情報ではありませんが、secret の値やトークンは含めないでください。
+
+## 8. break-glass の担当者と利用手順を決める
 
 ### 担当者とロール
 
@@ -343,9 +450,11 @@ break-glass は、ポータルを経由できない緊急時だけ使います�
 3. 上の利用手順で更新・申請・承認を行い、発見用 API で公開中のリビジョンに反映されたことを確認します。
 4. 一時的に追加した権限を削除し、削除したことを Issue に記録します。
 
-## 8. 記録して前提との差分を報告する
+## 9. 記録して前提との差分を報告する
 
-作業記録に次を残し、Issue #2 の該当項目にチェックを付けます。secret の値、トークン、非公開のレコード本体は Issue に貼り付けません。
+[Issue #2 の作業記録テンプレート](registry-portal-issue2-record-template-ja.md#2-記録テンプレート)を使って Issue #2 にコメントし、Issue #2 の該当項目にチェックを付けます。secret の値、トークン、非公開のレコード本体は Issue に貼り付けません。このリポジトリは公開されているため、ARN などに含まれる AWS アカウント ID は末尾 4 桁だけを残して伏せます（[値の扱い](registry-portal-issue2-record-template-ja.md#値の扱い)）。
+
+記録には次の内容が含まれます。
 
 - [ ] Registry の名前、ID、ARN、リージョン、名前空間、状態、確認日時（手順 1・2）
 - [ ] 自動承認の判定（`autoApprovalRules` の値）（手順 2）
@@ -353,9 +462,10 @@ break-glass は、ポータルを経由できない緊急時だけ使います�
 - [ ] 認可タイプ、User Pool ID、発見用 client_id、secret の保管先 ARN、Cognito と Registry それぞれの scope（手順 4）
 - [ ] 全件数、種別・状態ごとの件数、作成経路ごとの件数と根拠、不明の件数（手順 5）
 - [ ] 公開中の `AGENT` の件数と、Agent Card あり・なしの件数、取得日時（手順 6）
-- [ ] break-glass のロール ARN、担当者、利用手順の保管先、`isA2A` 補完時の制約（手順 7）
+- [ ] Terraform に渡す値の一覧、セルフサインアップの設定、名前の重なりの有無（手順 7）
+- [ ] break-glass のロール ARN、担当者、利用手順の保管先、`isA2A` 補完時の制約（手順 8）
 
-前提と違う点があれば、[親 Issue #1](https://github.com/JustinWangJP/sample-agentic-value-accelerator/issues/1) に項目ごとに次の形でコメントします。permission set を IAM ロールで代替した件（[IAM の作成手順の手順 10](registry-portal-iam-setup-personal-account-ja.md#10-issue-2-に記録する)）も、同じコメントにまとめます。
+前提と違う点があれば、[親 Issue #1](https://github.com/JustinWangJP/sample-agentic-value-accelerator/issues/1) に項目ごとに次の形でコメントします。permission set を IAM ロールで代替した件（[IAM の作成手順の手順 10](registry-portal-iam-setup-personal-account-ja.md#10-issue-2-に記録する)）と、IAM Identity Center がないため Issue #5 の bootstrap と `deploy.sh` をそのまま使えない件（[Terraform ガイドの 7](registry-portal-terraform-guide-ja.md#7-既知の食い違いと未解決事項)）も、同じコメントにまとめます。
 
 ```markdown
 ### <項目名>
@@ -370,3 +480,17 @@ break-glass は、ポータルを経由できない緊急時だけ使います�
 - 担当者を分けられない（break-glass の承認者・監査担当者、`isA2A` 補完時の自己承認）。
 - `isA2A` がスキーマにない、または `AGENT` 専用の必須 Boolean になっていない。
 - 発見用 M2M のクライアントがない、または secret が Secrets Manager にない。
+- IAM Identity Center がなく、permission set を使えない（IAM ロールで代替する）。
+- User Pool が us-east-1 にない、またはセルフサインアップが有効になっている。
+- ポータルが作るグループ・リソースサーバー・IAM ロールと同じ名前のものが既にある。
+- 組織の証跡がなく、90 日より前のレコードの作成経路を調べられない。
+
+### 後片付け
+
+記録を投稿したら、CloudShell の作業ファイルを削除します。どれも機密情報は含みませんが、残す必要はありません。CloudShell のホームディレクトリは、使わないまま 120 日たつと削除されます。
+
+```bash
+rm -f "$HOME/registry.json" "$HOME/records.json" "$HOME/published-agents.jsonl" "$HOME/issue2-vars.sh"
+```
+
+最後に、右上のメニューから **スイッチバック**（Switch back）を選び、元のユーザーに戻ります。
