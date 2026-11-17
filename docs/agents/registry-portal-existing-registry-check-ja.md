@@ -2,7 +2,7 @@
 
 [Issue #2](https://github.com/JustinWangJP/sample-agentic-value-accelerator/issues/2) のチェックリストのうち、IAM ユーザーとロールの作成以外の項目を進める手順書です。個人 AWS アカウントで、[IAM ユーザーとロールの作成手順](registry-portal-iam-setup-personal-account-ja.md)を済ませていることを前提にします。
 
-確認作業では AWS を変更しません。読み取り用ロール `RegistryPortalReadOnly` と CloudShell を使います。手順 8 の break-glass だけは、手順を決めて記録するところまで行い、実際の変更はしません。
+確認作業では AWS を変更しません。読み取り用ロール `RegistryPortalReadOnly` と CloudShell を使います（例外は、手順 7 で KMS キーのエイリアスから ARN を調べる場合だけです）。手順 8 の break-glass だけは、手順を決めて記録するところまで行い、実際の変更はしません。
 
 IAM Identity Center は使いません。Identity Center のアカウントインスタンスは permission set に対応していないため、設計書の permission set `RegistryPortalDeployer` は同じ名前の IAM ロールで代替します（[AWS ドキュメント](https://docs.aws.amazon.com/singlesignon/latest/userguide/account-instances-identity-center.html)）。
 
@@ -334,6 +334,8 @@ count_published_agents
 
 ポータルを配信するときに `dev.tfvars` に設定する値を、ここまでの結果からまとめます（[Terraform ガイドの 3.2](registry-portal-terraform-guide-ja.md#32-事前に確定する値)）。あわせて、ポータルが作る Cognito の資源と IAM ロールの名前が、既存のものと重ならないかを確認します。ここでも AWS は変更しません。手順 4 で設定した `COGNITO_REGION` と `USER_POOL_ID` を使います。
 
+手順 4 で認可タイプが `AWS_IAM` だった場合や、発見用のクライアントや secret が見つからなかった場合は、`discovery_` で始まる値を決められません。記録には「未確定（手順 4 の差分による）」と書き、手順 9 で差分として報告します。人間用の User Pool が決まっていれば、この手順のほかの確認は行います。
+
 ### Cognito ドメインとトークン URL
 
 ```bash
@@ -358,12 +360,16 @@ aws cognito-idp list-identity-providers --region "$COGNITO_REGION" --user-pool-i
 
 ### 発見用 M2M の scope と secret の KMS キー
 
-- `discovery_scope`: 手順 4 で確認した、client の `scopes` と Registry の `allowedScopes` の両方に含まれる scope を1つ指定します。Registry に `allowedScopes` がなければ、空文字（client の既定の scope）にできます。
-- `discovery_kms_key_arn`: 手順 4 の `kmsKeyId` がなければ `null` です。ある場合は、キーの完全な ARN（`arn:aws:kms:<リージョン>:<アカウント ID>:key/<キー ID>`）を指定します。`kmsKeyId` がキー ID やエイリアスの場合、`RegistryPortalReadOnly` には KMS の読み取り権限がないので、`aws kms describe-key --key-id <kmsKeyId> --query KeyMetadata.Arn --region <リージョン> --profile registry-deploy` で ARN を確認します。
+- `discovery_scope`: 手順 4 で確認した、client の `scopes` と Registry の `allowedScopes` の両方に含まれる scope を 1 つ指定します。Registry に `allowedScopes` がなければ、空文字（client の既定の scope）にできます。
+- `discovery_kms_key_arn`: 手順 4 の `kmsKeyId` の形で決めます。`RegistryPortalReadOnly` には KMS の権限がないため、エイリアスの場合だけ別のロールを使います。
+  - `kmsKeyId` がない: `null` です。
+  - `arn:aws:kms:...:key/...` の形: そのまま指定します。
+  - キー ID（`1234abcd-...` の形）: secret と同じリージョン・アカウントのキーなので、`arn:aws:kms:<secret のリージョン>:<アカウント ID>:key/<キー ID>` と組み立てます。
+  - エイリアス（`alias/...` を含む形）: エイリアスはキーの ARN ではないため、指定できません。この確認手順で唯一、ローカル端末の `registry-deploy` プロファイル（[IAM 手順の 9](registry-portal-iam-setup-personal-account-ja.md#ローカル端末を使う)）を使い、`aws kms describe-key --key-id '<kmsKeyId の値>' --region '<secret のリージョン>' --profile registry-deploy --query KeyMetadata.Arn --output text` で ARN を調べます。読み取りだけで、AWS は変更しません。どのロールで調べたかを記録します。
 
 ### 名前の重なり
 
-ポータルの Terraform は、既存の User Pool にグループ・リソースサーバー・人間用 client を追加し、IAM ロールも作ります。同じ名前のものが既にあると、apply が失敗したり、同じ資源を2つの場所で管理することになったりします。
+ポータルの Terraform は、既存の User Pool にグループ・リソースサーバー・人間用 client を追加し、IAM ロールも作ります。同じ名前のものが既にあると、apply が失敗したり、同じ資源を 2 つの場所で管理することになったりします。
 
 ```bash
 # Cognito のグループ（registry-publisher、registry-curator、registry-admin、team-*）

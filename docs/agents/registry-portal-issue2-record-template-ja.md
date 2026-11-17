@@ -2,9 +2,9 @@
 
 [Issue #2](https://github.com/JustinWangJP/sample-agentic-value-accelerator/issues/2) の確認と準備の結果を、Issue のコメントとして残すための書式です。あわせて、別の人（または後日の自分）が同じ手順で結果を再現し、記録と一致するかを確かめる方法を示します。
 
-作業の手順そのものは、次の2つの手順書にあります。この文書には手順を書きません。
+作業の手順そのものは、次の 2 つの手順書にあります。この文書には手順を書きません。
 
-1. [個人 AWS アカウントで IAM ユーザーとロールを作成する](registry-portal-iam-setup-personal-account-ja.md)
+1. [個人 AWS アカウントで Registry ポータル用の IAM ユーザーとロールを作成する](registry-portal-iam-setup-personal-account-ja.md)
 2. [既存の AWS Agent Registry を確認し、break-glass の手順を決める](registry-portal-existing-registry-check-ja.md)
 
 以下、前者を「IAM 手順」、後者を「確認手順」と呼びます。
@@ -129,7 +129,7 @@ git log -1 --format='%h %cs' -- docs/agents/
 | `discovery_token_url` | <https://.../oauth2/token> |
 | `discovery_client_id` | <ID> |
 | `discovery_client_secret_arn` | <ARN> |
-| `discovery_kms_key_arn` | <null または ARN> |
+| `discovery_kms_key_arn` | <null または ARN>（エイリアスから調べた場合は、使ったロール） |
 | `discovery_scope` | <scope または ""> |
 
 - [ ] セルフサインアップ: `adminCreateOnly` = <true／false>（確認手順 7）
@@ -164,25 +164,31 @@ git log -1 --format='%h %cs' -- docs/agents/
    手順書が更新されている場合は、記録の版の手順で実行します。最新版との違いで結果が変わる場合は、その違いを再確認の結果に書きます。
 
 2. 確認手順 0 のとおり、`RegistryPortalReadOnly` に切り替えて CloudShell を開きます。`aws --version` を実行し、記録のバージョンと違えば書き留めます。
-3. 記録の値を変数に設定します。確認手順の途中で設定する変数と同じ名前です。
+3. 記録の値を `$HOME/issue2-vars.sh` に書き、読み込みます。確認手順の途中で設定する変数と同じ名前です。セッションが切れたときも、確認手順 0 と同じく `source "$HOME/issue2-vars.sh"` で戻せます。
 
    ```bash
    set -o pipefail
    export AWS_REGION=us-east-1
+   cat > "$HOME/issue2-vars.sh" <<'VARS'
    REGISTRY_ID='記録の Registry ID'
    COGNITO_REGION='記録の User Pool のリージョン'
    USER_POOL_ID='記録の User Pool ID'
    DISCOVERY_CLIENT_ID='記録の client_id'
    SECRET_ARN='記録の secret の ARN（アカウント ID は実際の値に戻す）'
+   VARS
+   source "$HOME/issue2-vars.sh"
    ```
 
 ### 比べ方
 
-確認手順の 1〜7 のコマンドを、上の変数を使ってそのまま実行し、出力を記録と比べます。手順 1 の一覧と、手順 4 の Secrets Manager の一覧は、記録の値が含まれていることだけを確かめます。
+確認手順の 1〜7 のコマンドを、上の変数を使って実行し、出力を記録と比べます。ただし、**変数を設定する行は実行しません**。確認手順の `REGISTRY_ID='一覧で確認した registryId'` のような行と、その直後の `echo ... >> "$HOME/issue2-vars.sh"` の行です。実行すると、記録の値が説明の文字列で上書きされます。上書きしてしまった場合は、準備の 3 をやり直します。
+
+手順 1 の一覧と、手順 4 の Secrets Manager の一覧は、記録の値が含まれていることだけを確かめます。
 
 | 区分 | 項目 | 一致しないとき |
 | --- | --- | --- |
-| 完全に一致するはず | Registry の ID・ARN・状態、`autoApprovalRules`、スキーマのフィールドと `isA2A`、認可タイプ、`discoveryUrl`、`allowedClients`・`allowedAudience`・`allowedScopes`、client の設定、ドメイン、secret の ARN と `kmsKeyId`、`adminCreateOnly`、名前の重なりの結果 | 記録のあとに設定が変わった可能性があります。CloudTrail のイベント履歴で、記録の日時以降の `UpdateRegistry`、`UpdateUserPoolClient`、`UpdateUserPool`、`UpdateSecret` などを探し、変更した主体と日時を書きます |
+| 完全に一致するはず | Registry の ID・ARN・状態、`autoApprovalRules`、スキーマのフィールドと `isA2A`、認可タイプ、`discoveryUrl`、`allowedClients`・`allowedAudience`・`allowedScopes`、client の設定、ドメイン、secret の ARN と `kmsKeyId`、`adminCreateOnly` | 記録のあとに設定が変わった可能性があります。CloudTrail のイベント履歴で、記録の日時以降の `UpdateRegistry`、`UpdateUserPoolClient`、`UpdateUserPool`、`UpdateSecret` などを探し、変更した主体と日時を書きます |
+| ポータルの配信前だけ一致する | 名前の重なりの結果（確認手順 7） | ポータルを配信すると、ポータル自身のグループ・リソースサーバー・人間用 client・Lambda の実行ロールが作られ、必ず表示されます。配信後に再確認するときは、表示された名前から、ポータルが作る名前（`name_prefix` が既定の `registry-portal-dev` の場合、`registry-publisher`、`registry-curator`、`registry-admin`、記録の `team_names` に `team-` を付けたもの、`registry-portal`、`registry-portal-dev-human`、`registry-portal-dev-management`、`registry-portal-decision`、`registry-portal-events`）を除き、残ったものだけを重なりとして書きます |
 | 時間とともに変わる | レコードの件数、種別・状態ごとの件数、公開中の `AGENT` と Agent Card の件数 | 記録の取得日時以降に作成・更新・状態変更されたレコードで説明できるかを確かめます。CloudTrail のイベント履歴で `CreateRegistryRecord`、`UpdateRegistryRecord`、`UpdateRegistryRecordStatus`、`DeleteRegistryRecord` を記録の日時以降に絞って数え、差分と合うかを書きます |
 | 判断を含む | 作成経路の分類、secret と client_id の対応付け、`team_names`、break-glass の担当者 | 記録の「根拠」の列をたどり、同じ判断になるかを確かめます。違う判断になる場合は理由を書きます |
 
@@ -192,7 +198,7 @@ IAM の記録は、IAM 手順 8 のシミュレーションをもう一度実行
 
 ### 結果の書き方
 
-再確認の結果は、元の記録のコメントへの返信として、次の形で Issue #2 に追加します。
+GitHub の Issue のコメントには返信のスレッドがないため、元の記録のコメントの URL（コメントの日時のリンク）を書いた新しいコメントとして、次の形で Issue #2 に追加します。
 
 ```markdown
 ## Issue #2 再確認（<YYYY-MM-DD>）
@@ -211,6 +217,6 @@ IAM の記録は、IAM 手順 8 のシミュレーションをもう一度実行
 
 ## 関連文書
 
-- [個人 AWS アカウントで IAM ユーザーとロールを作成する](registry-portal-iam-setup-personal-account-ja.md)
+- [個人 AWS アカウントで Registry ポータル用の IAM ユーザーとロールを作成する](registry-portal-iam-setup-personal-account-ja.md)
 - [既存の AWS Agent Registry を確認し、break-glass の手順を決める](registry-portal-existing-registry-check-ja.md)
 - [Registry ポータルの Terraform ガイド](registry-portal-terraform-guide-ja.md)
