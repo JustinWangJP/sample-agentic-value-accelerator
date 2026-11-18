@@ -204,7 +204,7 @@ resource "aws_apigatewayv2_integration" "management" {
 }
 
 resource "aws_apigatewayv2_route" "management" {
-  for_each             = toset(["GET /api/me", "GET /api/catalog"])
+  for_each             = toset(["GET /api/me", "GET /api/catalog", "POST /api/catalog/search", "GET /api/catalog/{recordId}"])
   api_id               = aws_apigatewayv2_api.portal.id
   route_key            = each.value
   target               = "integrations/${aws_apigatewayv2_integration.management.id}"
@@ -230,12 +230,19 @@ resource "aws_apigatewayv2_stage" "default" {
   }
 }
 
+# 呼び出し許可は本体スタックの route のメソッドと path に限る。{recordId} は * に置き換える。
+# 決裁と管理の追加 route の許可は、それぞれの追加スタックが作る
 resource "aws_lambda_permission" "api" {
-  for_each       = toset(["me", "catalog"])
-  statement_id   = "AllowApiGateway-${each.value}"
+  for_each = {
+    me             = "GET/api/me"
+    catalog        = "GET/api/catalog"
+    catalog-search = "POST/api/catalog/search"
+    catalog-detail = "GET/api/catalog/*"
+  }
+  statement_id   = "AllowApiGateway-${each.key}"
   action         = "lambda:InvokeFunction"
   function_name  = aws_lambda_function.management.function_name
   principal      = "apigateway.amazonaws.com"
   source_account = var.aws_account_id
-  source_arn     = "${aws_apigatewayv2_api.portal.execution_arn}/*/GET/api/${each.value}"
+  source_arn     = "${aws_apigatewayv2_api.portal.execution_arn}/*/${each.value}"
 }

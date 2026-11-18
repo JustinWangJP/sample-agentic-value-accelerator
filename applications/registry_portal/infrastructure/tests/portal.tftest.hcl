@@ -1,6 +1,32 @@
 mock_provider "aws" {
   mock_resource "aws_cloudfront_distribution" {
-    defaults = { domain_name = "portal.example.cloudfront.net" }
+    defaults = { domain_name = "portal.example.cloudfront.net", arn = "arn:aws:cloudfront::123456789012:distribution/EXAMPLE" }
+  }
+  # apply で ARN の形式を検証する属性には、形式の正しい値を与える
+  mock_resource "aws_cloudfront_function" {
+    defaults = { arn = "arn:aws:cloudfront::123456789012:function/registry-portal-dev-spa" }
+  }
+  mock_resource "aws_cloudwatch_log_group" {
+    defaults = { arn = "arn:aws:logs:us-east-1:123456789012:log-group:/aws/example" }
+  }
+  mock_resource "aws_iam_role" {
+    defaults = { arn = "arn:aws:iam::123456789012:role/registry-portal-dev-management" }
+  }
+  mock_resource "aws_s3_bucket" {
+    defaults = { arn = "arn:aws:s3:::portal-test-123456789012" }
+  }
+  mock_resource "aws_lambda_function" {
+    defaults = {
+      arn        = "arn:aws:lambda:us-east-1:123456789012:function:registry-portal-dev-management"
+      invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:registry-portal-dev-management/invocations"
+    }
+  }
+  mock_resource "aws_apigatewayv2_api" {
+    defaults = {
+      id            = "abcde12345"
+      api_endpoint  = "https://abcde12345.execute-api.us-east-1.amazonaws.com"
+      execution_arn = "arn:aws:execute-api:us-east-1:123456789012:abcde12345"
+    }
   }
 }
 
@@ -33,6 +59,10 @@ run "security_boundaries" {
   assert {
     condition     = aws_cognito_user_pool_client.human.generate_secret == false && aws_cognito_user_pool_client.human.allowed_oauth_flows == toset(["code"]) && contains(aws_cognito_user_pool_client.human.allowed_oauth_scopes, "registry-portal/catalog.read")
     error_message = "人間用 client は secret のない code flow とカスタム scope が必要です。"
+  }
+  assert {
+    condition     = toset([for route in aws_apigatewayv2_route.management : route.route_key]) == toset(["GET /api/me", "GET /api/catalog", "POST /api/catalog/search", "GET /api/catalog/{recordId}"])
+    error_message = "本体スタックの route は主体とカタログ（一覧・検索・詳細）だけにしてください。決裁と管理の追加 route は追加スタックが作ります。"
   }
   assert {
     condition     = alltrue([for route in aws_apigatewayv2_route.management : route.authorization_type == "JWT" && route.authorization_scopes == toset(["registry-portal/catalog.read"])])
@@ -104,6 +134,20 @@ run "security_boundaries" {
       alltrue([for action in flatten([statement.Action]) : !startswith(action, "dynamodb:") || action == "dynamodb:GetItem"])
     ])
     error_message = "本体スタックが管理 Lambda に付ける DynamoDB 権限は GetItem だけにしてください（下書きの権限は management スタックが付ける）。"
+  }
+}
+
+run "lambda_invoke_permissions" {
+  command = apply
+  assert {
+    condition = toset([for permission in aws_lambda_permission.api : trimprefix(permission.source_arn, "${aws_apigatewayv2_api.portal.execution_arn}/*/")]) == toset([
+      "GET/api/me", "GET/api/catalog", "POST/api/catalog/search", "GET/api/catalog/*",
+    ])
+    error_message = "管理 Lambda の呼び出し許可は、本体スタックの route のメソッドと path に限ってください。"
+  }
+  assert {
+    condition     = alltrue([for permission in aws_lambda_permission.api : permission.principal == "apigateway.amazonaws.com" && permission.source_account == var.aws_account_id])
+    error_message = "管理 Lambda は同じアカウントの API Gateway からだけ呼び出せるようにしてください。"
   }
 }
 
