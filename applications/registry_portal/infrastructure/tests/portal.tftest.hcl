@@ -151,6 +151,29 @@ run "lambda_invoke_permissions" {
   }
 }
 
+run "outputs_for_additional_stacks" {
+  command = apply
+  assert {
+    condition = (
+      output.http_api_id == "abcde12345"
+      && output.jwt_authorizer_id == aws_apigatewayv2_authorizer.human.id
+      && output.management_integration_id == aws_apigatewayv2_integration.management.id
+      && output.human_client_id == aws_cognito_user_pool_client.human.id
+      && output.cognito_issuer == "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_Example"
+    )
+    error_message = "追加スタックが HTTP API・JWT authorizer・管理 integration・人間用 client を参照できるよう、ID を出力してください。"
+  }
+  assert {
+    condition = (
+      output.management_role_name == "registry-portal-dev-management"
+      && output.management_function_name == "registry-portal-dev-management"
+      && output.supplement_table_name == "registry-portal-dev-auxiliary"
+      && output.supplement_table_arn == "arn:aws:dynamodb:us-east-1:123456789012:table/registry-portal-dev-auxiliary"
+    )
+    error_message = "追加スタックの tfvars に転記する管理ロール名・関数名と補助テーブルの名前・ARN を出力してください。"
+  }
+}
+
 run "customer_managed_secret_key" {
   command = plan
   variables {
