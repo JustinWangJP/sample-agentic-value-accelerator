@@ -15,7 +15,7 @@ resource "aws_cognito_resource_server" "portal" {
   user_pool_id = var.cognito_user_pool_id
   scope {
     scope_name        = "catalog.read"
-    scope_description = "ポータルの主体と公開承認済みカタログ項目を閲覧する"
+    scope_description = "ポータルの API を呼び出す。route ごとに検証し、業務ロールの判定は handler が行う"
   }
 }
 

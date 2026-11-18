@@ -136,12 +136,13 @@ resource "aws_apigatewayv2_integration" "decision" {
 }
 
 resource "aws_apigatewayv2_route" "decision" {
-  for_each           = toset(local.routes)
-  api_id             = var.http_api_id
-  route_key          = each.value
-  target             = "integrations/${aws_apigatewayv2_integration.decision.id}"
-  authorization_type = "JWT"
-  authorizer_id      = var.jwt_authorizer_id
+  for_each             = toset(local.routes)
+  api_id               = var.http_api_id
+  route_key            = each.value
+  target               = "integrations/${aws_apigatewayv2_integration.decision.id}"
+  authorization_type   = "JWT"
+  authorizer_id        = var.jwt_authorizer_id
+  authorization_scopes = var.authorization_scopes
 }
 
 # HTTP API から決裁 Lambda を呼び出す許可。審査と決裁の path（/api/reviews 以下）、Admin・Curator の

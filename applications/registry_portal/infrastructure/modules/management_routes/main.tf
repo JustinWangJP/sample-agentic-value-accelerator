@@ -43,12 +43,13 @@ data "aws_apigatewayv2_api" "portal" {
 }
 
 resource "aws_apigatewayv2_route" "management" {
-  for_each           = local.routes
-  api_id             = var.http_api_id
-  route_key          = each.value.route_key
-  target             = "integrations/${var.management_integration_id}"
-  authorization_type = "JWT"
-  authorizer_id      = var.jwt_authorizer_id
+  for_each             = local.routes
+  api_id               = var.http_api_id
+  route_key            = each.value.route_key
+  target               = "integrations/${var.management_integration_id}"
+  authorization_type   = "JWT"
+  authorizer_id        = var.jwt_authorizer_id
+  authorization_scopes = var.authorization_scopes
 }
 
 # HTTP API から管理 Lambda を呼び出す許可。この module が割り当てる path だけに限る

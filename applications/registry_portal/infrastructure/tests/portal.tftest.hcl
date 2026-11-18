@@ -172,6 +172,10 @@ run "outputs_for_additional_stacks" {
     )
     error_message = "追加スタックの tfvars に転記する管理ロール名・関数名と補助テーブルの名前・ARN を出力してください。"
   }
+  assert {
+    condition     = output.frontend_config.VITE_COGNITO_SCOPES == "openid registry-portal/catalog.read"
+    error_message = "SPA は route が検証するカスタム scope を含めてトークンを要求してください。"
+  }
 }
 
 run "customer_managed_secret_key" {
