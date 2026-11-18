@@ -400,16 +400,31 @@ IAM は [下書き用 Terraform モジュール](infrastructure/modules/manageme
 
 ```bash
 cd applications/registry_portal/infrastructure/management
-cp terraform.tfvars.example terraform.tfvars   # 値を環境に合わせる。コミットしない
-cp backend.hcl.example backend.hcl             # 本体と同じ state バケット。key は registry-portal/dev/management.tfstate。コミットしない
-terraform init -backend-config=backend.hcl
-terraform validate
-terraform plan -out=tfplan
-terraform show -json tfplan > plan.json
-python3 ../../scripts/check_plan.py plan.json
-terraform show tfplan    # IAM の対象ロール・ARN・action と既存資源への変更を確認する
-terraform apply tfplan
-rm tfplan plan.json
+cp terraform.tfvars.example terraform.tfvars
+cp backend.hcl.example backend.hcl
+```
+
+`terraform.tfvars` を環境に合わせ、`backend.hcl` の bucket を本体と同じ実際の state バケット名に設定します。key は `registry-portal/dev/management.tfstate` にします。どちらのファイルもコミットしません。以下は、個人アカウントの Terraform 用プロファイルが `registry-deploy-tf` の例です。名前を変えた場合は置き換えてください。
+
+```bash
+(
+  set -e
+  export AWS_PROFILE=registry-deploy-tf
+  terraform init -backend-config=backend.hcl -backend-config=encrypt=true -backend-config=use_lockfile=true
+  terraform validate
+  terraform plan -out=tfplan
+  terraform show -json tfplan > plan.json
+  python3 ../../scripts/check_plan.py plan.json
+  terraform show tfplan
+  printf 'IAM と既存資源の変更を確認し、反映する場合は apply と入力してください: '
+  read -r confirmation
+  if [ "$confirmation" != apply ]; then
+    printf '反映を中止しました。\n' >&2
+    exit 1
+  fi
+  terraform apply tfplan
+  rm tfplan plan.json
+)
 ```
 
 API Gateway の CORS は本体スタックが `PATCH` と `Idempotency-Key` ヘッダーを許可します。
@@ -533,16 +548,31 @@ SPA の「審査待ち」は Curator（`registry-curator` グループ）だけ�
 
 ```bash
 cd applications/registry_portal/infrastructure/decision
-cp terraform.tfvars.example terraform.tfvars   # 値を環境に合わせる。コミットしない
-cp backend.hcl.example backend.hcl             # 本体と同じ state バケット。key は registry-portal/dev/decision.tfstate。コミットしない
-terraform init -backend-config=backend.hcl
-terraform validate
-terraform plan -out=tfplan
-terraform show -json tfplan > plan.json
-python3 ../../scripts/check_plan.py plan.json
-terraform show tfplan    # IAM の対象ロール・ARN・action と既存資源への変更を確認する
-terraform apply tfplan
-rm tfplan plan.json
+cp terraform.tfvars.example terraform.tfvars
+cp backend.hcl.example backend.hcl
+```
+
+`terraform.tfvars` を環境に合わせ、`backend.hcl` の bucket を本体と同じ実際の state バケット名に設定します。key は `registry-portal/dev/decision.tfstate` にします。どちらのファイルもコミットしません。以下は、個人アカウントの Terraform 用プロファイルが `registry-deploy-tf` の例です。名前を変えた場合は置き換えてください。
+
+```bash
+(
+  set -e
+  export AWS_PROFILE=registry-deploy-tf
+  terraform init -backend-config=backend.hcl -backend-config=encrypt=true -backend-config=use_lockfile=true
+  terraform validate
+  terraform plan -out=tfplan
+  terraform show -json tfplan > plan.json
+  python3 ../../scripts/check_plan.py plan.json
+  terraform show tfplan
+  printf 'IAM と既存資源の変更を確認し、反映する場合は apply と入力してください: '
+  read -r confirmation
+  if [ "$confirmation" != apply ]; then
+    printf '反映を中止しました。\n' >&2
+    exit 1
+  fi
+  terraform apply tfplan
+  rm tfplan plan.json
+)
 ```
 
 モジュールは、借用する既存 HTTP API（`http_api_id`）に `GET /api/reviews`、`GET /api/reviews/{recordId}`、`POST /api/reviews/{recordId}/approve`、`POST /api/reviews/{recordId}/reject`、`POST /api/records/{recordId}/suspend`、`POST /api/records/{recordId}/deprecate`、`GET /api/records/{recordId}/publication`、`POST /api/records/{recordId}/deprecation-requests/decline`、`GET /api/records/{recordId}/recovery`、`POST /api/records/{recordId}/recovery` の route を作り、決裁 Lambda（payload format 2.0）に統合して既存の JWT authorizer（`jwt_authorizer_id`）を適用します。HTTP API の呼び出し許可（`aws_lambda_permission`）は `/api/reviews` 以下と `/api/records/*/suspend`・`/api/records/*/deprecate`・`/api/records/*/publication`・`/api/records/*/deprecation-requests/decline`・`/api/records/*/recovery` の path に限ります。HTTP API・authorizer・CORS の設定は本体スタックが持ち、`POST` と `Idempotency-Key` ヘッダーを許可します。

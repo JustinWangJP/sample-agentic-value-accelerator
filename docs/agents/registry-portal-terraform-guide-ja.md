@@ -359,34 +359,35 @@ python3 scripts/build_lambda.py
 
 ### 4.5 追加スタックを適用する
 
-3 つの追加スタックの手順は同じです。最初の `STACK` と `STATE_KEY` だけを、スタックごとに 1.4 の表の値に変えて実行します。4.3 で各 tfvars の設定を済ませてから進みます。backend は部分設定（`backend "s3" {}`）なので、`init` のときに指定します。リポジトリのルートで実行します。
+3 つの追加スタックの手順は同じです。`STACK` をスタックごとに変えて実行します。4.3 で各 tfvars の設定を済ませてから進みます。各スタックの `backend.hcl.example` を `backend.hcl` にコピーし、`bucket` には本体の `infrastructure/backend.hcl` と同じ実際のバケット名を設定してください。key は次の表の値にします。リポジトリのルートで実行します。
 
-| `STACK` | `STATE_KEY` |
+| `STACK` | `key` |
 | --- | --- |
-| `management` | `management.tfstate` |
-| `decision` | `decision.tfstate` |
-| `notification_events` | `notification-events.tfstate` |
+| `management` | `registry-portal/dev/management.tfstate` |
+| `decision` | `registry-portal/dev/decision.tfstate` |
+| `notification_events` | `registry-portal/dev/notification-events.tfstate` |
 
 ```bash
-STACK=management
-STATE_KEY=management.tfstate
-export AWS_PROFILE=registry-deploy-tf
-STATE_BUCKET=registry-portal-state-$(aws sts get-caller-identity --query Account --output text)   # 3.5 で作ったバケット
-cd "applications/registry_portal/infrastructure/$STACK"
-terraform init \
-  -backend-config="bucket=$STATE_BUCKET" \
-  -backend-config="key=registry-portal/dev/$STATE_KEY" \
-  -backend-config="region=us-east-1" \
-  -backend-config="encrypt=true" \
-  -backend-config="use_lockfile=true"
-terraform validate
-terraform plan -out=tfplan
-terraform show -json tfplan > plan.json
-python3 ../../scripts/check_plan.py plan.json
-terraform show tfplan    # 既存 Registry・既存 HTTP API と IAM の対象ロール・ARN・action を確認する
-terraform apply tfplan
-rm tfplan plan.json
-cd -    # リポジトリのルートに戻る
+(
+  set -e
+  STACK=management
+  export AWS_PROFILE=registry-deploy-tf
+  cd "applications/registry_portal/infrastructure/$STACK"
+  terraform init -backend-config=backend.hcl -backend-config=encrypt=true -backend-config=use_lockfile=true
+  terraform validate
+  terraform plan -out=tfplan
+  terraform show -json tfplan > plan.json
+  python3 ../../scripts/check_plan.py plan.json
+  terraform show tfplan
+  printf '既存資源と IAM の変更を確認し、反映する場合は apply と入力してください: '
+  read -r confirmation
+  if [ "$confirmation" != apply ]; then
+    printf '反映を中止しました。\n' >&2
+    exit 1
+  fi
+  terraform apply tfplan
+  rm tfplan plan.json
+)
 ```
 
 `backend.hcl.example` を使う場合も、1.4 の表と同じ key を設定してください。`decision` と `notification_events` の IAM policy はロググループと DLQ の ARN を名前・アカウント ID・リージョンから組み立てるため、初回 plan でも確定してガードに通せます。
