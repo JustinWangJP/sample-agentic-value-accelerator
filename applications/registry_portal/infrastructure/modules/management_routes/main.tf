@@ -35,6 +35,36 @@ locals {
       statement_id = "AllowHttpApiInvokeNotificationsRead"
       path         = "api/notifications/read"
     }
+    create_record = {
+      route_key    = "POST /api/records"
+      statement_id = "AllowHttpApiInvokeCreateRecord"
+      path         = "api/records"
+    }
+    list_records = {
+      route_key    = "GET /api/records"
+      statement_id = "AllowHttpApiInvokeListRecords"
+      path         = "api/records"
+    }
+    get_record = {
+      route_key    = "GET /api/records/{recordId}"
+      statement_id = "AllowHttpApiInvokeGetRecord"
+      path         = "api/records/*"
+    }
+    update_record = {
+      route_key    = "PATCH /api/records/{recordId}"
+      statement_id = "AllowHttpApiInvokeUpdateRecord"
+      path         = "api/records/*"
+    }
+    get_operation = {
+      route_key    = "GET /api/operations/{operationId}"
+      statement_id = "AllowHttpApiInvokeGetOperation"
+      path         = "api/operations/*"
+    }
+    submit_record = {
+      route_key    = "POST /api/records/{recordId}/submit"
+      statement_id = "AllowHttpApiInvokeSubmitRecord"
+      path         = "api/records/*/submit"
+    }
   }
 }
 
