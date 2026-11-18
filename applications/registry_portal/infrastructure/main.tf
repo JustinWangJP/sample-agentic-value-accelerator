@@ -5,6 +5,8 @@ locals {
   secret_region   = split(":", var.discovery_client_secret_arn)[3]
   log_group_arn   = "arn:aws:logs:us-east-1:${var.aws_account_id}:log-group:/aws/lambda/${var.name_prefix}-management"
   registry_record = "${var.registry_arn}/record/*"
+  # plan の段階で値が確定するよう、名前から組み立てる（追加スタックの supplement_table_arn にも使う）
+  supplement_table_arn = "arn:aws:dynamodb:us-east-1:${var.aws_account_id}:table/${aws_dynamodb_table.auxiliary.name}"
 }
 
 resource "aws_cognito_resource_server" "portal" {
@@ -125,6 +127,12 @@ resource "aws_iam_role_policy" "management" {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = var.discovery_client_secret_arn
+      },
+      {
+        # カタログ詳細が所有チームの正本と公開版のスナップショットを読む。下書きの権限は management スタックが付ける
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem"]
+        Resource = local.supplement_table_arn
       }
       ], var.discovery_kms_key_arn == null ? [] : [{
         Effect   = "Allow"
@@ -157,6 +165,8 @@ resource "aws_lambda_function" "management" {
       DISCOVERY_CLIENT_ID         = var.discovery_client_id
       DISCOVERY_CLIENT_SECRET_ARN = var.discovery_client_secret_arn
       DISCOVERY_SCOPE             = var.discovery_scope
+      SUPPLEMENT_TABLE_NAME       = aws_dynamodb_table.auxiliary.name
+      # A2A_SEARCH_ENABLED は isA2A の補完と確認（#16）が終わるまで設定しない（未設定は無効）
     }
   }
   depends_on = [aws_iam_role_policy.management, aws_cloudwatch_log_group.management]

@@ -55,6 +55,19 @@ run "security_boundaries" {
     error_message = "管理 handler に固定した Registry と secret ARN を渡してください。"
   }
   assert {
+    condition = (
+      aws_lambda_function.management.environment[0].variables["SUPPLEMENT_TABLE_NAME"] == "registry-portal-dev-auxiliary"
+      && aws_lambda_function.management.environment[0].variables["DISCOVERY_TOKEN_URL"] == var.discovery_token_url
+      && aws_lambda_function.management.environment[0].variables["DISCOVERY_CLIENT_ID"] == var.discovery_client_id
+      && aws_lambda_function.management.environment[0].variables["DISCOVERY_SCOPE"] == ""
+    )
+    error_message = "管理 handler に補助テーブル名（SUPPLEMENT_TABLE_NAME）と発見用 M2M の設定を渡してください。"
+  }
+  assert {
+    condition     = !contains(keys(aws_lambda_function.management.environment[0].variables), "A2A_SEARCH_ENABLED")
+    error_message = "A2A 検索は isA2A の準備が終わるまで無効にするため、A2A_SEARCH_ENABLED を設定しないでください。"
+  }
+  assert {
     condition     = length(aws_lambda_function.management.vpc_config) == 0
     error_message = "MVP1 の Lambda は VPC 外で実行してください。"
   }
@@ -69,6 +82,20 @@ run "security_boundaries" {
   assert {
     condition     = !strcontains(aws_iam_role_policy.management.policy, "kms:Decrypt") && strcontains(aws_iam_role_policy.management.policy, var.discovery_client_secret_arn)
     error_message = "secret は完全な ARN に限定し、AWS 管理キーの場合は KMS 権限を付けないでください。"
+  }
+  assert {
+    condition = anytrue([
+      for statement in jsondecode(aws_iam_role_policy.management.policy).Statement :
+      statement.Action == ["dynamodb:GetItem"] && statement.Resource == "arn:aws:dynamodb:us-east-1:123456789012:table/registry-portal-dev-auxiliary"
+    ])
+    error_message = "管理 Lambda のカタログ詳細には、補助テーブルに限った dynamodb:GetItem が必要です。"
+  }
+  assert {
+    condition = alltrue([
+      for statement in jsondecode(aws_iam_role_policy.management.policy).Statement :
+      alltrue([for action in flatten([statement.Action]) : !startswith(action, "dynamodb:") || action == "dynamodb:GetItem"])
+    ])
+    error_message = "本体スタックが管理 Lambda に付ける DynamoDB 権限は GetItem だけにしてください（下書きの権限は management スタックが付ける）。"
   }
 }
 
