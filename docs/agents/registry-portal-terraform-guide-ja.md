@@ -5,12 +5,11 @@ Registry ポータル（MVP1）を dev 環境に配信するための Terraform 
 **対象環境は、IAM Identity Center のない個人 AWS アカウント 1 つ**です。デプロイには、[個人アカウント向けの IAM 手順](registry-portal-iam-setup-personal-account-ja.md)で作る IAM ロール `RegistryPortalDeployer` を使います。
 
 > [!IMPORTANT]
-> **2026-11-17 時点の状態**
+> **Issue #5・#49 の統合実装の状態**
 >
-> - 基盤スタック（bootstrap、本体スタック、`scripts/deploy.sh`、plan のガード）は [Issue #5](https://github.com/JustinWangJP/sample-agentic-value-accelerator/issues/5) のブランチ `feature/5-portal-infrastructure` にだけあり、**`develop` には未マージ**です。
-> - #5 の bootstrap と `deploy.sh` は IAM Identity Center を前提にしているため、**個人アカウントではそのまま使えません**。本書では、コードを直すまでの代わりの手順を示します（3.5、4.2）。
-> - `develop` にあるのは、基盤スタックの資源を借りて権限と route を追加する**追加スタック**（`management`、`decision`、`notification_events`）だけです。
-> - 本書の手順は、まだ AWS 上で実行・検証していません。統合前に解消が必要な点は「[7. 既知の食い違いと未解決事項](#7-既知の食い違いと未解決事項)」にまとめています。
+> - bootstrap と `scripts/deploy.sh` は、MFA 付き IAM ロール `RegistryPortalDeployer` を使う個人アカウントに対応しています。Terraform には `credential_process` のプロファイルを渡します（3.4、4.2）。
+> - 本体と追加スタック（`management`、`decision`、`notification_events`）は別 state で運用します。本体の output を各追加スタックの tfvars に手動で転記します（[ADR-0013](../adr/0013-separate-portal-addon-states.md)）。
+> - dev への AWS apply と手動受入は未実施です。実装で解消した点と運用時の確認事項は「[7. 統合実装の状態と確認事項](#7-統合実装の状態と確認事項)」にまとめています。
 
 ## 目次
 
@@ -20,7 +19,7 @@ Registry ポータル（MVP1）を dev 環境に配信するための Terraform 
 4. [配信の手順](#4-配信の手順)
 5. [実行コマンド一覧](#5-実行コマンド一覧)
 6. [トラブルシューティング](#6-トラブルシューティング)
-7. [既知の食い違いと未解決事項](#7-既知の食い違いと未解決事項)
+7. [統合実装の状態と確認事項](#7-統合実装の状態と確認事項)
 
 ## 1. 全体設計
 
@@ -53,16 +52,16 @@ flowchart TB
     POOL["Cognito User Pool とドメイン"]
     M2M["発見用 M2M client と secret（Secrets Manager）"]
     IAM["IAM ユーザー registry-operator と<br/>ロール RegistryPortalDeployer ほか"]
-    STATE["state 用 S3 バケット（CLI で作成）"]
     BUS["EventBridge の default バス"]
   end
 
-  subgraph base["基盤スタック（Issue #5・未マージ）"]
+  subgraph base["基盤スタック"]
+    STATE["bootstrap<br/>state 用 S3 バケット"]
     MAIN["本体スタック<br/>SPA・HTTP API・管理 Lambda・補助テーブル・Cognito の子リソース"]
   end
 
-  subgraph addon["追加スタック（develop にある）"]
-    MGMT["management<br/>管理ロールへの権限追加・管理 route"]
+  subgraph addon["追加スタック（別 state）"]
+    MGMT["management<br/>管理ロールへの権限追加・下書きなどの管理 route"]
     DEC["decision<br/>決裁 Lambda・決裁 route"]
     EVT["notification_events<br/>イベント処理 Lambda・EventBridge ルール・DLQ"]
   end
@@ -86,11 +85,11 @@ AWS 上の構成図は [`docs/diagrams/agent-registry-mvp1-aws-architecture-ja.d
 
 | スタック | ディレクトリ | 主に作るもの | state の key | 状態 |
 | --- | --- | --- | --- | --- |
-| bootstrap | `infrastructure/bootstrap/` | state 用 S3 バケット、Identity Center の permission set | — | **個人アカウントでは使わない**。state バケットは CLI で作る（3.5） |
-| 本体 | `infrastructure/`（直下） | SPA 用 S3 と CloudFront（OAC、CSP、viewer request function）、HTTP API・JWT authorizer・stage、管理 Lambda と実行ロール、補助 DynamoDB、ロググループ、Cognito のリソースサーバー・人間用 client・グループ | `registry-portal/dev/terraform.tfstate` | #5 ブランチのみ |
-| management | `infrastructure/management/` | 管理 Lambda のロールへの下書き用 inline policy、管理 handler の追加 route（管理レコード、接続情報、履歴、廃止依頼、通知）と呼び出し許可 | `registry-portal/dev/management.tfstate` | develop |
-| decision | `infrastructure/decision/` | 決裁 Lambda、専用の実行ロール、ロググループ、決裁 route（審査、承認・却下、公開停止、廃止、回復など）と呼び出し許可 | `registry-portal/dev/decision.tfstate` | develop |
-| notification_events | `infrastructure/notification_events/` | イベント処理 Lambda、専用の実行ロール、ロググループ、DLQ（SQS）、EventBridge ルールとターゲット、再試行の設定 | `registry-portal/dev/notification-events.tfstate` | develop |
+| bootstrap | `infrastructure/bootstrap/` | state 用 S3 バケット。Identity Center の permission set と割り当ては任意 | ローカルの `terraform.tfstate` | 個人アカウント対応済み。state は暗号化した場所で別途保管する（3.5） |
+| 本体 | `infrastructure/`（直下） | SPA 用 S3 と CloudFront（OAC、CSP、viewer request function）、HTTP API・JWT authorizer・stage、管理 Lambda と実行ロール、補助 DynamoDB、ロググループ、Cognito のリソースサーバー・人間用 client・グループ | `registry-portal/dev/terraform.tfstate` | 統合実装済み。追加スタック向け output を提供する |
+| management | `infrastructure/management/` | 管理 Lambda のロールへの下書き用 inline policy、管理 handler の追加 route（下書き・申請・操作照会、管理レコード、接続情報、履歴、廃止依頼、通知）と呼び出し許可 | `registry-portal/dev/management.tfstate` | 別 state で運用。本体の output を転記する |
+| decision | `infrastructure/decision/` | 決裁 Lambda、専用の実行ロール、ロググループ、決裁 route（審査、承認・却下、公開停止、廃止、回復など）と呼び出し許可 | `registry-portal/dev/decision.tfstate` | 別 state で運用。顧客管理 KMS キーに対応済み（#49） |
+| notification_events | `infrastructure/notification_events/` | イベント処理 Lambda、専用の実行ロール、ロググループ、DLQ（SQS）、EventBridge ルールとターゲット、再試行の設定 | `registry-portal/dev/notification-events.tfstate` | 別 state で運用。CI の検証対象に追加済み |
 
 どのスタックも `RegistryPortalDeployer` で実行します。
 
@@ -133,7 +132,7 @@ Lambda の実行ロールには、Registry 本体の作成・削除・設定変�
 | 発見用 M2M の secret | 所有しない。完全な ARN だけを渡し、secret の値は Terraform に渡さない | `discovery_client_secret_arn` | 同上の 4「secret の保管先」 |
 | secret の KMS キー | 顧客管理キーの場合だけ ARN を渡す。本体スタックの管理 Lambda と decision スタックの決裁 Lambda に、Secrets Manager 経由で、対象 secret の暗号化コンテキストに限った `kms:Decrypt` を付ける。両方のスタックに同じ値を渡す | `discovery_kms_key_arn`（AWS 管理キーなら `null`） | 同上の 4・7 |
 | IAM ユーザーと 3 つのロール | 所有しない。手動で作る | なし | [個人アカウント向けの IAM 手順](registry-portal-iam-setup-personal-account-ja.md) |
-| state 用 S3 バケット | 所有しない。CLI で作る（3.5） | `backend.hcl` の `bucket` | 3.5 |
+| state 用 S3 バケット | bootstrap が所有する。本体と追加スタックは backend として借りる（3.5） | `backend.hcl` の `bucket` | 3.5 |
 | EventBridge の default バス | 所有しない。ルールを 1 本追加する | なし（`event_bus_name = "default"` で固定） | — |
 | CloudTrail | Terraform では扱わない。個人アカウントに組織の trail はないので、イベント履歴（90 日）を使うか、必要なら trail を手動で作る | なし | — |
 
@@ -177,11 +176,10 @@ rm "$PWD/build/management.zip"
 | ツール | バージョン | 備考 |
 | --- | --- | --- |
 | Terraform | 1.10 以上、2.0 未満 | S3 ネイティブのロック（`use_lockfile`）に 1.10 以上が必要。CI は 1.10.5 |
-| AWS provider | 本体は `= 6.71.0`、追加スタックは `~> 6.0` | `.terraform.lock.hcl` は `.gitignore` の対象 |
+| AWS provider | すべてのルートスタックで `= 6.71.0` | `.terraform.lock.hcl` は `.gitignore` の対象 |
 | Python | 3.13 と pip | Lambda の zip を作るのに使う |
 | Node.js | 24 と npm | SPA のビルドに使う |
 | AWS CLI | v2（`aws configure export-credentials` が使えるもの） | MFA 付きのロールを Terraform に渡すのに使う（3.4） |
-| jq | 任意のバージョン | 4.2 で Terraform の出力を読むのに使う |
 
 ### 3.2 事前に確定する値
 
@@ -230,55 +228,39 @@ aws sts get-caller-identity --profile registry-deploy-tf   # MFA を求められ
 
 ### 3.5 state 用 S3 バケットを作る
 
-#5 の bootstrap は、Identity Center の permission set と割り当てを作るため、個人アカウントでは `plan` の段階で失敗します。さらに、bootstrap が作る state バケットのポリシーは `AWSReservedSSO_RegistryPortalDeployer_*` 以外の主体による state の読み書きを拒否します。そのため、バケットだけを作っても IAM ロールの `RegistryPortalDeployer` は state を使えません。**bootstrap をそのまま apply しないでください。**
-
-コードを直すまで（7 章の項目 6）は、bootstrap と同じ設定のバケットを CLI で作ります。`RegistryPortalDeployer` で実行します。
+bootstrap を使って state 用バケットを作ります。3.4 の MFA キャッシュと Terraform 用プロファイルを先に用意してください。
 
 ```bash
-export AWS_PROFILE=registry-deploy AWS_REGION=us-east-1
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-STATE_BUCKET=registry-portal-state-$ACCOUNT_ID
-DEPLOYER_ROLE_ARN=arn:aws:iam::$ACCOUNT_ID:role/RegistryPortalDeployer
-
-# us-east-1 では LocationConstraint を指定しない
-aws s3api create-bucket --bucket "$STATE_BUCKET"
-aws s3api put-public-access-block --bucket "$STATE_BUCKET" \
-  --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
-aws s3api put-bucket-ownership-controls --bucket "$STATE_BUCKET" \
-  --ownership-controls 'Rules=[{ObjectOwnership=BucketOwnerEnforced}]'
-aws s3api put-bucket-versioning --bucket "$STATE_BUCKET" --versioning-configuration Status=Enabled
-aws s3api put-bucket-encryption --bucket "$STATE_BUCKET" \
-  --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
-
-cat > "$TMPDIR/state-bucket-policy.json" <<EOF
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "RequireTLS",
-      "Effect": "Deny",
-      "Principal": "*",
-      "Action": "s3:*",
-      "Resource": ["arn:aws:s3:::$STATE_BUCKET", "arn:aws:s3:::$STATE_BUCKET/*"],
-      "Condition": {"Bool": {"aws:SecureTransport": "false"}}
-    },
-    {
-      "Sid": "StateOnlyForDeployer",
-      "Effect": "Deny",
-      "Principal": "*",
-      "Action": ["s3:GetObject*", "s3:PutObject*", "s3:DeleteObject*", "s3:ListBucket*"],
-      "Resource": ["arn:aws:s3:::$STATE_BUCKET", "arn:aws:s3:::$STATE_BUCKET/*"],
-      "Condition": {"ArnNotLike": {"aws:PrincipalArn": "$DEPLOYER_ROLE_ARN"}}
-    }
-  ]
-}
-EOF
-aws s3api put-bucket-policy --bucket "$STATE_BUCKET" --policy "file://$TMPDIR/state-bucket-policy.json"
+cd applications/registry_portal
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+aws sts get-caller-identity --profile registry-deploy
+export AWS_PROFILE=registry-deploy-tf
+cp infrastructure/bootstrap/terraform.tfvars.example infrastructure/bootstrap/terraform.tfvars
 ```
 
-- `aws:PrincipalArn` には、引き受けたロールのセッションではなく、ロールの ARN が入ります。そのため、条件にはロール ARN を指定します。
-- このポリシーを適用すると、`RegistryPortalDeployer` 以外の主体（`RegistryPortalReadOnly` を含む）は state を読めなくなります。誤って Deployer 自身を締め出した場合は、ルートユーザーでサインインしてバケットポリシーを削除できます。
-- bootstrap と違い、このバケットは Terraform の管理対象ではないので、`prevent_destroy` による保護はありません。バケットを削除しないでください。
+`terraform.tfvars` にアカウント ID、state バケット名、SPA バケット名、既存 User Pool ID を設定します。`name_prefix` は本体とそろえます。個人アカウントでは次の値を設定し、`identity_center_instance_arn` と `deployer_group_id` は既定の `null` のままにします。
+
+```hcl
+deployer_principal_arn   = "arn:aws:iam::<アカウント ID>:role/RegistryPortalDeployer"
+bootstrap_admin_role_arn = "arn:aws:iam::<アカウント ID>:role/RegistryPortalDeployer"
+```
+
+`deployer_principal_arn` は state とロックの内容を読み書きできる主体です。`aws:PrincipalArn` と照合する IAM ロール ARN を渡し、STS セッション ARN は使いません。`bootstrap_admin_role_arn` は bootstrap を実行する既存 IAM ロールです。この変数は `HeadBucket` に必要なバケット一覧の拒否だけを免除し、state とロックの内容へのアクセス権は追加しません。個人アカウントで Deployer 自身が bootstrap を実行する場合は、上記のように両方を同じ ARN にします。
+
+設定後、保存した plan を確認して反映します。
+
+```bash
+terraform -chdir=infrastructure/bootstrap init
+terraform -chdir=infrastructure/bootstrap validate
+terraform -chdir=infrastructure/bootstrap plan -out=bootstrap.tfplan
+terraform -chdir=infrastructure/bootstrap show bootstrap.tfplan
+terraform -chdir=infrastructure/bootstrap apply bootstrap.tfplan
+rm infrastructure/bootstrap/bootstrap.tfplan
+```
+
+bootstrap はバージョニング、AES256 暗号化、公開アクセス禁止、TLS 必須のバケットポリシーを設定します。バケットには `prevent_destroy` を付けています。bootstrap 自身の state はローカルに作るため、初回管理者が暗号化した場所で保管してください。本体や追加スタックの state と混ぜません。
+
+Identity Center を使う環境では、`identity_center_instance_arn` と `deployer_group_id` を両方指定すると permission set と割り当ても作ります。`deployer_principal_arn` には既存の SSO ロール ARN パターンを指定します。既存 permission set の import を含む手順は [README の手動配信](../../applications/registry_portal/README.md#dev-に手動配信する)を参照してください。
 
 ### 3.6 本体スタックの設定ファイルを作る
 
@@ -291,7 +273,7 @@ cp infrastructure/terraform.tfvars.example infrastructure/dev.tfvars
 - `backend.hcl` の `bucket` には、3.5 で作ったバケット名を設定します。key は `registry-portal/dev/terraform.tfstate` のままにします。
 - `dev.tfvars` には、アカウント ID、SPA バケット名、`name_prefix`（既定は `registry-portal-dev`）などを設定します。secret の値は書きません。
 
-`dev.tfvars` は `.gitignore`（`**/*.tfvars`）の対象ですが、`backend.hcl` は対象外です。コミットしないよう `git status` で確認してください。
+`dev.tfvars` と `backend.hcl` は `.gitignore` の対象です。コミット前に `git status` でも確認してください。
 
 ## 4. 配信の手順
 
@@ -301,7 +283,7 @@ cp infrastructure/terraform.tfvars.example infrastructure/dev.tfvars
 | --- | --- | --- |
 | 0 | Issue #2 の読み取り確認で、既存資源の値を確定する | `registry-read` |
 | 1 | IAM ユーザーとロールを作る（3.3） | ルートユーザーまたは管理者 |
-| 2 | state 用バケットを作る（3.5） | `registry-deploy` |
+| 2 | bootstrap で state 用バケットを作る（3.5） | `registry-deploy-tf` |
 | 3 | 本体スタックを配信する（4.2） | `registry-deploy-tf` と `registry-deploy` |
 | 4 | `management`（下書き権限と管理 route） | `registry-deploy-tf` |
 | 5 | `decision`（決裁 Lambda と route） | `registry-deploy-tf` |
@@ -309,110 +291,75 @@ cp infrastructure/terraform.tfvars.example infrastructure/dev.tfvars
 | 7 | Cognito でユーザーを作り、グループに割り当てる | コンソール（`registry-deploy`） |
 | 8 | dev で受入確認を行う（Issue #5 の README のチェックリスト） | — |
 
-4〜6の順序に依存関係はありませんが、本体スタックの資源を借りるため、3の後に実行します。3の前に、7 章の項目 1〜3（TTL 属性名、環境変数、CORS）を #5 のブランチで直しておいてください。直さないと配信後に API が動きません。
+4〜6の順序に依存関係はありませんが、本体スタックの資源を借りるため、3の後に実行します。本体の output を各スタックの tfvars に転記してください。
 
 ### 4.2 本体スタックを配信する
 
-`deploy.sh` は SSO のプロファイルと `AWSReservedSSO_RegistryPortalDeployer_*` のロールを確認し、どちらにも当てはまらなければ止まります。そのため、個人アカウントでは使えません（7 章の項目 6）。コードを直すまでは、`deploy.sh` と同じ処理を次の手順で手作業で行います。途中でエラーになったら、それ以降の手順に進まないでください。
+個人アカウントでは、`role_arn` と `mfa_serial` を設定した `registry-deploy` を `AWS_PROFILE` に指定します。3.4 の `registry-deploy-tf` は `credential_process` で同じセッションを Terraform に渡します。Terraform 用の名前は既定で `<AWS_PROFILE>-tf` です。別名の場合は `TERRAFORM_AWS_PROFILE` を指定してください。
 
 ```bash
 cd applications/registry_portal
 unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
-aws sts get-caller-identity --profile registry-deploy          # MFA を入力し、キャッシュを作る
-export AWS_PROFILE=registry-deploy-tf
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/registry-portal-deploy.XXXXXX")
-
-# 1. 固定版の SDK を同梱した Lambda の zip を作る
-python3 scripts/build_lambda.py --output "$WORK/management.zip"
-
-# 2. 初期化と検証（暗号化とロックを強制する）
-terraform -chdir=infrastructure init -input=false -reconfigure \
-  -backend-config="$PWD/infrastructure/backend.hcl" \
-  -backend-config=encrypt=true -backend-config=use_lockfile=true
-terraform -chdir=infrastructure validate
-
-# 3. plan を保存してガードに通す
-terraform -chdir=infrastructure plan -input=false \
-  -var-file="$PWD/infrastructure/dev.tfvars" \
-  -var="lambda_zip_path=$WORK/management.zip" \
-  -out="$WORK/approved.tfplan"
-terraform -chdir=infrastructure show -json "$WORK/approved.tfplan" > "$WORK/plan.json"
-python3 scripts/check_plan.py "$WORK/plan.json"
-
-# 4. plan を目視で確認する（既存 Registry の変更・削除がなく、IAM が意図した ARN と action に限られていること）
-terraform -chdir=infrastructure show -no-color "$WORK/approved.tfplan" | less
-
-# 5. 確認できたら、保存した plan だけを apply する
-terraform -chdir=infrastructure apply -input=false "$WORK/approved.tfplan"
-
-# 6. 出力を環境変数にして SPA をビルドする
-eval "$(terraform -chdir=infrastructure output -json frontend_config \
-  | jq -r 'to_entries[] | "export \(.key)=\(.value | @sh)"')"
-SPA_BUCKET=$(terraform -chdir=infrastructure output -raw spa_bucket_name)
-DIST_ID=$(terraform -chdir=infrastructure output -raw cloudfront_distribution_id)
-(cd frontend && npm ci && npm run build)
-
-# 7. アセットを同期し、index.html はキャッシュなしで最後に置く
-aws s3 sync frontend/dist/ "s3://$SPA_BUCKET/" --delete --exclude index.html \
-  --cache-control 'public,max-age=31536000,immutable'
-aws s3 cp frontend/dist/index.html "s3://$SPA_BUCKET/index.html" \
-  --cache-control 'no-cache,no-store,must-revalidate' --content-type 'text/html'
-
-# 8. CloudFront のキャッシュを無効化し、作業ディレクトリを消す
-aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths '/*'
-rm -rf "$WORK"
+aws sts get-caller-identity --profile registry-deploy
+AWS_PROFILE=registry-deploy scripts/deploy.sh infrastructure/backend.hcl infrastructure/dev.tfvars
 ```
+
+スクリプトは `assumed-role/RegistryPortalDeployer/*` の主体と、Terraform 用プロファイルが同じセッションを返すことを確認します。SDK 同梱 ZIP を生成し、backend の暗号化と `use_lockfile=true` を強制して初期化します。保存した plan を `check_plan.py` に通した後、目視確認のために表示します。
+
+既存 Registry の作成・変更・削除がなく、IAM の対象 ARN と action が意図どおりであることを確認してください。反映する場合は `apply` と入力します。スクリプトは保存した同じ plan だけを apply します。ガード違反やコマンド失敗、中止があれば、後続の操作は実行しません。
+
+apply 後は `frontend_config` で SPA をビルドし、アセット、非キャッシュの `index.html` の順に S3 に配置して CloudFront のキャッシュを無効化します。一時 ZIP と plan は終了時に削除します。CI 内からの実行と環境変数のアクセスキーは拒否します。
 
 `frontend_config` には、`VITE_COGNITO_DOMAIN`、`VITE_COGNITO_CLIENT_ID`、`VITE_REDIRECT_URI`、`VITE_API_BASE_URL`、`VITE_COGNITO_SCOPES` が入ります。secret は含みません。
 
+Identity Center を使う場合も、本体スタックには同じスクリプトを使います。SSO プロファイルでログインし、`AWSReservedSSO_RegistryPortalDeployer_*` の主体で実行してください（[README](../../applications/registry_portal/README.md#dev-に手動配信する)）。bootstrap の permission set は本体の state key と管理 Lambda 向けの権限に限ります。追加 3 スタックの state key や決裁・イベント処理の資源には対応していないため、SSO 経路で追加スタックを配信するには別途権限整備が必要です。個人アカウントの MFA 付き IAM ロール経路は全スタックを対象とします。
+
 ### 4.3 追加スタックに渡す値を集める
 
-追加スタックの `terraform.tfvars.example` の名前（`registry-portal-management`、`registry-auxiliary` など）は例です。本体スタックが実際に作った名前に置き換えてください。`name_prefix` が既定の `registry-portal-dev` の場合、名前は次のようになります。
-
-| 変数 | 値 | 使うスタック |
-| --- | --- | --- |
-| `region` | `us-east-1` | すべて |
-| `registry_arn` | `dev.tfvars` と同じ値 | すべて |
-| `supplement_table_name` | `registry-portal-dev-auxiliary` | decision、notification_events |
-| `supplement_table_arn` | `arn:aws:dynamodb:us-east-1:<アカウント ID>:table/registry-portal-dev-auxiliary` | すべて |
-| `management_role_name` | `registry-portal-dev-management` | management |
-| `management_function_name` | `registry-portal-dev-management` | management |
-| `http_api_id` | 下のコマンドで調べる | management、decision |
-| `jwt_authorizer_id` | 下のコマンドで調べる（名前は `human-access-token`） | management、decision |
-| `management_integration_id` | 下のコマンドで調べる | management |
-| `cognito_user_pool_id` | `dev.tfvars` と同じ値 | decision |
-| `human_client_id` | 下のコマンドで調べる（名前は `registry-portal-dev-human`） | decision |
-| `discovery_token_url`、`discovery_client_id`、`discovery_client_secret_arn`、`discovery_scope` | `dev.tfvars` と同じ値 | decision |
-| `discovery_kms_key_arn` | `dev.tfvars` と同じ値（顧客管理キーの場合だけ。AWS 管理キーなら指定しない） | decision |
-| `lambda_zip_path` | 4.4 で作った zip のパス | decision、notification_events |
-
-```bash
-export AWS_PROFILE=registry-deploy AWS_REGION=us-east-1
-API_ID=$(aws apigatewayv2 get-apis --query "Items[?Name=='registry-portal-dev'].ApiId" --output text)
-echo "http_api_id = $API_ID"
-aws apigatewayv2 get-authorizers --api-id "$API_ID" \
-  --query "Items[?Name=='human-access-token'].AuthorizerId" --output text
-aws apigatewayv2 get-integrations --api-id "$API_ID" \
-  --query "Items[?contains(IntegrationUri, 'registry-portal-dev-management')].IntegrationId" --output text
-USER_POOL_ID='dev.tfvars の cognito_user_pool_id'
-aws cognito-idp list-user-pool-clients --user-pool-id "$USER_POOL_ID" \
-  --query "UserPoolClients[?ClientName=='registry-portal-dev-human'].ClientId" --output text
-```
-
-### 4.4 Lambda の zip を作る
-
-`decision` と `notification_events` の例では、`lambda_zip_path = "../../backend/build/lambda.zip"` を想定しています。`develop` には zip を作るスクリプトがありません。#5 の `scripts/build_lambda.py` は `backend/src/registry_portal` パッケージ全体と固定版の依存パッケージを同梱するので、同じ zip を決裁とイベント処理の Lambda にも使える見込みです（handler が違うだけです）。
+本体と追加スタックは別 state を維持します（[ADR-0013](../adr/0013-separate-portal-addon-states.md)）。各 `terraform.tfvars.example` を同ディレクトリの `terraform.tfvars` にコピーし、本体の output を手動で転記してください。例の名前や ID をそのまま使わないでください。
 
 ```bash
 cd applications/registry_portal
-python3 scripts/build_lambda.py --output backend/build/lambda.zip
+AWS_PROFILE=registry-deploy-tf terraform -chdir=infrastructure output
 ```
 
-現状、`backend/build/` は `.gitignore` の対象外です。zip をコミットしないよう注意し、統合時に `.gitignore` に追加してください。
+| 変数 | 転記元 | 使うスタック |
+| --- | --- | --- |
+| `region` | `us-east-1` | すべて |
+| `registry_arn` | 本体の `dev.tfvars` と同じ値 | すべて |
+| `supplement_table_name` | 同名の本体 output | decision、notification_events |
+| `supplement_table_arn` | 同名の本体 output | すべて |
+| `management_role_name` | 同名の本体 output | management |
+| `management_function_name` | 同名の本体 output | management |
+| `http_api_id` | 同名の本体 output | management、decision |
+| `jwt_authorizer_id` | 同名の本体 output | management、decision |
+| `management_integration_id` | 同名の本体 output | management |
+| `cognito_user_pool_id` | 本体の `dev.tfvars` と同じ値 | decision |
+| `human_client_id` | 同名の本体 output | decision |
+| `discovery_token_url`、`discovery_client_id`、`discovery_client_secret_arn`、`discovery_scope` | 本体の `dev.tfvars` と同じ値 | decision |
+| `discovery_kms_key_arn` | 本体の `dev.tfvars` と同じ値。顧客管理キーの場合だけ ARN を指定し、AWS 管理キーなら省略または `null` | decision |
+| `lambda_zip_path` | 4.4 で作った共通 ZIP のパス | decision、notification_events |
+
+`cognito_issuer` の output は確認用です。decision のルートスタックは `region` と `cognito_user_pool_id` から issuer を組み立てるため、tfvars に `cognito_issuer` を追加しません。
+
+`management_role_name` が本体の管理 Lambda の実行ロールであることを、output と plan で確認してください。ガードは policy の資源アドレスで役割を判定するため、別のロール名を誤って転記しても検出できません。
+
+#49 の対応により、顧客管理キーの ARN を指定した場合だけ、決裁 Lambda に `kms:Decrypt` を付けます。権限は Secrets Manager 経由で対象 secret の暗号化コンテキストに限定します。本体と decision の両方に同じ ARN を渡してください。AWS 管理キーを使う場合は、両方で省略または `null` にします。
+
+### 4.4 Lambda の zip を作る
+
+`build_lambda.py` は `backend/src/registry_portal` 全体と固定版の依存パッケージを同梱します。決裁とイベント処理の Lambda は同じ ZIP を使い、handler だけを切り替えます。各スタックの例は `lambda_zip_path = "../../backend/build/lambda.zip"` を参照します。
+
+```bash
+cd applications/registry_portal
+python3 scripts/build_lambda.py
+```
+
+出力先は既定で `backend/build/lambda.zip` です。`--output` で変更した場合は tfvars のパスも合わせてください。`backend/build/`、`infrastructure/backend.hcl` と追加スタックの `backend.hcl` は `.gitignore` の対象です。本体の `deploy.sh` は同じビルドスクリプトで一時 ZIP を生成します。
 
 ### 4.5 追加スタックを適用する
 
-3 つの追加スタックの手順は同じです。最初の `STACK` と `STATE_KEY` だけを、スタックごとに 1.4 の表の値に変えて実行します。backend は部分設定（`backend "s3" {}`）なので、`init` のときに指定します。リポジトリのルートで実行します。
+3 つの追加スタックの手順は同じです。最初の `STACK` と `STATE_KEY` だけを、スタックごとに 1.4 の表の値に変えて実行します。4.3 で各 tfvars の設定を済ませてから進みます。backend は部分設定（`backend "s3" {}`）なので、`init` のときに指定します。リポジトリのルートで実行します。
 
 | `STACK` | `STATE_KEY` |
 | --- | --- |
@@ -426,21 +373,23 @@ STATE_KEY=management.tfstate
 export AWS_PROFILE=registry-deploy-tf
 STATE_BUCKET=registry-portal-state-$(aws sts get-caller-identity --query Account --output text)   # 3.5 で作ったバケット
 cd "applications/registry_portal/infrastructure/$STACK"
-cp terraform.tfvars.example terraform.tfvars    # 4.3 の値を設定する。コミットしない
 terraform init \
   -backend-config="bucket=$STATE_BUCKET" \
   -backend-config="key=registry-portal/dev/$STATE_KEY" \
   -backend-config="region=us-east-1" \
   -backend-config="encrypt=true" \
   -backend-config="use_lockfile=true"
+terraform validate
 terraform plan -out=tfplan
-terraform show tfplan            # 既存 Registry・既存 HTTP API の変更や削除がないことを確認する
+terraform show -json tfplan > plan.json
+python3 ../../scripts/check_plan.py plan.json
+terraform show tfplan    # 既存 Registry・既存 HTTP API と IAM の対象ロール・ARN・action を確認する
 terraform apply tfplan
-rm tfplan
+rm tfplan plan.json
 cd -    # リポジトリのルートに戻る
 ```
 
-README には `registry-portal/decision.tfstate` のような key の例がありますが、個人アカウントでは 1.4の表の key にそろえます。
+`backend.hcl.example` を使う場合も、1.4 の表と同じ key を設定してください。`decision` と `notification_events` の IAM policy はロググループと DLQ の ARN を名前・アカウント ID・リージョンから組み立てるため、初回 plan でも確定してガードに通せます。
 
 ## 5. 実行コマンド一覧
 
@@ -452,8 +401,8 @@ cd applications/registry_portal
 # 整形（全スタック）
 terraform -chdir=infrastructure fmt -check -recursive
 
-# 追加スタックの検証（develop の CI と同じ。CI は notification_events をまだ検証していない）
-for d in management decision notification_events; do
+# 全スタックの検証（CI は notification_events も対象）
+for d in . bootstrap management decision notification_events; do
   terraform -chdir=infrastructure/$d init -backend=false
   terraform -chdir=infrastructure/$d validate
 done
@@ -461,10 +410,9 @@ done
 # IAM ポリシーのテンプレートのテスト
 (cd backend && pytest tests/test_decision_permissions.py)
 
-# 以下は #5 の統合後に実行できる
-terraform -chdir=infrastructure init -backend=false
-terraform -chdir=infrastructure validate
-terraform -chdir=infrastructure test                  # mock provider を使う
+# mock provider のテスト
+terraform -chdir=infrastructure test
+terraform -chdir=infrastructure/bootstrap test
 python3 -m unittest discover -s infrastructure/tests -v
 node --test infrastructure/tests/spa_rewrite.test.mjs
 bash -n scripts/deploy.sh
@@ -479,7 +427,7 @@ bash -n scripts/deploy.sh
 | state 用バケットを作る（初回だけ） | 3.5 のコマンド |
 | 本体スタックを配信する | 4.2 のコマンド |
 | 追加スタックを適用する | 各ディレクトリで `terraform init -backend-config=...`、`plan -out=tfplan`、`apply tfplan` |
-| plan だけを手で検査する | `terraform show -json tfplan > plan.json && python3 scripts/check_plan.py plan.json` |
+| plan の JSON を手で検査する（`applications/registry_portal` から） | `python3 scripts/check_plan.py <plan.json>` |
 
 ### 5.3 state の操作
 
@@ -492,11 +440,11 @@ bash -n scripts/deploy.sh
 | 管理対象から外す（AWS 上の資源は消さない） | `terraform state rm '<アドレス>'` |
 | ロックが残ったとき | `terraform force-unlock <LOCK_ID>`（ほかに実行中の作業がないことを確認してから） |
 
-`management_routes` を本体スタックに移すときは、本体スタックで import してから `management` の state で `terraform state rm` を実行し、二重に管理しないようにします（README「公開停止・廃止・廃止依頼」）。
+現在は追加スタックの state を移動しません。後続 Issue で統合を決めた場合だけ、対象資源を移行先に import し、移行元で `terraform state rm` を実行します。移行中は apply を止め、同じ資源を複数の state から操作しないでください（[ADR-0013](../adr/0013-separate-portal-addon-states.md)）。
 
 ### 5.4 削除について
 
-補助テーブルには `prevent_destroy` と削除保護があるため、本体スタックの `terraform destroy` は失敗します。dev 環境を作り直す手順はまだ決めていません。既存の Registry と User Pool、3.5 の state バケット、手動で作った IAM の主体は Terraform で管理していないので、destroy の対象にはなりません。
+補助テーブルには `prevent_destroy` と削除保護があるため、本体スタックの `terraform destroy` は失敗します。dev 環境を作り直す手順はまだ決めていません。既存 Registry、User Pool 本体、手動で作った IAM の主体は destroy の対象になりません。state バケットは bootstrap が所有し、`prevent_destroy` で保護します。
 
 ## 6. トラブルシューティング
 
@@ -505,7 +453,7 @@ bash -n scripts/deploy.sh
 | Terraform が `AssumeRoleTokenProviderNotSetError` で止まる | `mfa_serial` 付きのプロファイル（`registry-deploy`）を Terraform に渡している。`registry-deploy-tf` を使う（3.4） |
 | `registry-deploy-tf` で `ExpiredToken`、または MFA を求められる | キャッシュの期限切れ。`aws sts get-caller-identity --profile registry-deploy` をもう一度実行する |
 | `terraform init` で state バケットの 403 | `RegistryPortalDeployer` 以外で実行しているか、環境変数の認証情報がプロファイルより優先されている。`aws sts get-caller-identity` の Arn を確認する |
-| `deploy.sh` が「IAM Identity Center の SSO profile が必要です」で止まる | 個人アカウントでは `deploy.sh` を使えない。4.2 の手順で配信する |
+| `deploy.sh` がプロファイルの検査で止まる | `AWS_PROFILE` に `role_arn` と `mfa_serial` 付きの `registry-deploy` を指定する。Terraform 用プロファイルの `credential_process` が同じプロファイルを参照することと、MFA キャッシュの有効期限を確認する（3.4、4.2） |
 | `check_plan.py` が中止する | plan に既存 Registry の変更・削除・置換、禁止 action の Allow、managed policy の付与、Function URL、`NotAction` や全権限のワイルドカードが含まれている。plan を見直す |
 | provider が `allowed_account_ids` でエラーになる | `aws_account_id` とログイン先のアカウントが違う |
 | `apply` でグループやリソースサーバーの重複エラー | 同じ名前のものが既にある。2.2 の手順で import する |
@@ -513,23 +461,23 @@ bash -n scripts/deploy.sh
 | 決裁 Lambda が起動直後に設定エラーになる | 環境変数の `SUPPLEMENT_TABLE_NAME` や `DISCOVERY_*` が未設定か、形式が誤っている |
 | Admin の取り込みが「公開版を取得できなかったため取り込めません」で失敗し続ける | 発見用 M2M の secret が顧客管理キーで暗号化されているのに、decision スタックに `discovery_kms_key_arn` を渡していない（または本体と違うキーを渡している）。決裁 Lambda のログに「発見用 secret の取得に失敗しました」が出ていれば該当する。decision の `terraform.tfvars` に本体と同じ `discovery_kms_key_arn` を指定して apply する（4.3） |
 
-## 7. 既知の食い違いと未解決事項
+## 7. 統合実装の状態と確認事項
 
-#5 のブランチは、追加スタックができる前に分岐しています。また、Identity Center を前提に作られています。統合する Issue で次の点を解消してください。
+過去の食い違い 11 項目を、Issue #5・#49 の統合実装に合わせて整理しました。以下の実装はローカル検査の対象です。dev への AWS apply と手動受入は未実施で、AWS 上のアクセス制御、M2M の疎通、TTL による削除、EventBridge の受信は配信後に確認します。
 
-| 項目 | 内容 | 影響 | 対応案 |
-| --- | --- | --- | --- |
-| 1 | 補助テーブルの TTL 属性名が、#5 では `expires_at`、アプリ（`backend/src/registry_portal/services/dynamodb.py`）と README では `expiresAt` | 通知と既読位置が 90 日後に削除されない | #5 の `aws_dynamodb_table.auxiliary` の `ttl.attribute_name` を `expiresAt` にする |
-| 2 | #5 の管理 Lambda に環境変数 `SUPPLEMENT_TABLE_NAME` がない | 下書き、履歴、通知の API が 503 になる | 本体スタックの環境変数に補助テーブル名を追加する |
-| 3 | #5 の HTTP API の CORS が `GET` と `OPTIONS` だけ | `POST`（申請、決裁など）と `Idempotency-Key` ヘッダーがブラウザで拒否される | `allow_methods` に `POST`、`allow_headers` に `idempotency-key` を追加する |
-| 4 | `check_plan.py` が `CreateRegistryRecord`、`UpdateRegistryRecord`、`UpdateRegistryRecordStatus`、`SubmitRegistryRecordForApproval` の Allow を禁止している | 追加スタックの IAM を本体の plan に含めるとガードが中止する | 管理ロールと決裁ロールに限って、それぞれに必要な action を許可するようガードと fixture を更新する（#5 の README で予告済み） |
-| 5 | bootstrap が Identity Center の permission set と割り当てを必須で作る | 個人アカウントでは bootstrap を使えない | Identity Center の資源を `count` で任意にする。または個人アカウント用に、state バケットだけを作る構成に分ける |
-| 6 | state バケットのポリシーと `deploy.sh` が、SSO ロール（`AWSReservedSSO_RegistryPortalDeployer_*`）と SSO プロファイルだけを許可している | 個人アカウントの IAM ロールでは state を使えず、`deploy.sh` も使えない | state バケットのポリシーで許可する主体の ARN を変数（例: `deployer_principal_arn`）にする。`deploy.sh` は、`role_arn` 付きのプロファイルと `assumed-role/RegistryPortalDeployer/*` も受け付けるようにし、MFA を求めない Terraform 用のプロファイル（3.4）を前提にする |
-| 7 | 追加スタックの provider の固定方法が本体と揃っていない（`~> 6.0`） | provider のバージョンがスタックごとにずれる | `= 6.71.0` に固定する |
-| 8 | CI が `notification_events` の `validate` をまだ実行していない | 構文エラーに気づくのが遅れる | `.github/workflows/registry-portal-ci.yml` に追加する |
-| 9 | 決裁と管理の route が本体スタックの外にある | HTTP API の資源が 3 つの state に分散する | README の方針どおり、統合時に `management_routes` と `decision` の route を本体スタックから呼び出し、元の state から `state rm` する |
-| 10 | `RegistryPortalDeployer` が `AdministratorAccess` を持つ | permission set より権限が広く、Registry に書き込めるロールを新しく作ることも防げない | plan のガードと目視で確認する。デプロイ対象が固まったら、必要なサービスだけのポリシーにするか、作成するロールに permissions boundary を必須にする（IAM 手順の 4の注記） |
-| 11 | （#49 で解消）`decision` スタックに `discovery_kms_key_arn` の変数がなく、決裁 Lambda の実行ロールに `kms:Decrypt` がなかった | secret が顧客管理キーで暗号化されていると、決裁 Lambda が secret を読めず、Admin の取り込み（`POST /api/records/{recordId}/adopt`）が必ず失敗する。画面には「時間をおいて再試行してください」と表示されるが、再試行しても直らない。審査・承認・却下・公開停止など、発見用 API を使わない操作には影響しない。AWS 管理キー（確認手順の手順 4 で `kmsKeyId` がない）なら発生しない | 解消済み。`decision` スタックとモジュールに任意の変数 `discovery_kms_key_arn`（既定は `null`）を追加した。指定したときだけ、本体スタックと同じく Secrets Manager 経由・対象 secret の暗号化コンテキストに限った `kms:Decrypt` を、別の `aws_iam_role_policy`（`count` 付き）で決裁 Lambda の実行ロールに付ける。`decision` の tfvars に本体と同じ値を渡す（3.2、4.3） |
+| 項目 | 状態 | 統合実装と運用時の確認事項 |
+| --- | --- | --- |
+| 1 | 解消済み | 本体の補助テーブルの TTL 属性はアプリと同じ `expiresAt`。AWS による期限切れ項目の削除は配信後に確認する |
+| 2 | 解消済み | 管理 Lambda に `SUPPLEMENT_TABLE_NAME`、`REGISTRY_ARN`、`DISCOVERY_*` を設定する。A2A 検索は未設定時に有効なため、`A2A_SEARCH_ENABLED` は設定しない |
+| 3 | 解消済み | CORS は SPA の origin だけを許可し、`GET`・`POST`・`PATCH`・`OPTIONS` と `Authorization`・`Content-Type`・`Idempotency-Key` を許可する。各 route は `registry-portal/catalog.read` の scope を検証する |
+| 4 | 解消済み。対象ロールは目視確認 | ガードは `module.management_drafts.aws_iam_role_policy.management_drafts` に作成・更新・申請を、`module.decision.aws_iam_role_policy.decision` に決裁だけを許可する。policy の資源アドレスで役割を判定するため、`management_role_name` の取り違えは検出できない。本体の output と plan を照合する。決裁・イベント処理のロググループと DLQ の ARN は初回 plan でも確定する |
+| 5 | 解消済み | bootstrap の Identity Center 資源は任意。個人アカウントでは `identity_center_instance_arn` と `deployer_group_id` を省略し、state バケットだけを作る |
+| 6 | 個人アカウント対応済み | state バケットは `deployer_principal_arn` を照合する。`deploy.sh` は MFA 付きのロールプロファイルと `credential_process` の Terraform 用プロファイルに対応する。SSO permission set は本体向けで、追加スタックの配信には別途権限整備が必要（4.2） |
+| 7 | 解消済み | 本体・bootstrap・追加 3 スタックの AWS provider を `= 6.71.0` に固定した。共通 ZIP の出力先 `backend/build/` と各 `backend.hcl` は ignore 対象 |
+| 8 | 解消済み | CI は `notification_events` を含む全ルートスタックの init と validate を行う。AWS の認証情報は持たず、apply は行わない |
+| 9 | 別 state を維持する決定 | 本体は HTTP API と管理 Lambda の統合を持ち、下書き・申請・操作照会を含む管理の追加 route と決裁 route は追加スタックが持つ。本体の output を各 tfvars に手動転記する。現在は state を移動しない。後続 Issue で統合する場合だけ import と `state rm` を行う（[ADR-0013](../adr/0013-separate-portal-addon-states.md)） |
+| 10 | 運用上の制約として継続 | 個人アカウントの `RegistryPortalDeployer` は `AdministratorAccess` を持ち、新しいロール経由の Registry 書き込みまで IAM では防げない。全スタックの plan をガードに通し、IAM の対象ロール・ARN・action を目視確認する。権限の絞り込みや permissions boundary は後続の検討対象 |
+| 11 | #49 で解消済み | decision の `discovery_kms_key_arn` は任意で既定は `null`。顧客管理キーの場合だけ本体と同じ ARN を渡すと、別の inline policy が Secrets Manager 経由・対象 secret の暗号化コンテキストに限った `kms:Decrypt` を付ける。AWS 管理キーの場合は両方で省略または `null` にする。顧客管理キーでの Admin の取り込みと、`null` の場合に復号権限を追加しないことを配信後に確認する |
 
 ## 関連文書
 
@@ -540,3 +488,4 @@ bash -n scripts/deploy.sh
 - [個人 AWS アカウントで Registry ポータル用の IAM ユーザーとロールを作成する](registry-portal-iam-setup-personal-account-ja.md)
 - [ADR-0003 公開 HTTPS と単一 Registry](../adr/0003-public-https-without-waf-and-single-registry.md)
 - [ADR-0004 CI から AWS に反映しない](../adr/0004-no-aws-deployment-from-ci.md)
+- [ADR-0013 本体と追加スタックの state を分けて運用する](../adr/0013-separate-portal-addon-states.md)
