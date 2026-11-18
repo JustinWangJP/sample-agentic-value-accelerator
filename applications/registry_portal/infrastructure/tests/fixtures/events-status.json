@@ -1,0 +1,48 @@
+{
+  "format_version": "1.2",
+  "planned_values": {
+    "root_module": {
+      "child_modules": [
+        {
+          "address": "module.notification_events",
+          "resources": [
+            {
+              "address": "module.notification_events.aws_iam_role_policy.events",
+              "mode": "managed",
+              "type": "aws_iam_role_policy",
+              "name": "events",
+              "values": {
+                "name": "events",
+                "role": "registry-portal-events",
+                "policy": "{\"Version\": \"2012-10-17\", \"Statement\": [{\"Sid\": \"Registry\", \"Effect\": \"Allow\", \"Action\": [\"agent-registry:UpdateRegistryRecordStatus\"], \"Resource\": [\"arn:aws:agent-registry:us-east-1:123456789012:registry/portal\", \"arn:aws:agent-registry:us-east-1:123456789012:registry/portal/record/*\"]}]}"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "resource_changes": [
+    {
+      "address": "module.notification_events.aws_iam_role_policy.events",
+      "module_address": "module.notification_events",
+      "mode": "managed",
+      "type": "aws_iam_role_policy",
+      "name": "events",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "before": null,
+        "after": {
+          "name": "events",
+          "role": "registry-portal-events",
+          "policy": "{\"Version\": \"2012-10-17\", \"Statement\": [{\"Sid\": \"Registry\", \"Effect\": \"Allow\", \"Action\": [\"agent-registry:UpdateRegistryRecordStatus\"], \"Resource\": [\"arn:aws:agent-registry:us-east-1:123456789012:registry/portal\", \"arn:aws:agent-registry:us-east-1:123456789012:registry/portal/record/*\"]}]}"
+        },
+        "after_unknown": {
+          "id": true
+        }
+      }
+    }
+  ]
+}
