@@ -1,4 +1,8 @@
-"""管理 Lambda に固定版 SDK とアプリケーションを同梱する。"""
+"""管理・決裁・イベント処理 Lambda 共通の ZIP に、固定版 SDK とアプリケーションを同梱する。
+
+3 つの Lambda は同じ ZIP を使い、handler だけが違う。既定の出力先は追加スタック
+（decision・notification_events）の tfvars 例が指す `backend/build/lambda.zip`。
+"""
 
 from __future__ import annotations
 
@@ -13,12 +17,22 @@ import tempfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+# Terraform の各 Lambda の handler（本体・modules/decision・modules/notification_events）
+LAMBDA_HANDLER_MODULES = (
+    "registry_portal.handlers.management",
+    "registry_portal.handlers.curation",
+    "registry_portal.handlers.events",
+)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=ROOT / "build/management.zip")
+    parser.add_argument("--output", type=Path, default=ROOT / "backend/build/lambda.zip")
     args = parser.parse_args()
+    for module in LAMBDA_HANDLER_MODULES:
+        if not (ROOT / "backend/src" / f"{module.replace('.', '/')}.py").is_file():
+            print(f"Lambda の handler モジュールがありません: {module}", file=sys.stderr)
+            return 1
     with tempfile.TemporaryDirectory(prefix="registry-portal-lambda-") as directory:
         target = Path(directory)
         subprocess.run(
