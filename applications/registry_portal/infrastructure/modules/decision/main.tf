@@ -4,12 +4,21 @@
 # Admin による取り込み・所有変更と結果確認中の操作の回復を行う。
 # descriptor の作成・更新（CreateRegistryRecord / UpdateRegistryRecord）と申請の権限は持たない
 # （設計書「最小インフラとセキュリティ」の決裁 Lambda）。既存 Registry と補助テーブルは借用するだけ。
+data "aws_caller_identity" "current" {}
+
+data "aws_region" "current" {}
+
 locals {
-  name = var.name_prefix
+  name           = var.name_prefix
+  log_group_name = "/aws/lambda/${local.name}"
+  # 作成前のロググループの arn 属性は初回の plan で未確定になり、反映前ガード（scripts/check_plan.py）が
+  # 「未確定の IAM policy」で中止する。本体スタックの local.log_group_arn と同じく、名前と plan 時に確定する
+  # アカウント ID・リージョンから組み立てる
+  log_group_arn = "arn:aws:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:log-group:${local.log_group_name}"
 }
 
 resource "aws_cloudwatch_log_group" "decision" {
-  name              = "/aws/lambda/${local.name}"
+  name              = local.log_group_name
   retention_in_days = 365
 }
 
@@ -32,7 +41,7 @@ resource "aws_iam_role_policy" "decision" {
     registry_arn         = var.registry_arn
     supplement_table_arn = var.supplement_table_arn
     discovery_secret_arn = var.discovery_client_secret_arn
-    log_group_arn        = aws_cloudwatch_log_group.decision.arn
+    log_group_arn        = local.log_group_arn
   })
 }
 
