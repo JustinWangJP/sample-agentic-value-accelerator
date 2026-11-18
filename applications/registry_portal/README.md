@@ -393,7 +393,8 @@ IAM は [下書き用 Terraform モジュール](infrastructure/modules/manageme
 ```bash
 cd applications/registry_portal/infrastructure/management
 cp terraform.tfvars.example terraform.tfvars   # 値を環境に合わせる。コミットしない
-terraform init -backend-config="bucket=<state バケット>" -backend-config="key=registry-portal/management-drafts.tfstate" -backend-config="region=<リージョン>"
+cp backend.hcl.example backend.hcl             # 本体と同じ state バケット。key は registry-portal/dev/management.tfstate。コミットしない
+terraform init -backend-config=backend.hcl
 terraform plan
 terraform apply
 ```
@@ -520,7 +521,8 @@ SPA の「審査待ち」は Curator（`registry-curator` グループ）だけ�
 ```bash
 cd applications/registry_portal/infrastructure/decision
 cp terraform.tfvars.example terraform.tfvars   # 値を環境に合わせる。コミットしない
-terraform init -backend-config="bucket=<state バケット>" -backend-config="key=registry-portal/decision.tfstate" -backend-config="region=<リージョン>"
+cp backend.hcl.example backend.hcl             # 本体と同じ state バケット。key は registry-portal/dev/decision.tfstate。コミットしない
+terraform init -backend-config=backend.hcl
 terraform plan
 terraform apply
 ```
@@ -842,7 +844,7 @@ Registry・補助テーブルの一時的な失敗（スロットリング・5xx
 ### IaC
 
 - [イベント処理モジュール](infrastructure/modules/notification_events/main.tf): イベント処理 Lambda、専用の実行ロール、ロググループ（365日）、DLQ（SQS、SSE）、EventBridge ルール（default バス、source・detail-type・`detail.registryId` で絞る）とターゲット、ルールからだけの呼び出し許可、非同期呼び出しの再試行設定。実行ロールが持つのは、`agent-registry:GetRegistryRecord`、補助テーブルの読み取り（`dynamodb:GetItem`・`Query`）、DLQ への `sqs:SendMessage` だけです。補助テーブルへの書き込み（`dynamodb:PutItem`）は、`dynamodb:LeadingKeys` の条件で通知・重複除去の印・処理済みのイベントのパーティションキーに限ります（[条件キーによる項目単位の制御](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/specifying-conditions.html)）。管理情報や操作記録は書けず、Registry の状態変更や descriptor の書き込みの権限も持ちません。
-- ルートモジュール [`infrastructure/notification_events`](infrastructure/notification_events/main.tf): `terraform.tfvars.example` をコピーし、リージョン（Registry と同じ）、Lambda の zip、Registry ARN、補助テーブルの名前と ARN を設定します。
+- ルートモジュール [`infrastructure/notification_events`](infrastructure/notification_events/main.tf): `terraform.tfvars.example` をコピーし、リージョン（Registry と同じ）、Lambda の zip、Registry ARN、補助テーブルの名前と ARN を設定します。`backend.hcl.example` を `backend.hcl` にコピーして `terraform init -backend-config=backend.hcl` で初期化します（key は `registry-portal/dev/notification-events.tfstate`）。Lambda の zip は `python3 scripts/build_lambda.py` が `backend/build/lambda.zip` に作ります（決裁 Lambda と共通。handler だけが違います）。
 - 通知 API の route（`GET /api/notifications`・`POST /api/notifications/read`）は、[管理 handler の route 用モジュール](infrastructure/modules/management_routes/main.tf) で既存の管理 Lambda の統合に割り当てます。管理 Lambda と決裁 Lambda のロールは、既存の `dynamodb:GetItem`・`PutItem`・`Query` で通知と既読位置を読み書きできるため、権限は追加しません。
 - 補助テーブルの TTL（属性 `expiresAt`）が有効であることを前提にします（#5 の IaC が持つ）。
 

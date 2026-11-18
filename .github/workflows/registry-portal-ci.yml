@@ -126,8 +126,8 @@ jobs:
         run: node --test infrastructure/tests/spa_rewrite.test.mjs
       - name: シェル構文
         run: bash -n scripts/deploy.sh
-      - name: 固定版 SDK を同梱した Lambda ZIP
-        run: python3 scripts/build_lambda.py --output "$RUNNER_TEMP/management.zip"
+      - name: 固定版 SDK を同梱した Lambda ZIP（管理・決裁・イベント処理で共通）
+        run: python3 scripts/build_lambda.py --output "$RUNNER_TEMP/lambda.zip"
       - name: Terraform fmt
         run: terraform -chdir=infrastructure fmt -check -recursive
       - name: Terraform validate と AWS 接続なしの mock plan
@@ -138,10 +138,12 @@ jobs:
           terraform -chdir=infrastructure/bootstrap init -backend=false -input=false
           terraform -chdir=infrastructure/bootstrap validate
           terraform -chdir=infrastructure/bootstrap test
-      # 各ルートモジュール（management・decision）の validate で、呼び出す下位モジュールも検査する
-      - name: Terraform validate（management・decision）
+      # 各ルートモジュール（management・decision・notification_events）の validate で、呼び出す下位モジュールも検査する
+      - name: Terraform validate（management・decision・notification_events）
         run: |
           terraform -chdir=infrastructure/management init -backend=false -input=false
           terraform -chdir=infrastructure/management validate
           terraform -chdir=infrastructure/decision init -backend=false -input=false
           terraform -chdir=infrastructure/decision validate
+          terraform -chdir=infrastructure/notification_events init -backend=false -input=false
+          terraform -chdir=infrastructure/notification_events validate
