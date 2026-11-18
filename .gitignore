@@ -118,3 +118,5 @@ plan/demo-script.md
 # Prefer running ASH with --output-dir outside the repo; this is a safety net for
 # the default in-repo output location.
 **/.ash/ash_output/
+
+env/*
