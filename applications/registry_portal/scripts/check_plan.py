@@ -27,6 +27,21 @@ FORBIDDEN_ACTIONS = (
     "lambda:UpdateFunctionUrlConfig",
     "lambda:InvokeFunctionUrl",
 )
+# 禁止 action のうち、追加スタックの実行ロールに限って許可するもの。
+# ロールは inline policy（aws_iam_role_policy）の資源アドレスで識別する。アドレスはモジュールのコードで固定され、
+# 名前・ARN と違って tfvars では変えられないため。ワイルドカードや旧 prefix による許可は認めない。
+ROLE_SCOPED_ACTIONS = {
+    # 管理ロール: 下書きの作成・更新と申請（infrastructure/management）
+    "module.management_drafts.aws_iam_role_policy.management_drafts": {
+        "agent-registry:createregistryrecord",
+        "agent-registry:updateregistryrecord",
+        "agent-registry:submitregistryrecordforapproval",
+    },
+    # 決裁ロール: 状態遷移（公開承認・却下・公開停止・廃止）だけ（infrastructure/decision）
+    "module.decision.aws_iam_role_policy.decision": {
+        "agent-registry:updateregistryrecordstatus",
+    },
+}
 POLICY_TYPES = {
     "aws_iam_policy",
     "aws_iam_role_policy",
@@ -123,6 +138,7 @@ def check_plan(plan: dict[str, Any]) -> list[str]:
             errors.append(f"{address}: 内容を検査できない managed policy の付与は使用できません")
         if kind not in POLICY_TYPES:
             continue
+        scoped = ROLE_SCOPED_ACTIONS.get(address, set()) if kind == "aws_iam_role_policy" else set()
         for policy in _policies(resource.get("values", {})):
             statements = policy["Statement"]
             if isinstance(statements, dict):
@@ -136,6 +152,8 @@ def check_plan(plan: dict[str, Any]) -> list[str]:
                 if isinstance(actions, str):
                     actions = [actions]
                 for action in actions:
+                    if action.lower() in scoped:
+                        continue
                     if any(
                         fnmatch.fnmatchcase(item.lower(), action.lower())
                         for item in FORBIDDEN_ACTIONS

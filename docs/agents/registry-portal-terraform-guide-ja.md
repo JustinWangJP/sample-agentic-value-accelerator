@@ -131,7 +131,7 @@ Lambda の実行ロールには、Registry 本体の作成・削除・設定変�
 | Cognito User Pool | 本体とドメインは所有しない。子リソース（リソースサーバー `registry-portal`、人間用 client、グループ）だけを本体スタックで追加する | `cognito_user_pool_id`、`cognito_domain`、`identity_providers` | 同上の 4・7 |
 | 発見用 M2M client | 所有しない。client ID とトークンエンドポイントを Lambda の環境変数に渡す | `discovery_client_id`、`discovery_token_url`、`discovery_scope` | 同上の 4・7 |
 | 発見用 M2M の secret | 所有しない。完全な ARN だけを渡し、secret の値は Terraform に渡さない | `discovery_client_secret_arn` | 同上の 4「secret の保管先」 |
-| secret の KMS キー | 顧客管理キーの場合だけ ARN を渡す。本体スタックの管理 Lambda に、Secrets Manager 経由で、対象 secret の暗号化コンテキストに限った `kms:Decrypt` を付ける。decision スタックの決裁 Lambda には付かない（7 章の項目 11） | `discovery_kms_key_arn`（AWS 管理キーなら `null`） | 同上の 4・7 |
+| secret の KMS キー | 顧客管理キーの場合だけ ARN を渡す。本体スタックの管理 Lambda と decision スタックの決裁 Lambda に、Secrets Manager 経由で、対象 secret の暗号化コンテキストに限った `kms:Decrypt` を付ける。両方のスタックに同じ値を渡す | `discovery_kms_key_arn`（AWS 管理キーなら `null`） | 同上の 4・7 |
 | IAM ユーザーと 3 つのロール | 所有しない。手動で作る | なし | [個人アカウント向けの IAM 手順](registry-portal-iam-setup-personal-account-ja.md) |
 | state 用 S3 バケット | 所有しない。CLI で作る（3.5） | `backend.hcl` の `bucket` | 3.5 |
 | EventBridge の default バス | 所有しない。ルールを 1 本追加する | なし（`event_bus_name = "default"` で固定） | — |
@@ -197,7 +197,7 @@ Issue #2 の読み取り確認（[既存 Registry の確認手順](registry-port
 | 所属チーム名（`team-` は付けない） | `team_names` | 本体 |
 | 発見用 M2M のトークン URL、client ID、scope | `discovery_token_url`、`discovery_client_id`、`discovery_scope` | 本体、decision |
 | 発見用 M2M secret の ARN | `discovery_client_secret_arn` | 本体、decision |
-| 発見用 M2M secret の KMS キーの ARN（顧客管理キーの場合だけ） | `discovery_kms_key_arn` | 本体（decision にはこの変数がない。7 章の項目 11） |
+| 発見用 M2M secret の KMS キーの ARN（顧客管理キーの場合だけ） | `discovery_kms_key_arn` | 本体、decision |
 | state 用バケット名と SPA 用バケット名（どちらもグローバルに一意） | `backend.hcl` の `bucket`、`spa_bucket_name` | すべて、本体 |
 
 ### 3.3 IAM ユーザーとロールを作る
@@ -382,7 +382,8 @@ rm -rf "$WORK"
 | `management_integration_id` | 下のコマンドで調べる | management |
 | `cognito_user_pool_id` | `dev.tfvars` と同じ値 | decision |
 | `human_client_id` | 下のコマンドで調べる（名前は `registry-portal-dev-human`） | decision |
-| `discovery_token_url`、`discovery_client_id`、`discovery_client_secret_arn`、`discovery_scope` | `dev.tfvars` と同じ値（`discovery_kms_key_arn` は decision にない。7 章の項目 11） | decision |
+| `discovery_token_url`、`discovery_client_id`、`discovery_client_secret_arn`、`discovery_scope` | `dev.tfvars` と同じ値 | decision |
+| `discovery_kms_key_arn` | `dev.tfvars` と同じ値（顧客管理キーの場合だけ。AWS 管理キーなら指定しない） | decision |
 | `lambda_zip_path` | 4.4 で作った zip のパス | decision、notification_events |
 
 ```bash
@@ -510,7 +511,7 @@ bash -n scripts/deploy.sh
 | `apply` でグループやリソースサーバーの重複エラー | 同じ名前のものが既にある。2.2 の手順で import する |
 | `iam:PutRolePolicy` などが `explicitDeny` になる | `RegistryPortalDeployer` は、自分自身・ほかの 2 ロール・`registry-operator` の IAM を変更できない（IAM 手順の 4）。Terraform の対象にそれらを含めない |
 | 決裁 Lambda が起動直後に設定エラーになる | 環境変数の `SUPPLEMENT_TABLE_NAME` や `DISCOVERY_*` が未設定か、形式が誤っている |
-| Admin の取り込みが「公開版を取得できなかったため取り込めません」で失敗し続ける | 発見用 M2M の secret が顧客管理キーで暗号化されていて、決裁 Lambda に `kms:Decrypt` がない（7 章の項目 11）。決裁 Lambda のログに「発見用 secret の取得に失敗しました」が出ていれば該当する。secret を AWS 管理キー（`aws/secretsmanager`）で暗号化し直すか、項目 11 の対応を待つ |
+| Admin の取り込みが「公開版を取得できなかったため取り込めません」で失敗し続ける | 発見用 M2M の secret が顧客管理キーで暗号化されているのに、decision スタックに `discovery_kms_key_arn` を渡していない（または本体と違うキーを渡している）。決裁 Lambda のログに「発見用 secret の取得に失敗しました」が出ていれば該当する。decision の `terraform.tfvars` に本体と同じ `discovery_kms_key_arn` を指定して apply する（4.3） |
 
 ## 7. 既知の食い違いと未解決事項
 
@@ -528,7 +529,7 @@ bash -n scripts/deploy.sh
 | 8 | CI が `notification_events` の `validate` をまだ実行していない | 構文エラーに気づくのが遅れる | `.github/workflows/registry-portal-ci.yml` に追加する |
 | 9 | 決裁と管理の route が本体スタックの外にある | HTTP API の資源が 3 つの state に分散する | README の方針どおり、統合時に `management_routes` と `decision` の route を本体スタックから呼び出し、元の state から `state rm` する |
 | 10 | `RegistryPortalDeployer` が `AdministratorAccess` を持つ | permission set より権限が広く、Registry に書き込めるロールを新しく作ることも防げない | plan のガードと目視で確認する。デプロイ対象が固まったら、必要なサービスだけのポリシーにするか、作成するロールに permissions boundary を必須にする（IAM 手順の 4の注記） |
-| 11 | `decision` スタックに `discovery_kms_key_arn` の変数がなく、決裁 Lambda の実行ロールに `kms:Decrypt` がない | secret が顧客管理キーで暗号化されていると、決裁 Lambda が secret を読めず、Admin の取り込み（`POST /api/records/{recordId}/adopt`）が必ず失敗する。画面には「時間をおいて再試行してください」と表示されるが、再試行しても直らない。審査・承認・却下・公開停止など、発見用 API を使わない操作には影響しない。AWS 管理キー（確認手順の手順 4 で `kmsKeyId` がない）なら発生しない | 本体スタックと同じく、変数と、Secrets Manager 経由・対象 secret の暗号化コンテキストに限った `kms:Decrypt` を `decision` に追加する |
+| 11 | （#49 で解消）`decision` スタックに `discovery_kms_key_arn` の変数がなく、決裁 Lambda の実行ロールに `kms:Decrypt` がなかった | secret が顧客管理キーで暗号化されていると、決裁 Lambda が secret を読めず、Admin の取り込み（`POST /api/records/{recordId}/adopt`）が必ず失敗する。画面には「時間をおいて再試行してください」と表示されるが、再試行しても直らない。審査・承認・却下・公開停止など、発見用 API を使わない操作には影響しない。AWS 管理キー（確認手順の手順 4 で `kmsKeyId` がない）なら発生しない | 解消済み。`decision` スタックとモジュールに任意の変数 `discovery_kms_key_arn`（既定は `null`）を追加した。指定したときだけ、本体スタックと同じく Secrets Manager 経由・対象 secret の暗号化コンテキストに限った `kms:Decrypt` を、別の `aws_iam_role_policy`（`count` 付き）で決裁 Lambda の実行ロールに付ける。`decision` の tfvars に本体と同じ値を渡す（3.2、4.3） |
 
 ## 関連文書
 
