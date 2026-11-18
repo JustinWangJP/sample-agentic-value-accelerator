@@ -175,7 +175,7 @@ rm "$PWD/build/management.zip"
 
 | ツール | バージョン | 備考 |
 | --- | --- | --- |
-| Terraform | 1.10 以上、2.0 未満 | S3 ネイティブのロック（`use_lockfile`）に 1.10 以上が必要。CI は 1.10.5 |
+| Terraform | 1.10 以上、2.0 未満。mock テストと CI は 1.17.1 | S3 ネイティブのロック（`use_lockfile`）に 1.10 以上が必要。mock テストの後片付けには、1.14 以降の [`prevent_destroy` をテスト終了時に無視する動作](https://github.com/hashicorp/terraform/blob/v1.14.0/CHANGELOG.md)を使う。実スタックの削除保護は維持する |
 | AWS provider | すべてのルートスタックで `= 6.71.0` | `.terraform.lock.hcl` は `.gitignore` の対象 |
 | Python | 3.13 と pip | Lambda の zip を作るのに使う |
 | Node.js | 24 と npm | SPA のビルドに使う |
