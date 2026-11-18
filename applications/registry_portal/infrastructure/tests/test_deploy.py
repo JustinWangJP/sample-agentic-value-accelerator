@@ -14,17 +14,24 @@ import subprocess, sys
 name = Path(sys.argv[0]).name
 args = sys.argv[1:]
 with open(os.environ["COMMAND_LOG"], "a") as log:
-    log.write(json.dumps([name, *args]) + "\\n")
+    log.write(json.dumps({"argv": [name, *args], "profile": os.environ.get("AWS_PROFILE")}) + "\\n")
 if name == "python3":
     if args and args[0].endswith("build_lambda.py"):
         Path(args[args.index("--output") + 1]).write_bytes(b"test zip")
     else:
         sys.exit(subprocess.run(["PYTHON", *args]).returncode)
 elif name == "aws":
-    if args[:3] == ["configure", "get", "sso_session"]:
-        print("portal-session")
+    profiles = json.loads(os.environ["FAKE_AWS_PROFILES"])
+    profile = args[args.index("--profile") + 1] if "--profile" in args else os.environ.get("AWS_PROFILE")
+    settings = profiles.get(profile, {})
+    if args[:2] == ["configure", "get"]:
+        if args[2] not in settings:
+            sys.exit(1)
+        print(settings[args[2]])
     if args[:2] == ["sts", "get-caller-identity"]:
-        print("arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_RegistryPortalDeployer_abc/operator")
+        if "caller_arn" not in settings:
+            sys.exit(255)
+        print(settings["caller_arn"])
 elif name == "terraform":
     if "show" in args and "-json" in args:
         print(Path(os.environ["PLAN_FIXTURE"]).read_text())
@@ -34,10 +41,55 @@ elif name == "terraform":
                           "frontend_config": {"value": {
                               "VITE_COGNITO_SCOPES": "openid registry-portal/catalog.read"}}}))
 """
+SSO_PROFILES = {
+    "portal": {
+        "sso_session": "portal-session",
+        "caller_arn": (
+            "arn:aws:sts::123456789012:assumed-role/"
+            "AWSReservedSSO_RegistryPortalDeployer_abc/operator"
+        ),
+    }
+}
+DEPLOYER_SESSION = "arn:aws:sts::123456789012:assumed-role/RegistryPortalDeployer/botocore-session-1"
+# 個人アカウント: MFA 付きのロールのプロファイルと、Terraform 用の credential_process プロファイル
+ROLE_PROFILES = {
+    "registry-deploy": {
+        "role_arn": "arn:aws:iam::123456789012:role/RegistryPortalDeployer",
+        "mfa_serial": "arn:aws:iam::123456789012:mfa/operator",
+        "source_profile": "registry-operator",
+        "caller_arn": DEPLOYER_SESSION,
+    },
+    "registry-deploy-tf": {
+        "credential_process": (
+            "aws configure export-credentials --profile registry-deploy --format process"
+        ),
+        "caller_arn": DEPLOYER_SESSION,
+    },
+}
+
+
+def with_profile(profiles, name, **changes):
+    """プロファイル設定のコピーを返す。値が None の項目は削除する。"""
+    updated = {key: dict(value) for key, value in profiles.items()}
+    settings = updated.setdefault(name, {})
+    for key, value in changes.items():
+        if value is None:
+            settings.pop(key, None)
+        else:
+            settings[key] = value
+    return updated
 
 
 class DeployTests(unittest.TestCase):
-    def run_deploy(self, fixture="safe", confirmation="apply\n", ci=""):
+    def run_deploy(
+        self,
+        fixture="safe",
+        confirmation="apply\n",
+        ci="",
+        profile="portal",
+        profiles=SSO_PROFILES,
+        extra_env=None,
+    ):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             commands = work / "commands.jsonl"
@@ -57,11 +109,13 @@ class DeployTests(unittest.TestCase):
             }
             env.update(
                 PATH=f"{work}:{os.environ['PATH']}",
-                AWS_PROFILE="portal",
+                AWS_PROFILE=profile,
                 CI=ci,
+                FAKE_AWS_PROFILES=json.dumps(profiles),
                 COMMAND_LOG=str(commands),
                 PLAN_FIXTURE=str(Path(__file__).parent / f"fixtures/{fixture}.json"),
             )
+            env.update(extra_env or {})
             result = subprocess.run(
                 [str(ROOT / "scripts/deploy.sh"), str(backend), str(variables)],
                 env=env,
@@ -69,7 +123,8 @@ class DeployTests(unittest.TestCase):
                 text=True,
                 capture_output=True,
             )
-            return result, [json.loads(line) for line in commands.read_text().splitlines()]
+            self.records = [json.loads(line) for line in commands.read_text().splitlines()]
+            return result, [record["argv"] for record in self.records]
 
     def test_approved_saved_plan_is_applied_then_spa_is_uploaded(self):
         result, commands = self.run_deploy()
@@ -115,6 +170,86 @@ class DeployTests(unittest.TestCase):
                 self.assertFalse(
                     any("s3" in command or "cloudfront" in command for command in commands)
                 )
+
+    def test_role_profile_with_mfa_runs_terraform_through_credential_process_profile(self):
+        for extra_env, terraform_profile in [
+            ({}, "registry-deploy-tf"),
+            ({"TERRAFORM_AWS_PROFILE": "custom-tf"}, "custom-tf"),
+        ]:
+            with self.subTest(terraform_profile=terraform_profile):
+                profiles = {
+                    **ROLE_PROFILES,
+                    terraform_profile: ROLE_PROFILES["registry-deploy-tf"],
+                }
+                result, commands = self.run_deploy(
+                    profile="registry-deploy", profiles=profiles, extra_env=extra_env
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                terraform = [r for r in self.records if r["argv"][0] == "terraform"]
+                self.assertTrue(terraform)
+                self.assertEqual({r["profile"] for r in terraform}, {terraform_profile})
+                first_identity = next(
+                    command for command in commands if command[1:3] == ["sts", "get-caller-identity"]
+                )
+                self.assertIn("registry-deploy", first_identity)
+                self.assertLess(
+                    commands.index(first_identity),
+                    next(i for i, command in enumerate(commands) if command[0] == "terraform"),
+                )
+                self.assertTrue(any("create-invalidation" in command for command in commands))
+
+    def test_unsafe_profile_or_principal_is_rejected_before_terraform(self):
+        other_session = "arn:aws:sts::123456789012:assumed-role/Administrator/operator"
+        cases = {
+            "MFA のないロールのプロファイル": (
+                "registry-deploy",
+                with_profile(ROLE_PROFILES, "registry-deploy", mfa_serial=None),
+            ),
+            "Terraform 用のプロファイルがない": (
+                "registry-deploy",
+                {"registry-deploy": ROLE_PROFILES["registry-deploy"]},
+            ),
+            "credential_process が別のプロファイルを参照する": (
+                "registry-deploy",
+                with_profile(
+                    ROLE_PROFILES,
+                    "registry-deploy-tf",
+                    credential_process=(
+                        "aws configure export-credentials --profile registry-admin --format process"
+                    ),
+                ),
+            ),
+            "RegistryPortalDeployer 以外のロール": (
+                "registry-deploy",
+                with_profile(
+                    with_profile(ROLE_PROFILES, "registry-deploy", caller_arn=other_session),
+                    "registry-deploy-tf",
+                    caller_arn=other_session,
+                ),
+            ),
+            "Terraform 用のプロファイルが別の主体になる": (
+                "registry-deploy",
+                with_profile(ROLE_PROFILES, "registry-deploy-tf", caller_arn=other_session),
+            ),
+            "credential_process のプロファイルを直接指定する": ("registry-deploy-tf", ROLE_PROFILES),
+            "SSO の別の permission set": (
+                "portal",
+                with_profile(
+                    SSO_PROFILES,
+                    "portal",
+                    caller_arn=(
+                        "arn:aws:sts::123456789012:assumed-role/"
+                        "AWSReservedSSO_AdministratorAccess_abc/operator"
+                    ),
+                ),
+            ),
+        }
+        for label, (profile, profiles) in cases.items():
+            with self.subTest(label):
+                result, commands = self.run_deploy(profile=profile, profiles=profiles)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(any(command[0] == "terraform" for command in commands))
+                self.assertFalse(any("s3" in command for command in commands))
 
     def test_ci_is_rejected_before_external_commands(self):
         result, commands = self.run_deploy(ci="true")
