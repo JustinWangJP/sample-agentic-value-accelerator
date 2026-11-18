@@ -17,7 +17,6 @@ import tempfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-# Terraform の各 Lambda の handler（本体・modules/decision・modules/notification_events）
 LAMBDA_HANDLER_MODULES = (
     "registry_portal.handlers.management",
     "registry_portal.handlers.curation",

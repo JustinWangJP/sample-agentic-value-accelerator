@@ -27,17 +27,12 @@ FORBIDDEN_ACTIONS = (
     "lambda:UpdateFunctionUrlConfig",
     "lambda:InvokeFunctionUrl",
 )
-# 禁止 action のうち、追加スタックの実行ロールに限って許可するもの。
-# ロールは inline policy（aws_iam_role_policy）の資源アドレスで識別する。アドレスはモジュールのコードで固定され、
-# 名前・ARN と違って tfvars では変えられないため。ワイルドカードや旧 prefix による許可は認めない。
 ROLE_SCOPED_ACTIONS = {
-    # 管理ロール: 下書きの作成・更新と申請（infrastructure/management）
     "module.management_drafts.aws_iam_role_policy.management_drafts": {
         "agent-registry:createregistryrecord",
         "agent-registry:updateregistryrecord",
         "agent-registry:submitregistryrecordforapproval",
     },
-    # 決裁ロール: 状態遷移（公開承認・却下・公開停止・廃止）だけ（infrastructure/decision）
     "module.decision.aws_iam_role_policy.decision": {
         "agent-registry:updateregistryrecordstatus",
     },
