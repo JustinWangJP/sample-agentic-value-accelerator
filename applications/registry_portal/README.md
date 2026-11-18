@@ -154,11 +154,15 @@ A2A の判定と検索用の写しの設計理由は [ADR-0006](../../docs/adr/0
 
 イベント処理 handler（`handlers/events.py`、#15）は `REGISTRY_ARN` と `SUPPLEMENT_TABLE_NAME`（必須）だけを使い、認証・発見の設定は読みません。
 
+本体スタック（`infrastructure/`）は、管理 Lambda に `A2A_SEARCH_ENABLED` 以外の変数を設定します。`SUPPLEMENT_TABLE_NAME` には本体スタックが作る補助テーブル（`<name_prefix>-auxiliary`）の名前を入れます。`A2A_SEARCH_ENABLED` は設定せず、無効のまま配信します。
+
 必須の変数が未設定、または形式が誤っていれば起動エラーにします。開発用に認証を通す設定はありません。管理 Lambda の実行ロールには、`DISCOVERY_CLIENT_SECRET_ARN` に対する `secretsmanager:GetSecretValue` 権限が必要です（下記の専用 Terraform で設定する）。Boto3・Botocore は Lambda ランタイム付属のものを使わず、`requirements.txt` で固定した版を同梱します（設計書「新しいサービス名前空間を使う」）。
 
 ### フロントエンド
 
 `frontend/.env.example` を `frontend/.env.local` にコピーして値を設定します。必須項目が未設定なら、SPA はエラーを表示し、ログイン処理を行いません。
+
+`VITE_COGNITO_SCOPES` には、`openid` とポータル用のカスタム scope `registry-portal/catalog.read` をスペース区切りで指定します。HTTP API の route は、本体スタックの route も追加スタック（management・decision）の route も、JWT authorizer でこの scope を検証します。scope を含まないトークンでは API が 403 を返します。未設定時の既定値は `openid` だけなので、必ず指定してください。配信時は本体スタックの `frontend_config` 出力がこの値を含みます。
 
 ## 開発
 
@@ -216,9 +220,9 @@ Issue #2 の読み取り確認で、既存 Registry、Cognito User Pool、SSO �
 
 CloudFront の接続先は非公開 S3 の REST endpoint だけです。深い SPA URL は viewer request function で `index.html` に解決します。API は独立した HTTP API origin で提供し、CloudFront のエラー差し替えは使いません。CloudFront 側に誤って `/api/*` を送った場合も JSON の 404 を返します。CSP の `connect-src` は Cognito の指定ドメインと us-east-1 の HTTP API ドメインを許可します。API の CORS は当該 CloudFront origin だけに限定します。この依存が循環しないよう、CSP の HTTP API 許可先はリージョン単位です。
 
-HTTP API は `GET /api/me` と `GET /api/catalog` を JWT authorizer と `registry-portal/catalog.read` で保護します。人間用 client は code flow のみを許可し、SPA が PKCE を使用します。人間用 client に secret はありません。Lambda permission は各 GET route の API Gateway 実行 ARN とアカウントに限定します。Function URL と VPC は作りません。管理 Lambda 以外の実行ロールはこの実装単位では作りません。決裁・イベント処理は後続 Issue で追加します。
+本体スタックの HTTP API は `GET /api/me`、`GET /api/catalog`、`POST /api/catalog/search`、`GET /api/catalog/{recordId}` を JWT authorizer と `registry-portal/catalog.read` で保護します。CORS は SPA の origin だけに、`GET`・`POST`・`PATCH` と `Authorization`・`Content-Type`・`Idempotency-Key` ヘッダーを許可します。人間用 client は code flow のみを許可し、SPA が PKCE を使用します。人間用 client に secret はありません。Lambda permission は各 route のメソッド・path の API Gateway 実行 ARN とアカウントに限定します。Function URL と VPC は作りません。本体スタックが作る実行ロールは管理 Lambda のものだけです。管理 handler の追加 route と下書きの権限、決裁、イベント処理は、別 state の追加スタック（`infrastructure/management`・`decision`・`notification_events`）が作ります。追加スタックの route も同じ scope を検証します。追加スタックの `terraform.tfvars` に転記する値（`http_api_id`、`jwt_authorizer_id`、`management_integration_id`、`human_client_id`、`cognito_issuer`、`management_role_name`、`management_function_name`、`supplement_table_name`、`supplement_table_arn`）は、本体スタックの output から取得します。
 
-補助 DynamoDB はオンデマンド、暗号化、PITR、削除保護を有効にします。現時点の閲覧 handler には DynamoDB の権限を付けません。管理 Lambda の IAM はログ、対象 Registry の読み取り、発見用 secret の取得だけです。Registry の発見は IAM ではなく既存の M2M JWT で行います。CloudWatch Logs は API と Lambda とも365日保存し、ログ書式にトークンや応答本文を含めません。
+補助 DynamoDB はオンデマンド、暗号化、PITR、削除保護を有効にし、TTL 属性は `expiresAt` です。本体スタックは管理 Lambda に、カタログ詳細のための補助テーブルへの `dynamodb:GetItem` だけを付けます。管理 Lambda の IAM は、このほかにログ、対象 Registry の読み取り、発見用 secret の取得（顧客管理キーの場合は条件付きの `kms:Decrypt`）です。Registry の発見は IAM ではなく既存の M2M JWT で行います。CloudWatch Logs は API と Lambda とも365日保存し、ログ書式にトークンや応答本文を含めません。
 
 ### 反映前ガードをローカルで検査する
 
