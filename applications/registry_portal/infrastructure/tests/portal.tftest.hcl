@@ -43,6 +43,14 @@ run "security_boundaries" {
     error_message = "補助テーブルの暗号化・PITR・削除保護を有効にしてください。"
   }
   assert {
+    condition = (
+      aws_apigatewayv2_api.portal.cors_configuration[0].allow_methods == toset(["GET", "POST", "PATCH", "OPTIONS"])
+      && aws_apigatewayv2_api.portal.cors_configuration[0].allow_headers == toset(["authorization", "content-type", "idempotency-key"])
+      && aws_apigatewayv2_api.portal.cors_configuration[0].allow_credentials != true
+    )
+    error_message = "CORS は SPA が使う GET・POST・PATCH と、Authorization・Content-Type・Idempotency-Key ヘッダーだけを許可してください。"
+  }
+  assert {
     condition     = aws_dynamodb_table.auxiliary.ttl[0].enabled && aws_dynamodb_table.auxiliary.ttl[0].attribute_name == "expiresAt"
     error_message = "補助テーブルの TTL 属性はアプリ（services/dynamodb.py）と同じ expiresAt にしてください。"
   }

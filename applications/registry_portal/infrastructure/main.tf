@@ -177,8 +177,9 @@ resource "aws_apigatewayv2_api" "portal" {
   protocol_type = "HTTP"
   cors_configuration {
     allow_origins = [local.spa_origin]
-    allow_methods = ["GET", "OPTIONS"]
-    allow_headers = ["authorization", "content-type"]
+    # SPA は下書きの更新に PATCH、申請・決裁などに POST と Idempotency-Key を使う
+    allow_methods = ["GET", "POST", "PATCH", "OPTIONS"]
+    allow_headers = ["authorization", "content-type", "idempotency-key"]
     max_age       = 300
   }
 }
