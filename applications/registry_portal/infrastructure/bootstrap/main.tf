@@ -40,21 +40,35 @@ variable "cognito_user_pool_id" {
   description = "既存 Cognito User Pool ID。子 client とグループだけを管理する。"
   type        = string
 }
-variable "identity_center_instance_arn" {
-  description = "既存 IAM Identity Center instance の ARN。"
+variable "deployer_principal_arn" {
+  description = "state とロックを読み書きできる唯一の主体の IAM ロール ARN（バケットポリシーの aws:PrincipalArn と照合する）。個人アカウントでは IAM ロール RegistryPortalDeployer の ARN、Identity Center では arn:aws:iam::<アカウント ID>:role/aws-reserved/sso.amazonaws.com/*AWSReservedSSO_RegistryPortalDeployer_* を指定する。STS セッション ARN は指定しない。"
   type        = string
+  validation {
+    condition     = can(regex("^arn:aws:iam::${var.aws_account_id}:role/", var.deployer_principal_arn)) && strcontains(var.deployer_principal_arn, "RegistryPortalDeployer")
+    error_message = "deployer には同一アカウントの RegistryPortalDeployer の IAM ロール ARN を指定してください。"
+  }
+}
+variable "identity_center_instance_arn" {
+  description = "既存 IAM Identity Center instance の ARN。null（既定）なら permission set と割り当てを作らない（Identity Center のない個人アカウント向け）。"
+  type        = string
+  default     = null
 }
 variable "deployer_group_id" {
-  description = "RegistryPortalDeployer を割り当てる既存 Identity Center グループ ID。"
+  description = "RegistryPortalDeployer を割り当てる既存 Identity Center グループ ID。identity_center_instance_arn を指定したときだけ必要。"
   type        = string
+  default     = null
+  validation {
+    condition     = (var.identity_center_instance_arn == null) == (var.deployer_group_id == null)
+    error_message = "identity_center_instance_arn と deployer_group_id は両方指定するか、両方とも省略してください。"
+  }
 }
 
 locals {
-  state_arn = "arn:aws:s3:::${var.state_bucket_name}"
-  spa_arn   = "arn:aws:s3:::${var.spa_bucket_name}"
-  sso_role  = "arn:aws:iam::${var.aws_account_id}:role/aws-reserved/sso.amazonaws.com/*AWSReservedSSO_RegistryPortalDeployer_*"
-  role_arn  = "arn:aws:iam::${var.aws_account_id}:role/${var.name_prefix}-management"
-  pool_arn  = "arn:aws:cognito-idp:us-east-1:${var.aws_account_id}:userpool/${var.cognito_user_pool_id}"
+  state_arn           = "arn:aws:s3:::${var.state_bucket_name}"
+  spa_arn             = "arn:aws:s3:::${var.spa_bucket_name}"
+  role_arn            = "arn:aws:iam::${var.aws_account_id}:role/${var.name_prefix}-management"
+  pool_arn            = "arn:aws:cognito-idp:us-east-1:${var.aws_account_id}:userpool/${var.cognito_user_pool_id}"
+  use_identity_center = var.identity_center_instance_arn != null
 }
 resource "aws_s3_bucket" "state" {
   bucket        = var.state_bucket_name
@@ -101,7 +115,7 @@ resource "aws_s3_bucket_policy" "state" {
         Principal = "*"
         Action    = ["s3:GetObject*", "s3:PutObject*", "s3:DeleteObject*"]
         Resource  = "${local.state_arn}/*"
-        Condition = { ArnNotLike = { "aws:PrincipalArn" = local.sso_role } }
+        Condition = { ArnNotLike = { "aws:PrincipalArn" = var.deployer_principal_arn } }
       },
       {
         Sid       = "StateListOnlyForOperators"
@@ -109,21 +123,25 @@ resource "aws_s3_bucket_policy" "state" {
         Principal = "*"
         Action    = ["s3:ListBucket*"]
         Resource  = local.state_arn
-        Condition = { ArnNotLike = { "aws:PrincipalArn" = [local.sso_role, var.bootstrap_admin_role_arn] } }
+        Condition = { ArnNotLike = { "aws:PrincipalArn" = [var.deployer_principal_arn, var.bootstrap_admin_role_arn] } }
       }
     ]
   })
   depends_on = [aws_s3_bucket_public_access_block.state]
 }
+# 以下の Identity Center の資源は identity_center_instance_arn を指定したときだけ作る。
+# 個人アカウントでは IAM ロール RegistryPortalDeployer（MFA 付き AssumeRole）を手動で用意する。
 resource "aws_ssoadmin_permission_set" "deployer" {
+  count            = local.use_identity_center ? 1 : 0
   name             = "RegistryPortalDeployer"
   description      = "Registry ポータル dev のローカル手動配信用。Registry 自体には書き込めない。"
   instance_arn     = var.identity_center_instance_arn
   session_duration = "PT1H"
 }
 resource "aws_ssoadmin_permission_set_inline_policy" "deployer" {
+  count              = local.use_identity_center ? 1 : 0
   instance_arn       = var.identity_center_instance_arn
-  permission_set_arn = aws_ssoadmin_permission_set.deployer.arn
+  permission_set_arn = aws_ssoadmin_permission_set.deployer[0].arn
   inline_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -235,8 +253,9 @@ resource "aws_ssoadmin_permission_set_inline_policy" "deployer" {
   })
 }
 resource "aws_ssoadmin_account_assignment" "deployer" {
+  count              = local.use_identity_center ? 1 : 0
   instance_arn       = var.identity_center_instance_arn
-  permission_set_arn = aws_ssoadmin_permission_set.deployer.arn
+  permission_set_arn = aws_ssoadmin_permission_set.deployer[0].arn
   principal_id       = var.deployer_group_id
   principal_type     = "GROUP"
   target_id          = var.aws_account_id
