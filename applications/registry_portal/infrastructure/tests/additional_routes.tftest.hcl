@@ -44,7 +44,38 @@ run "management_routes_require_portal_scope" {
     management_function_name  = "registry-portal-dev-management"
   }
   assert {
-    condition     = length(aws_apigatewayv2_route.management) > 0 && alltrue([for route in aws_apigatewayv2_route.management : route.authorization_type == "JWT" && route.authorization_scopes == toset(["registry-portal/catalog.read"])])
+    condition     = length(aws_apigatewayv2_route.management) > 0 && alltrue([for route in aws_apigatewayv2_route.management : route.authorization_type == "JWT" && route.authorization_scopes == toset(["registry-portal/catalog.read"]) && route.authorizer_id == var.jwt_authorizer_id && route.target == "integrations/${var.management_integration_id}"])
     error_message = "管理 handler の追加 route も、本体スタックと同じポータル用の scope を JWT authorizer で検証してください。"
+  }
+  assert {
+    condition = length(setsubtract(toset([
+      "POST /api/records",
+      "GET /api/records",
+      "GET /api/records/{recordId}",
+      "PATCH /api/records/{recordId}",
+      "GET /api/operations/{operationId}",
+      "POST /api/records/{recordId}/submit",
+    ]), toset([for route in aws_apigatewayv2_route.management : route.route_key]))) == 0
+    error_message = "下書きの route が不足しています。${join(", ", sort(tolist(setsubtract(toset([
+      "POST /api/records",
+      "GET /api/records",
+      "GET /api/records/{recordId}",
+      "PATCH /api/records/{recordId}",
+      "GET /api/operations/{operationId}",
+      "POST /api/records/{recordId}/submit",
+    ]), toset([for route in aws_apigatewayv2_route.management : route.route_key])))))}"
+  }
+  assert {
+    condition = alltrue([for route_key, path in {
+      "POST /api/records"                   = "api/records"
+      "GET /api/records"                    = "api/records"
+      "GET /api/records/{recordId}"         = "api/records/*"
+      "PATCH /api/records/{recordId}"       = "api/records/*"
+      "GET /api/operations/{operationId}"   = "api/operations/*"
+      "POST /api/records/{recordId}/submit" = "api/records/*/submit"
+      } : anytrue([for name, route in aws_apigatewayv2_route.management :
+        route.route_key == route_key && try(aws_lambda_permission.management_api[name].source_arn == "arn:aws:execute-api:us-east-1:123456789012:abcde12345/*/*/${path}", false)
+    ])]) && alltrue([for permission in aws_lambda_permission.management_api : permission.function_name == var.management_function_name && permission.principal == "apigateway.amazonaws.com" && permission.action == "lambda:InvokeFunction"])
+    error_message = "下書きの各 route に、対応する path から既存の管理 Lambda を呼び出す許可が必要です。"
   }
 }
