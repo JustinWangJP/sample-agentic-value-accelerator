@@ -71,7 +71,7 @@ resource "aws_dynamodb_table" "auxiliary" {
   server_side_encryption { enabled = true }
   point_in_time_recovery { enabled = true }
   ttl {
-    attribute_name = "expires_at"
+    attribute_name = "expiresAt"
     enabled        = true
   }
   lifecycle { prevent_destroy = true }

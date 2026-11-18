@@ -43,6 +43,10 @@ run "security_boundaries" {
     error_message = "補助テーブルの暗号化・PITR・削除保護を有効にしてください。"
   }
   assert {
+    condition     = aws_dynamodb_table.auxiliary.ttl[0].enabled && aws_dynamodb_table.auxiliary.ttl[0].attribute_name == "expiresAt"
+    error_message = "補助テーブルの TTL 属性はアプリ（services/dynamodb.py）と同じ expiresAt にしてください。"
+  }
+  assert {
     condition     = aws_cloudwatch_log_group.management.retention_in_days == 365 && aws_cloudwatch_log_group.api.retention_in_days == 365
     error_message = "ログは365日保存してください。"
   }
