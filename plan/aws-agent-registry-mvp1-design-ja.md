@@ -10,6 +10,9 @@ us-east-1 にある既存の AWS Agent Registry 1個を使い、Agent・MCP サ�
 - [ADR-0002 Registry を正本とし、DynamoDB は補助に限定する](../docs/adr/0002-registry-as-source-of-truth.md)
 - [ADR-0003 MVP1 は公開 HTTPS で提供し、閉域化と private 用 Registry は見送る](../docs/adr/0003-public-https-without-waf-and-single-registry.md)
 - [ADR-0004 CI から AWS へは反映せず、反映はローカルから手動で行う](../docs/adr/0004-no-aws-deployment-from-ci.md)
+- [ADR-0010 結果確認中の決裁は、決裁 handler の再送と、決裁した Curator の操作照会で確定する](../docs/adr/0010-settling-uncertain-decisions.md)
+- [ADR-0011 結果確認中の操作の回復は、Admin が決裁 handler で行い、Registry の再取得で確定できないときだけ強制解除する](../docs/adr/0011-admin-recovery-operation.md)
+- [ADR-0012 公開停止の印と廃止依頼は補助テーブルに置き、AWS の状態を優先する](../docs/adr/0012-suspension-mark-and-deprecation-requests-in-supplement.md)
 
 ## 前提とした事実
 
@@ -165,7 +168,7 @@ MVP1 の承認は1段とし、申請者と最終編集者以外の Curator が1�
 |---|---|---|
 | Viewer | ログインした全員（グループなし） | カタログの閲覧・検索 |
 | Publisher | Cognito グループ `registry-publisher`。書き込みには、チームグループ（例: `team-payments`）による所属チームも必要 | 所属チームが所有チームである Registry レコードの下書き作成・編集・申請・廃止依頼 |
-| Curator | `registry-curator` | 審査待ちの閲覧、決裁、公開停止、廃止 |
+| Curator | `registry-curator` | 審査待ちの閲覧、決裁、公開停止、廃止、廃止依頼の見送り |
 | Admin | `registry-admin` | 未管理レコードの取り込み、所有チームの変更、回復操作 |
 | サービス主体 | CI 専用 M2M client。設定で1つの所有チームに紐付ける | 下書きの作成・更新・申請のみ。決裁はできない |
 
@@ -204,8 +207,9 @@ MVP1 の承認は1段とし、申請者と最終編集者以外の Curator が1�
 | `PENDING_APPROVAL` | Curator が公開承認すると `APPROVED`、理由を付けて却下すると `REJECTED` |
 | `REJECTED` | Publisher が編集すると `DRAFT` に戻る。その後、再申請する |
 | `APPROVED` | 編集すると新しい下書きができる。旧版はカタログ項目として公開されたまま |
-| 公開停止 | Curator が理由を付けて却下し、発見できなくする。再公開には編集と再申請が必要 |
-| 廃止 | Publisher の廃止依頼、または Curator の判断で、理由の入力と二重確認を経て `DEPRECATED` にする。元に戻せない |
+| 公開停止 | Curator が理由を付けて却下し、発見できなくする。再公開には編集と再申請が必要。廃止依頼は閉じない（廃止するか見送るかの判断を残す）。当面は最新の版が公開中のときだけ行う。二重リビジョンで却下したときの挙動は AWS の文書になく未確認のため、#33 で実環境を確かめるまでの暫定の制約とする（#13 で合意） |
+| 廃止 | Publisher の廃止依頼、または Curator の判断で、理由の入力と二重確認（元に戻せないことの確認と、レコード名の入力による確定）を経て `DEPRECATED` にする。元に戻せない。未解決の廃止依頼は廃止で解決する。二重確認は画面（SPA）で行い、API は確認（`confirm: true`）のない廃止だけを拒否する。レコード名の照合は API では行わない（二重確認を経ない呼び出しの誤送信を防ぐ最後の検査と位置付ける） |
+| 廃止依頼の見送り | Curator が理由を付けて廃止依頼を閉じる。レコードの状態は変えない。廃止依頼の終わり方は、廃止と見送りの2つだけ |
 
 AWS 自体は却下済みからの直接承認を許すが、ポータルでは再申請を必須にする。承認待ちの最中に編集すると新しい下書きになり、元の申請は無効になる。管理 API は最新版を、発見 API は承認済みの版を返すので、画面上で「下書きあり」と「公開中」が同時に成り立つことがある。[ライフサイクルと二重リビジョン](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-record-lifecycle.html)
 
@@ -234,10 +238,13 @@ AWS 自体は却下済みからの直接承認を許すが、ポータルでは�
 3. 決裁時には、Curator が見たスナップショットのハッシュを受け取る。Lambda は現物の状態と内容を再取得し、申請時のハッシュと一致するか確認する。一致しなければ HTTP 409 を返し、決裁しない。
 4. 決裁の意図を先に記録してから、AWS の状態更新 API を呼ぶ。成功応答と再取得の結果を確認したうえで、操作成功を記録する。AWS が失敗した場合は、承認済みと表示しない。
 5. AWS では成功したのに補助情報の保存に失敗した場合や、タイムアウトで AWS の結果がわからない場合は、操作を「結果確認中」として記録する。その後 AWS の正本を再取得して照合し、確認が取れるまでそのレコードへの新しい書き込みを止める。
+   申請だけは例外として、スナップショットを保存した後に申請 API の受け付けを確認できず、現物が内容の一致する `DRAFT` のままなら、照合（`GET /api/operations/{operationId}`）が自動承認設定を確認し直してから申請 API を呼び直す。照合は書き込みを伴う読み取りになるが、止まった操作がロックを持ち続けて編集が409のままになることを防ぐ。照合より先に決裁された場合は申請を成功、内容が申請時と一致しない場合は申請を失敗として確定し、どちらもロックを解除する。
+   決裁も同様に止まり得る。決裁の確定の経路（決裁 handler の再送と、決裁した Curator の操作照会）と決裁理由の上限は ADR-0010 に従う。
+6. 上の経路で確定できないまま止まった操作（操作の主体の不在、補助ストア障害の継続など）は、Admin の回復操作で Registry を再取得して照合する。照合でも確定できない場合に限り、Admin は理由を付けて操作を失敗として確定し、ロックを解除できる（強制解除）。強制解除は、Registry を再取得でき、AWS が処理中でなく、AWS が受け付けを返した操作でないことを確かめてから行う。実行中の処理に重ねないよう、開始から一定時間（5分）が過ぎた操作だけを対象にする。詳細は ADR-0011 に従う。
 
 これはアプリ内の操作の整合を取る設計であり、AWS と DynamoDB にまたがる分散トランザクションではない。`UpdateRegistryRecordStatus` には expected revision や `If-Match` に相当するパラメーターがない。そこで ADR-0001 に従い、ポータルの Lambda 以外の書き込み経路を IAM で Deny する。break-glass 用管理ロールによる直接の変更は、通知と監査で検出する。[決裁 API の引数](https://docs.aws.amazon.com/boto3/latest/reference/services/agent-registry-control/client/update_registry_record_status.html)
 
-SDK に `clientToken` がある操作は、同じ操作 ID を使って再試行する。決裁 API に存在しない冪等性引数を前提にしない。ロックの期限が切れたことを理由に、結果が確定していない処理の上から別の書き込みをしない。DynamoDB の TTL は、ロックを取ってよいかの判定には使わず、確定済みの実行制御項目を片付けるためだけに使う。
+SDK に `clientToken` がある操作は、同じ操作 ID を使って再試行する。決裁 API に存在しない冪等性引数を前提にしない。ロックの期限が切れたことを理由に、結果が確定していない処理の上から別の書き込みをしない。ロックを外せるのは、操作の確定と、上記6の Admin の強制解除だけである。DynamoDB の TTL は、ロックを取ってよいかの判定には使わず、確定済みの実行制御項目を片付けるためだけに使う。
 
 ## 通知
 
@@ -245,10 +252,19 @@ Registry が EventBridge の default バスに送るイベントを、ルール1
 
 | 受け取るイベント（`aws.agent-registry`） | 通知先 |
 |---|---|
-| `Registry Record State changed to Pending Approval` と、廃止依頼（アプリ内で発生） | Curator 全員 |
+| `Registry Record State changed to Pending Approval`（ポータルの申請と照合できたもの）と、廃止依頼（アプリ内で発生） | Curator 全員 |
 | `... to Approved`、`... to Rejected`、`... to Deprecated` | 所有チームの Publisher 全員 |
-| 参照先の Skill・MCP サーバーの廃止・公開停止 | その参照先を使う Agent の所有チーム |
-| 操作記録と照合できない状態変化（ポータル外の変更） | Admin 全員 |
+| 廃止依頼の見送り（アプリ内で発生。AWS の状態を変えないためイベントは出ない） | 所有チームの Publisher 全員 |
+| 参照先の Skill・MCP サーバーの廃止・公開停止（ポータル外の変更を含む） | その参照先を使う Agent の所有チーム。所有チームや関連参照を補助テーブルから読めない Agent は Admin 全員 |
+| 操作記録と照合できない状態変化（ポータル外の変更） | Admin 全員。管理下のレコードなら所有チームの Publisher 全員にも、通常の決裁とは区別して届ける。審査待ちへの変化でも Curator には届けない |
+
+ポータル外の変更の宛先グループは、#15 の実装（PR #39）で次のとおり決めた。
+
+- 所有チームにも届けるのは、自分のレコードがポータルの外で公開・却下されたことに気づけるようにするためである。通常の決裁と同じ種別にすると確認されていない変化を正規の決裁と取り違えるため、ポータル外の変更として区別する。
+- Curator に申請として届けないのは、ポータル外の審査待ちをそのまま決裁させないためである。ポータル外の審査待ちは、取り込み・保存・再申請からポータルの審査に乗せる。
+- ポータル外の公開停止・廃止も、参照先が発見できなくなる点はポータル内の操作と同じなので、参照先を使う Agent の所有チームに届ける。ポータル外の `Rejected` は却下と公開停止を区別できないが、参照先を使う Agent があるのは公開承認された版を持つ参照先だけなので、公開停止として届ける。
+
+再試行を使い切ったイベントは DLQ（SQS）に残し、Admin が原因を取り除いてから送り直す。通知は出来事・宛先グループ・種別で重複を除くため、送り直しても重複しない。
 
 イベントに含まれるのは record ID だけで、操作者は含まれない。そのため Lambda は Registry レコードを再取得し、補助テーブルの操作記録と照合して「ポータル内の変更か、外の変更か」を判定する。EventBridge は重複して配信したり順序が入れ替わったりするので、event ID で重複を除き、状態は常に再取得した値を使う。
 
@@ -264,7 +280,7 @@ Registry が EventBridge の default バスに送るイベントを、ルール1
 | SPA 認証 | 既存 Cognito User Pool の人間用公開 client で、Authorization Code + PKCE。secret は持たない。M2M client とは分ける |
 | API の入口 | HTTP API の JWT authorizer で、issuer、audience（client_id）、有効期限、route ごとの scope を検証する。業務ロールと所有チームは Lambda で検査する |
 | 管理 Lambda | 発見の代理、Registry レコードの取得・作成・更新・申請、廃止依頼、通知 API。Registry の状態を変更する権限は持たない |
-| 決裁 Lambda | 公開承認、却下、公開停止、廃止、取り込み、操作の回復。descriptor の作成・更新権限は持たない |
+| 決裁 Lambda | 公開承認、却下、公開停止、廃止、廃止依頼の見送り、取り込み、操作の回復。descriptor の作成・更新権限は持たない |
 | イベント処理 Lambda | EventBridge から起動される。Registry の読み取りと、補助テーブルの通知への書き込みだけを行う |
 | 補助 DynamoDB | 1テーブル、オンデマンド、暗号化、PITR、削除保護 |
 | Secrets Manager | 既存の発見用 M2M secret の ARN を参照する。取得できるのは管理 Lambda だけ。トークンは有効期限を考慮してメモリー上で再利用し、401 時の再取得は回数を制限する |
@@ -318,7 +334,7 @@ ADR-0004 に従い、GitHub Actions では AWS への反映を一切行わない
 | `GET /api/catalog` | 発見 API を使ったカタログ項目の一覧。nextToken を中継する | 人間 |
 | `POST /api/catalog/search` | 自然言語検索。許可した metadata filter だけを組み立てる | 人間 |
 | `GET /api/catalog/{id}` | カタログ項目の詳細。batch-get に ID を1件渡して取得する | 人間 |
-| `GET /api/records` | 管理用の一覧。業務ロールと所有チームで絞り込む | 人間 |
+| `GET /api/records` | 管理用の一覧。Publisher（所有チーム）の下書き一覧のままで、Curator には公開しない（#34 で Curator 向けに `GET /api/records/publication` を別に設けた） | 人間 |
 | `POST /api/records` | 下書きの作成。Idempotency-Key を必須にする | 人間、サービス主体 |
 | `GET /api/records/{id}` | 管理中の最新版を取得する | 人間、サービス主体 |
 | `PATCH /api/records/{id}` | 種別ごとの編集。expected content hash を必須にする | 人間、サービス主体 |
@@ -327,10 +343,15 @@ ADR-0004 に従い、GitHub Actions では AWS への反映を一切行わない
 | `GET /api/reviews` | AWS の承認待ちと廃止依頼に補助情報を結合して返す。状態は AWS を正本とする | Curator |
 | `POST /api/reviews/{id}/approve` | 理由とスナップショットのハッシュを検査して公開承認する | Curator |
 | `POST /api/reviews/{id}/reject` | 理由を必須にして却下する | Curator |
-| `POST /api/records/{id}/suspend` | 公開停止。却下による非公開化であることを明示する | Curator |
+| `POST /api/records/{id}/suspend` | 公開停止。却下で発見できなくすることを明示する | Curator |
 | `POST /api/records/{id}/deprecate` | 元に戻せない廃止であることを明示し、二重確認を経て実行する | Curator |
+| `GET /api/records/{id}/publication` | 公開管理の照会。状態・公開中の版・未解決の廃止依頼・実行できる操作（できない理由）を返す。決裁 Lambda が処理する | Curator |
+| `GET /api/records/publication` | 管理下のレコードを名前の一部と状態（ポータルの「公開停止中」を含む閉じた集合）で探す一覧。Curator が公開管理を開く入口。決裁 Lambda が処理する | Curator |
+| `POST /api/records/{id}/deprecation-requests/decline` | 廃止依頼の見送り。理由を必須にし、レコードの状態は変えない。決裁 Lambda が処理する | Curator |
 | `POST /api/records/{id}/adopt` | 未管理レコードの取り込みと所有チームの割り当て | Admin |
 | `GET /api/operations/{id}` | 操作結果、結果確認中の状態、回復結果 | 人間 |
+| `GET /api/records/{id}/recovery` | ロックを持つ未確定の操作の概要（種別・主体・開始時刻・回復できるようになる時刻）。決裁 Lambda が処理する | Admin |
+| `POST /api/records/{id}/recovery` | Registry を再取得して照合し、確定できなければ理由を付けて強制解除する。決裁 Lambda が処理する | Admin |
 | `GET /api/records/{id}/history` | 操作と審査の履歴 | 人間 |
 | `GET /api/notifications` | 自分宛ての通知と未読件数 | 人間 |
 | `POST /api/notifications/read` | 既読位置の更新 | 人間 |

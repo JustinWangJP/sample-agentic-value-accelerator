@@ -9,11 +9,13 @@ on:
     paths:
       - "applications/registry_portal/**"
       - ".github/workflows/registry-portal-ci.yml"
+      - ".pre-commit-config.yaml"
   push:
     branches: [main, develop]
     paths:
       - "applications/registry_portal/**"
       - ".github/workflows/registry-portal-ci.yml"
+      - ".pre-commit-config.yaml"
 
 permissions:
   contents: read
@@ -43,11 +45,30 @@ jobs:
       - name: pytest
         run: pytest
       - name: Flake8
-        run: flake8 src tests
+        run: flake8 src tests ../scripts
       - name: Black
-        run: black --check src tests
+        run: black --config pyproject.toml --check src tests ../scripts
+      - name: import 境界
+        run: python ../scripts/check_imports.py
       - name: mypy
         run: mypy
+
+  openapi:
+    name: OpenAPI 仕様（Redocly lint）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: applications/registry_portal/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      # 設定は backend/redocly.yaml。版は pre-commit と README の「開発」と揃える
+      - name: Redocly lint
+        run: npx --yes @redocly/cli@1.34.3 lint
 
   frontend:
     name: frontend（ESLint / Vitest / typecheck / build）
@@ -117,3 +138,10 @@ jobs:
           terraform -chdir=infrastructure/bootstrap init -backend=false -input=false
           terraform -chdir=infrastructure/bootstrap validate
           terraform -chdir=infrastructure/bootstrap test
+      # 各ルートモジュール（management・decision）の validate で、呼び出す下位モジュールも検査する
+      - name: Terraform validate（management・decision）
+        run: |
+          terraform -chdir=infrastructure/management init -backend=false -input=false
+          terraform -chdir=infrastructure/management validate
+          terraform -chdir=infrastructure/decision init -backend=false -input=false
+          terraform -chdir=infrastructure/decision validate

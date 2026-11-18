@@ -122,3 +122,5 @@ plan/demo-script.md
 # Registry ポータルのローカル backend 設定と Lambda 配布物
 applications/registry_portal/infrastructure/backend.hcl
 applications/registry_portal/build/
+
+env/*

@@ -1,5 +1,12 @@
+import { AdministrationView } from './administration/AdministrationView'
 import { useEffect, useState } from 'react'
 import { CatalogView } from './catalog/CatalogView'
+import { canViewAllHistory } from './drafts/api'
+import { RecordDraftsView } from './drafts/RecordDraftsView'
+import { NotificationsView } from './notifications/NotificationsView'
+import { RecordPublicationView } from './publication/RecordPublicationView'
+import { RecoveryView } from './recovery/RecoveryView'
+import { ReviewsView } from './reviews/ReviewsView'
 import type { StartupState } from './startup'
 
 type Props = { startup: Promise<StartupState> }
@@ -24,7 +31,10 @@ export default function App({ startup }: Props) {
 export function StartupView({ state }: { state: StartupState | null }) {
   return (
     <main className="page">
-      <h1>Registry ポータル</h1>
+      <header className="page-header">
+        <h1>Registry ポータル</h1>
+        {state?.status === 'ready' && <NotificationsView api={state.api} onRelogin={state.relogin} />}
+      </header>
       {state === null || state.status === 'redirecting' ? (
         <p role="status">ログインしています…</p>
       ) : state.status === 'error' ? (
@@ -55,7 +65,17 @@ export function StartupView({ state }: { state: StartupState | null }) {
               でログインします。
             </p>
           </section>
-          <CatalogView api={state.api} onRelogin={state.relogin} />
+          <CatalogView
+            api={state.api}
+            canViewHistory={canViewAllHistory(state.me.roles)}
+            canManagePublication={state.me.roles.includes('Curator')}
+            onRelogin={state.relogin}
+          />
+          <ReviewsView api={state.api} roles={state.me.roles} onRelogin={state.relogin} />
+          <RecordPublicationView api={state.api} roles={state.me.roles} onRelogin={state.relogin} />
+          <AdministrationView api={state.api} roles={state.me.roles} onRelogin={state.relogin} />
+          <RecoveryView api={state.api} roles={state.me.roles} onRelogin={state.relogin} />
+          <RecordDraftsView api={state.api} roles={state.me.roles} teams={state.me.teams} onRelogin={state.relogin} />
         </>
       )}
     </main>

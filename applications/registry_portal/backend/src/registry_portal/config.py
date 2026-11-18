@@ -41,6 +41,30 @@ def load_auth_settings(environ: Mapping[str, str]) -> AuthSettings:
 
 
 @dataclass(frozen=True)
+class RegistrySettings:
+    """借用する既存 Registry の位置。利用者のリクエストからは受け取らない。"""
+
+    # 既存 Registry の ARN（arn:aws:agent-registry:<region>:<account>:registry/<id>）
+    arn: str
+    # Registry のリージョン。ARN から導出する
+    region: str
+
+
+_REGISTRY_ARN = re.compile(
+    r"arn:aws(?:-[a-z]+)*:agent-registry:(?P<region>[a-z0-9-]+):\d{12}:registry/[A-Za-z0-9]{12,16}"
+)
+
+
+def load_registry_settings(environ: Mapping[str, str]) -> RegistrySettings:
+    """環境変数から Registry の ARN とリージョンを読む。形式の誤りは ConfigurationError とする。"""
+    registry_arn = environ.get("REGISTRY_ARN", "").strip()
+    match = _REGISTRY_ARN.fullmatch(registry_arn)
+    if match is None:
+        raise ConfigurationError("設定が正しくありません: REGISTRY_ARN の形式が不正です")
+    return RegistrySettings(arn=registry_arn, region=match.group("region"))
+
+
+@dataclass(frozen=True)
 class DiscoverySettings:
     """JWT 認可の Registry に、発見用 M2M トークンで問い合わせるための設定。
 
@@ -63,12 +87,26 @@ class DiscoverySettings:
     scope: str
 
     @property
+    def registry_endpoint(self) -> str:
+        return f"https://agent-registry.{self.registry_region}.api.aws"
+
+    @property
     def discoverable_records_list_url(self) -> str:
         """ListDiscoverableRegistryRecords の宛先。ARN は1つの path 要素として符号化する（Botocore と同じ）。"""
         return (
-            f"https://agent-registry.{self.registry_region}.api.aws/registries/"
+            f"{self.registry_endpoint}/registries/"
             f"{quote(self.registry_arn, safe='')}/discoverable-records-list"
         )
+
+    @property
+    def discoverable_records_search_url(self) -> str:
+        """SearchDiscoverableRegistryRecords の宛先。Registry は本文の registryIds で指定する。"""
+        return f"{self.registry_endpoint}/discoverable-records-search"
+
+    @property
+    def discoverable_records_batch_url(self) -> str:
+        """BatchGetDiscoverableRegistryRecord の宛先。Registry は本文の entries で指定する。"""
+        return f"{self.registry_endpoint}/discoverable-records-batch"
 
 
 _REQUIRED_DISCOVERY_KEYS = (
@@ -76,9 +114,6 @@ _REQUIRED_DISCOVERY_KEYS = (
     "DISCOVERY_TOKEN_URL",
     "DISCOVERY_CLIENT_ID",
     "DISCOVERY_CLIENT_SECRET_ARN",
-)
-_REGISTRY_ARN = re.compile(
-    r"arn:aws(?:-[a-z]+)*:agent-registry:(?P<region>[a-z0-9-]+):\d{12}:registry/[A-Za-z0-9]{12,16}"
 )
 
 _SECRET_ARN = re.compile(
@@ -91,10 +126,12 @@ def load_discovery_settings(environ: Mapping[str, str]) -> DiscoverySettings:
     missing = [key for key in _REQUIRED_DISCOVERY_KEYS if not environ.get(key, "").strip()]
     if missing:
         raise ConfigurationError(f"発見設定が不足しています: {', '.join(missing)}")
-    registry_arn = environ["REGISTRY_ARN"].strip()
-    match = _REGISTRY_ARN.fullmatch(registry_arn)
-    if match is None:
-        raise ConfigurationError("発見設定が正しくありません: REGISTRY_ARN の形式が不正です")
+    try:
+        registry = load_registry_settings(environ)
+    except ConfigurationError:
+        raise ConfigurationError(
+            "発見設定が正しくありません: REGISTRY_ARN の形式が不正です"
+        ) from None
     token_url = environ["DISCOVERY_TOKEN_URL"].strip()
     if not token_url.startswith("https://"):
         raise ConfigurationError(
@@ -107,11 +144,34 @@ def load_discovery_settings(environ: Mapping[str, str]) -> DiscoverySettings:
             "発見設定が正しくありません: DISCOVERY_CLIENT_SECRET_ARN の形式が不正です"
         )
     return DiscoverySettings(
-        registry_arn=registry_arn,
-        registry_region=match.group("region"),
+        registry_arn=registry.arn,
+        registry_region=registry.region,
         token_url=token_url,
         client_id=environ["DISCOVERY_CLIENT_ID"].strip(),
         client_secret_arn=client_secret_arn,
         client_secret_region=secret_match.group("region"),
         scope=environ.get("DISCOVERY_SCOPE", "").strip(),
+    )
+
+
+@dataclass(frozen=True)
+class CatalogSettings:
+    """カタログの検索・詳細に使う任意の設定。"""
+
+    # 補助テーブル（DynamoDB）の名前。None なら所有チームの正本と公開版スナップショットを読まない
+    supplement_table_name: str | None
+    # A2A 検索用 metadata（isA2A）の補完と確認が終わったら true にする
+    a2a_search_enabled: bool
+
+
+def load_catalog_settings(environ: Mapping[str, str]) -> CatalogSettings:
+    """環境変数からカタログの設定を読み込む。真偽値の形式の誤りは ConfigurationError とする。"""
+    a2a_search = environ.get("A2A_SEARCH_ENABLED", "").strip()
+    if a2a_search not in ("", "true", "false"):
+        raise ConfigurationError(
+            "カタログ設定が正しくありません: A2A_SEARCH_ENABLED は true または false で指定してください"
+        )
+    return CatalogSettings(
+        supplement_table_name=environ.get("SUPPLEMENT_TABLE_NAME", "").strip() or None,
+        a2a_search_enabled=a2a_search == "true",
     )
