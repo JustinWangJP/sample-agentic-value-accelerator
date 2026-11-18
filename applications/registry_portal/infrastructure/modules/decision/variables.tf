@@ -83,6 +83,17 @@ variable "discovery_client_secret_arn" {
   description = "発見用 M2M client secret を保存した Secrets Manager の ARN"
 }
 
+variable "discovery_kms_key_arn" {
+  type        = string
+  description = "発見用 M2M secret を顧客管理 KMS キーで暗号化している場合の完全なキー ARN。指定すると決裁 Lambda に条件付きの kms:Decrypt を付ける。AWS 管理キー（aws/secretsmanager）なら null"
+  default     = null
+
+  validation {
+    condition     = var.discovery_kms_key_arn == null ? true : can(regex("^arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[A-Za-z0-9-]+$", var.discovery_kms_key_arn))
+    error_message = "KMS キーの完全な ARN を指定してください（エイリアスは使えません）。"
+  }
+}
+
 variable "discovery_scope" {
   type        = string
   description = "発見用 M2M に要求する scope。空文字なら client の既定値"

@@ -22,4 +22,6 @@ module "decision" {
   discovery_client_id         = var.discovery_client_id
   discovery_client_secret_arn = var.discovery_client_secret_arn
   discovery_scope             = var.discovery_scope
+  # secret が顧客管理 KMS キーで暗号化されている場合だけ指定する（本体スタックと同じ値）
+  discovery_kms_key_arn = var.discovery_kms_key_arn
 }

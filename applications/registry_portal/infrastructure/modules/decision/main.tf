@@ -36,6 +36,21 @@ resource "aws_iam_role_policy" "decision" {
   })
 }
 
+# 発見用 secret が顧客管理 KMS キーで暗号化されている場合だけ、取り込みで secret を読むための
+# kms:Decrypt を付ける（#49）。本体スタックの管理 Lambda と同じく、Secrets Manager 経由で
+# その secret の暗号化コンテキストに限る。基本の policy（テンプレート）は条件分岐を持たせないため別の資源にする
+resource "aws_iam_role_policy" "decision_discovery_kms" {
+  count = var.discovery_kms_key_arn == null ? 0 : 1
+  name  = "${local.name}-discovery-kms"
+  role  = aws_iam_role.decision.name
+  policy = templatefile("${path.module}/discovery-kms-policy.json.tftpl", {
+    kms_key_arn          = var.discovery_kms_key_arn
+    discovery_secret_arn = var.discovery_client_secret_arn
+    # secret のリージョンは本体スタックと同じく ARN から導出する
+    secret_region = split(":", var.discovery_client_secret_arn)[3]
+  })
+}
+
 resource "aws_lambda_function" "decision" {
   function_name    = local.name
   role             = aws_iam_role.decision.arn
