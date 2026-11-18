@@ -187,7 +187,7 @@ GitHub Actions（`.github/workflows/registry-portal-ci.yml`）では上記に加
 
 Issue #2 の読み取り確認で、既存 Registry、Cognito User Pool、SSO の IdP 名、発見用 M2M client と secret ARN を確定してください。既存 Registry と User Pool 本体は Terraform の管理対象にしません。User Pool の既存ドメインを使い、ポータル用の client、リソースサーバー、業務ロールと `team-*` グループだけを追加します。既に同名のグループや `registry-portal` リソースサーバーがある場合は、その所有者と調整して import してから plan を確認してください。
 
-1. 初回だけ、Identity Center と state バケットを管理できる短期認証情報で bootstrap を実行します。`infrastructure/bootstrap/terraform.tfvars.example` を同ディレクトリの `terraform.tfvars` にコピーし、値を置き換えます。
+1. 初回だけ、state バケットを管理できる短期認証情報で bootstrap を実行します。IAM Identity Center のない個人アカウントでは、MFA 付きで引き受けた IAM ロール `RegistryPortalDeployer` を使い、Terraform には手順 3 の `credential_process` の profile を渡します（例: `aws sts get-caller-identity --profile registry-deploy` で MFA コードを入力してから `export AWS_PROFILE=registry-deploy-tf`）。`infrastructure/bootstrap/terraform.tfvars.example` を同ディレクトリの `terraform.tfvars` にコピーし、値を置き換えます。
 
    ```bash
    cd applications/registry_portal
@@ -197,13 +197,31 @@ Issue #2 の読み取り確認で、既存 Registry、Cognito User Pool、SSO �
    terraform -chdir=infrastructure/bootstrap apply bootstrap.tfplan
    ```
 
-   bootstrap は state バケットと `RegistryPortalDeployer` permission set、その既存グループへの割当てを作ります。state バケットはバージョニング、暗号化、公開アクセス禁止を有効にし、state とロックの内容へのアクセスをこの permission set の SSO ロールに限定します。`bootstrap_admin_role_arn` には、bootstrap に使用する短期認証情報の元となる既存 IAM ロールの ARN を指定します（STS セッション ARN は指定しません）。このロールは `HeadBucket` に必要なバケット一覧の拒否だけを免除され、state とロックの内容を読み書きする例外にはなりません。バケット管理の権限は既存の管理者ポリシーで付与してください。bootstrap 自身の state は初回管理者が暗号化した場所で保管してください。本体の state と混ぜません。permission set は Registry 本体とレコードへの書き込みを明示的に Deny します。CloudFront の作成や API Gateway の一覧など、作成前に ARN がない操作にはサービスに限定した権限を使います。管理 Lambda の実行ロールを渡せるのは Lambda サービスだけです。
+   bootstrap は state バケットを作ります。state バケットはバージョニング、暗号化、公開アクセス禁止を有効にし、state とロックの内容へのアクセスを `deployer_principal_arn` の主体に限定します。個人アカウントでは IAM ロール `RegistryPortalDeployer` の ARN（`arn:aws:iam::<アカウント ID>:role/RegistryPortalDeployer`）を指定します。`aws:PrincipalArn` にはセッションではなくロールの ARN が入るため、STS セッション ARN は指定しません。IAM Identity Center を使う場合だけ、`identity_center_instance_arn` と `deployer_group_id` を指定し、`deployer_principal_arn` を `AWSReservedSSO_RegistryPortalDeployer_*` のロール ARN にします。このときは `RegistryPortalDeployer` permission set と、その既存グループへの割当ても作ります。`bootstrap_admin_role_arn` には、bootstrap に使用する短期認証情報の元となる既存 IAM ロールの ARN を指定します（STS セッション ARN は指定しません）。個人アカウントで `RegistryPortalDeployer` 自身が bootstrap を実行する場合は、同じロール ARN を指定します。このロールは `HeadBucket` に必要なバケット一覧の拒否だけを免除され、state とロックの内容を読み書きする例外にはなりません。バケット管理の権限は既存の管理者ポリシーで付与してください。bootstrap 自身の state は初回管理者が暗号化した場所で保管してください。本体の state と混ぜません。Identity Center の permission set は Registry 本体とレコードへの書き込みを明示的に Deny します。CloudFront の作成や API Gateway の一覧など、作成前に ARN がない操作にはサービスに限定した権限を使います。管理 Lambda の実行ロールを渡せるのは Lambda サービスだけです。
 
-   Issue #2 で `RegistryPortalDeployer` permission set が作成済みの場合は、新規作成せず `aws_ssoadmin_permission_set.deployer` に import します。既存の inline policy とグループへの account assignment も確認し、対応する `aws_ssoadmin_permission_set_inline_policy.deployer` と `aws_ssoadmin_account_assignment.deployer` の import、および既存の管理元との所有の調整を済ませてから plan を確認してください。同じ資源を複数の state で管理しないでください。
+   Identity Center を使い、Issue #2 で `RegistryPortalDeployer` permission set が作成済みの場合は、新規作成せず `aws_ssoadmin_permission_set.deployer[0]` に import します。既存の inline policy とグループへの account assignment も確認し、対応する `aws_ssoadmin_permission_set_inline_policy.deployer[0]` と `aws_ssoadmin_account_assignment.deployer[0]` の import、および既存の管理元との所有の調整を済ませてから plan を確認してください。同じ資源を複数の state で管理しないでください。
 
 2. `infrastructure/backend.hcl.example` と `infrastructure/terraform.tfvars.example` を、それぞれ `infrastructure/backend.hcl` と `infrastructure/dev.tfvars` にコピーします。bootstrap と同じアカウント、バケット名、名前の接頭辞を設定します。secret 値は入力しません。既存 secret が顧客管理 KMS キーを使う場合だけ `discovery_kms_key_arn` を設定します。管理 Lambda には、そのキーの復号を Secrets Manager 経由かつ対象 secret の暗号化コンテキストに限定して付けます。
 
-3. AWS CLI の SSO profile に `RegistryPortalDeployer` を設定し、ログインして配信します。環境変数のアクセスキーは解除してください。profile の `sso_region` は Identity Center の既存リージョンを使います。
+3. `RegistryPortalDeployer` の短期認証情報を使う AWS CLI の profile を用意して配信します。環境変数のアクセスキー（`AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_SESSION_TOKEN`）は解除してください。profile より優先されます。
+
+   個人アカウント（IAM Identity Center なし）では、`role_arn` と `mfa_serial` を持つロールの profile（例: `registry-deploy`）を `AWS_PROFILE` に指定します。Terraform の AWS provider は MFA コードを入力できず、`mfa_serial` 付きの profile をそのまま渡すと `AssumeRoleTokenProviderNotSetError` で失敗します。そのため、AWS CLI がキャッシュした短期認証情報を `credential_process` で渡す Terraform 用の profile を `~/.aws/config` に追加します。名前は既定で `<AWS_PROFILE>-tf` で、別の名前にする場合は `TERRAFORM_AWS_PROFILE` で指定します。
+
+   ```ini
+   [profile registry-deploy-tf]
+   credential_process = aws configure export-credentials --profile registry-deploy --format process
+   region = us-east-1
+   ```
+
+   ```bash
+   unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+   aws sts get-caller-identity --profile registry-deploy   # MFA コードを入力し、短期認証情報をキャッシュする
+   AWS_PROFILE=registry-deploy scripts/deploy.sh infrastructure/backend.hcl infrastructure/dev.tfvars
+   ```
+
+   スクリプトは、ロールの profile の主体が `assumed-role/RegistryPortalDeployer/*` であること、Terraform 用の profile の `credential_process` がそのロールの profile を参照し、同じセッションになることを確認してから、Terraform をその profile で実行します。キャッシュの期限（ロールの最大セッション時間）が切れていたら、`aws sts get-caller-identity --profile registry-deploy` を実行し直してください。
+
+   IAM Identity Center を使う場合は、SSO profile に `RegistryPortalDeployer` permission set を設定し、ログインして配信します。profile の `sso_region` は Identity Center の既存リージョンを使います。主体は `AWSReservedSSO_RegistryPortalDeployer_*` に限ります。
 
    ```bash
    aws sso login --profile registry-portal-dev
@@ -211,6 +229,8 @@ Issue #2 の読み取り確認で、既存 Registry、Cognito User Pool、SSO �
    ```
 
    スクリプトは SDK 同梱 ZIP を生成し、S3 backend の暗号化と `use_lockfile=true` を強制して初期化します。保存した plan を JSON ガードに通し、同じ plan を表示します。内容を確認して `apply` と入力すると、その保存済み plan だけを反映します。中止、ガード違反、途中のコマンド失敗では後続の操作を行いません。CI 内からの実行と長期アクセスキーは拒否します。
+
+   個人アカウントの IAM ロール `RegistryPortalDeployer` は `AdministratorAccess` を持ち、Identity Center の permission set（Registry への書き込みを明示的に Deny し、対象の ARN と action に絞ったもの）より権限が広くなります。Registry に書き込めるロールを新しく作ることも IAM では防げません。この差は、plan の JSON ガード（`scripts/check_plan.py`）と apply 前の目視確認で補います。`apply` と入力する前に、既存 Registry の作成・変更・削除がないこと、作成・変更される IAM ロールとポリシーが意図した ARN と action に限られることを必ず確認してください。デプロイ対象が固まったら、必要なサービスだけのポリシーにするか、作成するロールに permissions boundary を必須にすることを検討します。
 
 4. apply 後は Terraform の `frontend_config` 出力を使って SPA をビルドします。`openid registry-portal/catalog.read` を含む scope と専用の HTTP API URL が設定されます。ハッシュ付きアセットを S3 に同期し、最後に `index.html` を非キャッシュで配置して CloudFront を無効化します。生成 ZIP と plan JSON は一時ディレクトリから削除します。
 
@@ -248,7 +268,7 @@ terraform -chdir=infrastructure/bootstrap test
 - [ ] SPA の深い URL を再読み込みでき、API の 401、403、404 が HTML の成功応答にならない。
 - [ ] scope 不足、ID トークン、別 issuer、別 client、発見用 M2M client のトークンで API を呼び出せない。
 - [ ] API と Lambda のログに JWT、secret、応答本文が出ていない。
-- [ ] Terraform plan に既存 Registry の作成・変更・削除がなく、専用 permission set と実行ロールの IAM が意図した ARN と action に限定される。
+- [ ] Terraform plan に既存 Registry の作成・変更・削除がなく、実行ロールの IAM（Identity Center を使う場合は専用 permission set も）が意図した ARN と action に限定される。
 
 ## custom Agent の下書き（#7）
 
