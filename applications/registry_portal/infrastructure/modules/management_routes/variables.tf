@@ -18,17 +18,6 @@ variable "jwt_authorizer_id" {
   }
 }
 
-variable "authorization_scopes" {
-  type        = list(string)
-  description = "管理 handler の route で JWT authorizer が検証するカスタム scope。本体スタックのリソースサーバーが定義し、人間用 SPA client に許可したもの"
-  default     = ["registry-portal/catalog.read"]
-
-  validation {
-    condition     = length(var.authorization_scopes) > 0
-    error_message = "route ごとに検証するカスタム scope を1つ以上指定してください。"
-  }
-}
-
 variable "management_integration_id" {
   type        = string
   description = "既存 HTTP API にある、管理 Lambda への統合（integration）の ID。カタログや下書きの route と同じ統合を指定する"

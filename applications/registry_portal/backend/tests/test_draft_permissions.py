@@ -114,9 +114,11 @@ def test_routes_module_assigns_only_portal_added_management_routes():
         "aws_apigatewayv2_route",
         "aws_lambda_permission",
     ]
-    assert 'target             = "integrations/${var.management_integration_id}"' in main
-    assert 'authorization_type = "JWT"' in main
-    assert "authorizer_id      = var.jwt_authorizer_id" in main
+    assert re.search(r'target\s+= "integrations/\$\{var\.management_integration_id\}"', main)
+    assert re.search(r'authorization_type\s+= "JWT"', main)
+    assert re.search(r"authorizer_id\s+= var\.jwt_authorizer_id", main)
+    # 本体スタックの route と同じポータル用のカスタム scope を JWT authorizer で検証する
+    assert re.search(r'authorization_scopes = \["registry-portal/catalog\.read"\]', main)
     paths = re.findall(r'path\s*=\s*"([^"]+)"', main)
     assert paths == [
         "api/admin/records",

@@ -151,13 +151,14 @@ resource "aws_apigatewayv2_integration" "decision" {
 }
 
 resource "aws_apigatewayv2_route" "decision" {
-  for_each             = toset(local.routes)
-  api_id               = var.http_api_id
-  route_key            = each.value
-  target               = "integrations/${aws_apigatewayv2_integration.decision.id}"
-  authorization_type   = "JWT"
-  authorizer_id        = var.jwt_authorizer_id
-  authorization_scopes = var.authorization_scopes
+  for_each           = toset(local.routes)
+  api_id             = var.http_api_id
+  route_key          = each.value
+  target             = "integrations/${aws_apigatewayv2_integration.decision.id}"
+  authorization_type = "JWT"
+  authorizer_id      = var.jwt_authorizer_id
+  # 本体スタックのリソースサーバーが定義し、人間用 SPA client に許可したポータル用の scope
+  authorization_scopes = ["registry-portal/catalog.read"]
 }
 
 # HTTP API から決裁 Lambda を呼び出す許可。審査と決裁の path（/api/reviews 以下）、Admin・Curator の

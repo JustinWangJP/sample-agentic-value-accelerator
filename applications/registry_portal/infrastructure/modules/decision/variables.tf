@@ -68,17 +68,6 @@ variable "jwt_authorizer_id" {
   }
 }
 
-variable "authorization_scopes" {
-  type        = list(string)
-  description = "決裁の route で JWT authorizer が検証するカスタム scope。本体スタックのリソースサーバーが定義し、人間用 SPA client に許可したもの"
-  default     = ["registry-portal/catalog.read"]
-
-  validation {
-    condition     = length(var.authorization_scopes) > 0
-    error_message = "route ごとに検証するカスタム scope を1つ以上指定してください。"
-  }
-}
-
 variable "discovery_token_url" {
   type        = string
   description = "取り込み時の公開承認済みの版を取得する発見用 M2M の HTTPS トークンエンドポイント"
