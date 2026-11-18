@@ -5,6 +5,8 @@ locals {
   secret_region   = split(":", var.discovery_client_secret_arn)[3]
   log_group_arn   = "arn:aws:logs:us-east-1:${var.aws_account_id}:log-group:/aws/lambda/${var.name_prefix}-management"
   registry_record = "${var.registry_arn}/record/*"
+  # plan の段階で値が確定するよう、名前から組み立てる（追加スタックの supplement_table_arn にも使う）
+  supplement_table_arn = "arn:aws:dynamodb:us-east-1:${var.aws_account_id}:table/${aws_dynamodb_table.auxiliary.name}"
 }
 
 resource "aws_cognito_resource_server" "portal" {
@@ -13,7 +15,7 @@ resource "aws_cognito_resource_server" "portal" {
   user_pool_id = var.cognito_user_pool_id
   scope {
     scope_name        = "catalog.read"
-    scope_description = "ポータルの主体と公開承認済みカタログ項目を閲覧する"
+    scope_description = "ポータルの API を呼び出す。route ごとに検証し、業務ロールの判定は handler が行う"
   }
 }
 
@@ -71,7 +73,7 @@ resource "aws_dynamodb_table" "auxiliary" {
   server_side_encryption { enabled = true }
   point_in_time_recovery { enabled = true }
   ttl {
-    attribute_name = "expires_at"
+    attribute_name = "expiresAt"
     enabled        = true
   }
   lifecycle { prevent_destroy = true }
@@ -125,6 +127,12 @@ resource "aws_iam_role_policy" "management" {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = var.discovery_client_secret_arn
+      },
+      {
+        # カタログ詳細が所有チームの正本と公開版のスナップショットを読む。下書きの権限は management スタックが付ける
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem"]
+        Resource = local.supplement_table_arn
       }
       ], var.discovery_kms_key_arn == null ? [] : [{
         Effect   = "Allow"
@@ -157,6 +165,8 @@ resource "aws_lambda_function" "management" {
       DISCOVERY_CLIENT_ID         = var.discovery_client_id
       DISCOVERY_CLIENT_SECRET_ARN = var.discovery_client_secret_arn
       DISCOVERY_SCOPE             = var.discovery_scope
+      SUPPLEMENT_TABLE_NAME       = aws_dynamodb_table.auxiliary.name
+      # A2A_SEARCH_ENABLED は isA2A の補完と確認（#16）が終わるまで設定しない（未設定は無効）
     }
   }
   depends_on = [aws_iam_role_policy.management, aws_cloudwatch_log_group.management]
@@ -167,8 +177,9 @@ resource "aws_apigatewayv2_api" "portal" {
   protocol_type = "HTTP"
   cors_configuration {
     allow_origins = [local.spa_origin]
-    allow_methods = ["GET", "OPTIONS"]
-    allow_headers = ["authorization", "content-type"]
+    # SPA は下書きの更新に PATCH、申請・決裁などに POST と Idempotency-Key を使う
+    allow_methods = ["GET", "POST", "PATCH", "OPTIONS"]
+    allow_headers = ["authorization", "content-type", "idempotency-key"]
     max_age       = 300
   }
 }
@@ -193,7 +204,7 @@ resource "aws_apigatewayv2_integration" "management" {
 }
 
 resource "aws_apigatewayv2_route" "management" {
-  for_each             = toset(["GET /api/me", "GET /api/catalog"])
+  for_each             = toset(["GET /api/me", "GET /api/catalog", "POST /api/catalog/search", "GET /api/catalog/{recordId}"])
   api_id               = aws_apigatewayv2_api.portal.id
   route_key            = each.value
   target               = "integrations/${aws_apigatewayv2_integration.management.id}"
@@ -219,12 +230,19 @@ resource "aws_apigatewayv2_stage" "default" {
   }
 }
 
+# 呼び出し許可は本体スタックの route のメソッドと path に限る。{recordId} は * に置き換える。
+# 決裁と管理の追加 route の許可は、それぞれの追加スタックが作る
 resource "aws_lambda_permission" "api" {
-  for_each       = toset(["me", "catalog"])
-  statement_id   = "AllowApiGateway-${each.value}"
+  for_each = {
+    me             = "GET/api/me"
+    catalog        = "GET/api/catalog"
+    catalog-search = "POST/api/catalog/search"
+    catalog-detail = "GET/api/catalog/*"
+  }
+  statement_id   = "AllowApiGateway-${each.key}"
   action         = "lambda:InvokeFunction"
   function_name  = aws_lambda_function.management.function_name
   principal      = "apigateway.amazonaws.com"
   source_account = var.aws_account_id
-  source_arn     = "${aws_apigatewayv2_api.portal.execution_arn}/*/GET/api/${each.value}"
+  source_arn     = "${aws_apigatewayv2_api.portal.execution_arn}/*/${each.value}"
 }

@@ -49,6 +49,8 @@ resource "aws_apigatewayv2_route" "management" {
   target             = "integrations/${var.management_integration_id}"
   authorization_type = "JWT"
   authorizer_id      = var.jwt_authorizer_id
+  # 本体スタックのリソースサーバーが定義し、人間用 SPA client に許可したポータル用の scope
+  authorization_scopes = ["registry-portal/catalog.read"]
 }
 
 # HTTP API から管理 Lambda を呼び出す許可。この module が割り当てる path だけに限る
