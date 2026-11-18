@@ -96,7 +96,7 @@ variable "discovery_scope" {
   default     = ""
 }
 variable "lambda_zip_path" {
-  description = "固定版 SDK を同梱した管理 Lambda ZIP の絶対パス。scripts/build_lambda.py で生成する。"
+  description = "管理・決裁・イベント処理 Lambda 共通の ZIP のパス。scripts/build_lambda.py で生成する。deploy.sh は一時ディレクトリの ZIP を指定する。"
   type        = string
-  default     = "../build/management.zip"
+  default     = "../backend/build/lambda.zip"
 }
