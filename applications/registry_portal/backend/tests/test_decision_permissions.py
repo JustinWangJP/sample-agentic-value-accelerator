@@ -81,6 +81,8 @@ def test_module_creates_the_decision_lambda_with_its_own_role_and_log_group():
         "aws_cloudwatch_log_group",
         "aws_iam_role",
         "aws_iam_role_policy",
+        # 発見用 secret が顧客管理キーの場合だけ付ける kms:Decrypt（#49）
+        "aws_iam_role_policy",
         "aws_lambda_function",
         "aws_apigatewayv2_integration",
         "aws_apigatewayv2_route",
@@ -174,3 +176,94 @@ def test_root_module_applies_the_decision_module():
             assert re.search(rf"^\s*{name}\s*=\s*", block, re.MULTILINE), name
     # CI では検証だけを行うため、state の保存先は部分設定にして環境ごとに渡す
     assert 'backend "s3" {}' in (ROOT / "versions.tf").read_text()
+
+
+KMS_KEY_ARN = "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000000"
+DISCOVERY_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:discovery-AbCdEf"
+
+
+def _discovery_kms_policy_block() -> str:
+    main = (MODULE / "main.tf").read_text()
+    (block,) = re.findall(
+        r'^resource "aws_iam_role_policy" "decision_discovery_kms" \{(.*?)\n\}',
+        main,
+        re.DOTALL | re.MULTILINE,
+    )
+    return block
+
+
+def test_discovery_kms_decrypt_is_not_granted_when_key_arn_is_null():
+    """顧客管理キーを指定しない（null）とき、決裁 Lambda の実行ロールに KMS の権限が増えない（#49）。"""
+    # 常に付く基本の policy には KMS の action を含めない
+    assert not any(
+        action.startswith("kms:")
+        for statement in render_policy()["Statement"]
+        for action in statement["Action"]
+    )
+    # KMS の policy は別の資源にし、キー ARN が null なら作らない
+    block = _discovery_kms_policy_block()
+    assert re.search(r"^\s*count\s*=\s*var\.discovery_kms_key_arn == null \? 0 : 1$", block, re.M)
+    assert re.search(r"^\s*role\s*=\s*aws_iam_role\.decision\.name$", block, re.M)
+
+
+def test_discovery_kms_decrypt_only_allows_the_key_via_secrets_manager_for_the_secret():
+    """キー ARN を指定したとき、そのキーへの kms:Decrypt だけを、本体スタックと同じ 2 つの条件付きで許可する。"""
+    block = _discovery_kms_policy_block()
+    # 描画に渡す値は、キー ARN と secret ARN、secret の ARN から導出したリージョン
+    assert re.search(r"^\s*kms_key_arn\s*=\s*var\.discovery_kms_key_arn$", block, re.M)
+    assert re.search(
+        r"^\s*discovery_secret_arn\s*=\s*var\.discovery_client_secret_arn$", block, re.M
+    )
+    assert re.search(
+        r'^\s*secret_region\s*=\s*split\(":", var\.discovery_client_secret_arn\)\[3\]$',
+        block,
+        re.M,
+    )
+    (template_name,) = re.findall(r'templatefile\("\$\{path\.module\}/([^"]+)"', block)
+    rendered = (
+        (MODULE / template_name)
+        .read_text()
+        .replace("${kms_key_arn}", KMS_KEY_ARN)
+        .replace("${discovery_secret_arn}", DISCOVERY_SECRET_ARN)
+        .replace("${secret_region}", "us-east-1")
+    )
+    assert "${" not in rendered
+    statements = [
+        {key: value for key, value in statement.items() if key != "Sid"}
+        for statement in json.loads(rendered)["Statement"]
+    ]
+    assert statements == [
+        {
+            "Effect": "Allow",
+            "Action": ["kms:Decrypt"],
+            "Resource": KMS_KEY_ARN,
+            "Condition": {
+                "StringEquals": {"kms:ViaService": "secretsmanager.us-east-1.amazonaws.com"},
+                "StringLike": {"kms:EncryptionContext:SecretARN": DISCOVERY_SECRET_ARN},
+            },
+        }
+    ]
+
+
+def test_discovery_kms_key_arn_is_an_optional_full_key_arn_in_both_modules():
+    """ルートとモジュールの両方に、既定 null で完全なキー ARN だけを受け付ける変数がある。"""
+    for variables_path in (ROOT / "variables.tf", MODULE / "variables.tf"):
+        variables = variables_path.read_text()
+        (block,) = re.findall(
+            r'^variable "discovery_kms_key_arn" \{(.*?)\n\}', variables, re.DOTALL | re.M
+        )
+        assert re.search(r"^\s*type\s*=\s*string$", block, re.M), variables_path
+        assert re.search(r"^\s*default\s*=\s*null$", block, re.M), variables_path
+        assert re.search(r'^\s*description\s*=\s*".+"$', block, re.M), variables_path
+        assert "var.discovery_kms_key_arn == null ? true :" in block, variables_path
+        (pattern,) = re.findall(r'regex\("([^"]+)"', block)
+        pattern = pattern.replace("\\\\", "\\")
+        assert re.fullmatch(pattern, KMS_KEY_ARN)
+        assert re.fullmatch(pattern, "arn:aws:kms:ap-northeast-1:123456789012:key/mrk-0123abcd")
+        for invalid in (
+            "arn:aws:kms:us-east-1:123456789012:alias/aws/secretsmanager",
+            "arn:aws:kms:us-east-1:123456789012:key/*",
+            "00000000-0000-0000-0000-000000000000",
+            "*",
+        ):
+            assert not re.fullmatch(pattern, invalid), invalid
