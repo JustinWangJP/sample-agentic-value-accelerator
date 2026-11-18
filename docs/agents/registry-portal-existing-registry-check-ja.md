@@ -462,8 +462,10 @@ break-glass は、ポータルを経由できない緊急時だけ使います�
 
 記録には次の内容が含まれます。
 
-- [ ] Registry の名前、ID、ARN、リージョン、名前空間、状態、確認日時（手順 1・2）
-- [ ] 自動承認の判定（`autoApprovalRules` の値）（手順 2）
+
+
+- [x] Registry の名前、ID、ARN、リージョン、名前空間、状態、確認日時（手順 1・2）
+- [x] 自動承認の判定（`autoApprovalRules` の値）（手順 2）
 - [ ] `AGENT` が使えるフィールドと、`isA2A` の有無・定義場所・型・必須かどうか（手順 3）
 - [ ] 認可タイプ、User Pool ID、発見用 client_id、secret の保管先 ARN、Cognito と Registry それぞれの scope（手順 4）
 - [ ] 全件数、種別・状態ごとの件数、作成経路ごとの件数と根拠、不明の件数（手順 5）
