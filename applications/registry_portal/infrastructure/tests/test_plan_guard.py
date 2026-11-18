@@ -19,6 +19,10 @@ TEMPLATE_VALUES = {
     ),
     "log_group_arn": "arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda/portal",
     "dead_letter_queue_arn": "arn:aws:sqs:us-east-1:123456789012:registry-portal-events-dlq",
+    "kms_key_arn": (
+        "arn:aws:kms:us-east-1:123456789012:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+    ),
+    "secret_region": "us-east-1",
 }
 
 
@@ -118,6 +122,11 @@ class PlanGuardTests(unittest.TestCase):
             (
                 "module.decision.aws_iam_role_policy.decision",
                 modules / "decision/decision-policy.json.tftpl",
+            ),
+            (
+                # 発見用 secret が顧客管理 KMS キーで暗号化されている場合だけ付ける policy（#49）
+                "module.decision.aws_iam_role_policy.decision_discovery_kms[0]",
+                modules / "decision/discovery-kms-policy.json.tftpl",
             ),
             (
                 "module.notification_events.aws_iam_role_policy.events",
