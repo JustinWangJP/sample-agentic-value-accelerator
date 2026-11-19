@@ -176,6 +176,38 @@ class PlanGuardTests(unittest.TestCase):
                     result = run_guard(saved.name)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_function_url_is_rejected_from_either_plan_section(self):
+        # Function URL は planned_values と resource_changes のどちらに現れても中止する
+        resource = {
+            "address": "aws_lambda_function_url.api",
+            "mode": "managed",
+            "type": "aws_lambda_function_url",
+            "values": {"function_name": "registry-portal", "authorization_type": "NONE"},
+        }
+        for source, after in [
+            ("planned_values", None),
+            ("resource_changes", resource["values"]),
+            # 削除だけの変更（after が null）でも検出する
+            ("resource_changes", None),
+        ]:
+            with self.subTest(source=source, after=after):
+                plan = {
+                    "format_version": "1.2",
+                    "resource_changes": [],
+                    "planned_values": {"root_module": {"resources": []}},
+                }
+                if source == "planned_values":
+                    plan["planned_values"]["root_module"]["resources"] = [resource]
+                else:
+                    change = {key: resource[key] for key in ("address", "mode", "type")}
+                    plan["resource_changes"] = [dict(change, change={"after": after})]
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as saved:
+                    json.dump(plan, saved)
+                    saved.flush()
+                    result = run_guard(saved.name)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("Function URL は使用できません", result.stderr)
+
     def test_every_provider_managed_policy_grant_is_rejected(self):
         fixture = json.loads((FIXTURES / "managed-policy-paths.json").read_text())
         for resource in fixture["planned_values"]["root_module"]["resources"]:

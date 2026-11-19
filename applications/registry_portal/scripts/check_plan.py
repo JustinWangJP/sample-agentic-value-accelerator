@@ -135,14 +135,13 @@ def check_plan(plan: dict[str, Any]) -> list[str]:
             "registry" in kind and ("agent_registry" in kind or "agentcore" in kind)
         ):
             errors.append(f"{address}: 既存 Registry を Terraform の管理対象にできません")
-        if kind == "aws_lambda_function_url":
-            errors.append(f"{address}: Function URL は使用できません")
         if resource["type"] in POLICY_TYPES:
             unknown = resource["change"].get("after_unknown", {})
             if resource["type"] == "aws_iam_role" and unknown.get("managed_policy_arns"):
                 errors.append(f"{address}: 未確定の managed policy の付与は検査できません")
             if any(unknown.get(key) for key in ("policy", "inline_policy")):
                 errors.append(f"{address}: 未確定の IAM policy は検査できません")
+    # 計画後の値（planned_values）と変更（削除を含む resource_changes）を 1 つの流れで検査する
     resources = _resources(root)
     resources += [
         dict(resource, values=resource["change"].get("after") or {})
@@ -162,7 +161,7 @@ def check_plan(plan: dict[str, Any]) -> list[str]:
         if kind not in POLICY_TYPES:
             continue
         scoped = ROLE_SCOPED_ACTIONS.get(address, set()) if kind == "aws_iam_role_policy" else set()
-        for policy in _policies(resource.get("values", {})):
+        for policy in _policies(values):
             statements = policy["Statement"]
             if isinstance(statements, dict):
                 statements = [statements]
