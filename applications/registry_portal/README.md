@@ -279,6 +279,8 @@ terraform -chdir=infrastructure/bootstrap test
 - [ ] scope 不足、ID トークン、別 issuer、別 client、発見用 M2M client のトークンで API を呼び出せない。
 - [ ] API と Lambda のログに JWT、secret、応答本文が出ていない。
 - [ ] Terraform plan に既存 Registry の作成・変更・削除がなく、実行ロールの IAM（Identity Center を使う場合は専用 permission set も）が意図した ARN と action に限定される。
+- [ ] 下書きの作成から申請、申請者・最終編集者以外の Curator による公開承認までを画面で通せる。申請者・最終編集者本人が承認すると 403 `FORBIDDEN` になる（Admin が Curator を兼ねていても同じ）。
+- [ ] 決裁ロールの IAM 境界を確認する。決裁 Lambda の実行ロールでは `UpdateRegistryRecordStatus` と読み取りだけが許可され、descriptor の作成・更新（`CreateRegistryRecord`・`UpdateRegistryRecord`）と申請（`SubmitRegistryRecordForApproval`）は拒否される（IAM の policy simulator などで確認する）。
 
 ## custom Agent の下書き（#7）
 
