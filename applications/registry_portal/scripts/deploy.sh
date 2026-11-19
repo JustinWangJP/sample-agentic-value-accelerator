@@ -52,10 +52,10 @@ tf() { AWS_PROFILE="$terraform_profile" terraform -chdir="$infra_dir" "$@"; }
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/registry-portal-deploy.XXXXXX")"
 trap 'rm -rf "$work_dir"' EXIT
-python3 "$portal_dir/scripts/build_lambda.py" --output "$work_dir/management.zip"
+python3 "$portal_dir/scripts/build_lambda.py" --output "$work_dir/lambda.zip"
 tf init -input=false -reconfigure -backend-config="$backend_file" -backend-config=encrypt=true -backend-config=use_lockfile=true
 tf validate
-tf plan -input=false -var-file="$vars_file" -var="lambda_zip_path=$work_dir/management.zip" -out="$work_dir/approved.tfplan"
+tf plan -input=false -var-file="$vars_file" -var="lambda_zip_path=$work_dir/lambda.zip" -out="$work_dir/approved.tfplan"
 tf show -json "$work_dir/approved.tfplan" > "$work_dir/plan.json"
 python3 "$portal_dir/scripts/check_plan.py" "$work_dir/plan.json"
 tf show -no-color "$work_dir/approved.tfplan"

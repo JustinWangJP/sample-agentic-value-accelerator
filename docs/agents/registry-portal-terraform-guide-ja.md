@@ -155,12 +155,12 @@ import ID の形式は AWS provider のバージョンで変わることがあ�
 ```bash
 # 例: 本体スタックに既存のグループを取り込む
 cd applications/registry_portal
-python3 scripts/build_lambda.py --output "$PWD/build/management.zip"
+python3 scripts/build_lambda.py --output "$PWD/build/lambda.zip"
 USER_POOL_ID='dev.tfvars の cognito_user_pool_id'
 AWS_PROFILE=registry-deploy-tf terraform -chdir=infrastructure import -var-file=dev.tfvars \
-  -var="lambda_zip_path=$PWD/build/management.zip" \
+  -var="lambda_zip_path=$PWD/build/lambda.zip" \
   'aws_cognito_user_group.business["registry-publisher"]' "$USER_POOL_ID/registry-publisher"
-rm "$PWD/build/management.zip"
+rm "$PWD/build/lambda.zip"
 ```
 
 ### 2.3 作らないもの
@@ -357,7 +357,7 @@ cd applications/registry_portal
 python3 scripts/build_lambda.py
 ```
 
-出力先は既定で `backend/build/lambda.zip` です。`--output` で変更した場合は tfvars のパスも合わせてください。`backend/build/`、`infrastructure/backend.hcl` と追加スタックの `backend.hcl` は `.gitignore` の対象です。本体の `deploy.sh` は同じビルドスクリプトで一時 ZIP を生成します。
+出力先は既定で `backend/build/lambda.zip` です。`--output` で変更した場合は tfvars のパスも合わせてください。`backend/build/`、`infrastructure/backend.hcl` と追加スタックの `backend.hcl` は `.gitignore` の対象です。本体の `deploy.sh` は同じビルドスクリプトで、一時ディレクトリに共通 ZIP（`lambda.zip`）を生成します。
 
 ### 4.5 追加スタックを適用する
 
