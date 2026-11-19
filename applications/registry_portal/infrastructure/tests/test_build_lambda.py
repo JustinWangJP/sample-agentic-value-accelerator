@@ -57,7 +57,7 @@ class BuildLambdaTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             make_project(root)
-            output = root / "build/management.zip"
+            output = root / "build/lambda.zip"
             result = build(root, "--output", str(output))
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual(json.loads(result.stdout)["lambda_zip"], str(output.resolve()))

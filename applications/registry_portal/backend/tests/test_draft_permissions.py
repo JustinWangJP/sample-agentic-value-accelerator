@@ -140,8 +140,12 @@ def test_routes_module_assigns_only_portal_added_management_routes():
         "api/operations/*",
         "api/records/*/submit",
     ]
-    (source_arn,) = re.findall(r"source_arn\s*=\s*\"([^\"]+)\"", main)
-    assert source_arn.split("/*/*")[1] == "/${each.value.path}"
+    # stage だけを * にし、メソッドは route_key の先頭、path は route ごとの値に限る
+    (source_arn,) = re.findall(r"^\s*source_arn\s*=\s*(.+)$", main, re.MULTILINE)
+    assert source_arn == (
+        '"${data.aws_apigatewayv2_api.portal.execution_arn}/*/'
+        '${split(" ", each.value.route_key)[0]}/${each.value.path}"'
+    )
 
 
 def test_root_module_applies_the_routes_module():

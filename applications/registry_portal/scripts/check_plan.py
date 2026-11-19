@@ -85,11 +85,39 @@ def _policies(values: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _target_registry_arn(plan: dict[str, Any]) -> str | None:
+    """追加スタックのルート変数 registry_arn（借用する既存 Registry）を返す。"""
+    variable = (plan.get("variables") or {}).get("registry_arn") or {}
+    value = variable.get("value")
+    if not isinstance(value, str) or not value or any(char in value for char in "*?"):
+        return None
+    return value
+
+
+def _limited_to_registry(statement: dict[str, Any], registry_arn: str | None) -> bool:
+    """Resource が対象 Registry 本体とそのレコードだけに限られているかを返す。"""
+    if registry_arn is None or "NotResource" in statement:
+        return False
+    resources = statement.get("Resource", [])
+    if isinstance(resources, str):
+        resources = [resources]
+    record_prefix = f"{registry_arn}/record/"
+    return bool(resources) and all(
+        isinstance(item, str)
+        and (
+            item == registry_arn
+            or (item.startswith(record_prefix) and "/" not in item[len(record_prefix) :])
+        )
+        for item in resources
+    )
+
+
 def check_plan(plan: dict[str, Any]) -> list[str]:
     """保存済み plan から安全条件に違反する箇所を返す。"""
     if not str(plan.get("format_version", "")).startswith("1."):
         raise ValueError("対応する plan JSON の format_version がありません")
     root = plan["planned_values"]["root_module"]
+    registry_arn = _target_registry_arn(plan)
     errors = []
     changes = plan.get("resource_changes", [])
     for resource in changes:
@@ -107,14 +135,13 @@ def check_plan(plan: dict[str, Any]) -> list[str]:
             "registry" in kind and ("agent_registry" in kind or "agentcore" in kind)
         ):
             errors.append(f"{address}: 既存 Registry を Terraform の管理対象にできません")
-        if kind == "aws_lambda_function_url":
-            errors.append(f"{address}: Function URL は使用できません")
         if resource["type"] in POLICY_TYPES:
             unknown = resource["change"].get("after_unknown", {})
             if resource["type"] == "aws_iam_role" and unknown.get("managed_policy_arns"):
                 errors.append(f"{address}: 未確定の managed policy の付与は検査できません")
             if any(unknown.get(key) for key in ("policy", "inline_policy")):
                 errors.append(f"{address}: 未確定の IAM policy は検査できません")
+    # 計画後の値（planned_values）と変更（削除を含む resource_changes）を 1 つの流れで検査する
     resources = _resources(root)
     resources += [
         dict(resource, values=resource["change"].get("after") or {})
@@ -134,7 +161,7 @@ def check_plan(plan: dict[str, Any]) -> list[str]:
         if kind not in POLICY_TYPES:
             continue
         scoped = ROLE_SCOPED_ACTIONS.get(address, set()) if kind == "aws_iam_role_policy" else set()
-        for policy in _policies(resource.get("values", {})):
+        for policy in _policies(values):
             statements = policy["Statement"]
             if isinstance(statements, dict):
                 statements = [statements]
@@ -148,6 +175,11 @@ def check_plan(plan: dict[str, Any]) -> list[str]:
                     actions = [actions]
                 for action in actions:
                     if action.lower() in scoped:
+                        if not _limited_to_registry(statement, registry_arn):
+                            errors.append(
+                                f"{address}: {action} の Resource は対象 Registry"
+                                f"（{registry_arn or '不明'}）とそのレコードに限ってください"
+                            )
                         continue
                     if any(
                         fnmatch.fnmatchcase(item.lower(), action.lower())

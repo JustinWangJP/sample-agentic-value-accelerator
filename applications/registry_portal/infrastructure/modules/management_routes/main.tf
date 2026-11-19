@@ -83,12 +83,15 @@ resource "aws_apigatewayv2_route" "management" {
   authorization_scopes = ["registry-portal/catalog.read"]
 }
 
-# HTTP API から管理 Lambda を呼び出す許可。この module が割り当てる path だけに限る
+# HTTP API から管理 Lambda を呼び出す許可。本体スタックの aws_lambda_permission.api と同じく、
+# stage 以外は route ごとのメソッド（route_key の先頭）と path に限る。
+# source_arn の * は / もまたぐため、api/records/* は GET の履歴（api/records/*/history）にも一致する。
+# 同じメソッドの route はすべて管理 Lambda に向くので、許可の範囲は広がらない
 resource "aws_lambda_permission" "management_api" {
   for_each      = local.routes
   statement_id  = each.value.statement_id
   action        = "lambda:InvokeFunction"
   function_name = var.management_function_name
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/*/${each.value.path}"
+  source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/${split(" ", each.value.route_key)[0]}/${each.value.path}"
 }

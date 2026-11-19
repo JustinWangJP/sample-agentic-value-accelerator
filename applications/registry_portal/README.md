@@ -266,7 +266,7 @@ terraform -chdir=infrastructure/bootstrap validate
 terraform -chdir=infrastructure/bootstrap test
 ```
 
-これらは AWS の認証情報を必要としません。Terraform test は mock provider を使います。JSON ガードは `python3 scripts/check_plan.py <plan.json>` で再実行できます。既存 Registry の create、update、delete、置換、禁止 action の Allow、managed policy の付与、未確定 IAM policy、Function URL を拒否します。Allow の `NotAction` と全権限ワイルドカードも拒否し、Deny 文は許可します。禁止 action のうち、管理ロールの inline policy（`module.management_drafts.aws_iam_role_policy.management_drafts`）には `CreateRegistryRecord`・`UpdateRegistryRecord`・`SubmitRegistryRecordForApproval` を、決裁ロールの inline policy（`module.decision.aws_iam_role_policy.decision`）には `UpdateRegistryRecordStatus` だけを、ワイルドカードを使わない `agent-registry:` の action 名に限って許可します。ロールは名前ではなく資源アドレスで識別するため、イベント処理ロールやその他の主体、`aws_iam_policy` には引き続き禁止します。追加スタック（`management`・`decision`・`notification_events`）は別 state のため、各スタックで `terraform plan -out=tfplan && terraform show -json tfplan > plan.json` を実行し、同じ `check_plan.py` に通してから apply します。`decision` と `notification_events` のポリシーは、ロググループ（と DLQ）の ARN を名前・アカウント ID・リージョンから組み立てるため、初回作成の plan でも確定してガードを通ります。ガードは `management_role_name` の取り違えを検出できません。本体の同名 output と plan を照合し、管理 Lambda のロールを指していることを目視で確認してください。権限の境界を変えるときは、ガードの許可境界と fixture も更新してください。
+これらは AWS の認証情報を必要としません。Terraform test は mock provider を使います。JSON ガードは `python3 scripts/check_plan.py <plan.json>` で再実行できます。既存 Registry の create、update、delete、置換、禁止 action の Allow、managed policy の付与、未確定 IAM policy、Function URL を拒否します。Allow の `NotAction` と全権限ワイルドカードも拒否し、Deny 文は許可します。禁止 action のうち、管理ロールの inline policy（`module.management_drafts.aws_iam_role_policy.management_drafts`）には `CreateRegistryRecord`・`UpdateRegistryRecord`・`SubmitRegistryRecordForApproval` を、決裁ロールの inline policy（`module.decision.aws_iam_role_policy.decision`）には `UpdateRegistryRecordStatus` だけを、ワイルドカードを使わない `agent-registry:` の action 名に限って許可します。許可するのは、その文の `Resource` が plan のルート変数 `registry_arn` の Registry 本体とそのレコード（`<registry_arn>/record/*` など）だけを指す場合です。`*`、別の Registry、前方一致のワイルドカード、`NotResource` は拒否し、plan に `registry_arn` がない場合も拒否します。ロールは名前ではなく資源アドレスで識別するため、イベント処理ロールやその他の主体、`aws_iam_policy` には引き続き禁止します。追加スタック（`management`・`decision`・`notification_events`）は別 state のため、各スタックで `terraform plan -out=tfplan && terraform show -json tfplan > plan.json` を実行し、同じ `check_plan.py` に通してから apply します。`decision` と `notification_events` のポリシーは、ロググループ（と DLQ）の ARN を名前・アカウント ID・リージョンから組み立てるため、初回作成の plan でも確定してガードを通ります。ガードは `management_role_name` の取り違えを検出できません。本体の同名 output と plan を照合し、管理 Lambda のロールを指していることを目視で確認してください。権限の境界を変えるときは、ガードの許可境界と fixture も更新してください。
 
 ### dev の手動受入を記録する
 
@@ -278,7 +278,10 @@ terraform -chdir=infrastructure/bootstrap test
 - [ ] SPA の深い URL を再読み込みでき、API の 401、403、404 が HTML の成功応答にならない。
 - [ ] scope 不足、ID トークン、別 issuer、別 client、発見用 M2M client のトークンで API を呼び出せない。
 - [ ] API と Lambda のログに JWT、secret、応答本文が出ていない。
+- [ ] 発見用 M2M の secret を取得できるのは管理 Lambda と決裁 Lambda の実行ロールだけで、イベント処理 Lambda の実行ロールなどその他の主体は取得できない（決裁ロールは Admin の取り込みのために持つ。ガイド 1.6・7 章の項目 12）。
 - [ ] Terraform plan に既存 Registry の作成・変更・削除がなく、実行ロールの IAM（Identity Center を使う場合は専用 permission set も）が意図した ARN と action に限定される。
+- [ ] 下書きの作成から申請、申請者・最終編集者以外の Curator による公開承認までを画面で通せる。申請者・最終編集者本人が承認すると 403 `FORBIDDEN` になる（Admin が Curator を兼ねていても同じ）。
+- [ ] 決裁ロールの IAM 境界を確認する。決裁 Lambda の実行ロールでは `UpdateRegistryRecordStatus` と読み取りだけが許可され、descriptor の作成・更新（`CreateRegistryRecord`・`UpdateRegistryRecord`）と申請（`SubmitRegistryRecordForApproval`）は拒否される（IAM の policy simulator などで確認する）。
 
 ## custom Agent の下書き（#7）
 

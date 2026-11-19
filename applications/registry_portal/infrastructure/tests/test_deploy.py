@@ -161,6 +161,20 @@ class DeployTests(unittest.TestCase):
         self.assertIn("-backend-config=encrypt=true", init)
         self.assertIn("-backend-config=use_lockfile=true", init)
 
+    def test_lambda_zip_is_named_as_the_shared_package(self):
+        # 管理・決裁・イベント処理の Lambda が共通で使う ZIP であることがわかる名前で作り、plan に渡す
+        result, commands = self.run_deploy()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        build = next(
+            command
+            for command in commands
+            if command[0] == "python3" and command[1].endswith("build_lambda.py")
+        )
+        zip_path = build[build.index("--output") + 1]
+        self.assertEqual(Path(zip_path).name, "lambda.zip")
+        plan = next(command for command in commands if "plan" in command)
+        self.assertIn(f"-var=lambda_zip_path={zip_path}", plan)
+
     def test_guard_failure_or_cancel_never_reaches_apply_or_upload(self):
         for fixture, confirmation in [("registry-update", "apply\n"), ("safe", "no\n")]:
             with self.subTest(fixture=fixture):
