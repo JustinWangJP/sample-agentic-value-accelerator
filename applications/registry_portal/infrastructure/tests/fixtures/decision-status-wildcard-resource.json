@@ -1,0 +1,53 @@
+{
+  "format_version": "1.2",
+  "planned_values": {
+    "root_module": {
+      "child_modules": [
+        {
+          "address": "module.decision",
+          "resources": [
+            {
+              "address": "module.decision.aws_iam_role_policy.decision",
+              "mode": "managed",
+              "type": "aws_iam_role_policy",
+              "name": "decision",
+              "values": {
+                "name": "decision",
+                "role": "registry-portal-decision",
+                "policy": "{\"Version\": \"2012-10-17\", \"Statement\": [{\"Sid\": \"Registry\", \"Effect\": \"Allow\", \"Action\": [\"agent-registry:GetRegistryRecord\", \"agent-registry:ListRegistryRecords\", \"agent-registry:GetRegistry\", \"agent-registry:UpdateRegistryRecordStatus\"], \"Resource\": \"*\"}, {\"Sid\": \"Supplement\", \"Effect\": \"Allow\", \"Action\": [\"dynamodb:GetItem\", \"dynamodb:PutItem\"], \"Resource\": \"arn:aws:dynamodb:us-east-1:123456789012:table/registry-portal-dev-supplement\"}]}"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "resource_changes": [
+    {
+      "address": "module.decision.aws_iam_role_policy.decision",
+      "module_address": "module.decision",
+      "mode": "managed",
+      "type": "aws_iam_role_policy",
+      "name": "decision",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "before": null,
+        "after": {
+          "name": "decision",
+          "role": "registry-portal-decision",
+          "policy": "{\"Version\": \"2012-10-17\", \"Statement\": [{\"Sid\": \"Registry\", \"Effect\": \"Allow\", \"Action\": [\"agent-registry:GetRegistryRecord\", \"agent-registry:ListRegistryRecords\", \"agent-registry:GetRegistry\", \"agent-registry:UpdateRegistryRecordStatus\"], \"Resource\": \"*\"}, {\"Sid\": \"Supplement\", \"Effect\": \"Allow\", \"Action\": [\"dynamodb:GetItem\", \"dynamodb:PutItem\"], \"Resource\": \"arn:aws:dynamodb:us-east-1:123456789012:table/registry-portal-dev-supplement\"}]}"
+        },
+        "after_unknown": {
+          "id": true
+        }
+      }
+    }
+  ],
+  "variables": {
+    "registry_arn": {
+      "value": "arn:aws:agent-registry:us-east-1:123456789012:registry/portal"
+    }
+  }
+}

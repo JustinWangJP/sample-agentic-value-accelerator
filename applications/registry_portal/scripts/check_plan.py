@@ -85,11 +85,39 @@ def _policies(values: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _target_registry_arn(plan: dict[str, Any]) -> str | None:
+    """追加スタックのルート変数 registry_arn（借用する既存 Registry）を返す。"""
+    variable = (plan.get("variables") or {}).get("registry_arn") or {}
+    value = variable.get("value")
+    if not isinstance(value, str) or not value or any(char in value for char in "*?"):
+        return None
+    return value
+
+
+def _limited_to_registry(statement: dict[str, Any], registry_arn: str | None) -> bool:
+    """Resource が対象 Registry 本体とそのレコードだけに限られているかを返す。"""
+    if registry_arn is None or "NotResource" in statement:
+        return False
+    resources = statement.get("Resource", [])
+    if isinstance(resources, str):
+        resources = [resources]
+    record_prefix = f"{registry_arn}/record/"
+    return bool(resources) and all(
+        isinstance(item, str)
+        and (
+            item == registry_arn
+            or (item.startswith(record_prefix) and "/" not in item[len(record_prefix) :])
+        )
+        for item in resources
+    )
+
+
 def check_plan(plan: dict[str, Any]) -> list[str]:
     """保存済み plan から安全条件に違反する箇所を返す。"""
     if not str(plan.get("format_version", "")).startswith("1."):
         raise ValueError("対応する plan JSON の format_version がありません")
     root = plan["planned_values"]["root_module"]
+    registry_arn = _target_registry_arn(plan)
     errors = []
     changes = plan.get("resource_changes", [])
     for resource in changes:
@@ -148,6 +176,11 @@ def check_plan(plan: dict[str, Any]) -> list[str]:
                     actions = [actions]
                 for action in actions:
                     if action.lower() in scoped:
+                        if not _limited_to_registry(statement, registry_arn):
+                            errors.append(
+                                f"{address}: {action} の Resource は対象 Registry"
+                                f"（{registry_arn or '不明'}）とそのレコードに限ってください"
+                            )
                         continue
                     if any(
                         fnmatch.fnmatchcase(item.lower(), action.lower())

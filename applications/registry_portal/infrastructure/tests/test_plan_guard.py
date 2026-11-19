@@ -110,6 +110,24 @@ class PlanGuardTests(unittest.TestCase):
                 if not allowed:
                     self.assertIn("禁止 action", result.stderr)
 
+    def test_role_scoped_registry_writes_are_limited_to_the_target_registry(self):
+        # 自ロールの書き込み action でも、Resource が plan の変数 registry_arn の Registry と
+        # そのレコードに限られない場合は中止する
+        for fixture in [
+            "management-drafts-wildcard-resource",
+            "management-drafts-other-registry",
+            # 前方一致のワイルドカードは別 Registry（registry/portal-other など）にも一致する
+            "management-drafts-registry-prefix",
+            # 対象 Registry が plan からわからなければ検査できない
+            "management-drafts-no-registry-variable",
+            "decision-status-wildcard-resource",
+            "decision-status-other-registry",
+        ]:
+            with self.subTest(fixture=fixture):
+                result = run_guard(FIXTURES / f"{fixture}.json")
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("対象 Registry", result.stderr)
+
     def test_additional_stack_policy_templates_pass_the_guard(self):
         # 追加スタックの実際のポリシー本文を、各スタックの plan と同じ資源アドレスで検査する。
         # テンプレートに他ロールの action を足すと、ここで中止される
@@ -147,6 +165,8 @@ class PlanGuardTests(unittest.TestCase):
                 }
                 plan = {
                     "format_version": "1.2",
+                    # 追加スタックのルート変数。ガードは書き込み action の Resource をこの値と照合する
+                    "variables": {"registry_arn": {"value": TEMPLATE_VALUES["registry_arn"]}},
                     "resource_changes": [],
                     "planned_values": {"root_module": {"resources": [resource]}},
                 }

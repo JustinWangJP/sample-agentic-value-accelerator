@@ -44,5 +44,10 @@
         }
       }
     }
-  ]
+  ],
+  "variables": {
+    "registry_arn": {
+      "value": "arn:aws:agent-registry:us-east-1:123456789012:registry/portal"
+    }
+  }
 }
