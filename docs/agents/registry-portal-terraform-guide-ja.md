@@ -471,7 +471,7 @@ bash -n scripts/deploy.sh
 | 項目 | 状態 | 統合実装と運用時の確認事項 |
 | --- | --- | --- |
 | 1 | 解消済み | 本体の補助テーブルの TTL 属性はアプリと同じ `expiresAt`。AWS による期限切れ項目の削除は配信後に確認する |
-| 2 | 解消済み | 管理 Lambda に `SUPPLEMENT_TABLE_NAME`、`REGISTRY_ARN`、`DISCOVERY_*` を設定する。A2A 検索は未設定時に有効なため、`A2A_SEARCH_ENABLED` は設定しない |
+| 2 | 解消済み | 管理 Lambda に `SUPPLEMENT_TABLE_NAME`、`REGISTRY_ARN`、`DISCOVERY_*` を設定する。`A2A_SEARCH_ENABLED` は未設定なら無効（`config.py` の `load_catalog_settings`）。`isA2A` の補完と確認（#16）が終わるまで設定せず、無効のまま配信する |
 | 3 | 解消済み | CORS は SPA の origin だけを許可し、`GET`・`POST`・`PATCH`・`OPTIONS` と `Authorization`・`Content-Type`・`Idempotency-Key` を許可する。各 route は `registry-portal/catalog.read` の scope を検証する |
 | 4 | 解消済み。対象ロールは目視確認 | ガードは `module.management_drafts.aws_iam_role_policy.management_drafts` に作成・更新・申請を、`module.decision.aws_iam_role_policy.decision` に決裁だけを許可する。policy の資源アドレスで役割を判定するため、`management_role_name` の取り違えは検出できない。本体の output と plan を照合する。決裁・イベント処理のロググループと DLQ の ARN は初回 plan でも確定する |
 | 5 | 解消済み | bootstrap の Identity Center 資源は任意。個人アカウントでは `identity_center_instance_arn` と `deployer_group_id` を省略し、state バケットだけを作る |
