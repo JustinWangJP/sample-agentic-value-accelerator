@@ -66,16 +66,27 @@ run "management_routes_require_portal_scope" {
     ]), toset([for route in aws_apigatewayv2_route.management : route.route_key])))))}"
   }
   assert {
-    condition = alltrue([for route_key, path in {
-      "POST /api/records"                   = "api/records"
-      "GET /api/records"                    = "api/records"
-      "GET /api/records/{recordId}"         = "api/records/*"
-      "PATCH /api/records/{recordId}"       = "api/records/*"
-      "GET /api/operations/{operationId}"   = "api/operations/*"
-      "POST /api/records/{recordId}/submit" = "api/records/*/submit"
-      } : anytrue([for name, route in aws_apigatewayv2_route.management :
-        route.route_key == route_key && try(aws_lambda_permission.management_api[name].source_arn == "arn:aws:execute-api:us-east-1:123456789012:abcde12345/*/*/${path}", false)
-    ])]) && alltrue([for permission in aws_lambda_permission.management_api : permission.function_name == var.management_function_name && permission.principal == "apigateway.amazonaws.com" && permission.action == "lambda:InvokeFunction"])
-    error_message = "下書きの各 route に、対応する path から既存の管理 Lambda を呼び出す許可が必要です。"
+    # 本体スタックの aws_lambda_permission.api と同じく、stage 以外はメソッドと path を route ごとに固定する
+    condition = toset([for permission in aws_lambda_permission.management_api :
+      trimprefix(permission.source_arn, "arn:aws:execute-api:us-east-1:123456789012:abcde12345/*/")
+      ]) == toset([
+      "GET/api/admin/records",
+      "GET/api/admin/connection",
+      "GET/api/records/*/history",
+      "POST/api/records/*/deprecation-requests",
+      "GET/api/notifications",
+      "POST/api/notifications/read",
+      "POST/api/records",
+      "GET/api/records",
+      "GET/api/records/*",
+      "PATCH/api/records/*",
+      "GET/api/operations/*",
+      "POST/api/records/*/submit",
+    ]) && length(aws_lambda_permission.management_api) == length(aws_apigatewayv2_route.management)
+    error_message = "管理 Lambda の呼び出し許可は、route ごとのメソッドと path に限ってください（メソッドを * にしない）。"
+  }
+  assert {
+    condition     = alltrue([for permission in aws_lambda_permission.management_api : permission.function_name == var.management_function_name && permission.principal == "apigateway.amazonaws.com" && permission.action == "lambda:InvokeFunction"])
+    error_message = "下書きの各 route に、既存の管理 Lambda を呼び出す許可が必要です。"
   }
 }
