@@ -146,6 +146,14 @@ run "lambda_invoke_permissions" {
     error_message = "管理 Lambda の呼び出し許可は、本体スタックの route のメソッドと path に限ってください。"
   }
   assert {
+    # route と呼び出し許可を同じ map（{route_key, path}）から作り、キーとメソッドを対応させる
+    condition = keys(aws_apigatewayv2_route.management) == keys(aws_lambda_permission.api) && alltrue([
+      for name, route in aws_apigatewayv2_route.management :
+      startswith(aws_lambda_permission.api[name].source_arn, "${aws_apigatewayv2_api.portal.execution_arn}/*/${split(" ", route.route_key)[0]}/")
+    ])
+    error_message = "本体スタックの route と呼び出し許可は、同じキーの 1 つの map から作り、メソッドを一致させてください。"
+  }
+  assert {
     condition     = alltrue([for permission in aws_lambda_permission.api : permission.principal == "apigateway.amazonaws.com" && permission.source_account == var.aws_account_id])
     error_message = "管理 Lambda は同じアカウントの API Gateway からだけ呼び出せるようにしてください。"
   }

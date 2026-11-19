@@ -203,10 +203,33 @@ resource "aws_apigatewayv2_integration" "management" {
   timeout_milliseconds   = 30000
 }
 
+# 本体スタックが管理 Lambda に割り当てる route と、呼び出し許可の path（execution ARN の stage・メソッドの後ろ）。
+# {recordId} は * に置き換える。決裁と管理の追加 route は、それぞれの追加スタックが作る
+locals {
+  management_routes = {
+    me = {
+      route_key = "GET /api/me"
+      path      = "api/me"
+    }
+    catalog = {
+      route_key = "GET /api/catalog"
+      path      = "api/catalog"
+    }
+    catalog-search = {
+      route_key = "POST /api/catalog/search"
+      path      = "api/catalog/search"
+    }
+    catalog-detail = {
+      route_key = "GET /api/catalog/{recordId}"
+      path      = "api/catalog/*"
+    }
+  }
+}
+
 resource "aws_apigatewayv2_route" "management" {
-  for_each             = toset(["GET /api/me", "GET /api/catalog", "POST /api/catalog/search", "GET /api/catalog/{recordId}"])
+  for_each             = local.management_routes
   api_id               = aws_apigatewayv2_api.portal.id
-  route_key            = each.value
+  route_key            = each.value.route_key
   target               = "integrations/${aws_apigatewayv2_integration.management.id}"
   authorization_type   = "JWT"
   authorizer_id        = aws_apigatewayv2_authorizer.human.id
@@ -230,19 +253,13 @@ resource "aws_apigatewayv2_stage" "default" {
   }
 }
 
-# 呼び出し許可は本体スタックの route のメソッドと path に限る。{recordId} は * に置き換える。
-# 決裁と管理の追加 route の許可は、それぞれの追加スタックが作る
+# 呼び出し許可は本体スタックの route のメソッド（route_key の先頭）と path に限る
 resource "aws_lambda_permission" "api" {
-  for_each = {
-    me             = "GET/api/me"
-    catalog        = "GET/api/catalog"
-    catalog-search = "POST/api/catalog/search"
-    catalog-detail = "GET/api/catalog/*"
-  }
+  for_each       = local.management_routes
   statement_id   = "AllowApiGateway-${each.key}"
   action         = "lambda:InvokeFunction"
   function_name  = aws_lambda_function.management.function_name
   principal      = "apigateway.amazonaws.com"
   source_account = var.aws_account_id
-  source_arn     = "${aws_apigatewayv2_api.portal.execution_arn}/*/${each.value}"
+  source_arn     = "${aws_apigatewayv2_api.portal.execution_arn}/*/${split(" ", each.value.route_key)[0]}/${each.value.path}"
 }
