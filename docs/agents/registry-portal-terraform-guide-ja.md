@@ -118,6 +118,8 @@ Lambda はどれも Python 3.13、arm64、タイムアウト 30 秒、メモリ 
 
 Lambda の実行ロールには、Registry 本体の作成・削除・設定変更、レコードの物理削除、`iam:PassRole` を付けません。
 
+発見用 M2M の secret（`secretsmanager:GetSecretValue`。顧客管理キーの場合は Secrets Manager 経由の `kms:Decrypt` も）を取得できるのは、管理 Lambda と決裁 Lambda の実行ロールだけです。決裁ロールは、Admin の既存レコードの取り込み（#16）で公開版を発見 API から取得するために使います。Issue #5 のコメントにある「管理 Lambda 以外のロールが secret を取得できないこと」は、この理由で決裁ロールを例外とし、イベント処理ロールなどその他の主体には付けません（7 章の項目 12）。
+
 `RegistryPortalDeployer` は `AdministratorAccess` を持つため、permission set よりも権限が広くなります。権限の境界は、plan のガード（`check_plan.py`）と apply 前の目視確認で守ります（IAM 手順の 4の注記）。
 
 ## 2. 既存資源の流用
@@ -464,7 +466,7 @@ bash -n scripts/deploy.sh
 
 ## 7. 統合実装の状態と確認事項
 
-過去の食い違い 11 項目を、Issue #5・#49 の統合実装に合わせて整理しました。以下の実装はローカル検査の対象です。dev への AWS apply と手動受入は未実施で、AWS 上のアクセス制御、M2M の疎通、TTL による削除、EventBridge の受信は配信後に確認します。
+過去の食い違い 11 項目を、Issue #5・#49 の統合実装に合わせて整理しました。項目 12 は、Issue のコメントの要求と実装の差を設計判断として記録したものです。以下の実装はローカル検査の対象です。dev への AWS apply と手動受入は未実施で、AWS 上のアクセス制御、M2M の疎通、TTL による削除、EventBridge の受信は配信後に確認します。
 
 | 項目 | 状態 | 統合実装と運用時の確認事項 |
 | --- | --- | --- |
@@ -479,6 +481,7 @@ bash -n scripts/deploy.sh
 | 9 | 別 state を維持する決定 | 本体は HTTP API と管理 Lambda の統合を持ち、下書き・申請・操作照会を含む管理の追加 route と決裁 route は追加スタックが持つ。本体の output を各 tfvars に手動転記する。現在は state を移動しない。後続 Issue で統合する場合だけ import と `state rm` を行う（[ADR-0013](../adr/0013-separate-portal-addon-states.md)） |
 | 10 | 運用上の制約として継続 | 個人アカウントの `RegistryPortalDeployer` は `AdministratorAccess` を持ち、新しいロール経由の Registry 書き込みまで IAM では防げない。全スタックの plan をガードに通し、IAM の対象ロール・ARN・action を目視確認する。権限の絞り込みや permissions boundary は後続の検討対象 |
 | 11 | #49 で解消済み | decision の `discovery_kms_key_arn` は任意で既定は `null`。顧客管理キーの場合だけ本体と同じ ARN を渡すと、別の inline policy が Secrets Manager 経由・対象 secret の暗号化コンテキストに限った `kms:Decrypt` を付ける。AWS 管理キーの場合は両方で省略または `null` にする。顧客管理キーでの Admin の取り込みと、`null` の場合に復号権限を追加しないことを配信後に確認する |
+| 12 | 設計判断として記録 | Issue #5 のコメントは「管理 Lambda 以外のロールが secret を取得できないこと」の確認を求めているが、決裁ロールも Admin の取り込み（#16）のために発見用 secret の `GetSecretValue`（と項目 11 の `kms:Decrypt`）を持つ。secret を取得できるのは管理ロールと決裁ロールだけとし、イベント処理ロールなどには付けない（1.6）。配信後の手動受入（README「dev の手動受入を記録する」）で確認する |
 
 ## 関連文書
 
