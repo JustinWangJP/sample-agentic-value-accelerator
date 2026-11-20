@@ -1,6 +1,7 @@
 """管理・決裁・イベント処理 Lambda 共通の ZIP に、固定版 SDK とアプリケーションを同梱する。
 
-3 つの Lambda は同じ ZIP を使い、handler だけが違う。既定の出力先は追加スタック
+3 つの Lambda は同じ ZIP を使い、handler だけが違う。handler の一覧は Terraform の
+Lambda 定義（handler 属性）から読み、ここでは持たない。既定の出力先は追加スタック
 （decision・notification_events）の tfvars 例が指す `backend/build/lambda.zip`。
 """
 
@@ -10,6 +11,7 @@ import argparse
 from importlib.metadata import Distribution
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -17,18 +19,28 @@ import tempfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-LAMBDA_HANDLER_MODULES = (
-    "registry_portal.handlers.management",
-    "registry_portal.handlers.curation",
-    "registry_portal.handlers.events",
-)
+# aws_lambda_function の handler 属性（"<モジュール>.<関数名>"）
+_HANDLER_ATTRIBUTE = re.compile(r'^\s*handler\s*=\s*"([A-Za-z_][\w.]*)\.\w+"', re.MULTILINE)
+
+
+def lambda_handler_modules(root: Path = ROOT) -> list[str]:
+    """Terraform の Lambda 定義を正本として、共通 ZIP に必要な handler モジュールを返す。"""
+    modules: set[str] = set()
+    for definition in (root / "infrastructure").rglob("*.tf"):
+        if ".terraform" not in definition.parts:
+            modules.update(_HANDLER_ATTRIBUTE.findall(definition.read_text()))
+    return sorted(modules)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "backend/build/lambda.zip")
     args = parser.parse_args()
-    for module in LAMBDA_HANDLER_MODULES:
+    handler_modules = lambda_handler_modules()
+    if not handler_modules:
+        print("infrastructure/ に Lambda の handler の定義がありません", file=sys.stderr)
+        return 1
+    for module in handler_modules:
         if not (ROOT / "backend/src" / f"{module.replace('.', '/')}.py").is_file():
             print(f"Lambda の handler モジュールがありません: {module}", file=sys.stderr)
             return 1

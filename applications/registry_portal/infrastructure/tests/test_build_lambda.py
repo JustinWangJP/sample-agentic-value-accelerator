@@ -30,8 +30,11 @@ for service in ("agent-registry", "agent-registry-control"):
 LAMBDA_HANDLERS = ("management", "curation", "events")
 
 
-def make_project(root: Path, handlers=LAMBDA_HANDLERS) -> None:
-    """build_lambda.py を、偽の pip と最小のアプリケーションを持つ作業ディレクトリへ置く。"""
+def make_project(root: Path, handlers=LAMBDA_HANDLERS, declared=LAMBDA_HANDLERS) -> None:
+    """build_lambda.py を、偽の pip と最小のアプリケーションを持つ作業ディレクトリへ置く。
+
+    handlers は実在させる handler モジュール、declared は Terraform の Lambda 定義に書く handler。
+    """
     (root / "scripts").mkdir()
     shutil.copy2(ROOT / "scripts/build_lambda.py", root / "scripts/build_lambda.py")
     package = root / "backend/src/registry_portal"
@@ -39,6 +42,13 @@ def make_project(root: Path, handlers=LAMBDA_HANDLERS) -> None:
     (package / "__init__.py").write_text("")
     for name in ("__init__", *handlers):
         (package / "handlers" / f"{name}.py").write_text("")
+    for name in declared:
+        definition = root / "infrastructure/modules" / name / "main.tf"
+        definition.parent.mkdir(parents=True)
+        definition.write_text(
+            f'resource "aws_lambda_function" "{name}" {{\n'
+            f'  handler = "registry_portal.handlers.{name}.handler"\n}}\n'
+        )
     (root / "backend/requirements.txt").write_text("boto3==9.8.7\nbotocore==9.8.7\n")
     (root / "pip.py").write_text(FAKE_PIP)
 
@@ -87,6 +97,34 @@ class BuildLambdaTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("registry_portal.handlers.events", result.stderr)
             self.assertFalse((root / "backend/build/lambda.zip").exists())
+
+    def test_required_handlers_follow_the_terraform_lambda_definitions(self):
+        # handler の一覧は Terraform の Lambda 定義だけに書き、ビルド側で別に持たない
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            make_project(root, declared=(*LAMBDA_HANDLERS, "reports"))
+            result = build(root)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("registry_portal.handlers.reports", result.stderr)
+
+    def test_build_stops_when_no_lambda_definition_is_found(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            make_project(root, declared=())
+            result = build(root)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((root / "backend/build/lambda.zip").exists())
+
+    def test_repository_lambda_definitions_name_the_three_shared_handlers(self):
+        sys.path.insert(0, str(ROOT / "scripts"))
+        try:
+            import build_lambda
+        finally:
+            sys.path.pop(0)
+        self.assertEqual(
+            build_lambda.lambda_handler_modules(ROOT),
+            [f"registry_portal.handlers.{name}" for name in sorted(LAMBDA_HANDLERS)],
+        )
 
 
 if __name__ == "__main__":
