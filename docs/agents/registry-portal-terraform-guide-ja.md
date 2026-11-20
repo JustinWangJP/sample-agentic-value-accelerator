@@ -314,7 +314,7 @@ apply 後は `frontend_config` で SPA をビルドし、アセット、非キ�
 
 `frontend_config` には、`VITE_COGNITO_DOMAIN`、`VITE_COGNITO_CLIENT_ID`、`VITE_REDIRECT_URI`、`VITE_API_BASE_URL`、`VITE_COGNITO_SCOPES` が入ります。secret は含みません。
 
-Identity Center を使う場合も、本体スタックには同じスクリプトを使います。SSO プロファイルでログインし、`AWSReservedSSO_RegistryPortalDeployer_*` の主体で実行してください（[README](../../applications/registry_portal/README.md#dev-に手動配信する)）。bootstrap の permission set は本体の state key と管理 Lambda 向けの権限に限ります。追加 3 スタックの state key や決裁・イベント処理の資源には対応していないため、SSO 経路で追加スタックを配信するには別途権限整備が必要です。個人アカウントの MFA 付き IAM ロール経路は全スタックを対象とします。
+Identity Center を使う場合も、本体スタックには同じスクリプトを使います。SSO プロファイルでログインし、`AWSReservedSSO_RegistryPortalDeployer_*` の主体で実行してください（[README](../../applications/registry_portal/README.md#dev-に手動配信する)）。bootstrap の permission set は本体の state key と管理 Lambda 向けの権限に限ります。追加 3 スタックの state key や決裁・イベント処理の資源には対応していないため、`deploy.sh` は SSO プロファイルと `--stack` の組み合わせを Terraform の実行前に拒否します。追加スタックは、個人アカウントの MFA 付き IAM ロール経路でだけ配信します（dev は個人アカウントだけで運用するため、permission set は追加スタック向けに広げません）。
 
 ### 4.3 追加スタックに渡す値を集める
 
@@ -361,36 +361,25 @@ python3 scripts/build_lambda.py
 
 ### 4.5 追加スタックを適用する
 
-3 つの追加スタックの手順は同じです。`STACK` をスタックごとに変えて実行します。4.3 で各 tfvars の設定を済ませてから進みます。各スタックの `backend.hcl.example` を `backend.hcl` にコピーし、`bucket` には本体の `infrastructure/backend.hcl` と同じ実際のバケット名を設定してください。key は次の表の値にします。リポジトリのルートで実行します。
+3 つの追加スタックも、本体と同じ `scripts/deploy.sh` に `--stack` を付けて反映します。4.3 で各 `terraform.tfvars` の設定を済ませてから進みます。各スタックの `backend.hcl.example` を `backend.hcl` にコピーし、`bucket` には本体の `infrastructure/backend.hcl` と同じ実際のバケット名を設定してください。key は次の表の値にします。`applications/registry_portal` で実行します。
 
-| `STACK` | `key` |
+| `--stack` | `key` |
 | --- | --- |
 | `management` | `registry-portal/dev/management.tfstate` |
 | `decision` | `registry-portal/dev/decision.tfstate` |
 | `notification_events` | `registry-portal/dev/notification-events.tfstate` |
 
 ```bash
-(
-  set -e
-  STACK=management
-  export AWS_PROFILE=registry-deploy-tf
-  cd "applications/registry_portal/infrastructure/$STACK"
-  terraform init -backend-config=backend.hcl -backend-config=encrypt=true -backend-config=use_lockfile=true
-  terraform validate
-  terraform plan -out=tfplan
-  terraform show -json tfplan > plan.json
-  python3 ../../scripts/check_plan.py plan.json
-  terraform show tfplan
-  printf '既存資源と IAM の変更を確認し、反映する場合は apply と入力してください: '
-  read -r confirmation
-  if [ "$confirmation" != apply ]; then
-    printf '反映を中止しました。\n' >&2
-    exit 1
-  fi
-  terraform apply tfplan
-  rm tfplan plan.json
-)
+cd applications/registry_portal
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+aws sts get-caller-identity --profile registry-deploy   # MFA コードを入力し、短期認証情報をキャッシュする
+for STACK in management decision notification_events; do
+  AWS_PROFILE=registry-deploy scripts/deploy.sh --stack "$STACK" \
+    "infrastructure/$STACK/backend.hcl" "infrastructure/$STACK/terraform.tfvars" || break
+done
 ```
+
+スクリプトは本体と同じく、CI 内からの実行と環境変数の認証情報を拒否し、主体が `RegistryPortalDeployer` であること（個人アカウントでは Terraform 用プロファイルが同じセッションであること）を確認します。そのうえで一時ディレクトリに plan を保存し、`check_plan.py` に通して表示します。`apply` と入力したときだけ、その保存済み plan を反映します。`decision` と `notification_events` には、共通 ZIP（`lambda.zip`）を一時ディレクトリに作って `lambda_zip_path` に渡します（tfvars の値より優先されます）。追加スタックでは SPA のビルドと配信は行いません。1 つのスタックで中止・失敗したら、上の例は残りを実行せずに止まります。
 
 `backend.hcl.example` を使う場合も、1.4 の表と同じ key を設定してください。`decision` と `notification_events` の IAM policy はロググループと DLQ の ARN を名前・アカウント ID・リージョンから組み立てるため、初回 plan でも確定してガードに通せます。
 
@@ -429,7 +418,7 @@ bash -n scripts/deploy.sh
 | Terraform 用のプロファイルを確認する | `aws sts get-caller-identity --profile registry-deploy-tf` |
 | state 用バケットを作る（初回だけ） | 3.5 のコマンド |
 | 本体スタックを配信する | 4.2 のコマンド |
-| 追加スタックを適用する | 各ディレクトリで `terraform init -backend-config=...`、`plan -out=tfplan`、`apply tfplan` |
+| 追加スタックを適用する | `AWS_PROFILE=registry-deploy scripts/deploy.sh --stack <management\|decision\|notification_events> infrastructure/<スタック>/backend.hcl infrastructure/<スタック>/terraform.tfvars`（本体と同じ主体の検査・`check_plan.py`・`apply` の入力確認を通す） |
 | plan の JSON を手で検査する（`applications/registry_portal` から） | `python3 scripts/check_plan.py <plan.json>` |
 
 ### 5.3 state の操作
@@ -466,22 +455,23 @@ bash -n scripts/deploy.sh
 
 ## 7. 統合実装の状態と確認事項
 
-過去の食い違い 11 項目を、Issue #5・#49 の統合実装に合わせて整理しました。項目 12 は、Issue のコメントの要求と実装の差を設計判断として記録したものです。以下の実装はローカル検査の対象です。dev への AWS apply と手動受入は未実施で、AWS 上のアクセス制御、M2M の疎通、TTL による削除、EventBridge の受信は配信後に確認します。
+過去の食い違い 11 項目と、レビューで追加した項目 13 を、Issue #5・#49 の統合実装に合わせて整理しました。項目 12 は、Issue のコメントの要求と実装の差を設計判断として記録したものです。以下の実装はローカル検査の対象です。dev への AWS apply と手動受入は未実施で、AWS 上のアクセス制御、M2M の疎通、TTL による削除、EventBridge の受信、顧客管理キーでの取り込みは配信後に確認します。配信後に確認する項目は、すべて README「dev の手動受入を記録する」のチェックリストにあります。
 
 | 項目 | 状態 | 統合実装と運用時の確認事項 |
 | --- | --- | --- |
 | 1 | 解消済み | 本体の補助テーブルの TTL 属性はアプリと同じ `expiresAt`。AWS による期限切れ項目の削除は配信後に確認する |
 | 2 | 解消済み | 管理 Lambda に `SUPPLEMENT_TABLE_NAME`、`REGISTRY_ARN`、`DISCOVERY_*` を設定する。`A2A_SEARCH_ENABLED` は未設定なら無効（`config.py` の `load_catalog_settings`）。`isA2A` の補完と確認（#16）が終わるまで設定せず、無効のまま配信する |
-| 3 | 解消済み | CORS は SPA の origin だけを許可し、`GET`・`POST`・`PATCH`・`OPTIONS` と `Authorization`・`Content-Type`・`Idempotency-Key` を許可する。各 route は `registry-portal/catalog.read` の scope を検証する |
-| 4 | 解消済み。対象ロールは目視確認 | ガードは `module.management_drafts.aws_iam_role_policy.management_drafts` に作成・更新・申請を、`module.decision.aws_iam_role_policy.decision` に決裁だけを許可する。policy の資源アドレスで役割を判定するため、`management_role_name` の取り違えは検出できない。本体の output と plan を照合する。決裁・イベント処理のロググループと DLQ の ARN は初回 plan でも確定する |
+| 3 | 解消済み | CORS は SPA の origin だけを許可し、`GET`・`POST`・`PATCH`・`OPTIONS` と `Authorization`・`Content-Type`・`Idempotency-Key` を許可する。各 route は `registry-portal/api.invoke` の scope を検証する（scope 名は本体・追加スタック・SPA の既定値で一致させ、`test_portal_scope.py` で検査する） |
+| 4 | 解消済み。対象ロールは目視確認 | ガードは `module.management_drafts.aws_iam_role_policy.management_drafts` に作成・更新・申請を、`module.decision.aws_iam_role_policy.decision` に決裁だけを許可する。アドレスは `check_plan.py` の `ScopedPolicy`（module 呼び出し名と resource 名）で持ち、追加スタックの定義に実在することを `test_plan_guard.py` で検査する。policy の資源アドレスで役割を判定するため、`management_role_name` の取り違えは検出できない。本体の output と plan を照合する。決裁・イベント処理のロググループと DLQ の ARN は初回 plan でも確定する |
 | 5 | 解消済み | bootstrap の Identity Center 資源は任意。個人アカウントでは `identity_center_instance_arn` と `deployer_group_id` を省略し、state バケットだけを作る |
-| 6 | 個人アカウント対応済み | state バケットは `deployer_principal_arn` を照合する。`deploy.sh` は MFA 付きのロールプロファイルと `credential_process` の Terraform 用プロファイルに対応する。SSO permission set は本体向けで、追加スタックの配信には別途権限整備が必要（4.2） |
-| 7 | 解消済み | 本体・bootstrap・追加 3 スタックの AWS provider を `= 6.71.0` に固定した。共通 ZIP の出力先 `backend/build/` と各 `backend.hcl` は ignore 対象 |
+| 6 | 個人アカウント対応済み | state バケットは `deployer_principal_arn` を照合する。`deploy.sh` は MFA 付きのロールプロファイルと `credential_process` の Terraform 用プロファイルに対応する。SSO permission set は本体向けで、`deploy.sh` は SSO プロファイルでの `--stack` を拒否する。dev は個人アカウントだけで運用するため、追加スタック向けの permission set の拡張は行わない（4.2） |
+| 7 | 解消済み | 本体・bootstrap・追加 3 スタックの AWS provider を `= 6.71.0` に固定した。共通 ZIP の出力先 `backend/build/`、各 `backend.hcl`、手順書の plan ファイル（`*.tfplan`）と `plan.json` は ignore 対象 |
 | 8 | 解消済み | CI は `notification_events` を含む全ルートスタックの init と validate を行う。AWS の認証情報は持たず、apply は行わない |
 | 9 | 別 state を維持する決定 | 本体は HTTP API と管理 Lambda の統合を持ち、下書き・申請・操作照会を含む管理の追加 route と決裁 route は追加スタックが持つ。本体の output を各 tfvars に手動転記する。現在は state を移動しない。後続 Issue で統合する場合だけ import と `state rm` を行う（[ADR-0013](../adr/0013-separate-portal-addon-states.md)） |
-| 10 | 運用上の制約として継続 | 個人アカウントの `RegistryPortalDeployer` は `AdministratorAccess` を持ち、新しいロール経由の Registry 書き込みまで IAM では防げない。全スタックの plan をガードに通し、IAM の対象ロール・ARN・action を目視確認する。権限の絞り込みや permissions boundary は後続の検討対象 |
+| 10 | 運用上の制約として継続 | 個人アカウントの `RegistryPortalDeployer` は `AdministratorAccess` を持ち、新しいロール経由の Registry 書き込みまで IAM では防げない。全スタックを `scripts/deploy.sh`（追加スタックは `--stack`）で反映し、plan をガードに通して IAM の対象ロール・ARN・action を目視確認する。権限の絞り込みや permissions boundary は後続の検討対象 |
 | 11 | #49 で解消済み | decision の `discovery_kms_key_arn` は任意で既定は `null`。顧客管理キーの場合だけ本体と同じ ARN を渡すと、別の inline policy が Secrets Manager 経由・対象 secret の暗号化コンテキストに限った `kms:Decrypt` を付ける。AWS 管理キーの場合は両方で省略または `null` にする。顧客管理キーでの Admin の取り込みと、`null` の場合に復号権限を追加しないことを配信後に確認する |
-| 12 | 設計判断として記録 | Issue #5 のコメントは「管理 Lambda 以外のロールが secret を取得できないこと」の確認を求めているが、決裁ロールも Admin の取り込み（#16）のために発見用 secret の `GetSecretValue`（と項目 11 の `kms:Decrypt`）を持つ。secret を取得できるのは管理ロールと決裁ロールだけとし、イベント処理ロールなどには付けない（1.6）。配信後の手動受入（README「dev の手動受入を記録する」）で確認する |
+| 12 | 設計判断として記録 | Issue #5 のコメントは「管理 Lambda 以外のロールが secret を取得できないこと」の確認を求めているが、#49 の本文のとおり、決裁ロールも Admin の取り込み（#16）のために発見用 secret の `GetSecretValue`（と項目 11 の `kms:Decrypt`）を持つ。secret を取得できるのは管理ロールと決裁ロールだけとし、イベント処理ロールなどには付けない（1.6）。設計書の「最小インフラとセキュリティ」の Secrets Manager の行もこの範囲に更新した。配信後の手動受入（README「dev の手動受入を記録する」）で確認する |
+| 13 | 解消済み | CloudFront のレスポンスヘッダーの CSP は、HTTP API の CORS との循環参照を避けるため `connect-src` を execute-api のリージョン単位で許可する。SPA の本番ビルドが `index.html` に埋め込む meta の CSP（`frontend/src/connectCsp.ts`）で、接続先を自分の HTTP API と Cognito に限る。ブラウザは両方を満たす通信だけを許可する。配信後に meta の存在を確認する |
 
 ## 関連文書
 

@@ -15,6 +15,6 @@ Registry ポータルの本体スタックと、`management`・`decision`・`not
 
 - 本体を先に配信し、output を転記してから追加スタックを配信する。連携する資源を変更した場合は、各 tfvars も更新する。
 - state key は `registry-portal/dev/terraform.tfstate`、`registry-portal/dev/management.tfstate`、`registry-portal/dev/decision.tfstate`、`registry-portal/dev/notification-events.tfstate` を使う。bootstrap 自身の state は別に保管する。
-- 各スタックで保存した plan を同じ `check_plan.py` に通し、目視確認後にその plan だけを apply する。ガードは policy の資源アドレスで役割を判定するため、`management_role_name` の取り違えは検出できない。本体の output と plan の対象ロールを照合する。
+- 各スタックを `scripts/deploy.sh --stack <スタック>` で反映し、本体と同じ主体の検査を経て、保存した plan を同じ `check_plan.py` に通し、目視確認後にその plan だけを apply する。ガードは policy の資源アドレスで役割を判定するため、`management_role_name` の取り違えは検出できない。本体の output と plan の対象ロールを照合する。
 - 後続 Issue で統合する場合だけ、移行先に対象資源を import し、移行元で `terraform state rm` を実行する。移行中は apply を止め、同じ資源を複数の state から操作しない。両方の plan に作り直しや削除がないことを確認してから配信を再開する。
 - dev への AWS apply と手動受入は未実施である。配信手順と検証項目は [Terraform ガイド](../agents/registry-portal-terraform-guide-ja.md)と [README](../../applications/registry_portal/README.md#dev-に手動配信する)に従う。
