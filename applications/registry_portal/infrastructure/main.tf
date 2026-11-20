@@ -1,15 +1,21 @@
+data "aws_region" "current" {}
+
 locals {
-  issuer     = "https://cognito-idp.us-east-1.amazonaws.com/${var.cognito_user_pool_id}"
-  spa_origin = "https://${aws_cloudfront_distribution.spa.domain_name}"
+  # provider のリージョン（us-east-1 に固定。追加スタックのモジュールと同じく data source から読む）
+  region = data.aws_region.current.region
+  issuer = "https://cognito-idp.${local.region}.amazonaws.com/${var.cognito_user_pool_id}"
+  # 管理 Lambda・実行ロール・ロググループの共通名。bootstrap の locals も同じ規則で組み立てる
+  management_name = "${var.name_prefix}-management"
+  spa_origin      = "https://${aws_cloudfront_distribution.spa.domain_name}"
   # HTTP API のすべての route（追加スタックを含む）が検証するカスタム scope。業務ロールの判定は handler が行う。
   # SPA の既定値（frontend/src/config.ts の PORTAL_API_SCOPE）と同じ値にする
   portal_api_scope_name = "api.invoke"
   portal_api_scope      = "${aws_cognito_resource_server.portal.identifier}/${local.portal_api_scope_name}"
   secret_region         = split(":", var.discovery_client_secret_arn)[3]
-  log_group_arn         = "arn:aws:logs:us-east-1:${var.aws_account_id}:log-group:/aws/lambda/${var.name_prefix}-management"
+  log_group_arn         = "arn:aws:logs:${local.region}:${var.aws_account_id}:log-group:/aws/lambda/${local.management_name}"
   registry_record       = "${var.registry_arn}/record/*"
   # plan の段階で値が確定するよう、名前から組み立てる（追加スタックの supplement_table_arn にも使う）
-  supplement_table_arn = "arn:aws:dynamodb:us-east-1:${var.aws_account_id}:table/${aws_dynamodb_table.auxiliary.name}"
+  supplement_table_arn = "arn:aws:dynamodb:${local.region}:${var.aws_account_id}:table/${aws_dynamodb_table.auxiliary.name}"
 }
 
 resource "aws_cognito_resource_server" "portal" {
@@ -83,7 +89,7 @@ resource "aws_dynamodb_table" "auxiliary" {
 }
 
 resource "aws_cloudwatch_log_group" "management" {
-  name              = "/aws/lambda/${var.name_prefix}-management"
+  name              = "/aws/lambda/${local.management_name}"
   retention_in_days = 365
 }
 
@@ -93,7 +99,7 @@ resource "aws_cloudwatch_log_group" "api" {
 }
 
 resource "aws_iam_role" "management" {
-  name                = "${var.name_prefix}-management"
+  name                = local.management_name
   managed_policy_arns = []
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -107,7 +113,7 @@ resource "aws_iam_role" "management" {
 
 resource "aws_iam_role_policy" "management" {
   role = aws_iam_role.management.name
-  name = "${var.name_prefix}-management"
+  name = local.management_name
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = concat([
@@ -150,7 +156,7 @@ resource "aws_iam_role_policy" "management" {
 }
 
 resource "aws_lambda_function" "management" {
-  function_name    = "${var.name_prefix}-management"
+  function_name    = local.management_name
   role             = aws_iam_role.management.arn
   filename         = var.lambda_zip_path
   source_code_hash = filebase64sha256(var.lambda_zip_path)

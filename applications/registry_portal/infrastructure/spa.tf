@@ -1,3 +1,11 @@
+locals {
+  # CloudFront の管理キャッシュポリシー「CachingOptimized」の固定 ID（全アカウント共通）。
+  # data source で名前から引くと配信用の権限に cloudfront:ListCachePolicies が要るため、ID を直接指定する。
+  # 最小 TTL が 1 秒のため、Cache-Control: no-cache の index.html も最大 1 秒は CloudFront にキャッシュされる。
+  # 配信時は scripts/deploy.sh が CloudFront を無効化して入れ替える（README「dev に手動配信する」）
+  caching_optimized_policy_id = "658327ea-f89d-4fab-a63d-7e88639e58f6"
+}
+
 resource "aws_s3_bucket" "spa" {
   bucket        = var.spa_bucket_name
   force_destroy = false
@@ -34,7 +42,7 @@ resource "aws_cloudfront_response_headers_policy" "spa" {
   security_headers_config {
     content_security_policy {
       # API の CORS は CloudFront の origin に依存するため、CSP はリージョン単位で指定する。
-      content_security_policy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' ${var.cognito_domain} https://*.execute-api.us-east-1.amazonaws.com; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests"
+      content_security_policy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' ${var.cognito_domain} https://*.execute-api.${local.region}.amazonaws.com; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests"
       override                = true
     }
     content_type_options { override = true }
@@ -75,7 +83,7 @@ resource "aws_cloudfront_distribution" "spa" {
     allowed_methods            = ["GET", "HEAD"]
     cached_methods             = ["GET", "HEAD"]
     compress                   = true
-    cache_policy_id            = "658327ea-f89d-4fab-a63d-7e88639e58f6"
+    cache_policy_id            = local.caching_optimized_policy_id
     response_headers_policy_id = aws_cloudfront_response_headers_policy.spa.id
     function_association {
       event_type   = "viewer-request"

@@ -1,4 +1,8 @@
 mock_provider "aws" {
+  # provider のリージョン（versions.tf で us-east-1 に固定）
+  mock_data "aws_region" {
+    defaults = { region = "us-east-1" }
+  }
   mock_resource "aws_cloudfront_distribution" {
     defaults = { domain_name = "portal.example.cloudfront.net", arn = "arn:aws:cloudfront::123456789012:distribution/EXAMPLE" }
   }
