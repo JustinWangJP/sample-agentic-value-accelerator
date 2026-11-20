@@ -4,38 +4,55 @@ import fnmatch
 import json
 from pathlib import Path
 import sys
-from typing import Any
+from typing import Any, NamedTuple
 
-FORBIDDEN_ACTIONS = (
-    "agent-registry:CreateRegistry",
-    "agent-registry:UpdateRegistry",
-    "agent-registry:DeleteRegistry",
-    "agent-registry:DeleteRegistryRecord",
-    "agent-registry:CreateRegistryRecord",
-    "agent-registry:UpdateRegistryRecord",
-    "agent-registry:UpdateRegistryRecordStatus",
-    "agent-registry:SubmitRegistryRecordForApproval",
-    "bedrock-agentcore:CreateRegistry",
-    "bedrock-agentcore:UpdateRegistry",
-    "bedrock-agentcore:DeleteRegistry",
-    "bedrock-agentcore:CreateRegistryRecord",
-    "bedrock-agentcore:UpdateRegistryRecord",
-    "bedrock-agentcore:UpdateRegistryRecordStatus",
-    "bedrock-agentcore:SubmitRegistryRecordForApproval",
-    "bedrock-agentcore:DeleteRegistryRecord",
+# Registry の書き込み action。IAM では agent-registry と bedrock-agentcore の両方の prefix で禁止する
+REGISTRY_SERVICE_PREFIXES = ("agent-registry", "bedrock-agentcore")
+REGISTRY_WRITE_ACTIONS = (
+    "CreateRegistry",
+    "UpdateRegistry",
+    "DeleteRegistry",
+    "CreateRegistryRecord",
+    "UpdateRegistryRecord",
+    "UpdateRegistryRecordStatus",
+    "SubmitRegistryRecordForApproval",
+    "DeleteRegistryRecord",
+)
+FORBIDDEN_ACTIONS = tuple(
+    f"{prefix}:{action}"
+    for prefix in REGISTRY_SERVICE_PREFIXES
+    for action in REGISTRY_WRITE_ACTIONS
+) + (
     "lambda:CreateFunctionUrlConfig",
     "lambda:UpdateFunctionUrlConfig",
     "lambda:InvokeFunctionUrl",
 )
+
+
+class ScopedPolicy(NamedTuple):
+    """追加スタックの module が作る inline policy。plan 上では module 呼び出し名と resource 名で特定する。"""
+
+    module: str
+    name: str
+
+    @property
+    def address(self) -> str:
+        return f"module.{self.module}.aws_iam_role_policy.{self.name}"
+
+
+# 例外として、対象 Registry に限って書き込みを許可する policy と action（小文字）
 ROLE_SCOPED_ACTIONS = {
-    "module.management_drafts.aws_iam_role_policy.management_drafts": {
+    ScopedPolicy("management_drafts", "management_drafts"): {
         "agent-registry:createregistryrecord",
         "agent-registry:updateregistryrecord",
         "agent-registry:submitregistryrecordforapproval",
     },
-    "module.decision.aws_iam_role_policy.decision": {
+    ScopedPolicy("decision", "decision"): {
         "agent-registry:updateregistryrecordstatus",
     },
+}
+_SCOPED_ACTIONS_BY_ADDRESS = {
+    policy.address: actions for policy, actions in ROLE_SCOPED_ACTIONS.items()
 }
 POLICY_TYPES = {
     "aws_iam_policy",
@@ -123,7 +140,7 @@ def check_plan(plan: dict[str, Any]) -> list[str]:
     for resource in changes:
         if resource.get("mode") == "data":
             continue
-        kind = resource["type"].lower()
+        resource_type = resource["type"]
         address = resource["address"]
         identities = [resource["change"].get(side) or {} for side in ("before", "after")]
         has_registry_arn = any(
@@ -131,13 +148,15 @@ def check_plan(plan: dict[str, Any]) -> list[str]:
             for values in identities
             for key in ("arn", "id")
         )
+        lowered_type = resource_type.lower()
         if has_registry_arn or (
-            "registry" in kind and ("agent_registry" in kind or "agentcore" in kind)
+            "registry" in lowered_type
+            and ("agent_registry" in lowered_type or "agentcore" in lowered_type)
         ):
             errors.append(f"{address}: 既存 Registry を Terraform の管理対象にできません")
-        if resource["type"] in POLICY_TYPES:
+        if resource_type in POLICY_TYPES:
             unknown = resource["change"].get("after_unknown", {})
-            if resource["type"] == "aws_iam_role" and unknown.get("managed_policy_arns"):
+            if resource_type == "aws_iam_role" and unknown.get("managed_policy_arns"):
                 errors.append(f"{address}: 未確定の managed policy の付与は検査できません")
             if any(unknown.get(key) for key in ("policy", "inline_policy")):
                 errors.append(f"{address}: 未確定の IAM policy は検査できません")
@@ -149,18 +168,22 @@ def check_plan(plan: dict[str, Any]) -> list[str]:
         if resource.get("mode") != "data"
     ]
     for resource in resources:
-        kind = resource["type"]
+        resource_type = resource["type"]
         address = resource["address"]
-        if kind == "aws_lambda_function_url":
+        if resource_type == "aws_lambda_function_url":
             errors.append(f"{address}: Function URL は使用できません")
         values = resource.get("values", {})
-        if kind in MANAGED_POLICY_ATTACHMENTS or (
-            kind == "aws_iam_role" and values.get("managed_policy_arns")
+        if resource_type in MANAGED_POLICY_ATTACHMENTS or (
+            resource_type == "aws_iam_role" and values.get("managed_policy_arns")
         ):
             errors.append(f"{address}: 内容を検査できない managed policy の付与は使用できません")
-        if kind not in POLICY_TYPES:
+        if resource_type not in POLICY_TYPES:
             continue
-        scoped = ROLE_SCOPED_ACTIONS.get(address, set()) if kind == "aws_iam_role_policy" else set()
+        scoped = (
+            _SCOPED_ACTIONS_BY_ADDRESS.get(address, set())
+            if resource_type == "aws_iam_role_policy"
+            else set()
+        )
         for policy in _policies(values):
             statements = policy["Statement"]
             if isinstance(statements, dict):
@@ -186,8 +209,9 @@ def check_plan(plan: dict[str, Any]) -> list[str]:
                         for item in FORBIDDEN_ACTIONS
                     ):
                         errors.append(f"{address}: 禁止 action {action}")
-                    if kind != "aws_ssoadmin_permission_set_inline_policy" and fnmatch.fnmatchcase(
-                        "iam:passrole", action.lower()
+                    if (
+                        resource_type != "aws_ssoadmin_permission_set_inline_policy"
+                        and fnmatch.fnmatchcase("iam:passrole", action.lower())
                     ):
                         errors.append(f"{address}: 実行ロールに iam:PassRole を付与できません")
     return sorted(set(errors))

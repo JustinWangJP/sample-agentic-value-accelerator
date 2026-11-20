@@ -234,6 +234,41 @@ class PlanGuardTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                     self.assertIn("managed policy", result.stderr)
 
+    def test_role_scoped_policies_exist_in_the_addon_stack_definitions(self):
+        # 書き込みを許可する policy は、別 state の追加スタックの module 名と resource 名で特定する。
+        # 定義の改名に追従しないと許可が外れるため、定義に実在することを確かめる
+        sys.path.insert(0, str(ROOT / "scripts"))
+        try:
+            import check_plan
+        finally:
+            sys.path.pop(0)
+        stack_sources = "\n".join(
+            path.read_text() for path in (ROOT / "infrastructure").glob("*/main.tf")
+        )
+        self.assertTrue(check_plan.ROLE_SCOPED_ACTIONS)
+        for policy in check_plan.ROLE_SCOPED_ACTIONS:
+            with self.subTest(address=policy.address):
+                module_block = re.search(
+                    rf'module "{policy.module}" \{{[^}}]*source\s*=\s*"\.\./modules/([a-z_]+)"',
+                    stack_sources,
+                )
+                self.assertIsNotNone(module_block)
+                module_main = (
+                    ROOT / "infrastructure/modules" / module_block.group(1) / "main.tf"
+                ).read_text()
+                self.assertIn(f'resource "aws_iam_role_policy" "{policy.name}"', module_main)
+
+    def test_forbidden_actions_cover_both_registry_service_prefixes(self):
+        sys.path.insert(0, str(ROOT / "scripts"))
+        try:
+            import check_plan
+        finally:
+            sys.path.pop(0)
+        for action in check_plan.REGISTRY_WRITE_ACTIONS:
+            for prefix in ("agent-registry", "bedrock-agentcore"):
+                with self.subTest(action=f"{prefix}:{action}"):
+                    self.assertIn(f"{prefix}:{action}", check_plan.FORBIDDEN_ACTIONS)
+
 
 if __name__ == "__main__":
     unittest.main()
