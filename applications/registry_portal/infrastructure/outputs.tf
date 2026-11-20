@@ -17,7 +17,7 @@ output "frontend_config" {
     VITE_COGNITO_CLIENT_ID = aws_cognito_user_pool_client.human.id
     VITE_REDIRECT_URI      = "${local.spa_origin}/"
     VITE_API_BASE_URL      = aws_apigatewayv2_api.portal.api_endpoint
-    VITE_COGNITO_SCOPES    = "openid ${local.read_scope}"
+    VITE_COGNITO_SCOPES    = "openid ${local.portal_api_scope}"
   }
 }
 

@@ -124,7 +124,7 @@ def test_routes_module_assigns_only_portal_added_management_routes():
     assert re.search(r'authorization_type\s+= "JWT"', main)
     assert re.search(r"authorizer_id\s+= var\.jwt_authorizer_id", main)
     # 本体スタックの route と同じポータル用のカスタム scope を JWT authorizer で検証する
-    assert re.search(r'authorization_scopes = \["registry-portal/catalog\.read"\]', main)
+    assert re.search(r'authorization_scopes = \["registry-portal/api\.invoke"\]', main)
     paths = re.findall(r'path\s*=\s*"([^"]+)"', main)
     assert paths == [
         "api/admin/records",

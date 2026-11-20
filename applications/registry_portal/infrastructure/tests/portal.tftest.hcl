@@ -57,7 +57,7 @@ run "security_boundaries" {
     error_message = "S3 は OAC の署名で取得してください。"
   }
   assert {
-    condition     = aws_cognito_user_pool_client.human.generate_secret == false && aws_cognito_user_pool_client.human.allowed_oauth_flows == toset(["code"]) && contains(aws_cognito_user_pool_client.human.allowed_oauth_scopes, "registry-portal/catalog.read")
+    condition     = aws_cognito_user_pool_client.human.generate_secret == false && aws_cognito_user_pool_client.human.allowed_oauth_flows == toset(["code"]) && contains(aws_cognito_user_pool_client.human.allowed_oauth_scopes, "registry-portal/api.invoke")
     error_message = "人間用 client は secret のない code flow とカスタム scope が必要です。"
   }
   assert {
@@ -65,7 +65,7 @@ run "security_boundaries" {
     error_message = "本体スタックの route は主体とカタログ（一覧・検索・詳細）だけにしてください。決裁と管理の追加 route は追加スタックが作ります。"
   }
   assert {
-    condition     = alltrue([for route in aws_apigatewayv2_route.management : route.authorization_type == "JWT" && route.authorization_scopes == toset(["registry-portal/catalog.read"])])
+    condition     = alltrue([for route in aws_apigatewayv2_route.management : route.authorization_type == "JWT" && route.authorization_scopes == toset(["registry-portal/api.invoke"])])
     error_message = "すべての route に人間用 JWT と scope の検証が必要です。"
   }
   assert {
@@ -181,7 +181,7 @@ run "outputs_for_additional_stacks" {
     error_message = "追加スタックの tfvars に転記する管理ロール名・関数名と補助テーブルの名前・ARN を出力してください。"
   }
   assert {
-    condition     = output.frontend_config.VITE_COGNITO_SCOPES == "openid registry-portal/catalog.read"
+    condition     = output.frontend_config.VITE_COGNITO_SCOPES == "openid registry-portal/api.invoke"
     error_message = "SPA は route が検証するカスタム scope を含めてトークンを要求してください。"
   }
 }

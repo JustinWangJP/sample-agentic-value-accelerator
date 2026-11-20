@@ -27,7 +27,7 @@ run "decision_routes_require_portal_scope" {
     discovery_scope             = ""
   }
   assert {
-    condition     = length(aws_apigatewayv2_route.decision) > 0 && alltrue([for route in aws_apigatewayv2_route.decision : route.authorization_type == "JWT" && route.authorization_scopes == toset(["registry-portal/catalog.read"])])
+    condition     = length(aws_apigatewayv2_route.decision) > 0 && alltrue([for route in aws_apigatewayv2_route.decision : route.authorization_type == "JWT" && route.authorization_scopes == toset(["registry-portal/api.invoke"])])
     error_message = "決裁の route も、本体スタックと同じポータル用の scope を JWT authorizer で検証してください。"
   }
 }
@@ -44,7 +44,7 @@ run "management_routes_require_portal_scope" {
     management_function_name  = "registry-portal-dev-management"
   }
   assert {
-    condition     = length(aws_apigatewayv2_route.management) > 0 && alltrue([for route in aws_apigatewayv2_route.management : route.authorization_type == "JWT" && route.authorization_scopes == toset(["registry-portal/catalog.read"]) && route.authorizer_id == var.jwt_authorizer_id && route.target == "integrations/${var.management_integration_id}"])
+    condition     = length(aws_apigatewayv2_route.management) > 0 && alltrue([for route in aws_apigatewayv2_route.management : route.authorization_type == "JWT" && route.authorization_scopes == toset(["registry-portal/api.invoke"]) && route.authorizer_id == var.jwt_authorizer_id && route.target == "integrations/${var.management_integration_id}"])
     error_message = "管理 handler の追加 route も、本体スタックと同じポータル用の scope を JWT authorizer で検証してください。"
   }
   assert {

@@ -167,7 +167,7 @@ resource "aws_apigatewayv2_route" "decision" {
   authorization_type = "JWT"
   authorizer_id      = var.jwt_authorizer_id
   # 本体スタックのリソースサーバーが定義し、人間用 SPA client に許可したポータル用の scope
-  authorization_scopes = ["registry-portal/catalog.read"]
+  authorization_scopes = ["registry-portal/api.invoke"]
 }
 
 # HTTP API から決裁 Lambda を呼び出す許可。審査と決裁の path（/api/reviews 以下）、Admin・Curator の

@@ -137,7 +137,7 @@ def test_module_routes_only_curator_and_recovery_apis_to_the_decision_lambda():
     assert re.search(r'authorization_type\s+= "JWT"', main)
     assert re.search(r"authorizer_id\s+= var\.jwt_authorizer_id", main)
     # 本体スタックの route と同じポータル用のカスタム scope を JWT authorizer で検証する
-    assert re.search(r'authorization_scopes = \["registry-portal/catalog\.read"\]', main)
+    assert re.search(r'authorization_scopes = \["registry-portal/api\.invoke"\]', main)
     assert 'payload_format_version = "2.0"' in main
     # HTTP API と authorizer は借用し、作成しない
     assert 'resource "aws_apigatewayv2_api"' not in main

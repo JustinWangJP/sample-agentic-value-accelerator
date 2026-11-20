@@ -1,10 +1,13 @@
 locals {
-  issuer          = "https://cognito-idp.us-east-1.amazonaws.com/${var.cognito_user_pool_id}"
-  spa_origin      = "https://${aws_cloudfront_distribution.spa.domain_name}"
-  read_scope      = "registry-portal/catalog.read"
-  secret_region   = split(":", var.discovery_client_secret_arn)[3]
-  log_group_arn   = "arn:aws:logs:us-east-1:${var.aws_account_id}:log-group:/aws/lambda/${var.name_prefix}-management"
-  registry_record = "${var.registry_arn}/record/*"
+  issuer     = "https://cognito-idp.us-east-1.amazonaws.com/${var.cognito_user_pool_id}"
+  spa_origin = "https://${aws_cloudfront_distribution.spa.domain_name}"
+  # HTTP API のすべての route（追加スタックを含む）が検証するカスタム scope。業務ロールの判定は handler が行う。
+  # SPA の既定値（frontend/src/config.ts の PORTAL_API_SCOPE）と同じ値にする
+  portal_api_scope_name = "api.invoke"
+  portal_api_scope      = "${aws_cognito_resource_server.portal.identifier}/${local.portal_api_scope_name}"
+  secret_region         = split(":", var.discovery_client_secret_arn)[3]
+  log_group_arn         = "arn:aws:logs:us-east-1:${var.aws_account_id}:log-group:/aws/lambda/${var.name_prefix}-management"
+  registry_record       = "${var.registry_arn}/record/*"
   # plan の段階で値が確定するよう、名前から組み立てる（追加スタックの supplement_table_arn にも使う）
   supplement_table_arn = "arn:aws:dynamodb:us-east-1:${var.aws_account_id}:table/${aws_dynamodb_table.auxiliary.name}"
 }
@@ -14,7 +17,7 @@ resource "aws_cognito_resource_server" "portal" {
   name         = "Registry ポータル"
   user_pool_id = var.cognito_user_pool_id
   scope {
-    scope_name        = "catalog.read"
+    scope_name        = local.portal_api_scope_name
     scope_description = "ポータルの API を呼び出す。route ごとに検証し、業務ロールの判定は handler が行う"
   }
 }
@@ -25,7 +28,7 @@ resource "aws_cognito_user_pool_client" "human" {
   generate_secret                      = false
   allowed_oauth_flows_user_pool_client = true
   allowed_oauth_flows                  = ["code"]
-  allowed_oauth_scopes                 = ["openid", "${aws_cognito_resource_server.portal.identifier}/catalog.read"]
+  allowed_oauth_scopes                 = ["openid", local.portal_api_scope]
   supported_identity_providers         = var.identity_providers
   callback_urls                        = ["${local.spa_origin}/"]
   logout_urls                          = ["${local.spa_origin}/"]
@@ -233,7 +236,7 @@ resource "aws_apigatewayv2_route" "management" {
   target               = "integrations/${aws_apigatewayv2_integration.management.id}"
   authorization_type   = "JWT"
   authorizer_id        = aws_apigatewayv2_authorizer.human.id
-  authorization_scopes = [local.read_scope]
+  authorization_scopes = [local.portal_api_scope]
 }
 
 resource "aws_apigatewayv2_stage" "default" {

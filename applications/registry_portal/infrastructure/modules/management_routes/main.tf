@@ -80,7 +80,7 @@ resource "aws_apigatewayv2_route" "management" {
   authorization_type = "JWT"
   authorizer_id      = var.jwt_authorizer_id
   # 本体スタックのリソースサーバーが定義し、人間用 SPA client に許可したポータル用の scope
-  authorization_scopes = ["registry-portal/catalog.read"]
+  authorization_scopes = ["registry-portal/api.invoke"]
 }
 
 # HTTP API から管理 Lambda を呼び出す許可。本体スタックの aws_lambda_permission.api と同じく、

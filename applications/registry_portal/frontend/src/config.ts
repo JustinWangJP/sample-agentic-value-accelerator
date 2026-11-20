@@ -22,6 +22,12 @@ export class ConfigError extends Error {
 
 type Env = Record<string, string | undefined>
 
+/**
+ * HTTP API のすべての route が JWT authorizer で検証するカスタム scope。
+ * Terraform の Cognito リソースサーバー（infrastructure/main.tf の local.portal_api_scope）と同じ値にする
+ */
+export const PORTAL_API_SCOPE = 'registry-portal/api.invoke'
+
 const REQUIRED_KEYS = [
   'VITE_COGNITO_DOMAIN',
   'VITE_COGNITO_CLIENT_ID',
@@ -50,6 +56,6 @@ export function loadConfig(env: Env): PortalConfig {
     clientId: readEnv('VITE_COGNITO_CLIENT_ID'),
     redirectUri: readEnv('VITE_REDIRECT_URI'),
     apiBaseUrl: trimTrailingSlash(readEnv('VITE_API_BASE_URL')),
-    scopes: readEnv('VITE_COGNITO_SCOPES') || 'openid',
+    scopes: readEnv('VITE_COGNITO_SCOPES') || `openid ${PORTAL_API_SCOPE}`,
   }
 }
