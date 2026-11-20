@@ -125,7 +125,18 @@ def test_routes_module_assigns_only_portal_added_management_routes():
     assert re.search(r"authorizer_id\s+= var\.jwt_authorizer_id", main)
     # 本体スタックの route と同じポータル用のカスタム scope を JWT authorizer で検証する
     assert re.search(r'authorization_scopes = \["registry-portal/api\.invoke"\]', main)
-    paths = re.findall(r'path\s*=\s*"([^"]+)"', main)
+    # 呼び出し許可の path は route_key から導き、map に別の値として持たない。
+    # 先頭の / を除き、パスパラメータを * にする（Terraform の式と同じ規則で期待値を確かめる）
+    assert re.findall(r'path\s*=\s*"([^"]+)"', main) == []
+    assert (
+        'name => "${split(" ", route.route_key)[0]}/'
+        '${replace(trimprefix(split(" ", route.route_key)[1], "/"), "/\\\\{[^}]+\\\\}/", "*")}"'
+    ) in main
+    route_keys = re.findall(r'route_key\s*=\s*"([^"]+)"', main)
+    paths = [
+        re.sub(r"\{[^}]+\}", "*", route_key.split(" ")[1].removeprefix("/"))
+        for route_key in route_keys
+    ]
     assert paths == [
         "api/admin/records",
         "api/admin/connection",
@@ -140,11 +151,10 @@ def test_routes_module_assigns_only_portal_added_management_routes():
         "api/operations/*",
         "api/records/*/submit",
     ]
-    # stage だけを * にし、メソッドは route_key の先頭、path は route ごとの値に限る
+    # stage だけを * にし、メソッドと path は route ごとの値（local.invoke_paths）に限る
     (source_arn,) = re.findall(r"^\s*source_arn\s*=\s*(.+)$", main, re.MULTILINE)
     assert source_arn == (
-        '"${data.aws_apigatewayv2_api.portal.execution_arn}/*/'
-        '${split(" ", each.value.route_key)[0]}/${each.value.path}"'
+        '"${data.aws_apigatewayv2_api.portal.execution_arn}/*/${local.invoke_paths[each.key]}"'
     )
 
 

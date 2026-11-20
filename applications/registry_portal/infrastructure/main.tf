@@ -212,26 +212,32 @@ resource "aws_apigatewayv2_integration" "management" {
   timeout_milliseconds   = 30000
 }
 
-# 本体スタックが管理 Lambda に割り当てる route と、呼び出し許可の path（execution ARN の stage・メソッドの後ろ）。
-# {recordId} は * に置き換える。決裁と管理の追加 route は、それぞれの追加スタックが作る
+# 本体スタックが管理 Lambda に割り当てる route と、Lambda の呼び出し許可の ID。
+# 決裁と管理の追加 route は、それぞれの追加スタックが作る（modules/management_routes と同じ形の map）
 locals {
   management_routes = {
     me = {
-      route_key = "GET /api/me"
-      path      = "api/me"
+      route_key    = "GET /api/me"
+      statement_id = "AllowHttpApiInvokeMe"
     }
     catalog = {
-      route_key = "GET /api/catalog"
-      path      = "api/catalog"
+      route_key    = "GET /api/catalog"
+      statement_id = "AllowHttpApiInvokeCatalog"
     }
-    catalog-search = {
-      route_key = "POST /api/catalog/search"
-      path      = "api/catalog/search"
+    catalog_search = {
+      route_key    = "POST /api/catalog/search"
+      statement_id = "AllowHttpApiInvokeCatalogSearch"
     }
-    catalog-detail = {
-      route_key = "GET /api/catalog/{recordId}"
-      path      = "api/catalog/*"
+    catalog_detail = {
+      route_key    = "GET /api/catalog/{recordId}"
+      statement_id = "AllowHttpApiInvokeCatalogDetail"
     }
+  }
+  # 呼び出し許可の source_arn（execution ARN の stage の後ろ）は route_key から作る。
+  # メソッドはそのまま、path は先頭の / を除き、{recordId} などのパスパラメータを * にする
+  management_route_invoke_paths = {
+    for name, route in local.management_routes :
+    name => "${split(" ", route.route_key)[0]}/${replace(trimprefix(split(" ", route.route_key)[1], "/"), "/\\{[^}]+\\}/", "*")}"
   }
 }
 
@@ -265,10 +271,10 @@ resource "aws_apigatewayv2_stage" "default" {
 # 呼び出し許可は本体スタックの route のメソッド（route_key の先頭）と path に限る
 resource "aws_lambda_permission" "api" {
   for_each       = local.management_routes
-  statement_id   = "AllowApiGateway-${each.key}"
+  statement_id   = each.value.statement_id
   action         = "lambda:InvokeFunction"
   function_name  = aws_lambda_function.management.function_name
   principal      = "apigateway.amazonaws.com"
   source_account = var.aws_account_id
-  source_arn     = "${aws_apigatewayv2_api.portal.execution_arn}/*/${split(" ", each.value.route_key)[0]}/${each.value.path}"
+  source_arn     = "${aws_apigatewayv2_api.portal.execution_arn}/*/${local.management_route_invoke_paths[each.key]}"
 }
