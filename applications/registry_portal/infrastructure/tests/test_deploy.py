@@ -36,10 +36,11 @@ elif name == "terraform":
     if "show" in args and "-json" in args:
         print(Path(os.environ["PLAN_FIXTURE"]).read_text())
     elif "output" in args:
-        print(json.dumps({"spa_bucket_name": {"value": "portal-spa"},
-                          "cloudfront_distribution_id": {"value": "EDIST"},
-                          "frontend_config": {"value": {
-                              "VITE_COGNITO_SCOPES": "openid registry-portal/catalog.read"}}}))
+        outputs = {"spa_bucket_name": "portal-spa",
+                   "cloudfront_distribution_id": "EDIST",
+                   "frontend_config": {"VITE_COGNITO_SCOPES": "openid registry-portal/api.invoke"}}
+        value = outputs[args[-1]]
+        print(json.dumps(value) if "-json" in args else value, end="" if "-raw" in args else "\\n")
 """
 SSO_PROFILES = {
     "portal": {
@@ -89,6 +90,7 @@ class DeployTests(unittest.TestCase):
         profile="portal",
         profiles=SSO_PROFILES,
         extra_env=None,
+        stack_args=(),
     ):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
@@ -117,7 +119,7 @@ class DeployTests(unittest.TestCase):
             )
             env.update(extra_env or {})
             result = subprocess.run(
-                [str(ROOT / "scripts/deploy.sh"), str(backend), str(variables)],
+                [str(ROOT / "scripts/deploy.sh"), *stack_args, str(backend), str(variables)],
                 env=env,
                 input=confirmation,
                 text=True,
@@ -266,10 +268,100 @@ class DeployTests(unittest.TestCase):
                 self.assertFalse(any("s3" in command for command in commands))
 
     def test_ci_is_rejected_before_external_commands(self):
-        result, commands = self.run_deploy(ci="true")
+        for stack_args in [(), ("--stack", "decision")]:
+            with self.subTest(stack_args=stack_args):
+                result, commands = self.run_deploy(ci="true", stack_args=stack_args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("CI", result.stderr)
+                self.assertEqual(commands, [])
+
+    def test_addon_stack_runs_the_same_guarded_flow_in_its_directory_without_spa_upload(self):
+        # 追加スタックも本体と同じ主体の検査・plan ガード・確認を通し、SPA の配信は行わない
+        for stack, needs_zip in [
+            ("decision", True),
+            ("notification_events", True),
+            ("management", False),
+        ]:
+            with self.subTest(stack=stack):
+                result, commands = self.run_deploy(
+                    profile="registry-deploy", profiles=ROLE_PROFILES, stack_args=("--stack", stack)
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                terraform = [command for command in commands if command[0] == "terraform"]
+                self.assertTrue(terraform)
+                self.assertTrue(
+                    all(
+                        command[1] == f"-chdir={ROOT / 'infrastructure' / stack}"
+                        for command in terraform
+                    )
+                )
+                init = next(command for command in terraform if "init" in command)
+                self.assertIn("-backend-config=use_lockfile=true", init)
+                self.assertTrue(
+                    any(
+                        command[0] == "python3" and command[1].endswith("check_plan.py")
+                        for command in commands
+                    )
+                )
+                self.assertTrue(any("apply" in command for command in terraform))
+                plan = next(command for command in terraform if "plan" in command)
+                builds = [
+                    command
+                    for command in commands
+                    if command[0] == "python3" and command[1].endswith("build_lambda.py")
+                ]
+                if needs_zip:
+                    zip_path = builds[0][builds[0].index("--output") + 1]
+                    self.assertIn(f"-var=lambda_zip_path={zip_path}", plan)
+                else:
+                    self.assertEqual(builds, [])
+                    self.assertFalse(any(item.startswith("-var=lambda_zip_path") for item in plan))
+                self.assertFalse(any(command[0] == "npm" for command in commands))
+                self.assertFalse(
+                    any("s3" in command or "cloudfront" in command for command in commands)
+                )
+
+    def test_addon_stack_rejects_unsafe_principal_and_guard_failure(self):
+        other_session = "arn:aws:sts::123456789012:assumed-role/Administrator/operator"
+        profiles = with_profile(
+            with_profile(ROLE_PROFILES, "registry-deploy", caller_arn=other_session),
+            "registry-deploy-tf",
+            caller_arn=other_session,
+        )
+        result, commands = self.run_deploy(
+            profile="registry-deploy", profiles=profiles, stack_args=("--stack", "decision")
+        )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("CI", result.stderr)
-        self.assertEqual(commands, [])
+        self.assertFalse(any(command[0] == "terraform" for command in commands))
+        result, commands = self.run_deploy(
+            fixture="registry-update",
+            profile="registry-deploy",
+            profiles=ROLE_PROFILES,
+            stack_args=("--stack", "decision"),
+        )
+        self.assertIn("check_plan.py", " ".join(" ".join(command) for command in commands))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any("apply" in command for command in commands))
+
+    def test_sso_profile_is_rejected_for_addon_stacks_before_terraform(self):
+        # Identity Center の permission set は本体向けの権限だけを持つため、追加スタックは個人アカウントの
+        # MFA 付きロールの profile でだけ反映する
+        for stack in ("management", "decision", "notification_events"):
+            with self.subTest(stack=stack):
+                result, commands = self.run_deploy(stack_args=("--stack", stack))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Identity Center", result.stderr)
+                self.assertFalse(any(command[0] == "terraform" for command in commands))
+                self.assertFalse(
+                    any(command[1:3] == ["sts", "get-caller-identity"] for command in commands)
+                )
+
+    def test_unknown_stack_is_rejected_before_external_commands(self):
+        for stack_args in [("--stack", "bootstrap"), ("--stack", "../decision"), ("--stack",)]:
+            with self.subTest(stack_args=stack_args):
+                result, commands = self.run_deploy(stack_args=stack_args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(commands, [])
 
 
 if __name__ == "__main__":
