@@ -1,4 +1,8 @@
 mock_provider "aws" {
+  # provider のリージョン（us-east-1 に固定）
+  mock_data "aws_region" {
+    defaults = { region = "us-east-1" }
+  }
   mock_resource "aws_ssoadmin_permission_set" {
     defaults = { arn = "arn:aws:sso:::permissionSet/ssoins-0000000000000000/ps-0000000000000000" }
   }

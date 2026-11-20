@@ -63,12 +63,31 @@ variable "deployer_group_id" {
   }
 }
 
+data "aws_region" "current" {}
+
 locals {
+  region              = data.aws_region.current.region
   state_arn           = "arn:aws:s3:::${var.state_bucket_name}"
   spa_arn             = "arn:aws:s3:::${var.spa_bucket_name}"
-  role_arn            = "arn:aws:iam::${var.aws_account_id}:role/${var.name_prefix}-management"
-  pool_arn            = "arn:aws:cognito-idp:us-east-1:${var.aws_account_id}:userpool/${var.cognito_user_pool_id}"
+  pool_arn            = "arn:aws:cognito-idp:${local.region}:${var.aws_account_id}:userpool/${var.cognito_user_pool_id}"
   use_identity_center = var.identity_center_instance_arn != null
+  # 本体スタック（infrastructure/main.tf）の state key と資源名。bootstrap は本体より先に適用するため、
+  # 本体の資源を参照できず名前から組み立てる。本体と同じ規則にし、tests/test_bootstrap_names.py で照合する
+  main_stack = {
+    state_key       = "registry-portal/dev/terraform.tfstate"
+    management_name = "${var.name_prefix}-management"
+    auxiliary_table = "${var.name_prefix}-auxiliary"
+    api_log_group   = "/aws/apigateway/${var.name_prefix}"
+  }
+  main_state_arn = "${local.state_arn}/${local.main_stack.state_key}"
+  # 管理 Lambda の実行ロール（PassRole の対象）・関数・補助テーブル・ロググループ
+  management_role_arn     = "arn:aws:iam::${var.aws_account_id}:role/${local.main_stack.management_name}"
+  management_function_arn = "arn:aws:lambda:${local.region}:${var.aws_account_id}:function:${local.main_stack.management_name}"
+  auxiliary_table_arn     = "arn:aws:dynamodb:${local.region}:${var.aws_account_id}:table/${local.main_stack.auxiliary_table}"
+  portal_log_group_arns = [
+    "arn:aws:logs:${local.region}:${var.aws_account_id}:log-group:/aws/lambda/${local.main_stack.management_name}*",
+    "arn:aws:logs:${local.region}:${var.aws_account_id}:log-group:${local.main_stack.api_log_group}*",
+  ]
 }
 resource "aws_s3_bucket" "state" {
   bucket        = var.state_bucket_name
@@ -162,7 +181,7 @@ resource "aws_ssoadmin_permission_set_inline_policy" "deployer" {
         Effect    = "Allow"
         Action    = ["s3:ListBucket", "s3:ListBucketVersions"]
         Resource  = local.state_arn
-        Condition = { StringLike = { "s3:prefix" = ["registry-portal/dev/*"] } }
+        Condition = { StringLike = { "s3:prefix" = ["${dirname(local.main_stack.state_key)}/*"] } }
       },
       {
         Sid      = "StateBucketLocation"
@@ -174,13 +193,13 @@ resource "aws_ssoadmin_permission_set_inline_policy" "deployer" {
         Sid      = "StateAndLock"
         Effect   = "Allow"
         Action   = ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"]
-        Resource = ["${local.state_arn}/registry-portal/dev/terraform.tfstate", "${local.state_arn}/registry-portal/dev/terraform.tfstate.tflock"]
+        Resource = [local.main_state_arn, "${local.main_state_arn}.tflock"]
       },
       {
         Sid      = "ReleaseLock"
         Effect   = "Allow"
         Action   = "s3:DeleteObject"
-        Resource = "${local.state_arn}/registry-portal/dev/terraform.tfstate.tflock"
+        Resource = "${local.main_state_arn}.tflock"
       },
       {
         Sid      = "SpaBucket"
@@ -198,20 +217,20 @@ resource "aws_ssoadmin_permission_set_inline_policy" "deployer" {
         Sid      = "ManagementRole"
         Effect   = "Allow"
         Action   = ["iam:CreateRole", "iam:GetRole", "iam:DeleteRole", "iam:UpdateAssumeRolePolicy", "iam:PutRolePolicy", "iam:GetRolePolicy", "iam:DeleteRolePolicy", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies", "iam:TagRole", "iam:UntagRole"]
-        Resource = local.role_arn
+        Resource = local.management_role_arn
       },
       {
         Sid       = "PassOnlyManagementRoleToLambda"
         Effect    = "Allow"
         Action    = "iam:PassRole"
-        Resource  = local.role_arn
+        Resource  = local.management_role_arn
         Condition = { StringEquals = { "iam:PassedToService" = "lambda.amazonaws.com" } }
       },
       {
         Sid      = "ManagementFunction"
         Effect   = "Allow"
         Action   = ["lambda:CreateFunction", "lambda:GetFunction", "lambda:GetFunctionConfiguration", "lambda:GetPolicy", "lambda:ListVersionsByFunction", "lambda:UpdateFunctionCode", "lambda:UpdateFunctionConfiguration", "lambda:AddPermission", "lambda:RemovePermission", "lambda:DeleteFunction", "lambda:ListTags", "lambda:TagResource", "lambda:UntagResource", "lambda:GetFunctionCodeSigningConfig", "lambda:GetRuntimeManagementConfig"]
-        Resource = "arn:aws:lambda:us-east-1:${var.aws_account_id}:function:${var.name_prefix}-management"
+        Resource = local.management_function_arn
       },
       {
         Sid      = "ExistingPoolChildren"
@@ -223,13 +242,13 @@ resource "aws_ssoadmin_permission_set_inline_policy" "deployer" {
         Sid      = "AuxiliaryTable"
         Effect   = "Allow"
         Action   = ["dynamodb:CreateTable", "dynamodb:DescribeTable", "dynamodb:UpdateTable", "dynamodb:DescribeContinuousBackups", "dynamodb:UpdateContinuousBackups", "dynamodb:DescribeTimeToLive", "dynamodb:UpdateTimeToLive", "dynamodb:ListTagsOfResource", "dynamodb:TagResource", "dynamodb:UntagResource"]
-        Resource = "arn:aws:dynamodb:us-east-1:${var.aws_account_id}:table/${var.name_prefix}-auxiliary"
+        Resource = local.auxiliary_table_arn
       },
       {
         Sid      = "PortalLogs"
         Effect   = "Allow"
         Action   = ["logs:CreateLogGroup", "logs:DeleteLogGroup", "logs:PutRetentionPolicy", "logs:DeleteRetentionPolicy", "logs:ListTagsForResource", "logs:TagResource", "logs:UntagResource"]
-        Resource = ["arn:aws:logs:us-east-1:${var.aws_account_id}:log-group:/aws/lambda/${var.name_prefix}-management*", "arn:aws:logs:us-east-1:${var.aws_account_id}:log-group:/aws/apigateway/${var.name_prefix}*"]
+        Resource = local.portal_log_group_arns
       },
       {
         Sid      = "DescribeLogs"
@@ -241,7 +260,7 @@ resource "aws_ssoadmin_permission_set_inline_policy" "deployer" {
         Sid      = "HttpApi"
         Effect   = "Allow"
         Action   = ["apigateway:GET", "apigateway:POST", "apigateway:PATCH", "apigateway:PUT", "apigateway:DELETE"]
-        Resource = ["arn:aws:apigateway:us-east-1::/apis", "arn:aws:apigateway:us-east-1::/apis/*", "arn:aws:apigateway:us-east-1::/tags/*"]
+        Resource = ["arn:aws:apigateway:${local.region}::/apis", "arn:aws:apigateway:${local.region}::/apis/*", "arn:aws:apigateway:${local.region}::/tags/*"]
       },
       {
         Sid      = "SpaDistribution"
