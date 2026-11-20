@@ -124,5 +124,8 @@ applications/registry_portal/infrastructure/backend.hcl
 applications/registry_portal/infrastructure/*/backend.hcl
 applications/registry_portal/build/
 applications/registry_portal/backend/build/
+# 手順書の plan ファイルと、plan ガードに渡す JSON（plan に機密値が含まれうるためコミットしない）
+applications/registry_portal/infrastructure/**/*.tfplan
+applications/registry_portal/infrastructure/**/plan.json
 
 env/*
