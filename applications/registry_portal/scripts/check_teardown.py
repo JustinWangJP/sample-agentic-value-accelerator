@@ -82,10 +82,11 @@ def _managed_resource_count(pulled: str) -> int | None:
     )
 
 
-def _remaining_protections(plan: dict[str, Any]) -> list[str]:
-    """destroy の plan で、state 上の保護が撤去用の値になっていないリソースを返す。
+def _remaining_protections(plan: dict[str, Any]) -> tuple[list[str], list[Protection]]:
+    """destroy の plan で、state 上の保護が撤去用の値になっていないリソースと、検査を飛ばした保護を返す。
 
-    plan に出ないリソース（撤去の途中で削除済み）は対象にしない。
+    plan に出ないリソースは、撤去の途中で削除済みとみなして検査を飛ばす（途中で失敗した撤去を
+    続けるため）。リソース名の変更でも plan に出なくなるため、飛ばした保護は呼び出し元で表示する。
     """
     if not str(plan.get("format_version", "")).startswith("1."):
         raise ValueError("対応する plan JSON の format_version がありません")
@@ -95,8 +96,10 @@ def _remaining_protections(plan: dict[str, Any]) -> list[str]:
         if "delete" in change["change"].get("actions", [])
     }
     errors = []
+    skipped = []
     for protection in MAIN_PROTECTIONS:
         if protection.address not in before:
+            skipped.append(protection)
             continue
         value = before[protection.address].get(protection.attribute)
         if value is not protection.teardown_value:
@@ -104,16 +107,21 @@ def _remaining_protections(plan: dict[str, Any]) -> list[str]:
                 f"{protection.address} の {protection.attribute} が state 上で "
                 f"{json.dumps(value)} です（撤去には {json.dumps(protection.teardown_value)} が必要）"
             )
-    return errors
+    return errors, skipped
 
 
 def check_main_protection(path: str) -> int:
     """destroy の plan の JSON を読み、本体の保護が state 上で外れていれば 0 を返す。"""
     try:
-        errors = _remaining_protections(json.loads(Path(path).read_text()))
+        errors, skipped = _remaining_protections(json.loads(Path(path).read_text()))
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         print(f"本体の destroy の plan を読めません: {error}", file=sys.stderr)
         return 1
+    for protection in skipped:
+        print(
+            f"{protection.address} は plan にないため、削除済みとみなして "
+            f"{protection.attribute} の検査を飛ばしました"
+        )
     if errors:
         print("\n".join([*errors, GUIDE_STEP]), file=sys.stderr)
         return 1

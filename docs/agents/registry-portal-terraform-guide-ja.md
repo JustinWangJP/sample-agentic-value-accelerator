@@ -504,7 +504,7 @@ AWS_PROFILE=registry-deploy scripts/deploy.sh --destroy infrastructure/backend.h
 - スタックごとに「0 件」（撤去済み）か「state なし（未配信）」を表示します。どちらも撤去を止めません。state のファイルがないと `terraform state pull` は何も出力しないため、これを「state なし」と判定します。この出力は[公式ドキュメント](https://developer.hashicorp.com/terraform/cli/commands/state/pull)に記載がなく、Terraform 1.17.1 で確認した挙動です。`terraform show -json` は、state のファイルがない場合とリソースのない state の場合に同じ`{"format_version":"1.0"}` を出力して区別できないため使いません（同じく 1.17.1 で確認）。
 - 認証やネットワークの失敗、state の形式の異常などで state を読めない場合は、0 件として扱わずに止まります。
 
-plan を作った後、スクリプトは plan の削除前の値（state の値）で、補助テーブルの `deletion_protection_enabled` が `false`、SPA バケットの `force_destroy` が `true` であることを確かめます。そうでなければ、スタック名の入力を求める前に止まります。手順 3 の apply が済んでいないので、手順 3 に戻ります（飛ばして destroy すると、保護のないリソースだけを消してから途中で失敗します）。撤去の途中で削除済みのリソースは plan に出ないため、検査の対象になりません。
+plan を作った後、スクリプトは plan の削除前の値（state の値）で、補助テーブルの `deletion_protection_enabled` が `false`、SPA バケットの `force_destroy` が `true` であることを確かめます。そうでなければ、スタック名の入力を求める前に止まります。手順 3 の apply が済んでいないので、手順 3 に戻ります（飛ばして destroy すると、保護のないリソースだけを消してから途中で失敗します）。撤去の途中で削除済みのリソースは plan に出ないため、検査を飛ばし、飛ばしたリソースと属性を「plan にないため、削除済みとみなして … の検査を飛ばしました」と表示します。撤去を始める前なのにこの表示が出た場合は、リソース名が変わっていて検査が働いていません。`n` などを入力して中止してください。
 
 plan に既存 Registry の変更や削除がないことを確認し、`main` と入力します。destroy が途中で失敗した場合は、本節の最後の「撤去を中止したとき・destroy が途中で失敗したとき」に従います。
 

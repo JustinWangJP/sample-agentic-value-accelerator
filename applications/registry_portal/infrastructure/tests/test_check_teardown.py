@@ -66,7 +66,6 @@ class AddonStatesTests(unittest.TestCase):
                 self.assertIn("decision", result.stderr)
                 self.assertIn("読めません", result.stderr)
 
-
     def test_malformed_arguments_stop_as_usage_errors_before_reading_states(self):
         # `=` がない、スタック名やパスが空の引数は、どの state も読まずに使い方の誤りとして止める
         with tempfile.TemporaryDirectory() as directory:
@@ -146,6 +145,10 @@ class MainProtectionTests(unittest.TestCase):
         ]
         result = self.check_plan(plan)
         self.assertEqual(result.returncode, 0, result.stderr)
+        # リソース名の変更でも plan に出なくなるため、飛ばした検査を表示して気づけるようにする
+        self.assertIn("aws_s3_bucket.spa は plan にないため", result.stdout)
+        self.assertIn("force_destroy の検査を飛ばしました", result.stdout)
+        self.assertNotIn("aws_dynamodb_table.auxiliary", result.stdout)
 
     def test_unreadable_plan_stops(self):
         with tempfile.TemporaryDirectory() as directory:
