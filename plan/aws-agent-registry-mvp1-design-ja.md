@@ -283,7 +283,7 @@ Registry が EventBridge の default バスに送るイベントを、ルール1
 | 決裁 Lambda | 公開承認、却下、公開停止、廃止、廃止依頼の見送り、取り込み、操作の回復。descriptor の作成・更新権限は持たない |
 | イベント処理 Lambda | EventBridge から起動される。Registry の読み取りと、補助テーブルの通知への書き込みだけを行う |
 | 補助 DynamoDB | 1テーブル、オンデマンド、暗号化、PITR、削除保護 |
-| Secrets Manager | 既存の発見用 M2M secret の ARN を参照する。取得できるのは管理 Lambda だけ。トークンは有効期限を考慮してメモリー上で再利用し、401 時の再取得は回数を制限する |
+| Secrets Manager | 既存の発見用 M2M secret の ARN を参照する。取得できるのは管理 Lambda と、Admin の既存レコードの取り込み（#16）で公開版を発見 API から読む決裁 Lambda の実行ロールだけ（#49）。イベント処理 Lambda などその他の主体には付けない。トークンは有効期限を考慮してメモリー上で再利用し、401 時の再取得は回数を制限する |
 | ログ | CloudWatch Logs は365日保存。request ID、操作 ID、主体の識別子、結果を記録する。JWT、secret、定義の全文、SKILL.md の全文は記録しない |
 | 監査 | 操作履歴は補助テーブルに無期限で保存する。CloudTrail は既存の組織 trail を使う。WORM（S3 Object Lock）は付けない |
 | ネットワーク | Lambda は VPC に入れず、公開 AWS API へ TLS で接続する。VPC、NAT Gateway、ALB、ECS、VPC Link、WAF は追加しない（ADR-0003） |

@@ -8,8 +8,12 @@ supplement_table_name = "registry-auxiliary"
 supplement_table_arn  = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-auxiliary"
 http_api_id           = "a1b2c3d4e5"
 jwt_authorizer_id     = "abc123"
+# 本体スタックの output portal_api_scope
+portal_api_scope      = "registry-portal/api.invoke"
 # 取り込みで公開承認済みの版を読む発見用 M2M（管理 Lambda と同じ client）
 discovery_token_url         = "https://discovery.auth.us-east-1.amazoncognito.com/oauth2/token"
 discovery_client_id         = "discovery-m2m-client"
 discovery_client_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:discovery-m2m-AbCdEf"
 discovery_scope             = "registry/discovery.read"
+# secret を顧客管理 KMS キーで暗号化している場合だけ、本体スタックと同じキー ARN を指定する（AWS 管理キーなら不要）
+# discovery_kms_key_arn = "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000000"

@@ -1,4 +1,4 @@
-# Registry ポータルの CI（テスト・Lint・型検査のみ）
+# Registry ポータルの CI（テスト・Lint・型検査・IaC 検査）
 #
 # ADR-0004 に従い、AWS への反映は一切行わない。
 # AWS の認証情報・OIDC ロール（id-token: write）はこのワークフローに持たせない。
@@ -96,31 +96,54 @@ jobs:
       - name: build
         run: npm run build
 
-  draft-iam:
-    name: registry portal IAM（terraform fmt / validate）
+  infrastructure:
+    name: infrastructure（plan ガード / Terraform / Lambda パッケージ）
     runs-on: ubuntu-latest
+    env:
+      AWS_EC2_METADATA_DISABLED: "true"
+      AWS_CONFIG_FILE: /dev/null
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
     defaults:
       run:
-        working-directory: applications/registry_portal/infrastructure
+        working-directory: applications/registry_portal
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.10.5"
-      - name: terraform fmt
-        run: terraform fmt -check -recursive
-      # 各ルートモジュール（management・decision）の validate で、呼び出す下位モジュールも検査する
-      - name: terraform init（management）
-        working-directory: applications/registry_portal/infrastructure/management
-        run: terraform init -backend=false
-      - name: terraform validate（management）
-        working-directory: applications/registry_portal/infrastructure/management
-        run: terraform validate
-      - name: terraform init（decision）
-        working-directory: applications/registry_portal/infrastructure/decision
-        run: terraform init -backend=false
-      - name: terraform validate（decision）
-        working-directory: applications/registry_portal/infrastructure/decision
-        run: terraform validate
+          terraform_version: "1.17.1"
+          terraform_wrapper: false
+      - name: plan ガードと手動配信の境界
+        run: python3 -m unittest discover -s infrastructure/tests -v
+      - name: SPA の URL 解決
+        run: node --test infrastructure/tests/spa_rewrite.test.mjs
+      - name: シェル構文
+        run: bash -n scripts/deploy.sh
+      - name: 固定版 SDK を同梱した Lambda ZIP（管理・決裁・イベント処理で共通）
+        run: python3 scripts/build_lambda.py --output "$RUNNER_TEMP/lambda.zip"
+      - name: Terraform fmt
+        run: terraform -chdir=infrastructure fmt -check -recursive
+      - name: Terraform validate と AWS 接続なしの mock plan
+        run: |
+          terraform -chdir=infrastructure init -backend=false -input=false
+          terraform -chdir=infrastructure validate
+          terraform -chdir=infrastructure test
+          terraform -chdir=infrastructure/bootstrap init -backend=false -input=false
+          terraform -chdir=infrastructure/bootstrap validate
+          terraform -chdir=infrastructure/bootstrap test
+      # 各ルートモジュール（management・decision・notification_events）の validate で、呼び出す下位モジュールも検査する
+      - name: Terraform validate（management・decision・notification_events）
+        run: |
+          terraform -chdir=infrastructure/management init -backend=false -input=false
+          terraform -chdir=infrastructure/management validate
+          terraform -chdir=infrastructure/decision init -backend=false -input=false
+          terraform -chdir=infrastructure/decision validate
+          terraform -chdir=infrastructure/notification_events init -backend=false -input=false
+          terraform -chdir=infrastructure/notification_events validate

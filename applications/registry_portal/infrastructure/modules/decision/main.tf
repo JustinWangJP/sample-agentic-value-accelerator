@@ -8,9 +8,23 @@ locals {
   name = var.name_prefix
 }
 
-resource "aws_cloudwatch_log_group" "decision" {
-  name              = "/aws/lambda/${local.name}"
-  retention_in_days = 365
+# ロググループと、plan 時に確定するその ARN（本体スタック・notification_events と共通のモジュール）
+module "log_group" {
+  source        = "../lambda_log_group"
+  function_name = local.name
+}
+
+# ロググループを共通のモジュールに移した。適用済みの state は moved で引き継ぐ
+moved {
+  from = aws_cloudwatch_log_group.decision
+  to   = module.log_group.aws_cloudwatch_log_group.this
+}
+
+# 発見用 M2M client の環境変数と、顧客管理 KMS キーの場合の kms:Decrypt（本体スタックと共通）
+module "discovery_client" {
+  source      = "../discovery_client"
+  client      = var.discovery_client
+  kms_key_arn = var.discovery_kms_key_arn
 }
 
 resource "aws_iam_role" "decision" {
@@ -31,9 +45,20 @@ resource "aws_iam_role_policy" "decision" {
   policy = templatefile("${path.module}/decision-policy.json.tftpl", {
     registry_arn         = var.registry_arn
     supplement_table_arn = var.supplement_table_arn
-    discovery_secret_arn = var.discovery_client_secret_arn
-    log_group_arn        = aws_cloudwatch_log_group.decision.arn
+    discovery_secret_arn = var.discovery_client.client_secret_arn
+    log_group_arn        = module.log_group.arn
   })
+}
+
+# 発見用 secret が顧客管理 KMS キーで暗号化されている場合だけ、取り込みで secret を読むための
+# kms:Decrypt を付ける（#49）。本体スタックの管理 Lambda と同じ modules/discovery_client の policy で、
+# Secrets Manager 経由のその secret の暗号化コンテキストに限る。基本の policy（テンプレート）は条件分岐を
+# 持たせないため別の資源にする
+resource "aws_iam_role_policy" "decision_discovery_kms" {
+  count  = var.discovery_kms_key_arn == null ? 0 : 1
+  name   = "${local.name}-discovery-kms"
+  role   = aws_iam_role.decision.name
+  policy = module.discovery_client.kms_policy
 }
 
 resource "aws_lambda_function" "decision" {
@@ -47,18 +72,14 @@ resource "aws_lambda_function" "decision" {
   timeout          = 30
   memory_size      = 256
   environment {
-    variables = {
-      COGNITO_ISSUER              = var.cognito_issuer
-      HUMAN_CLIENT_ID             = var.human_client_id
-      REGISTRY_ARN                = var.registry_arn
-      SUPPLEMENT_TABLE_NAME       = var.supplement_table_name
-      DISCOVERY_TOKEN_URL         = var.discovery_token_url
-      DISCOVERY_CLIENT_ID         = var.discovery_client_id
-      DISCOVERY_CLIENT_SECRET_ARN = var.discovery_client_secret_arn
-      DISCOVERY_SCOPE             = var.discovery_scope
-    }
+    variables = merge(module.discovery_client.environment, {
+      COGNITO_ISSUER        = var.cognito_issuer
+      HUMAN_CLIENT_ID       = var.human_client_id
+      REGISTRY_ARN          = var.registry_arn
+      SUPPLEMENT_TABLE_NAME = var.supplement_table_name
+    })
   }
-  depends_on = [aws_iam_role_policy.decision, aws_cloudwatch_log_group.decision]
+  depends_on = [aws_iam_role_policy.decision, module.log_group]
 }
 
 # 決裁 handler の route を、借用する既存 HTTP API（#5 の IaC が持つ）に割り当てる。
@@ -142,6 +163,8 @@ resource "aws_apigatewayv2_route" "decision" {
   target             = "integrations/${aws_apigatewayv2_integration.decision.id}"
   authorization_type = "JWT"
   authorizer_id      = var.jwt_authorizer_id
+  # 本体スタックのリソースサーバーが定義し、人間用 SPA client に許可したポータル用の scope
+  authorization_scopes = [var.portal_api_scope]
 }
 
 # HTTP API から決裁 Lambda を呼び出す許可。審査と決裁の path（/api/reviews 以下）、Admin・Curator の

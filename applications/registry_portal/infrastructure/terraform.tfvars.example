@@ -1,0 +1,12 @@
+aws_account_id              = "123456789012"
+spa_bucket_name             = "registry-portal-dev-123456789012"
+registry_arn                = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
+cognito_user_pool_id        = "us-east-1_Example"
+cognito_domain              = "https://example.auth.us-east-1.amazoncognito.com"
+identity_providers          = ["COGNITO"]
+team_names                  = ["platform"]
+discovery_token_url         = "https://example.auth.us-east-1.amazoncognito.com/oauth2/token"
+discovery_client_id         = "existing-discovery-client"
+discovery_client_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:registry-discovery-AbCdEf"
+# discovery_kms_key_arn = "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000000"
+# discovery_scope = "existing-registry/discover"

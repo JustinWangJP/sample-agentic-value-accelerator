@@ -1,0 +1,48 @@
+{
+  "format_version": "1.2",
+  "planned_values": {
+    "root_module": {
+      "child_modules": [
+        {
+          "address": "module.management_drafts",
+          "resources": [
+            {
+              "address": "module.management_drafts.aws_iam_role_policy.management_drafts",
+              "mode": "managed",
+              "type": "aws_iam_role_policy",
+              "name": "management_drafts",
+              "values": {
+                "name": "management_drafts",
+                "role": "registry-portal-dev-management",
+                "policy": "{\"Version\": \"2012-10-17\", \"Statement\": [{\"Sid\": \"Registry\", \"Effect\": \"Allow\", \"Action\": [\"agent-registry:CreateRegistryRecord\", \"agent-registry:UpdateRegistryRecord\", \"agent-registry:GetRegistryRecord\", \"agent-registry:ListRegistryRecords\", \"agent-registry:GetRegistry\", \"agent-registry:SubmitRegistryRecordForApproval\", \"agent-registry:DeleteRegistryRecord\"], \"Resource\": [\"arn:aws:agent-registry:us-east-1:123456789012:registry/portal\", \"arn:aws:agent-registry:us-east-1:123456789012:registry/portal/record/*\"]}]}"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "resource_changes": [
+    {
+      "address": "module.management_drafts.aws_iam_role_policy.management_drafts",
+      "module_address": "module.management_drafts",
+      "mode": "managed",
+      "type": "aws_iam_role_policy",
+      "name": "management_drafts",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "before": null,
+        "after": {
+          "name": "management_drafts",
+          "role": "registry-portal-dev-management",
+          "policy": "{\"Version\": \"2012-10-17\", \"Statement\": [{\"Sid\": \"Registry\", \"Effect\": \"Allow\", \"Action\": [\"agent-registry:CreateRegistryRecord\", \"agent-registry:UpdateRegistryRecord\", \"agent-registry:GetRegistryRecord\", \"agent-registry:ListRegistryRecords\", \"agent-registry:GetRegistry\", \"agent-registry:SubmitRegistryRecordForApproval\", \"agent-registry:DeleteRegistryRecord\"], \"Resource\": [\"arn:aws:agent-registry:us-east-1:123456789012:registry/portal\", \"arn:aws:agent-registry:us-east-1:123456789012:registry/portal/record/*\"]}]}"
+        },
+        "after_unknown": {
+          "id": true
+        }
+      }
+    }
+  ]
+}

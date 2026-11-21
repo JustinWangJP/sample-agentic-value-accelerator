@@ -68,22 +68,28 @@ variable "jwt_authorizer_id" {
   }
 }
 
-variable "discovery_token_url" {
-  type        = string
-  description = "取り込み時の公開承認済みの版を取得する発見用 M2M の HTTPS トークンエンドポイント"
+variable "discovery_client" {
+  type = object({
+    token_url         = string
+    client_id         = string
+    client_secret_arn = string
+    scope             = string
+  })
+  description = "取り込みで公開承認済みの版を読む既存の発見用 M2M client の接続設定（HTTPS のトークンエンドポイント、client ID、client secret を保存した Secrets Manager の完全な ARN、要求する scope。scope が空文字なら client の既定値）。形式は modules/discovery_client で検証する"
 }
 
-variable "discovery_client_id" {
+variable "discovery_kms_key_arn" {
   type        = string
-  description = "取り込みで公開承認済みの版を読む既存の発見用 M2M client ID"
+  description = "発見用 M2M secret を顧客管理 KMS キーで暗号化している場合の完全なキー ARN。指定すると決裁 Lambda に条件付きの kms:Decrypt を付ける。AWS 管理キー（aws/secretsmanager）なら null"
+  default     = null
+
+  validation {
+    condition     = var.discovery_kms_key_arn == null ? true : can(regex("^arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[A-Za-z0-9-]+$", var.discovery_kms_key_arn))
+    error_message = "KMS キーの完全な ARN を指定してください（エイリアスは使えません）。"
+  }
 }
 
-variable "discovery_client_secret_arn" {
+variable "portal_api_scope" {
   type        = string
-  description = "発見用 M2M client secret を保存した Secrets Manager の ARN"
-}
-
-variable "discovery_scope" {
-  type        = string
-  description = "発見用 M2M に要求する scope。空文字なら client の既定値"
+  description = "route の JWT authorizer が検証するポータル用のカスタム scope。本体スタックの output portal_api_scope と同じ値"
 }

@@ -1,0 +1,1 @@
+{"format_version": "1.2", "resource_changes": [{"address": "aws_lambda_function_url.test", "mode": "managed", "type": "aws_lambda_function_url", "change": {"actions": ["create"], "after": {}, "after_unknown": {}}}], "planned_values": {"root_module": {"resources": []}}}

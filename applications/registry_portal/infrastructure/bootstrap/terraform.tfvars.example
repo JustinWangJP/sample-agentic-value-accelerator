@@ -1,0 +1,14 @@
+aws_account_id           = "123456789012"
+bootstrap_admin_role_arn = "arn:aws:iam::123456789012:role/RegistryPortalDeployer"
+state_bucket_name        = "registry-portal-state-123456789012"
+spa_bucket_name          = "registry-portal-dev-123456789012"
+cognito_user_pool_id     = "us-east-1_Example"
+
+# state とロックを読み書きできる唯一の主体（IAM ロール ARN。STS セッション ARN は不可）。
+# 個人アカウント（IAM Identity Center なし）: MFA 付きで引き受ける IAM ロール
+deployer_principal_arn = "arn:aws:iam::123456789012:role/RegistryPortalDeployer"
+
+# IAM Identity Center を使う場合だけ、次の 3 行に置き換えて permission set と割り当ても作る。
+# deployer_principal_arn       = "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/*AWSReservedSSO_RegistryPortalDeployer_*"
+# identity_center_instance_arn = "arn:aws:sso:::instance/ssoins-0000000000000000"
+# deployer_group_id            = "00000000-0000-0000-0000-000000000000"

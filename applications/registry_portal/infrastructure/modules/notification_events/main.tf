@@ -2,8 +2,17 @@
 # Registry が EventBridge の default バスに送るレコードの状態変化のイベントを、ルール1本でイベント処理 Lambda に流す。
 # イベント処理 handler（handlers/events.py）は Registry の読み取りと、補助テーブルへの通知の書き込みだけを行う
 # （設計書「最小インフラとセキュリティ」のイベント処理 Lambda）。既存 Registry と補助テーブルは借用するだけ。
+data "aws_caller_identity" "current" {}
+
+data "aws_region" "current" {}
+
 locals {
-  name = var.name_prefix
+  name                   = var.name_prefix
+  dead_letter_queue_name = "${local.name}-dlq"
+  # 作成前の DLQ の arn 属性は初回の plan で未確定になり、反映前ガード（scripts/check_plan.py）が
+  # 「未確定の IAM policy」で中止する。ロググループ（modules/lambda_log_group）と同じく、名前と plan 時に確定する
+  # アカウント ID・リージョンから組み立てる
+  dead_letter_queue_arn = "arn:aws:sqs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:${local.dead_letter_queue_name}"
   # ARN の末尾（registry/<id>）の ID。イベントの detail.registryId はこの値になる
   registry_id = element(split("/", var.registry_arn), 1)
   # Registry のレコードのイベントの detail-type（README「画面上の通知」の根拠の表）
@@ -16,15 +25,22 @@ locals {
   ]
 }
 
-resource "aws_cloudwatch_log_group" "events" {
-  name              = "/aws/lambda/${local.name}"
-  retention_in_days = 365
+# ロググループと、plan 時に確定するその ARN（本体スタック・decision と共通のモジュール）
+module "log_group" {
+  source        = "../lambda_log_group"
+  function_name = local.name
+}
+
+# ロググループを共通のモジュールに移した。適用済みの state は moved で引き継ぐ
+moved {
+  from = aws_cloudwatch_log_group.events
+  to   = module.log_group.aws_cloudwatch_log_group.this
 }
 
 # 再試行を使い切ったイベント（元のイベントの本文）を残す。Admin が原因を取り除いた後、
 # 本文をイベント処理 Lambda に非同期で送り直す（README「画面上の通知」）
 resource "aws_sqs_queue" "events_dead_letter" {
-  name                      = "${local.name}-dlq"
+  name                      = local.dead_letter_queue_name
   message_retention_seconds = 1209600
   sqs_managed_sse_enabled   = true
 }
@@ -47,8 +63,8 @@ resource "aws_iam_role_policy" "events" {
   policy = templatefile("${path.module}/events-policy.json.tftpl", {
     registry_arn          = var.registry_arn
     supplement_table_arn  = var.supplement_table_arn
-    log_group_arn         = aws_cloudwatch_log_group.events.arn
-    dead_letter_queue_arn = aws_sqs_queue.events_dead_letter.arn
+    log_group_arn         = module.log_group.arn
+    dead_letter_queue_arn = local.dead_letter_queue_arn
   })
 }
 
@@ -71,7 +87,7 @@ resource "aws_lambda_function" "events" {
       SUPPLEMENT_TABLE_NAME = var.supplement_table_name
     }
   }
-  depends_on = [aws_iam_role_policy.events, aws_cloudwatch_log_group.events]
+  depends_on = [aws_iam_role_policy.events, module.log_group]
 }
 
 # 非同期呼び出しの再試行。Registry・補助テーブルの一時的な失敗では handler が例外を返し、Lambda が再試行する。

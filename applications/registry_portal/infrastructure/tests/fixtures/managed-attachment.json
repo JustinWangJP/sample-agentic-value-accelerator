@@ -1,0 +1,1 @@
+{"format_version": "1.2", "resource_changes": [], "planned_values": {"root_module": {"resources": [{"address": "module.role.aws_iam_role_policy_attachment.unsafe", "type": "aws_iam_role_policy_attachment", "mode": "managed", "values": {"policy_arn": "arn:aws:iam::aws:policy/AdministratorAccess"}}]}}}

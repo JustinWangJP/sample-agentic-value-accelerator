@@ -88,8 +88,9 @@ def test_events_role_only_reads_the_registry_and_writes_notifications():
 
 def test_module_creates_the_events_lambda_with_its_own_role_and_rule():
     main = (MODULE / "main.tf").read_text()
+    # ロググループは本体スタック・決裁と共通のモジュールで作る
+    assert re.search(r'^module "log_group" \{\n\s*source\s*=\s*"\.\./lambda_log_group"', main, re.M)
     assert re.findall(r'^resource "([^"]+)"', main, re.MULTILINE) == [
-        "aws_cloudwatch_log_group",
         "aws_sqs_queue",
         "aws_iam_role",
         "aws_iam_role_policy",

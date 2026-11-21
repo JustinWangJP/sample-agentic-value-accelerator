@@ -7,20 +7,28 @@ const complete = {
   VITE_COGNITO_CLIENT_ID: 'human-spa-client',
   VITE_REDIRECT_URI: 'https://portal.example.com/',
   VITE_API_BASE_URL: 'https://api.example.com/',
+  VITE_COGNITO_SCOPES: ' openid registry-portal/api.invoke ',
 }
 
 describe('設定の読み込み', () => {
-  it('必須項目がそろっていれば設定を返し、scope の既定値は openid にする', () => {
+  it('必須項目がそろっていれば設定を返す', () => {
     expect(loadConfig(complete)).toEqual({
       cognitoDomain: 'https://portal.auth.us-east-1.amazoncognito.com',
       clientId: 'human-spa-client',
       redirectUri: 'https://portal.example.com/',
       apiBaseUrl: 'https://api.example.com',
-      scopes: 'openid',
+      scopes: 'openid registry-portal/api.invoke',
     })
   })
 
-  it.each(['VITE_COGNITO_DOMAIN', 'VITE_COGNITO_CLIENT_ID', 'VITE_REDIRECT_URI', 'VITE_API_BASE_URL'])(
+  // scope の値は Terraform の本体スタックだけに定義し、SPA は既定値を持たない
+  it.each([
+    'VITE_COGNITO_DOMAIN',
+    'VITE_COGNITO_CLIENT_ID',
+    'VITE_REDIRECT_URI',
+    'VITE_API_BASE_URL',
+    'VITE_COGNITO_SCOPES',
+  ])(
     '%s が未設定なら ConfigError にする',
     (key) => {
       const env: Record<string, string | undefined> = { ...complete, [key]: '  ' }

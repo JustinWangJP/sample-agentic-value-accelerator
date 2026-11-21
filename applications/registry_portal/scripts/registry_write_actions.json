@@ -1,0 +1,13 @@
+{
+  "service_prefixes": ["agent-registry", "bedrock-agentcore"],
+  "actions": [
+    "CreateRegistry",
+    "UpdateRegistry",
+    "DeleteRegistry",
+    "CreateRegistryRecord",
+    "UpdateRegistryRecord",
+    "UpdateRegistryRecordStatus",
+    "SubmitRegistryRecordForApproval",
+    "DeleteRegistryRecord"
+  ]
+}

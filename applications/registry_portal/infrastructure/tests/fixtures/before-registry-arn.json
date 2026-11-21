@@ -1,0 +1,1 @@
+{"format_version": "1.2", "resource_changes": [{"address": "aws_cloudcontrolapi_resource.existing", "mode": "managed", "type": "aws_cloudcontrolapi_resource", "change": {"actions": ["delete"], "before": {"arn": "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"}, "after": null}}], "planned_values": {"root_module": {"resources": []}}}
