@@ -163,6 +163,17 @@ class DeployTests(unittest.TestCase):
             self.records = [json.loads(line) for line in commands.read_text().splitlines()]
             return result, [record["argv"] for record in self.records]
 
+    def run_destroy(self, fixture="safe", confirmation="main\n", **options):
+        """撤去のモードで実行する。撤去の手順（ガイド 5.4）と同じく、MFA 付きのロールの profile を使う。"""
+        return self.run_deploy(
+            fixture,
+            confirmation,
+            profile="registry-deploy",
+            profiles=ROLE_PROFILES,
+            destroy=True,
+            **options,
+        )
+
     def test_approved_saved_plan_is_applied_then_spa_is_uploaded(self):
         result, commands = self.run_deploy()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -480,13 +491,10 @@ class DeployTests(unittest.TestCase):
         ]
         for fixture, confirmation, stack_args, reason in cases:
             with self.subTest(fixture=fixture, confirmation=confirmation, stack_args=stack_args):
-                result, commands = self.run_deploy(
+                result, commands = self.run_destroy(
                     fixture,
                     confirmation,
-                    profile="registry-deploy",
-                    profiles=ROLE_PROFILES,
                     stack_args=stack_args,
-                    destroy=True,
                 )
                 self.assertNotEqual(result.returncode, 0)
                 if reason != "check_plan":
@@ -496,14 +504,7 @@ class DeployTests(unittest.TestCase):
 
     def test_main_destroy_stops_while_an_addon_stack_state_has_resources(self):
         # 追加スタックは本体の API・Lambda・ロール・テーブルを借りるため、撤去の順番は「追加スタック → 本体」
-        result, commands = self.run_deploy(
-            "safe",
-            "main\n",
-            profile="registry-deploy",
-            profiles=ROLE_PROFILES,
-            destroy=True,
-            states={"management": pulled_state(LOG_GROUP)},
-        )
+        result, commands = self.run_destroy(states={"management": pulled_state(LOG_GROUP)})
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("management（1 件）", result.stderr)
         self.assertNotIn("decision", result.stderr)
@@ -530,11 +531,7 @@ class DeployTests(unittest.TestCase):
         }
         for label, (states, extra_env) in cases.items():
             with self.subTest(label):
-                result, commands = self.run_deploy(
-                    confirmation="main\n",
-                    profile="registry-deploy",
-                    profiles=ROLE_PROFILES,
-                    destroy=True,
+                result, commands = self.run_destroy(
                     states=states,
                     extra_env=extra_env,
                 )
@@ -543,13 +540,7 @@ class DeployTests(unittest.TestCase):
 
     def test_main_destroy_proceeds_when_addon_states_are_empty(self):
         # 撤去済みの追加スタックの state は、リソースのない state か、state のファイル自体がない
-        result, commands = self.run_deploy(
-            confirmation="main\n",
-            profile="registry-deploy",
-            profiles=ROLE_PROFILES,
-            destroy=True,
-            states={"decision": pulled_state()},
-        )
+        result, commands = self.run_destroy(states={"decision": pulled_state()})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         # 撤去済み（0 件）と未配信（state なし）は、どちらも撤去を止めないが表示では区別する
         self.assertIn("decision: 0 件", result.stdout)
@@ -567,12 +558,7 @@ class DeployTests(unittest.TestCase):
 
     def test_addon_state_init_reuses_the_main_backend_settings_with_only_the_key_replaced(self):
         # 追加スタックの state は本体と同じバケットにあり、key だけが異なる（各 backend.hcl.example）
-        result, commands = self.run_deploy(
-            confirmation="main\n",
-            profile="registry-deploy",
-            profiles=ROLE_PROFILES,
-            destroy=True,
-        )
+        result, commands = self.run_destroy()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         inits = {
             command[1]: (command[2:], record["profile"])
@@ -598,37 +584,22 @@ class DeployTests(unittest.TestCase):
 
     def test_main_destroy_stops_before_apply_while_protection_remains_in_state(self):
         # 手順 3 の apply を飛ばすと、保護のないリソースだけ消えてから途中で失敗するため、apply の前に止める
-        result, commands = self.run_deploy(
-            "destroy-main-protected",
-            "main\n",
-            profile="registry-deploy",
-            profiles=ROLE_PROFILES,
-            destroy=True,
-        )
+        result, commands = self.run_destroy("destroy-main-protected")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("5.4", result.stderr)
         self.assertNotIn("スタック名（main）を入力", result.stdout)
         self.assertFalse(any("apply" in command for command in commands))
 
     def test_main_destroy_applies_after_protection_is_removed_from_state(self):
-        result, commands = self.run_deploy(
-            "destroy-main",
-            "main\n",
-            profile="registry-deploy",
-            profiles=ROLE_PROFILES,
-            destroy=True,
-        )
+        result, commands = self.run_destroy("destroy-main")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue(any("apply" in command for command in commands))
 
     def test_addon_destroy_does_not_require_the_main_protection_settings(self):
-        result, commands = self.run_deploy(
+        result, commands = self.run_destroy(
             "destroy-main-protected",
             "decision\n",
-            profile="registry-deploy",
-            profiles=ROLE_PROFILES,
             stack_args=("--stack", "decision"),
-            destroy=True,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(
