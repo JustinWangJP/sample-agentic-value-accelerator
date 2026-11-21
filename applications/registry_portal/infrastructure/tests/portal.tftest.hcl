@@ -3,6 +3,13 @@ mock_provider "aws" {
   mock_data "aws_region" {
     defaults = { region = "us-east-1" }
   }
+  mock_data "aws_caller_identity" {
+    defaults = { account_id = "123456789012" }
+  }
+  # route と呼び出し許可のモジュール（modules/management_routes）が、HTTP API の ID から実行 ARN を読む
+  mock_data "aws_apigatewayv2_api" {
+    defaults = { execution_arn = "arn:aws:execute-api:us-east-1:123456789012:abcde12345" }
+  }
   mock_resource "aws_cloudfront_distribution" {
     defaults = { domain_name = "portal.example.cloudfront.net", arn = "arn:aws:cloudfront::123456789012:distribution/EXAMPLE" }
   }
@@ -65,11 +72,11 @@ run "security_boundaries" {
     error_message = "人間用 client は secret のない code flow とカスタム scope が必要です。"
   }
   assert {
-    condition     = toset([for route in aws_apigatewayv2_route.management : route.route_key]) == toset(["GET /api/me", "GET /api/catalog", "POST /api/catalog/search", "GET /api/catalog/{recordId}"])
+    condition     = toset([for route in values(module.management_routes.routes) : route.route_key]) == toset(["GET /api/me", "GET /api/catalog", "POST /api/catalog/search", "GET /api/catalog/{recordId}"])
     error_message = "本体スタックの route は主体とカタログ（一覧・検索・詳細）だけにしてください。決裁と管理の追加 route は追加スタックが作ります。"
   }
   assert {
-    condition     = alltrue([for route in aws_apigatewayv2_route.management : route.authorization_type == "JWT" && route.authorization_scopes == toset(["registry-portal/api.invoke"])])
+    condition     = alltrue([for route in values(module.management_routes.routes) : route.authorization_type == "JWT" && route.authorization_scopes == toset(["registry-portal/api.invoke"])])
     error_message = "すべての route に人間用 JWT と scope の検証が必要です。"
   }
   assert {
@@ -89,8 +96,9 @@ run "security_boundaries" {
     error_message = "補助テーブルの TTL 属性はアプリ（services/dynamodb.py）と同じ expiresAt にしてください。"
   }
   assert {
-    condition     = aws_cloudwatch_log_group.management.retention_in_days == 365 && aws_cloudwatch_log_group.api.retention_in_days == 365
-    error_message = "ログは365日保存してください。"
+    # 管理 Lambda のロググループの保存期間は modules/lambda_log_group（tests/shared_modules.tftest.hcl）で確かめる
+    condition     = module.management_log_group.name == "/aws/lambda/registry-portal-dev-management" && aws_cloudwatch_log_group.api.retention_in_days == 365
+    error_message = "ログは365日保存し、管理 Lambda のロググループは共通のモジュールで作ってください。"
   }
   assert {
     condition     = aws_lambda_function.management.environment[0].variables["REGISTRY_ARN"] == var.registry_arn && aws_lambda_function.management.environment[0].variables["DISCOVERY_CLIENT_SECRET_ARN"] == var.discovery_client_secret_arn
@@ -144,21 +152,21 @@ run "security_boundaries" {
 run "lambda_invoke_permissions" {
   command = apply
   assert {
-    condition = toset([for permission in aws_lambda_permission.api : trimprefix(permission.source_arn, "${aws_apigatewayv2_api.portal.execution_arn}/*/")]) == toset([
+    condition = toset([for permission in values(module.management_routes.invoke_permissions) : trimprefix(permission.source_arn, "${aws_apigatewayv2_api.portal.execution_arn}/*/")]) == toset([
       "GET/api/me", "GET/api/catalog", "POST/api/catalog/search", "GET/api/catalog/*",
     ])
     error_message = "管理 Lambda の呼び出し許可は、本体スタックの route のメソッドと path に限ってください。"
   }
   assert {
-    # route と呼び出し許可を同じ map（{route_key, path}）から作り、キーとメソッドを対応させる
-    condition = keys(aws_apigatewayv2_route.management) == keys(aws_lambda_permission.api) && alltrue([
-      for name, route in aws_apigatewayv2_route.management :
-      startswith(aws_lambda_permission.api[name].source_arn, "${aws_apigatewayv2_api.portal.execution_arn}/*/${split(" ", route.route_key)[0]}/")
+    # route と呼び出し許可を同じ map（{route_key, statement_id}）から作り、キーとメソッドを対応させる
+    condition = keys(module.management_routes.routes) == keys(module.management_routes.invoke_permissions) && alltrue([
+      for name, route in module.management_routes.routes :
+      startswith(module.management_routes.invoke_permissions[name].source_arn, "${aws_apigatewayv2_api.portal.execution_arn}/*/${split(" ", route.route_key)[0]}/")
     ])
     error_message = "本体スタックの route と呼び出し許可は、同じキーの 1 つの map から作り、メソッドを一致させてください。"
   }
   assert {
-    condition     = alltrue([for permission in aws_lambda_permission.api : permission.principal == "apigateway.amazonaws.com" && permission.source_account == var.aws_account_id])
+    condition     = alltrue([for permission in values(module.management_routes.invoke_permissions) : permission.principal == "apigateway.amazonaws.com" && permission.source_account == var.aws_account_id && permission.function_name == aws_lambda_function.management.function_name])
     error_message = "管理 Lambda は同じアカウントの API Gateway からだけ呼び出せるようにしてください。"
   }
 }
@@ -185,8 +193,8 @@ run "outputs_for_additional_stacks" {
     error_message = "追加スタックの tfvars に転記する管理ロール名・関数名と補助テーブルの名前・ARN を出力してください。"
   }
   assert {
-    condition     = output.frontend_config.VITE_COGNITO_SCOPES == "openid registry-portal/api.invoke"
-    error_message = "SPA は route が検証するカスタム scope を含めてトークンを要求してください。"
+    condition     = output.frontend_config.VITE_COGNITO_SCOPES == "openid ${output.portal_api_scope}" && output.portal_api_scope == "registry-portal/api.invoke"
+    error_message = "SPA は route が検証するカスタム scope を含めてトークンを要求し、追加スタックに渡す scope を出力してください。"
   }
 }
 
@@ -196,7 +204,15 @@ run "customer_managed_secret_key" {
     discovery_kms_key_arn = "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000000"
   }
   assert {
-    condition     = strcontains(aws_iam_role_policy.management.policy, "kms:Decrypt") && strcontains(aws_iam_role_policy.management.policy, "secretsmanager.us-east-1.amazonaws.com") && strcontains(aws_iam_role_policy.management.policy, "kms:EncryptionContext:SecretARN")
-    error_message = "顧客管理キーの復号は対象 secret と Secrets Manager 経由に限定してください。"
+    condition = [
+      for statement in jsondecode(aws_iam_role_policy.management.policy).Statement : statement.Condition
+      if statement.Action == ["kms:Decrypt"]
+      ] == [{
+        StringEquals = {
+          "kms:ViaService"                  = "secretsmanager.us-east-1.amazonaws.com"
+          "kms:EncryptionContext:SecretARN" = var.discovery_client_secret_arn
+        }
+    }]
+    error_message = "顧客管理キーの復号は、Secrets Manager 経由と対象 secret の完全一致（StringEquals）に限定してください。"
   }
 }

@@ -1,91 +1,45 @@
-# 管理 handler の route のうち、このポータルが追加したものを、借用する既存 HTTP API に割り当てる。
-# HTTP API・JWT authorizer・管理 Lambda とその統合（integration）は #5 の IaC（または既存環境）が持ち、
-# ここでは ID と名前で受け取るだけにする。route と、その path に限った呼び出し許可だけを作る。
+# 管理 handler の route を HTTP API に割り当て、route ごとのメソッドと path に限った呼び出し許可を作る。
+# 本体スタック（主体とカタログの route）と management スタック（このポータルが追加した route）が、それぞれの
+# route 表（var.routes）を渡して使う。HTTP API・JWT authorizer・管理 Lambda とその統合（integration）は
+# 呼び出し元が持ち、ここでは ID と名前で受け取るだけにする。
 locals {
-  # 管理 Lambda に割り当てる route と、Lambda の呼び出し許可の ID（本体スタックの local.management_routes と同じ形）
-  routes = {
-    admin_records = {
-      route_key    = "GET /api/admin/records"
-      statement_id = "AllowHttpApiInvokeAdminRecords"
-    }
-    admin_connection = {
-      route_key    = "GET /api/admin/connection"
-      statement_id = "AllowHttpApiInvokeAdminConnection"
-    }
-    history = {
-      route_key    = "GET /api/records/{recordId}/history"
-      statement_id = "AllowHttpApiInvokeRecordHistory"
-    }
-    deprecation_request = {
-      route_key    = "POST /api/records/{recordId}/deprecation-requests"
-      statement_id = "AllowHttpApiInvokeDeprecationRequest"
-    }
-    # 画面上の通知（#15）。自分宛ての通知と未読件数の取得と、既読位置の更新
-    notifications = {
-      route_key    = "GET /api/notifications"
-      statement_id = "AllowHttpApiInvokeNotifications"
-    }
-    notifications_read = {
-      route_key    = "POST /api/notifications/read"
-      statement_id = "AllowHttpApiInvokeNotificationsRead"
-    }
-    create_record = {
-      route_key    = "POST /api/records"
-      statement_id = "AllowHttpApiInvokeCreateRecord"
-    }
-    list_records = {
-      route_key    = "GET /api/records"
-      statement_id = "AllowHttpApiInvokeListRecords"
-    }
-    get_record = {
-      route_key    = "GET /api/records/{recordId}"
-      statement_id = "AllowHttpApiInvokeGetRecord"
-    }
-    update_record = {
-      route_key    = "PATCH /api/records/{recordId}"
-      statement_id = "AllowHttpApiInvokeUpdateRecord"
-    }
-    get_operation = {
-      route_key    = "GET /api/operations/{operationId}"
-      statement_id = "AllowHttpApiInvokeGetOperation"
-    }
-    submit_record = {
-      route_key    = "POST /api/records/{recordId}/submit"
-      statement_id = "AllowHttpApiInvokeSubmitRecord"
-    }
-  }
   # 呼び出し許可の source_arn（execution ARN の stage の後ろ）は route_key から作る。
   # メソッドはそのまま、path は先頭の / を除き、{recordId} などのパスパラメータを * にする
   invoke_paths = {
-    for name, route in local.routes :
+    for name, route in var.routes :
     name => "${split(" ", route.route_key)[0]}/${replace(trimprefix(split(" ", route.route_key)[1], "/"), "/\\{[^}]+\\}/", "*")}"
   }
 }
+
+data "aws_caller_identity" "current" {}
 
 data "aws_apigatewayv2_api" "portal" {
   api_id = var.http_api_id
 }
 
 resource "aws_apigatewayv2_route" "management" {
-  for_each           = local.routes
-  api_id             = var.http_api_id
-  route_key          = each.value.route_key
-  target             = "integrations/${var.management_integration_id}"
-  authorization_type = "JWT"
-  authorizer_id      = var.jwt_authorizer_id
-  # 本体スタックのリソースサーバーが定義し、人間用 SPA client に許可したポータル用の scope
-  authorization_scopes = ["registry-portal/api.invoke"]
+  for_each             = var.routes
+  api_id               = var.http_api_id
+  route_key            = each.value.route_key
+  target               = "integrations/${var.management_integration_id}"
+  authorization_type   = "JWT"
+  authorizer_id        = var.jwt_authorizer_id
+  authorization_scopes = [var.authorization_scope]
 }
 
-# HTTP API から管理 Lambda を呼び出す許可。本体スタックの aws_lambda_permission.api と同じく、
-# stage 以外は route ごとのメソッド（route_key の先頭）と path に限る。
-# source_arn の * は / もまたぐため、api/records/* は GET の履歴（api/records/*/history）にも一致する。
-# 同じメソッドの route はすべて管理 Lambda に向くので、許可の範囲は広がらない
+# HTTP API から管理 Lambda を呼び出す許可。stage 以外は route ごとのメソッド（route_key の先頭）と path に限り、
+# 同じアカウントの API Gateway に限る。
+# source_arn の * は / もまたいで一致する（README「IAM と route」のリンクを参照）。そのため GET/api/records/*
+# （GET /api/records/{recordId}）は、管理 Lambda の GET /api/records/{recordId}/history のほか、決裁 Lambda の
+# GET /api/records/publication・/api/records/{recordId}/publication・/api/records/{recordId}/recovery の実行 ARN にも一致する。
+# API Gateway が呼び出すのは route の統合先の Lambda だけなので、決裁の route から管理 Lambda が呼ばれることはない。
+# 一致する他の Lambda の route は tests/test_route_permissions.py で固定し、増えたときに見直す
 resource "aws_lambda_permission" "management_api" {
-  for_each      = local.routes
-  statement_id  = each.value.statement_id
-  action        = "lambda:InvokeFunction"
-  function_name = var.management_function_name
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/${local.invoke_paths[each.key]}"
+  for_each       = var.routes
+  statement_id   = each.value.statement_id
+  action         = "lambda:InvokeFunction"
+  function_name  = var.management_function_name
+  principal      = "apigateway.amazonaws.com"
+  source_account = data.aws_caller_identity.current.account_id
+  source_arn     = "${data.aws_apigatewayv2_api.portal.execution_arn}/*/${local.invoke_paths[each.key]}"
 }

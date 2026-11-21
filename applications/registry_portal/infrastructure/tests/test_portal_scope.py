@@ -1,7 +1,7 @@
-"""ポータル用のカスタム scope が、Terraform の各スタックと SPA の既定値でそろっていることを確かめる。
+"""ポータル用のカスタム scope を本体スタックの 1 か所だけに定義し、ほかは受け取って使うことを確かめる。
 
-追加スタックは別 state（ADR-0013）のため本体の local を参照できず、SPA は TypeScript で持つ。
-どこか 1 か所だけ改名すると、route の JWT 検証でトークンが拒否される。
+追加スタックは別 state（ADR-0013）のため、本体の output portal_api_scope を tfvars に転記して受け取る。
+SPA は配信時に本体の output frontend_config（VITE_COGNITO_SCOPES）から受け取り、既定値を持たない。
 """
 
 from pathlib import Path
@@ -22,23 +22,63 @@ def portal_api_scope() -> str:
     return f"{identifier.group(1)}/{scope_name.group(1)}"
 
 
-class PortalScopeTests(unittest.TestCase):
-    def test_addon_stack_routes_require_the_scope_defined_by_the_main_stack(self):
-        scope = portal_api_scope()
-        for module in ("decision", "management_routes"):
-            with self.subTest(module=module):
-                source = (INFRA / "modules" / module / "main.tf").read_text()
-                scopes = re.findall(r'authorization_scopes\s*=\s*\["([^"]+)"\]', source)
-                self.assertTrue(scopes)
-                self.assertEqual(set(scopes), {scope})
+def terraform_sources() -> list[Path]:
+    """テストと .terraform を除く Terraform の定義。"""
+    return [
+        path
+        for path in INFRA.rglob("*.tf")
+        if ".terraform" not in path.parts and "tests" not in path.parts
+    ]
 
-    def test_spa_default_scope_matches_the_main_stack(self):
-        config = (ROOT / "frontend/src/config.ts").read_text()
-        constant = re.search(r"export const PORTAL_API_SCOPE = '([^']+)'", config)
-        self.assertIsNotNone(constant)
-        self.assertEqual(constant.group(1), portal_api_scope())
+
+class PortalScopeTests(unittest.TestCase):
+    def test_scope_value_is_written_only_in_examples(self):
+        scope = portal_api_scope()
+        sources = terraform_sources() + [ROOT / "frontend/src/config.ts"]
+        for path in sources:
+            with self.subTest(path=path.relative_to(ROOT)):
+                self.assertNotIn(scope, path.read_text())
+
+    def test_main_stack_outputs_the_scope_for_addon_stacks_and_the_spa(self):
+        outputs = (INFRA / "outputs.tf").read_text()
+        self.assertRegex(
+            outputs, r'output "portal_api_scope" \{[^}]*value\s*=\s*local\.portal_api_scope\n'
+        )
+        self.assertIn('VITE_COGNITO_SCOPES    = "openid ${local.portal_api_scope}"', outputs)
+        main = (INFRA / "main.tf").read_text()
+        self.assertRegex(
+            main,
+            r'module "management_routes" \{[^}]*authorization_scope\s*=\s*local\.portal_api_scope\n',
+        )
+
+    def test_addon_stack_routes_require_the_transcribed_scope(self):
+        modules = INFRA / "modules"
+        self.assertIn(
+            "authorization_scopes = [var.portal_api_scope]",
+            (modules / "decision/main.tf").read_text(),
+        )
+        self.assertIn(
+            "authorization_scopes = [var.authorization_scope]",
+            (modules / "management_routes/main.tf").read_text(),
+        )
+        for stack, pattern in [
+            ("decision", r"portal_api_scope\s*=\s*var\.portal_api_scope\n"),
+            ("management", r"authorization_scope\s*=\s*var\.portal_api_scope\n"),
+        ]:
+            with self.subTest(stack=stack):
+                self.assertRegex((INFRA / stack / "main.tf").read_text(), pattern)
+                self.assertRegex(
+                    (INFRA / stack / "variables.tf").read_text(), r'variable "portal_api_scope" \{'
+                )
+
+    def test_examples_use_the_scope_defined_by_the_main_stack(self):
+        scope = portal_api_scope()
+        for stack in ("decision", "management"):
+            with self.subTest(stack=stack):
+                example = (INFRA / stack / "terraform.tfvars.example").read_text()
+                self.assertRegex(example, rf'portal_api_scope\s*=\s*"{re.escape(scope)}"\n')
         example = (ROOT / "frontend/.env.example").read_text()
-        self.assertIn(f"VITE_COGNITO_SCOPES=openid {portal_api_scope()}\n", example)
+        self.assertIn(f"VITE_COGNITO_SCOPES=openid {scope}\n", example)
 
 
 if __name__ == "__main__":

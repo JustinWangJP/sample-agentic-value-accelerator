@@ -40,12 +40,16 @@ class BootstrapNameTests(unittest.TestCase):
         for key, value in expected.items():
             with self.subTest(key=key):
                 self.assertEqual(names.get(key), value)
+        # 管理 Lambda のロググループは共通のモジュールが /aws/lambda/<関数名> で作る
         self.assertEqual(
             main_stack_value(
-                r'resource "aws_cloudwatch_log_group" "management" \{\s*name\s*=\s*"([^"]+)"'
+                r'module "management_log_group" \{\s*source\s*=\s*"\./modules/lambda_log_group"'
+                r"\s*function_name\s*=\s*([^\n]+)\n"
             ),
-            "/aws/lambda/${local.management_name}",
+            "local.management_name",
         )
+        log_group_module = (INFRA / "modules/lambda_log_group/main.tf").read_text()
+        self.assertIn('name              = "/aws/lambda/${var.function_name}"', log_group_module)
 
     def test_bootstrap_state_key_matches_the_main_stack_backend(self):
         backend = (INFRA / "backend.hcl.example").read_text()

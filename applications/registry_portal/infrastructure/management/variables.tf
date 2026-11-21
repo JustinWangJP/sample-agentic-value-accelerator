@@ -37,3 +37,8 @@ variable "management_function_name" {
   type        = string
   description = "呼び出し許可を追加する、既存の管理 Lambda の関数名"
 }
+
+variable "portal_api_scope" {
+  type        = string
+  description = "route の JWT authorizer が検証するポータル用のカスタム scope。本体スタックの output portal_api_scope を転記する"
+}

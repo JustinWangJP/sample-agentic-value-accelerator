@@ -17,11 +17,14 @@ module "decision" {
   supplement_table_arn  = var.supplement_table_arn
   http_api_id           = var.http_api_id
   jwt_authorizer_id     = var.jwt_authorizer_id
+  portal_api_scope      = var.portal_api_scope
   # 取り込みで公開承認済みの版を読む発見用 M2M（管理 Lambda と同じ client）
-  discovery_token_url         = var.discovery_token_url
-  discovery_client_id         = var.discovery_client_id
-  discovery_client_secret_arn = var.discovery_client_secret_arn
-  discovery_scope             = var.discovery_scope
+  discovery_client = {
+    token_url         = var.discovery_token_url
+    client_id         = var.discovery_client_id
+    client_secret_arn = var.discovery_client_secret_arn
+    scope             = var.discovery_scope
+  }
   # secret が顧客管理 KMS キーで暗号化されている場合だけ指定する（本体スタックと同じ値）
   discovery_kms_key_arn = var.discovery_kms_key_arn
 }

@@ -79,3 +79,8 @@ variable "discovery_scope" {
   type        = string
   description = "発見用 M2M に要求する scope。空文字なら client の既定値"
 }
+
+variable "portal_api_scope" {
+  type        = string
+  description = "route の JWT authorizer が検証するポータル用のカスタム scope。本体スタックの output portal_api_scope を転記する"
+}

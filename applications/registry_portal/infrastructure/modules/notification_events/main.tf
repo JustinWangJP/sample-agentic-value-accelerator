@@ -8,12 +8,10 @@ data "aws_region" "current" {}
 
 locals {
   name                   = var.name_prefix
-  log_group_name         = "/aws/lambda/${local.name}"
   dead_letter_queue_name = "${local.name}-dlq"
-  # 作成前のロググループと DLQ の arn 属性は初回の plan で未確定になり、反映前ガード（scripts/check_plan.py）が
-  # 「未確定の IAM policy」で中止する。本体スタックの local.log_group_arn と同じく、名前と plan 時に確定する
+  # 作成前の DLQ の arn 属性は初回の plan で未確定になり、反映前ガード（scripts/check_plan.py）が
+  # 「未確定の IAM policy」で中止する。ロググループ（modules/lambda_log_group）と同じく、名前と plan 時に確定する
   # アカウント ID・リージョンから組み立てる
-  log_group_arn         = "arn:aws:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:log-group:${local.log_group_name}"
   dead_letter_queue_arn = "arn:aws:sqs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:${local.dead_letter_queue_name}"
   # ARN の末尾（registry/<id>）の ID。イベントの detail.registryId はこの値になる
   registry_id = element(split("/", var.registry_arn), 1)
@@ -27,9 +25,16 @@ locals {
   ]
 }
 
-resource "aws_cloudwatch_log_group" "events" {
-  name              = local.log_group_name
-  retention_in_days = 365
+# ロググループと、plan 時に確定するその ARN（本体スタック・decision と共通のモジュール）
+module "log_group" {
+  source        = "../lambda_log_group"
+  function_name = local.name
+}
+
+# ロググループを共通のモジュールに移した。適用済みの state は moved で引き継ぐ
+moved {
+  from = aws_cloudwatch_log_group.events
+  to   = module.log_group.aws_cloudwatch_log_group.this
 }
 
 # 再試行を使い切ったイベント（元のイベントの本文）を残す。Admin が原因を取り除いた後、
@@ -58,7 +63,7 @@ resource "aws_iam_role_policy" "events" {
   policy = templatefile("${path.module}/events-policy.json.tftpl", {
     registry_arn          = var.registry_arn
     supplement_table_arn  = var.supplement_table_arn
-    log_group_arn         = local.log_group_arn
+    log_group_arn         = module.log_group.arn
     dead_letter_queue_arn = local.dead_letter_queue_arn
   })
 }
@@ -82,7 +87,7 @@ resource "aws_lambda_function" "events" {
       SUPPLEMENT_TABLE_NAME = var.supplement_table_name
     }
   }
-  depends_on = [aws_iam_role_policy.events, aws_cloudwatch_log_group.events]
+  depends_on = [aws_iam_role_policy.events, module.log_group]
 }
 
 # 非同期呼び出しの再試行。Registry・補助テーブルの一時的な失敗では handler が例外を返し、Lambda が再試行する。

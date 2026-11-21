@@ -2,15 +2,13 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "AdoptionDiscoverySecretKey",
+      "Sid": "DiscoverySecretKey",
       "Effect": "Allow",
       "Action": ["kms:Decrypt"],
       "Resource": "${kms_key_arn}",
       "Condition": {
         "StringEquals": {
-          "kms:ViaService": "secretsmanager.${secret_region}.amazonaws.com"
-        },
-        "StringLike": {
+          "kms:ViaService": "secretsmanager.${secret_region}.amazonaws.com",
           "kms:EncryptionContext:SecretARN": "${discovery_secret_arn}"
         }
       }

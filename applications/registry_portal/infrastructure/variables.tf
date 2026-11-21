@@ -58,28 +58,16 @@ variable "team_names" {
   }
 }
 variable "discovery_token_url" {
-  description = "既存の発見用 M2M client の HTTPS トークンエンドポイント。"
+  description = "既存の発見用 M2M client の HTTPS トークンエンドポイント（/oauth2/token）。形式は modules/discovery_client で検証する。"
   type        = string
-  validation {
-    condition     = can(regex("^https://[A-Za-z0-9.-]+/oauth2/token$", var.discovery_token_url))
-    error_message = "発見用トークン URL は HTTPS の /oauth2/token を指定してください。"
-  }
 }
 variable "discovery_client_id" {
-  description = "既存の発見用 M2M client の ID。人間用 SPA client と分離する。"
+  description = "既存の発見用 M2M client の ID。人間用 SPA client と分離する。空は modules/discovery_client で拒否する。"
   type        = string
-  validation {
-    condition     = length(trimspace(var.discovery_client_id)) > 0
-    error_message = "発見用 M2M client ID を指定してください。"
-  }
 }
 variable "discovery_client_secret_arn" {
-  description = "既存の発見用 M2M secret の完全な ARN。secret 値は Terraform に渡さない。"
+  description = "既存の発見用 M2M secret の完全な ARN（末尾の 6 文字を含み、ワイルドカードを含まない）。secret 値は Terraform に渡さない。形式は modules/discovery_client で検証する。"
   type        = string
-  validation {
-    condition     = can(regex("^arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+$", var.discovery_client_secret_arn))
-    error_message = "発見用 M2M secret の完全な ARN を指定してください。"
-  }
 }
 variable "discovery_kms_key_arn" {
   description = "secret に顧客管理 KMS キーを使う場合の完全なキー ARN。AWS 管理キーの場合は null。"

@@ -21,19 +21,22 @@ run "decision_policy_is_known_on_first_plan" {
     source = "./modules/decision"
   }
   variables {
-    name_prefix                 = "registry-portal-dev-decision"
-    lambda_zip_path             = "tests/fixtures/safe.json"
-    cognito_issuer              = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_Example"
-    human_client_id             = "human-spa-client"
-    registry_arn                = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
-    supplement_table_name       = "registry-auxiliary"
-    supplement_table_arn        = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-auxiliary"
-    http_api_id                 = "a1b2c3d4e5"
-    jwt_authorizer_id           = "abc123"
-    discovery_token_url         = "https://example.auth.us-east-1.amazoncognito.com/oauth2/token"
-    discovery_client_id         = "discovery-client"
-    discovery_client_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:discovery-AbCdEf"
-    discovery_scope             = "registry/discovery.read"
+    name_prefix           = "registry-portal-dev-decision"
+    lambda_zip_path       = "tests/fixtures/safe.json"
+    cognito_issuer        = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_Example"
+    human_client_id       = "human-spa-client"
+    registry_arn          = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
+    supplement_table_name = "registry-auxiliary"
+    supplement_table_arn  = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-auxiliary"
+    http_api_id           = "a1b2c3d4e5"
+    jwt_authorizer_id     = "abc123"
+    portal_api_scope      = "registry-portal/api.invoke"
+    discovery_client = {
+      token_url         = "https://example.auth.us-east-1.amazoncognito.com/oauth2/token"
+      client_id         = "discovery-client"
+      client_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:discovery-AbCdEf"
+      scope             = "registry/discovery.read"
+    }
   }
   assert {
     condition = [

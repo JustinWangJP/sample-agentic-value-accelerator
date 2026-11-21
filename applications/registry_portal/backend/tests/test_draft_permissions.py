@@ -82,7 +82,11 @@ def test_root_module_applies_the_draft_policy_to_the_management_role():
     root_variables = set(
         re.findall(r'^variable "([^"]+)"', (ROOT / "variables.tf").read_text(), re.MULTILINE)
     )
-    assert root_variables == module_variables | _variables(ROUTES_MODULE) | {"region"}
+    # 管理の route 表（routes）はルートモジュールが持ち、scope は本体スタックの output を転記した変数で受け取る
+    routes_inputs = (_variables(ROUTES_MODULE) - {"routes", "authorization_scope"}) | {
+        "portal_api_scope"
+    }
+    assert root_variables == module_variables | routes_inputs | {"region"}
     # CI では検証だけを行うため、state の保存先は部分設定にして環境ごとに渡す
     assert 'backend "s3" {}' in (ROOT / "versions.tf").read_text()
 
@@ -100,9 +104,11 @@ def test_routes_module_assigns_only_portal_added_management_routes():
     """Registry 管理・履歴・廃止依頼・通知・下書きの route を、既存の管理 Lambda の統合に割り当てる。
 
     HTTP API・authorizer・統合は借用し、作らない。呼び出し許可は割り当てた path だけに限る。
+    route 表は management のルートモジュールが持ち、route と呼び出し許可は modules/management_routes が作る。
     """
+    route_table = (ROOT / "main.tf").read_text()
     main = (ROUTES_MODULE / "main.tf").read_text()
-    assert re.findall(r'route_key\s*=\s*"([^"]+)"', main) == [
+    assert re.findall(r'route_key\s*=\s*"([^"]+)"', route_table) == [
         "GET /api/admin/records",
         "GET /api/admin/connection",
         "GET /api/records/{recordId}/history",
@@ -123,8 +129,9 @@ def test_routes_module_assigns_only_portal_added_management_routes():
     assert re.search(r'target\s+= "integrations/\$\{var\.management_integration_id\}"', main)
     assert re.search(r'authorization_type\s+= "JWT"', main)
     assert re.search(r"authorizer_id\s+= var\.jwt_authorizer_id", main)
-    # 本体スタックの route と同じポータル用のカスタム scope を JWT authorizer で検証する
-    assert re.search(r'authorization_scopes = \["registry-portal/api\.invoke"\]', main)
+    # 本体スタックの route と同じポータル用のカスタム scope（呼び出し元が渡す）を JWT authorizer で検証する
+    assert re.search(r"authorization_scopes = \[var\.authorization_scope\]", main)
+    assert re.search(r"for_each\s+= var\.routes", main)
     # 呼び出し許可の path は route_key から導き、map に別の値として持たない。
     # 先頭の / を除き、パスパラメータを * にする（Terraform の式と同じ規則で期待値を確かめる）
     assert re.findall(r'path\s*=\s*"([^"]+)"', main) == []
@@ -132,7 +139,7 @@ def test_routes_module_assigns_only_portal_added_management_routes():
         'name => "${split(" ", route.route_key)[0]}/'
         '${replace(trimprefix(split(" ", route.route_key)[1], "/"), "/\\\\{[^}]+\\\\}/", "*")}"'
     ) in main
-    route_keys = re.findall(r'route_key\s*=\s*"([^"]+)"', main)
+    route_keys = re.findall(r'route_key\s*=\s*"([^"]+)"', route_table)
     paths = [
         re.sub(r"\{[^}]+\}", "*", route_key.split(" ")[1].removeprefix("/"))
         for route_key in route_keys
@@ -164,5 +171,10 @@ def test_root_module_applies_the_routes_module():
     source = re.search(r'source\s*=\s*"([^"]+)"', block)
     assert source is not None
     assert (ROOT / source.group(1)).resolve() == ROUTES_MODULE
+    passed_through = {
+        "routes": "local.management_routes",
+        "authorization_scope": "var.portal_api_scope",
+    }
     for name in _variables(ROUTES_MODULE):
-        assert re.search(rf"^\s*{name}\s*=\s*var\.{name}$", block, re.MULTILINE), name
+        value = re.escape(passed_through.get(name, f"var.{name}"))
+        assert re.search(rf"^\s*{name}\s*=\s*{value}$", block, re.MULTILINE), name

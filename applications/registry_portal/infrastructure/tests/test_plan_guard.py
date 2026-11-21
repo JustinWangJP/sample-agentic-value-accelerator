@@ -144,7 +144,7 @@ class PlanGuardTests(unittest.TestCase):
             (
                 # 発見用 secret が顧客管理 KMS キーで暗号化されている場合だけ付ける policy（#49）
                 "module.decision.aws_iam_role_policy.decision_discovery_kms[0]",
-                modules / "decision/discovery-kms-policy.json.tftpl",
+                modules / "discovery_client/discovery-kms-policy.json.tftpl",
             ),
             (
                 "module.notification_events.aws_iam_role_policy.events",

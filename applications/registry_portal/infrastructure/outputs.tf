@@ -27,6 +27,10 @@ output "http_api_id" {
   description = "追加スタックが route を割り当てる HTTP API の ID（management・decision の http_api_id）。"
   value       = aws_apigatewayv2_api.portal.id
 }
+output "portal_api_scope" {
+  description = "HTTP API の route が JWT authorizer で検証するポータル用のカスタム scope（management・decision の portal_api_scope）。"
+  value       = local.portal_api_scope
+}
 output "jwt_authorizer_id" {
   description = "人間用 SPA client のトークンを検証する JWT authorizer の ID（management・decision の jwt_authorizer_id）。"
   value       = aws_apigatewayv2_authorizer.human.id

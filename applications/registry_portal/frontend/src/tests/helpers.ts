@@ -18,6 +18,7 @@ export const TEST_VITE_ENV: Record<string, string | undefined> = {
   VITE_COGNITO_CLIENT_ID: TEST_CONFIG.clientId,
   VITE_REDIRECT_URI: TEST_CONFIG.redirectUri,
   VITE_API_BASE_URL: TEST_CONFIG.apiBaseUrl,
+  VITE_COGNITO_SCOPES: TEST_CONFIG.scopes,
 }
 
 export function jsonResponse(status: number, body: unknown): Response {

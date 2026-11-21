@@ -6,6 +6,9 @@ from pathlib import Path
 
 MODULE = Path(__file__).resolve().parents[2] / "infrastructure/modules/decision"
 ROOT = Path(__file__).resolve().parents[2] / "infrastructure/decision"
+# 本体スタックと決裁で共通の、発見用 M2M client の設定（環境変数と KMS の文）
+DISCOVERY_MODULE = Path(__file__).resolve().parents[2] / "infrastructure/modules/discovery_client"
+MAIN_STACK = Path(__file__).resolve().parents[2] / "infrastructure"
 REGISTRY_ARN = "arn:aws:agent-registry:ap-northeast-1:123456789012:registry/abcdefghijkl"
 TABLE_ARN = "arn:aws:dynamodb:ap-northeast-1:123456789012:table/registry-portal-supplement"
 LOG_GROUP_ARN = (
@@ -78,7 +81,6 @@ def test_decision_policy_never_grants_descriptor_writes_or_submissions():
 def test_module_creates_the_decision_lambda_with_its_own_role_and_log_group():
     main = (MODULE / "main.tf").read_text()
     assert re.findall(r'^resource "([^"]+)"', main, re.MULTILINE) == [
-        "aws_cloudwatch_log_group",
         "aws_iam_role",
         "aws_iam_role_policy",
         # 発見用 secret が顧客管理キーの場合だけ付ける kms:Decrypt（#49）
@@ -91,15 +93,22 @@ def test_module_creates_the_decision_lambda_with_its_own_role_and_log_group():
         "aws_lambda_permission",
         "aws_lambda_permission",
     ]
+    # ロググループと発見用 M2M の設定は、本体スタックと共通のモジュールで作る
+    assert re.findall(r'^module "([^"]+)" \{\n\s*source\s*=\s*"([^"]+)"', main, re.MULTILINE) == [
+        ("log_group", "../lambda_log_group"),
+        ("discovery_client", "../discovery_client"),
+    ]
     # 実行ロールは決裁 Lambda 専用に新しく作る（管理 Lambda のロールを流用しない）
     assert 'Principal = { Service = "lambda.amazonaws.com" }' in main
     assert 'handler          = "registry_portal.handlers.curation.handler"' in main
     assert "aws_lambda_function_url" not in main
     for env in ("COGNITO_ISSUER", "HUMAN_CLIENT_ID", "REGISTRY_ARN", "SUPPLEMENT_TABLE_NAME"):
         assert env in main
-    # 補助テーブルがないと決裁 handler は起動しない（アプリ側の ConfigurationError と同じ前提）
-    assert "DISCOVERY_TOKEN_URL" in main
-    assert "DISCOVERY_CLIENT_SECRET_ARN" in main
+    # 発見用 M2M の環境変数（DISCOVERY_*）は共通モジュールの出力から渡す
+    assert "variables = merge(module.discovery_client.environment, {" in main
+    discovery_outputs = (DISCOVERY_MODULE / "outputs.tf").read_text()
+    for env in ("DISCOVERY_TOKEN_URL", "DISCOVERY_CLIENT_ID", "DISCOVERY_CLIENT_SECRET_ARN"):
+        assert env in discovery_outputs
 
 
 def test_module_routes_only_curator_and_recovery_apis_to_the_decision_lambda():
@@ -137,7 +146,8 @@ def test_module_routes_only_curator_and_recovery_apis_to_the_decision_lambda():
     assert re.search(r'authorization_type\s+= "JWT"', main)
     assert re.search(r"authorizer_id\s+= var\.jwt_authorizer_id", main)
     # 本体スタックの route と同じポータル用のカスタム scope を JWT authorizer で検証する
-    assert re.search(r'authorization_scopes = \["registry-portal/api\.invoke"\]', main)
+    # scope は本体スタックの output portal_api_scope を転記した変数で受け取る
+    assert re.search(r"authorization_scopes = \[var\.portal_api_scope\]", main)
     assert 'payload_format_version = "2.0"' in main
     # HTTP API と authorizer は借用し、作成しない
     assert 'resource "aws_apigatewayv2_api"' not in main
@@ -211,19 +221,26 @@ def test_discovery_kms_decrypt_is_not_granted_when_key_arn_is_null():
 def test_discovery_kms_decrypt_only_allows_the_key_via_secrets_manager_for_the_secret():
     """キー ARN を指定したとき、そのキーへの kms:Decrypt だけを、本体スタックと同じ 2 つの条件付きで許可する。"""
     block = _discovery_kms_policy_block()
+    # policy は本体スタックと共通のモジュールが描画する
+    assert re.search(r"^\s*policy\s*=\s*module\.discovery_client\.kms_policy$", block, re.M)
+    main = (MODULE / "main.tf").read_text()
+    (module_block,) = re.findall(r'^module "discovery_client" \{(.*?)\n\}', main, re.DOTALL | re.M)
+    assert re.search(r"^\s*kms_key_arn\s*=\s*var\.discovery_kms_key_arn$", module_block, re.M)
+    assert re.search(r"^\s*client\s*=\s*var\.discovery_client$", module_block, re.M)
     # 描画に渡す値は、キー ARN と secret ARN、secret の ARN から導出したリージョン
-    assert re.search(r"^\s*kms_key_arn\s*=\s*var\.discovery_kms_key_arn$", block, re.M)
+    discovery_main = (DISCOVERY_MODULE / "main.tf").read_text()
+    assert re.search(r"^\s*kms_key_arn\s*=\s*var\.kms_key_arn$", discovery_main, re.M)
     assert re.search(
-        r"^\s*discovery_secret_arn\s*=\s*var\.discovery_client_secret_arn$", block, re.M
+        r"^\s*discovery_secret_arn\s*=\s*var\.client\.client_secret_arn$", discovery_main, re.M
     )
     assert re.search(
-        r'^\s*secret_region\s*=\s*split\(":", var\.discovery_client_secret_arn\)\[3\]$',
-        block,
+        r'^\s*secret_region\s*=\s*split\(":", var\.client\.client_secret_arn\)\[3\]$',
+        discovery_main,
         re.M,
     )
-    (template_name,) = re.findall(r'templatefile\("\$\{path\.module\}/([^"]+)"', block)
+    (template_name,) = re.findall(r'templatefile\("\$\{path\.module\}/([^"]+)"', discovery_main)
     rendered = (
-        (MODULE / template_name)
+        (DISCOVERY_MODULE / template_name)
         .read_text()
         .replace("${kms_key_arn}", KMS_KEY_ARN)
         .replace("${discovery_secret_arn}", DISCOVERY_SECRET_ARN)
@@ -234,22 +251,34 @@ def test_discovery_kms_decrypt_only_allows_the_key_via_secrets_manager_for_the_s
         {key: value for key, value in statement.items() if key != "Sid"}
         for statement in json.loads(rendered)["Statement"]
     ]
+    # SecretARN は対象 secret との完全一致（StringEquals）。StringLike だとワイルドカードで複数の secret に広がる
     assert statements == [
         {
             "Effect": "Allow",
             "Action": ["kms:Decrypt"],
             "Resource": KMS_KEY_ARN,
             "Condition": {
-                "StringEquals": {"kms:ViaService": "secretsmanager.us-east-1.amazonaws.com"},
-                "StringLike": {"kms:EncryptionContext:SecretARN": DISCOVERY_SECRET_ARN},
+                "StringEquals": {
+                    "kms:ViaService": "secretsmanager.us-east-1.amazonaws.com",
+                    "kms:EncryptionContext:SecretARN": DISCOVERY_SECRET_ARN,
+                },
             },
         }
     ]
 
 
 def test_discovery_kms_key_arn_is_an_optional_full_key_arn_in_both_modules():
-    """ルートとモジュールの両方に、既定 null で完全なキー ARN だけを受け付ける変数がある。"""
-    for variables_path in (ROOT / "variables.tf", MODULE / "variables.tf"):
+    """ルートとモジュールの両方に、既定 null で完全なキー ARN だけを受け付ける変数がある。
+
+    #49 の受入条件により decision のルートとモジュールの両方で検証し、本体スタックも同じ正規表現を使う。
+    Terraform の検証は定数を共有できないため、3 か所の正規表現が同じであることをここで確かめる。
+    """
+    patterns = set()
+    for variables_path in (
+        ROOT / "variables.tf",
+        MODULE / "variables.tf",
+        MAIN_STACK / "variables.tf",
+    ):
         variables = variables_path.read_text()
         (block,) = re.findall(
             r'^variable "discovery_kms_key_arn" \{(.*?)\n\}', variables, re.DOTALL | re.M
@@ -260,6 +289,7 @@ def test_discovery_kms_key_arn_is_an_optional_full_key_arn_in_both_modules():
         assert "var.discovery_kms_key_arn == null ? true :" in block, variables_path
         (pattern,) = re.findall(r'regex\("([^"]+)"', block)
         pattern = pattern.replace("\\\\", "\\")
+        patterns.add(pattern)
         assert re.fullmatch(pattern, KMS_KEY_ARN)
         assert re.fullmatch(pattern, "arn:aws:kms:ap-northeast-1:123456789012:key/mrk-0123abcd")
         for invalid in (
@@ -269,3 +299,4 @@ def test_discovery_kms_key_arn_is_an_optional_full_key_arn_in_both_modules():
             "*",
         ):
             assert not re.fullmatch(pattern, invalid), invalid
+    assert len(patterns) == 1, patterns
