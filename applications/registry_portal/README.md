@@ -623,10 +623,10 @@ Seam 1 の Stubber と moto で、認可（Viewer と所属チームのない Pu
 AWS の状態遷移は [Record lifecycle](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-record-lifecycle.html) に従います。この文書が明記するのは次のとおりです。
 
 - 廃止（`DEPRECATED`）は、どの状態からも遷移でき、元に戻せない終端の状態である（「Any status → DEPRECATED (terminal)」）
-- 承認済みのレコードを一時的に発見できなくするには、却下（`REJECTED`）する。再び発見できるようにするには、編集して再承認する
-- 承認済みのレコードを編集すると新しい `DRAFT` の版ができ、承認済みの版は再承認まで発見 API に残る（二重リビジョン）
+- 公開承認済みのレコードを一時的に発見できなくするには、却下（`REJECTED`）する。再び発見できるようにするには、編集して再び公開承認する
+- 公開承認済みのレコードを編集すると新しい `DRAFT` の版ができ、発見 API と MCP endpoint は再び公開承認されるまで公開承認済みの版を返す（二重リビジョン。「Dual-revision behavior」と「Visibility rules」の節が明記）
 
-**実環境で未確認の範囲**: 二重リビジョン（承認済みの版を残したまま、最新の版が `DRAFT`・`PENDING_APPROVAL`・`REJECTED`）のときに却下すると、承認済みの版が発見されなくなるかは、文書に記載がなく、実環境でも確認していません。そのため公開停止は、最新の版が `APPROVED` のときだけ受け付けます。それ以外は 409 で拒否し（AWS での作成・更新が失敗した `CREATE_FAILED`・`UPDATE_FAILED` も同じ。理由には失敗した状態であることを示します）、公開管理の画面に理由と手順を表示します。これは [#33](https://github.com/JustinWangJP/sample-agentic-value-accelerator/issues/33) で実環境の挙動を確かめるまでの暫定の制約で、#13 の受入条件（Curator は理由を付けて公開停止できる）の範囲として Issue #13 で合意しています。#33 の結果に応じて、受付条件を広げるか、この制約を維持します。それまで二重リビジョンのレコードを緊急に止める必要があるときは、審査待ちなら先に申請を却下し、カタログに表示されなくなったかを確かめてください。
+**実環境で未確認の範囲**: Record lifecycle の文書は更新され、編集中（最新の版が `DRAFT`・`PENDING_APPROVAL`）でも発見 API と MCP endpoint が公開承認済みの版を返すことが明記されました（前項）。それでも、公開承認済みの版を残したまま最新の版（`DRAFT`・`PENDING_APPROVAL`・`REJECTED`）を `UpdateRegistryRecordStatus`（`REJECTED`）で却下したときの受け付け可否と、公開承認済みの版の発見への影響は文書に記載がなく、実環境でも確認していません。そのため公開停止は、最新の版が `APPROVED` のときだけ受け付けます。それ以外は 409 で拒否し（AWS での作成・更新が失敗した `CREATE_FAILED`・`UPDATE_FAILED` も同じ。理由には失敗した状態であることを示します）、公開管理の画面に理由と手順を表示します。これは [#33](https://github.com/JustinWangJP/sample-agentic-value-accelerator/issues/33) で実環境の挙動を確かめるまでの暫定の制約で、#13 の受入条件（Curator は理由を付けて公開停止できる）の範囲として Issue #13 で合意しています。#33 の結果に応じて、受付条件を広げるか、この制約を維持します。それまで二重リビジョンのレコードを緊急に止める必要があるときは、審査待ちなら先に申請を却下し、カタログに表示されなくなったかを確かめてください。表示が続く場合は管理者に連絡してください（公開管理の画面の案内と同じ）。申請を却下すると最新の版が `REJECTED` になり、公開停止は引き続き 409 になります。却下で表示が消えるかは #33 のケース C で確かめる内容のため、この案内はその結果に応じて見直します。
 
 | API | 内容 |
 | --- | --- |
@@ -660,6 +660,36 @@ AWS の状態遷移は [Record lifecycle](https://docs.aws.amazon.com/bedrock-ag
 ページングは AWS の `ListRegistryRecords`（`maxResults` 20）の `nextToken` をそのまま中継します。名前の絞り込みと管理下の絞り込みはポータル側で行うため、`items` が0件でも `nextToken` があり得ます（Publisher の下書き一覧と同じ契約。SPA は次のページを促します）。Registry と補助ストアの読み取りに失敗したときは 502 `REGISTRY_UNAVAILABLE` とし、空の結果にはしません。
 
 AWS の `ListRegistryRecords` の `name` フィルターは[公式文書](https://docs.aws.amazon.com/agent-registry-control/latest/APIReference/API_ListRegistryRecords.html)に一致方法（完全一致・前方一致・部分一致のいずれか）の記載がないため、名前の絞り込みはポータル側で行います。
+
+### 二重リビジョンの実機検証（#33）
+
+上記の未確認の範囲は、dev 環境で [scripts/verify_suspend_dual_revision.py](scripts/verify_suspend_dual_revision.py) を人間が実行して確認します。ポータルを経由せず、管理 API は boto3（`agent-registry-control`）、発見 API と MCP endpoint は発見用 M2M トークンで HTTP を直接呼びます。検証用レコードの形（custom Agent の `RecordDraft`）、状態の値、HTTP トランスポートはバックエンド（`registry_portal`）の定義をそのまま使います。MCP endpoint の呼び出しは JSON-RPC 2.0 の `tools/call`（`batch_get_discoverable_registry_record` ツール）で、[Using the Registry MCP endpoint](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/registry-mcp-endpoint.html) の例によります。この呼び出しは initialize なしの単発の `tools/call` で `Accept: application/json` ヘッダーのみのため、Streamable HTTP が SSE やセッション ID を要求する Registry では MCP 列が「確認できなかった」になることがあります（その場合も、HTTP ステータスやエラーメッセージなど応答から読み取れた内容を記録し、「返さなかった」とは区別します）。
+
+- 前提（ADR-0001）: Registry への書き込み（作成・編集・申請・状態更新）は、ポータルの Lambda 実行ロールと break-glass 用の管理ロールにだけ許可されています（[ADR-0001](../../docs/adr/0001-registry-writes-only-through-portal.md)）。このスクリプトはポータルを経由せず、同じ主体で作成から公開承認・却下までを行うため、break-glass 用の管理ロールの認証情報で実行します。実行中の変更は「ポータル外の変更」として Admin に通知され、監査の対象になるため、実行の前に Admin へ目的（#33 の検証）と実行日時を伝えてください。検証用レコードはカタログ項目として使わず、後始末で削除します
+- 前提: 対象の Registry は自動承認が無効（手動審査）であること（スクリプトが始めに `GetRegistry` で確認します）。break-glass ロールに、`GetRegistry` と、レコードの作成・編集・申請・状態更新・取得・削除の権限があること
+- トークンは `--token`（または環境変数 `SUSPEND_VERIFY_TOKEN`）で直接渡すか、`--token-url`・`--client-id`・`--client-secret`（または `SUSPEND_VERIFY_TOKEN_URL`・`SUSPEND_VERIFY_CLIENT_ID`・`SUSPEND_VERIFY_CLIENT_SECRET`）で client credentials として取得します
+
+```bash
+cd applications/registry_portal/backend
+PYTHONPATH=src .venv/bin/python ../scripts/verify_suspend_dual_revision.py \
+  --registry-arn arn:aws:agent-registry:<region>:<account>:registry/<id> \
+  --token <発見用 M2M アクセストークン>
+```
+
+- スクリプトは、固定の prefix（既定 `suspend-verify`）に実行日時を付けた名前のレコードを作り、公開承認した上で、ケース A（最新版 `DRAFT`）/ B（同 `PENDING_APPROVAL`）/ C（同 `REJECTED`）を順に試します。各ケースで、却下の前に発見 API（BatchGetDiscoverableRegistryRecord）と MCP endpoint が公開承認済みの版を返すかを観測し、`UpdateRegistryRecordStatus`（`REJECTED`）を試し、受け付けられたら再び観測します。比べる公開承認済みの版は、観測からではなく、スクリプトが公開承認した版です
+- ケース C の状態（新しい版を却下した後）は、審査待ちの版の却下（B の受理）で作ります。B が拒否された場合だけ、A と同じ手順（下書きの版の却下）で作り直し、その旨を備考に記録します。ケース C の「却下の前」の観測が受入条件の「新しい版を却下した後に公開承認済みの版が発見されるか」に、その後の却下の試行が「最新の版が `REJECTED` のときに公開停止を受け付けるか」に答えます
+- `UpdateRegistryRecordStatus`（`REJECTED`）が受け付けられても、最新の版が `REJECTED` にならない場合（公開承認済みの版の側が却下された可能性）は、失敗にせず「受け付けられた（最新版の状態は …）」と記録して先へ進みます。この場合、その受理ではケース C の状態を作れたとみなしません
+- 事前確認（公開承認だけの状態）で発見 API か MCP endpoint が公開承認済みの版を返さなかった場合は、以降のその列の「返さなかった」を却下の影響と断定できないことを備考に記録します
+- 管理 API の書き込みは非同期（HTTP 202）のため、状態が確定するまで `GetRegistryRecord` で読み直します。発見 API・MCP endpoint への反映の遅れに備え、各観測の前に `--settle-seconds`（既定 15 秒）待ち、結果が2回続けて一致するまで繰り返します（最大3回）。一致しなかった観測は表に「観測が安定しませんでした」と示すので、待ち時間を長くして再実行してください
+- 表の「返さなかった」は、応答が正常で対象のレコードが `RESOURCE_NOT_FOUND` だったこと（ポータルの発見アダプターと同じ解釈）、「確認できなかった」は、通信・HTTP・応答の形式の異常で判定できなかったことを示します。HTTP が 200 以外のときは、ステータスに加えて本文の要約（JSON の message など、最大200文字）を記録します
+- 途中で例外が起きた場合も、それまでの結果を表に出し、中断の理由を備考に記録します
+- 後始末はレコードの削除（DeleteRegistryRecord）です。削除が拒否された場合だけ、`DEPRECATED`（不可逆）にします。後始末は結果の表を出力した後に、中断（Ctrl-C を含む）した場合も必ず行い、最後の行に「後始末（レコード <ID>）: …」と結果を出します。削除も `DEPRECATED` もできなかったときは、そのレコードを手動で後始末するよう表示します。調査のためにレコードを残すときは `--keep-record` を付けます。実行ごとに新しい名前のレコードを作るため、残ったレコードは削除し直さなくても再実行できます
+- stdout に README に貼れる Markdown の表が出力されるので、結果をこの節に貼り付け、受付条件を広げるか維持するかを #33 で判断します（Issue #33 は実証が終わるまでクローズしません）
+
+スクリプトが前提とする管理 API の挙動の根拠は次のとおりです（公式ドキュメントと、botocore のサービスモデル `agent-registry-control/2025-12-01` で確認）。
+
+- 作成（[`CreateRegistryRecord`](https://docs.aws.amazon.com/boto3/latest/reference/services/agent-registry-control/client/create_registry_record.html)）・更新・申請・状態更新（[`UpdateRegistryRecordStatus`](https://docs.aws.amazon.com/boto3/latest/reference/services/agent-registry-control/client/update_registry_record_status.html)）は非同期で、HTTP 202 を返す。作成の `clientToken` は 33〜256 文字
+- 削除（[`DeleteRegistryRecord`](https://docs.aws.amazon.com/boto3/latest/reference/services/agent-registry-control/client/delete_registry_record.html)）は `ConflictException` を返しうる。どの状態で拒否するかは文書に記載がないため、拒否されたら `DEPRECATED` にする
 
 ### 廃止依頼のしくみ
 

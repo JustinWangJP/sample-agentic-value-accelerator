@@ -553,6 +553,24 @@ def test_suspend_rejects_records_without_a_published_version_or_with_a_newer_rev
 
 
 @mock_aws
+def test_suspend_rejects_a_newer_draft_or_rejected_revision_while_published():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        state = setup_pending(stub, registry, db)
+        approve(stub, state)
+        # 公開中の版を残したまま最新版が下書き・却下済み（二重リビジョン）でも、審査待ちと同じ理由で
+        # 受け付けない（#33）。AWS の状態更新は呼ばない
+        for index, status_value in enumerate(("DRAFT", "REJECTED")):
+            stub_get(stub, status_value, recordVersion="1.0.1")
+            status, body = suspend(state["decision"], key=f"suspend-dual-{index}")
+            assert status == 409
+            assert f"公開中の版 {PUBLISHED_VERSION}" in body["error"]["message"]
+            assert "公開停止できません" in body["error"]["message"]
+            assert stored(db, "LOCK") is None
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
 def test_suspend_explains_that_a_failed_aws_write_blocks_it():
     registry, db = clients()
     with Stubber(registry) as stub:

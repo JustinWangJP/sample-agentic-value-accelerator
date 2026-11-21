@@ -184,16 +184,44 @@ it('廃止の最終確認をやめると、送らずに入力へ戻る', async (
   expect(button('廃止を確定する').disabled).toBe(true)
 })
 
+// 二重リビジョン（公開中の版を残して最新の版が下書き・審査待ち・却下済み）での公開停止の拒否。
+// 理由と手順はバックエンドの check_suspendable（domain/curation.py）の文言をそのまま表示する
+const dualRevisionMessage =
+  '公開中の版 1.0.0 に加えて新しい版があるため、公開停止できません。' +
+  'この状態で公開を止められるかは確認できていません。審査待ちなら先に申請を却下し、' +
+  'カタログに表示されなくなったかを確認してください。表示が続く場合は管理者に連絡してください。'
+
+it.each(['DRAFT', 'PENDING_APPROVAL', 'REJECTED'])(
+  '二重リビジョン（最新の版が %s）の公開停止は、理由と手順を表示して送らせない',
+  async (status) => {
+    await mountPanel([
+      jsonResponse(200, {
+        ...view,
+        status,
+        actions: { ...view.actions, suspend: { allowed: false, message: dualRevisionMessage } },
+      }),
+    ])
+    // 理由だけでなく、緊急時の手順（申請の却下と管理者への連絡）まで省かずに表示する
+    expect(container.textContent).toContain(dualRevisionMessage)
+    await setValue('suspendReason', '問題が見つかったため')
+    expect(button('公開停止する').disabled).toBe(true)
+  },
+)
+
 it('実行できない操作は、理由を表示して送らせない', async () => {
-  const message = '公開中の版 1.0.0 に加えて新しい版があるため、公開停止できません。'
+  const message = 'AWS が処理中のため公開停止できません。状態が確定してから確認してください。'
   await mountPanel([
     jsonResponse(200, {
       ...view,
-      status: 'PENDING_APPROVAL',
-      actions: { ...view.actions, suspend: { allowed: false, message } },
+      status: 'UPDATING',
+      actions: {
+        suspend: { allowed: false, message },
+        deprecate: { allowed: false, message: 'AWS が処理中のため廃止できません。' },
+      },
     }),
   ])
   expect(container.textContent).toContain(message)
+  expect(container.textContent).toContain('AWS が処理中のため廃止できません。')
   await setValue('suspendReason', '問題が見つかったため')
   expect(button('公開停止する').disabled).toBe(true)
   expect(button('廃止する').disabled).toBe(true)
