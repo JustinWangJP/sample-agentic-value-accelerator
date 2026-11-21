@@ -39,15 +39,27 @@ stack_config() {
   esac
 }
 addon_choices="$(IFS='|'; echo "${addon_stacks[*]}")"
-usage="使用方法: AWS_PROFILE=<SSO profile またはロールの profile> [TERRAFORM_AWS_PROFILE=<credential_process の profile>] scripts/deploy.sh [--stack $addon_choices] <backend.hcl> <tfvars>"
+usage="使用方法: AWS_PROFILE=<SSO profile またはロールの profile> [TERRAFORM_AWS_PROFILE=<credential_process の profile>] scripts/deploy.sh [--destroy] [--stack $addon_choices] <backend.hcl> <tfvars>"
+# --destroy: 指定した 1 つのスタックを撤去する。配信と同じ検査と plan ガードを通し、SPA は配信しない
+destroy=false
 stack="main"
-if [[ "${1:-}" == "--stack" ]]; then
-  [[ $# -ge 2 ]] || fail "$usage"
-  stack="$2"
-  shift 2
-  [[ "$stack" != main ]] && stack_config "$stack" || fail "追加スタックには ${addon_stacks[*]} のいずれかを指定してください。"
-fi
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --destroy)
+      destroy=true
+      shift
+      ;;
+    --stack)
+      [[ $# -ge 2 ]] || fail "$usage"
+      stack="$2"
+      shift 2
+      [[ "$stack" != main ]] && stack_config "$stack" || fail "追加スタックには ${addon_stacks[*]} のいずれかを指定してください。"
+      ;;
+    *) break ;;
+  esac
+done
 stack_config "$stack"
+[[ "$destroy" == true ]] && publishes_spa=false
 [[ $# -eq 2 ]] || fail "$usage"
 [[ -z "${CI:-}" && -z "${GITHUB_ACTIONS:-}" ]] || fail "CI からの反映は禁止されています。ローカル端末で実行してください。"
 stack_dir="$infra_dir${stack_subdir:+/$stack_subdir}"
@@ -103,7 +115,42 @@ tf() { AWS_PROFILE="$terraform_profile" terraform -chdir="$stack_dir" "$@"; }
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/registry-portal-deploy.XXXXXX")"
 trap 'rm -rf "$work_dir"' EXIT
+if [[ "$destroy" == true && "$stack" == main ]]; then
+  # 追加スタックは本体の HTTP API・Lambda・実行ロール・補助テーブルを借りて route や権限を足している。
+  # 本体を先に消すと追加スタックの state に孤立したリソースが残るため、撤去の順番は「追加スタック → 本体」とし、
+  # 追加スタックの state にリソースが残っていれば、本体の plan を作る前に止める
+  remaining_stacks=()
+  for addon in "${addon_stacks[@]}"; do
+    addon_key="$(stack_config "$addon" && printf '%s' "$state_key")"
+    addon_dir="$infra_dir/$addon"
+    # 本体と同じ state バケットを使い、key だけを追加スタックのものに差し替える（後から指定した値が優先される）
+    AWS_PROFILE="$terraform_profile" terraform -chdir="$addon_dir" init -input=false -reconfigure -backend-config="$backend_file" -backend-config="key=$addon_key" -backend-config=encrypt=true -backend-config=use_lockfile=true
+    AWS_PROFILE="$terraform_profile" terraform -chdir="$addon_dir" show -json > "$work_dir/$addon.state.json"
+    # state のファイルがない場合も、撤去済みでリソースのない場合も、managed のリソースは 0 件になる
+    count="$(python3 - "$work_dir/$addon.state.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+state = json.loads(Path(sys.argv[1]).read_text())
+if not str(state.get("format_version", "")).startswith("1."):
+    sys.exit("state JSON の format_version がありません")
+
+
+def managed(module):
+    own = sum(1 for resource in module.get("resources", []) if resource.get("mode") == "managed")
+    return own + sum(managed(child) for child in module.get("child_modules", []))
+
+
+print(managed(state.get("values", {}).get("root_module", {})))
+PY
+)"
+    [[ "$count" == 0 ]] || remaining_stacks+=("${addon}（${count} 件）")
+  done
+  [[ ${#remaining_stacks[@]} -eq 0 ]] || fail "追加スタックの state にリソースが残っています: ${remaining_stacks[*]}。撤去の順番は「追加スタック → 本体」です。先に scripts/deploy.sh --destroy --stack <追加スタック> で撤去してください。"
+fi
 plan_args=(-input=false -var-file="$vars_file" -out="$work_dir/approved.tfplan")
+[[ "$destroy" == true ]] && plan_args+=(-destroy)
 # 共通の Lambda ZIP は、変数 lambda_zip_path を持つスタック（本体・decision・notification_events）にだけ渡す
 if grep -qs '^variable "lambda_zip_path"' "$stack_dir"/*.tf; then
   python3 "$portal_dir/scripts/build_lambda.py" --output "$work_dir/lambda.zip"
@@ -115,10 +162,21 @@ tf plan "${plan_args[@]}"
 tf show -json "$work_dir/approved.tfplan" > "$work_dir/plan.json"
 python3 "$portal_dir/scripts/check_plan.py" "$work_dir/plan.json"
 tf show -no-color "$work_dir/approved.tfplan"
-printf '\n上記 plan と Registry・IAM の変更を確認してください。反映する場合は apply と入力してください: '
-read -r confirmation || fail "反映を中止しました。"
-[[ "$confirmation" == "apply" ]] || fail "反映を中止しました。"
+if [[ "$destroy" == true ]]; then
+  # 撤去は取り消せないため、y や apply ではなく撤去するスタック名の入力を求める
+  printf '\n上記 plan は %s スタックのリソースを削除します。撤去する場合はスタック名（%s）を入力してください: ' "$stack" "$stack"
+  IFS= read -r confirmation || fail "撤去を中止しました。"
+  [[ "$confirmation" == "$stack" ]] || fail "入力がスタック名（${stack}）と一致しないため、撤去を中止しました。"
+else
+  printf '\n上記 plan と Registry・IAM の変更を確認してください。反映する場合は apply と入力してください: '
+  read -r confirmation || fail "反映を中止しました。"
+  [[ "$confirmation" == "apply" ]] || fail "反映を中止しました。"
+fi
 tf apply -input=false "$work_dir/approved.tfplan"
+if [[ "$destroy" == true ]]; then
+  printf '\n%s スタックの撤去が完了しました。\n' "$stack"
+  exit 0
+fi
 if [[ "$publishes_spa" != true ]]; then
   printf '\n%s スタックの反映が完了しました。README の dev 手動受入を実施してください。\n' "$stack"
   exit 0

@@ -40,8 +40,13 @@ elif name == "aws":
             sys.exit(255)
         print(settings["caller_arn"])
 elif name == "terraform":
-    if "show" in args and "-json" in args:
+    if "show" in args and "-json" in args and args[-1].endswith(".tfplan"):
         print(Path(os.environ["PLAN_FIXTURE"]).read_text())
+    elif "show" in args and "-json" in args:
+        # plan を指定しない show -json は state を表示する。FAKE_STATES にないスタックは state が空
+        stack = Path(args[0].split("=", 1)[1]).name
+        states = json.loads(os.environ.get("FAKE_STATES", "{}"))
+        print(json.dumps(states.get(stack, {"format_version": "1.0"})))
     elif "output" in args:
         outputs = {"spa_bucket_name": "portal-spa",
                    "cloudfront_distribution_id": "EDIST",
@@ -99,6 +104,8 @@ class DeployTests(unittest.TestCase):
         extra_env=None,
         stack_args=(),
         backend_key=None,
+        destroy=False,
+        states=None,
     ):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
@@ -131,10 +138,17 @@ class DeployTests(unittest.TestCase):
                 FAKE_AWS_PROFILES=json.dumps(profiles),
                 COMMAND_LOG=str(commands),
                 PLAN_FIXTURE=str(Path(__file__).parent / f"fixtures/{fixture}.json"),
+                FAKE_STATES=json.dumps(states or {}),
             )
             env.update(extra_env or {})
             result = subprocess.run(
-                [str(ROOT / "scripts/deploy.sh"), *stack_args, str(backend), str(variables)],
+                [
+                    str(ROOT / "scripts/deploy.sh"),
+                    *(("--destroy",) if destroy else ()),
+                    *stack_args,
+                    str(backend),
+                    str(variables),
+                ],
                 env=env,
                 input=confirmation,
                 text=True,
@@ -409,6 +423,131 @@ class DeployTests(unittest.TestCase):
             with self.subTest(stack_args=stack_args):
                 result, commands = self.run_deploy(stack_args=stack_args)
                 self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(commands, [])
+
+    def test_destroy_applies_the_saved_destroy_plan_without_spa_upload(self):
+        # destroy のモードは plan -destroy を保存し、確認後にその plan を apply する。SPA は配信しない
+        result, commands = self.run_deploy(destroy=True, confirmation="main\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        terraform = [command for command in commands if command[0] == "terraform"]
+        plan = next(command for command in terraform if "plan" in command)
+        apply = next(command for command in terraform if "apply" in command)
+        self.assertIn("-destroy", plan)
+        self.assertEqual(next(item[5:] for item in plan if item.startswith("-out=")), apply[-1])
+        self.assertLess(terraform.index(plan), terraform.index(apply))
+        self.assertTrue(
+            any(
+                command[0] == "python3" and command[1].endswith("check_plan.py")
+                for command in commands
+            )
+        )
+        self.assertFalse(any(command[0] == "npm" for command in commands))
+        self.assertFalse(any("s3" in command or "cloudfront" in command for command in commands))
+
+    def test_destroy_guard_failure_or_unmatched_confirmation_never_reaches_apply(self):
+        # 撤去の確認は配信より強く、スタック名と完全に一致しない入力（y や apply を含む）では止まる
+        cases = [
+            ("registry-update", "main\n", (), "check_plan"),
+            ("safe", "y\n", (), "一致しない"),
+            ("safe", "apply\n", (), "一致しない"),
+            ("safe", "main \n", (), "一致しない"),
+            ("safe", "", (), "中止"),
+            ("safe", "main\n", ("--stack", "decision"), "一致しない"),
+        ]
+        for fixture, confirmation, stack_args, reason in cases:
+            with self.subTest(fixture=fixture, confirmation=confirmation, stack_args=stack_args):
+                result, commands = self.run_deploy(
+                    fixture,
+                    confirmation,
+                    profile="registry-deploy",
+                    profiles=ROLE_PROFILES,
+                    stack_args=stack_args,
+                    destroy=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                if reason != "check_plan":
+                    self.assertIn(reason, result.stderr)
+                self.assertTrue(any("plan" in command for command in commands))
+                self.assertFalse(any("apply" in command for command in commands))
+
+    def test_main_destroy_stops_while_an_addon_stack_state_has_resources(self):
+        # 追加スタックは本体の API・Lambda・ロール・テーブルを借りるため、撤去の順番は「追加スタック → 本体」
+        log_group = {"address": "aws_cloudwatch_log_group.this", "mode": "managed"}
+        cases = {
+            "ルートモジュールに残る": {"root_module": {"resources": [log_group]}},
+            "子モジュールに残る": {
+                "root_module": {
+                    "child_modules": [{"address": "module.logs", "resources": [log_group]}]
+                }
+            },
+        }
+        for label, values in cases.items():
+            with self.subTest(label):
+                result, commands = self.run_deploy(
+                    "safe",
+                    "main\n",
+                    profile="registry-deploy",
+                    profiles=ROLE_PROFILES,
+                    destroy=True,
+                    states={"management": {"format_version": "1.0", "values": values}},
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("management", result.stderr)
+                self.assertNotIn("decision", result.stderr)
+                terraform = [command for command in commands if command[0] == "terraform"]
+                self.assertTrue(
+                    any(
+                        command[1] == f"-chdir={ROOT / 'infrastructure' / 'management'}"
+                        and "show" in command
+                        for command in terraform
+                    )
+                )
+                self.assertFalse(
+                    any("plan" in command or "apply" in command for command in terraform)
+                )
+                self.assertFalse(
+                    any(command[1] == f"-chdir={ROOT / 'infrastructure'}" for command in terraform)
+                )
+
+    def test_main_destroy_proceeds_when_addon_states_are_empty(self):
+        # 撤去済みの追加スタックの state は、リソースのない state か、state のファイル自体がない
+        result, commands = self.run_deploy(
+            confirmation="main\n",
+            profile="registry-deploy",
+            profiles=ROLE_PROFILES,
+            destroy=True,
+            states={"decision": {"format_version": "1.0", "values": {"root_module": {}}}},
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for addon, key in [
+            ("decision", STATE_KEYS["decision"]),
+            ("management", STATE_KEYS["management"]),
+            ("notification_events", STATE_KEYS["notification_events"]),
+        ]:
+            with self.subTest(addon=addon):
+                init = next(
+                    command
+                    for command in commands
+                    if command[:2] == ["terraform", f"-chdir={ROOT / 'infrastructure' / addon}"]
+                    and "init" in command
+                )
+                self.assertIn(f"-backend-config=key={key}", init)
+        self.assertTrue(any("apply" in command for command in commands))
+
+    def test_usage_shows_destroy_mode_and_destroy_is_rejected_from_ci(self):
+        result = subprocess.run(
+            [str(ROOT / "scripts/deploy.sh")],
+            text=True,
+            capture_output=True,
+            env={**os.environ, "CI": ""},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("[--destroy]", result.stderr)
+        for stack_args in [(), ("--stack", "decision")]:
+            with self.subTest(stack_args=stack_args):
+                result, commands = self.run_deploy(ci="true", stack_args=stack_args, destroy=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("CI", result.stderr)
                 self.assertEqual(commands, [])
 
 
