@@ -189,7 +189,7 @@ GitHub Actions（`.github/workflows/registry-portal-ci.yml`）では上記に加
 
 ## dev に手動配信する
 
-個人 AWS アカウント向けの準備と、別 state の追加スタックまでの配信手順は [Terraform ガイド](../../docs/agents/registry-portal-terraform-guide-ja.md)を参照してください。
+個人 AWS アカウント向けの準備と、別 state の追加スタックまでの配信手順は [Terraform ガイド](../../docs/agents/registry-portal-terraform-guide-ja.md)を参照してください。dev 環境を撤去する手順（保護の解除、`scripts/deploy.sh --destroy` による「追加スタック → 本体」の撤去、保護の戻し方）は [Terraform ガイドの 5.4](../../docs/agents/registry-portal-terraform-guide-ja.md#54-dev-環境を撤去する) にあります（[ADR-0014](../../docs/adr/0014-dev-teardown-protection-and-scope.md)）。
 
 前提は [ADR-0003](../../docs/adr/0003-public-https-without-waf-and-single-registry.md) と [ADR-0004](../../docs/adr/0004-no-aws-deployment-from-ci.md) に従います。実行には Terraform 1.10 以上、Python 3.13 と pip、Node.js 24 と npm、AWS CLI v2 が必要です。AWS provider は検証した 6.71.0 に固定しています。
 

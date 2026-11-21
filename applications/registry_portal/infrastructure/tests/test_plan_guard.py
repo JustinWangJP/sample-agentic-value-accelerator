@@ -19,9 +19,7 @@ TEMPLATE_VALUES = {
     ),
     "log_group_arn": "arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda/portal",
     "dead_letter_queue_arn": "arn:aws:sqs:us-east-1:123456789012:registry-portal-events-dlq",
-    "kms_key_arn": (
-        "arn:aws:kms:us-east-1:123456789012:key/1234abcd-12ab-34cd-56ef-1234567890ab"
-    ),
+    "kms_key_arn": "arn:aws:kms:us-east-1:123456789012:key/1234abcd-12ab-34cd-56ef-1234567890ab",
     "secret_region": "us-east-1",
 }
 
@@ -80,6 +78,78 @@ class PlanGuardTests(unittest.TestCase):
                 self.assertEqual(
                     result.returncode, 0 if allowed else 1, result.stdout + result.stderr
                 )
+
+    def test_destroy_plan_allows_portal_deletions_and_rejects_registry_deletions(self):
+        # terraform plan -destroy の JSON は、planned_values の root_module が空で、
+        # 各 resource_changes の after が null になる（Terraform 1.17.1 で確認した形）
+        base = json.loads((FIXTURES / "destroy-main.json").read_text())
+        self.assertEqual(base["planned_values"], {"root_module": {}})
+
+        def deletion(address, resource_type, before):
+            return {
+                "address": address,
+                "mode": "managed",
+                "type": resource_type,
+                "name": address.split(".")[-1],
+                "change": {"actions": ["delete"], "before": before, "after": None},
+            }
+
+        registry_arn = TEMPLATE_VALUES["registry_arn"]
+        # 削除される policy に Registry の書き込みがあっても、権限の付与ではないため止めない
+        write_policy = json.dumps(
+            {
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Action": "agent-registry:CreateRegistryRecord",
+                        "Resource": "*",
+                    }
+                ]
+            }
+        )
+        cases = {
+            "ポータルのリソースだけの削除": ([], True),
+            "Registry の書き込みを含む policy の削除": (
+                [
+                    deletion(
+                        "module.management_drafts.aws_iam_role_policy.management_drafts",
+                        "aws_iam_role_policy",
+                        {"name": "management-drafts", "policy": write_policy},
+                    )
+                ],
+                True,
+            ),
+            "Registry の種類のリソースの削除": (
+                [
+                    deletion(
+                        "aws_agent_registry_registry.existing", "aws_agent_registry_registry", {}
+                    )
+                ],
+                False,
+            ),
+            "Registry の ARN を持つリソースの削除": (
+                [
+                    deletion(
+                        "aws_cloudcontrolapi_resource.registry",
+                        "aws_cloudcontrolapi_resource",
+                        {"id": registry_arn},
+                    )
+                ],
+                False,
+            ),
+        }
+        for label, (extra, allowed) in cases.items():
+            with self.subTest(label):
+                plan = dict(base, resource_changes=[*base["resource_changes"], *extra])
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "plan.json"
+                    path.write_text(json.dumps(plan))
+                    result = run_guard(path)
+                self.assertEqual(
+                    result.returncode, 0 if allowed else 1, result.stdout + result.stderr
+                )
+                if not allowed:
+                    self.assertIn("既存 Registry", result.stderr)
 
     def test_registry_write_actions_are_allowed_only_for_their_own_role(self):
         # 管理ロール（management_drafts）は下書きの作成・更新・申請、

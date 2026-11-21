@@ -32,7 +32,7 @@ Registry ポータル（MVP1）を dev 環境に配信するための Terraform 
 | 人が手元で反映する | オペレーターが MFA 付きで IAM ロール `RegistryPortalDeployer` を引き受け、その短期認証情報で反映する。長期アクセスキーで直接操作しない | 設計書「デプロイと CI」、個人アカウント向け IAM 手順 |
 | plan をガードに通す | 保存した plan を JSON にして `scripts/check_plan.py` で検査し、目視で確認してから、その plan だけを apply する | Issue #5 |
 | 最小権限 | Lambda の実行ロールは対象 Registry の ARN と必要な action だけに絞る。Lambda ごとに実行ロールを分ける | 設計書「最小インフラとセキュリティ」 |
-| 削除事故を防ぐ | state バケットと補助テーブルには `prevent_destroy` を付け、補助テーブルには削除保護も設定する | Issue #5 |
+| 削除事故を防ぐ | state バケットと補助テーブルには `prevent_destroy` を付け、補助テーブルには削除保護も設定する。dev の撤去のときだけ保護を一時的に外す（5.4） | Issue #5、ADR-0014 |
 
 ### 1.2 IAM Identity Center を使わない理由
 
@@ -421,6 +421,7 @@ bash -n scripts/deploy.sh
 | state 用バケットを作る（初回だけ） | 3.5 のコマンド |
 | 本体スタックを配信する | 4.2 のコマンド |
 | 追加スタックを適用する | `AWS_PROFILE=registry-deploy scripts/deploy.sh --stack <management\|decision\|notification_events> infrastructure/<スタック>/backend.hcl infrastructure/<スタック>/terraform.tfvars`（本体と同じ主体の検査・`check_plan.py`・`apply` の入力確認を通す） |
+| スタックを撤去する（追加スタック → 本体の順） | `AWS_PROFILE=registry-deploy scripts/deploy.sh --destroy [--stack <management\|decision\|notification_events>] <backend.hcl> <tfvars>`（保護の解除と順番は 5.4。確認ではスタック名を入力する） |
 | plan の JSON を手で検査する（`applications/registry_portal` から） | `python3 scripts/check_plan.py <plan.json>` |
 
 ### 5.3 state の操作
@@ -436,9 +437,121 @@ bash -n scripts/deploy.sh
 
 現在は追加スタックの state を移動しません。後続 Issue で統合を決めた場合だけ、対象資源を移行先に import し、移行元で `terraform state rm` を実行します。移行中は apply を止め、同じ資源を複数の state から操作しないでください（[ADR-0013](../adr/0013-separate-portal-addon-states.md)）。
 
-### 5.4 削除について
+### 5.4 dev 環境を撤去する
 
-補助テーブルには `prevent_destroy` と削除保護があるため、本体スタックの `terraform destroy` は失敗します。dev 環境を作り直す手順はまだ決めていません。既存 Registry、User Pool 本体、手動で作った IAM の主体は destroy の対象になりません。state バケットは bootstrap が所有し、`prevent_destroy` で保護します。
+dev 環境を作り直すときの撤去の手順です。方針と理由は [ADR-0014](../adr/0014-dev-teardown-protection-and-scope.md) にあります。
+
+- 撤去の対象は、追加スタック（`management`・`decision`・`notification_events`）と本体スタックです。bootstrap と state バケットは対象外です。
+- 撤去の順番は「追加スタック → 本体」です。追加スタックは本体の HTTP API・管理 Lambda・実行ロール・補助テーブルを借りて、route・Lambda permission・inline policy を足しています。本体を先に消すと、追加スタックの state に孤立したリソースが残ります。
+- 撤去は `scripts/deploy.sh --destroy` で行います。配信と同じ主体の検査と `check_plan.py` を通し、`terraform plan -destroy` で保存した plan を表示します。撤去するスタック名を入力したときだけ、その plan を apply します（`y` や `apply` では進みません）。SPA の配信は行いません。
+- `deploy.sh` は SSO プロファイルと `--stack` の組み合わせを拒否するため、個人アカウントの MFA 付き IAM ロール（`registry-deploy`）で実行します。
+- この手順で dev の撤去と再作成を通す確認は、まだ行っていません（Issue #57）。
+
+#### 1. 必要ならデータとログを退避する
+
+補助テーブルは PITR が有効なので、テーブルを削除すると DynamoDB が 35 日保持のシステムバックアップを自動で作ります（[DynamoDB のドキュメント](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/PointInTimeRecovery_Howitworks.html#howitworks-pitr-deleting-table)）。それより長く残したい場合だけ、撤去の前にオンデマンドバックアップを取ります。オンデマンドバックアップは、削除するまで残ります。
+
+```bash
+cd applications/registry_portal
+TABLE="$(AWS_PROFILE=registry-deploy-tf terraform -chdir=infrastructure output -raw supplement_table_name)"
+aws dynamodb create-backup --table-name "$TABLE" --backup-name "$TABLE-before-teardown" --profile registry-deploy
+```
+
+ロググループ（本体の API と管理 Lambda、決裁 Lambda、イベント処理 Lambda）には `skip_destroy` がないため、撤去で消えます。365 日の保持は引き継がれません。必要なログは撤去の前に取得してください。
+
+#### 2. 追加スタックを撤去する
+
+```bash
+cd applications/registry_portal
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+aws sts get-caller-identity --profile registry-deploy   # MFA コードを入力し、短期認証情報をキャッシュする
+for STACK in management decision notification_events; do
+  AWS_PROFILE=registry-deploy scripts/deploy.sh --destroy --stack "$STACK" \
+    "infrastructure/$STACK/backend.hcl" "infrastructure/$STACK/terraform.tfvars" || break
+done
+```
+
+各スタックで plan を確認し、スタック名（`management` など）を入力します。`backend.hcl` の `key` の検査は配信と同じです（4.5）。1 つのスタックで中止・失敗したら、上の例は残りを実行せずに止まります。
+
+#### 3. 本体の保護を外す
+
+本体の `infrastructure/dev.tfvars` に次の 2 行を追加し、通常の配信（`apply` の入力）で反映します。tfvars は `.gitignore` の対象です。
+
+```hcl
+table_deletion_protection = false
+spa_force_destroy         = true
+```
+
+```bash
+AWS_PROFILE=registry-deploy scripts/deploy.sh infrastructure/backend.hcl infrastructure/dev.tfvars
+```
+
+plan で、補助テーブル（`aws_dynamodb_table.auxiliary`）の `deletion_protection_enabled` と SPA バケット（`aws_s3_bucket.spa`）の `force_destroy` が、作り直しではなく変更（update in-place）になっていることを確認します。`force_destroy` は state に入った値で destroy に効くため、destroy の前にこの apply が必要です（true にした後、apply が成功するまでは効きません）。`force_destroy` が state で `true` なら、destroy のときに Terraform がバケットのすべてのオブジェクト（ロックされたものを含む）を削除してからバケットを削除します。削除したオブジェクトは復元できません（[AWS provider 6.71.0 の aws_s3_bucket](https://registry.terraform.io/providers/hashicorp/aws/6.71.0/docs/resources/s3_bucket)）。
+
+次に、`infrastructure/main.tf` の補助テーブル（`aws_dynamodb_table.auxiliary`）から `lifecycle { prevent_destroy = true }` の行を手元で外します（削除またはコメントアウト）。`prevent_destroy` は Terraform の制約で変数にできません（lifecycle の設定にはリテラル値しか使えません。[Terraform の lifecycle](https://developer.hashicorp.com/terraform/language/meta-arguments/lifecycle)）。**この変更はコミットしません。** 外している間は `infrastructure/tests/test_teardown_guards.py` が失敗します。
+
+この後で撤去を中止する場合は、本節の最後の「撤去を中止したとき・destroy が途中で失敗したとき」の手順で保護を戻します。
+
+#### 4. 本体スタックを撤去する
+
+```bash
+AWS_PROFILE=registry-deploy scripts/deploy.sh --destroy infrastructure/backend.hcl infrastructure/dev.tfvars
+```
+
+本体の撤去では `--stack` を付けません。スクリプトは plan を作る前に、追加 3 スタックの state を `terraform state pull` で読み、リソースが残っていれば「追加スタックの state にリソースが残っています」と表示して止まります。その場合は手順 2 に戻ります。
+
+- 追加スタックの state は、本体と同じバケットにあり key だけが異なる前提です（4.5、各 `backend.hcl.example`）。スクリプトは本体の `backend.hcl` の key だけを追加スタックのもの（1.4 の表）に差し替えて読みます。
+- state を読む前に、本体の `backend.hcl` と同じディレクトリの `<スタック>/backend.hcl`（上の例では `infrastructure/<スタック>/backend.hcl`）を確かめます。ファイルがあれば、その `bucket` と `region` が本体の `backend.hcl` と一致することを確かめ、一致しなければ「本体の backend.hcl と一致しません」と表示して止まります。ファイルがなければ、本体のバケットとリージョンで key だけを差し替えて読むことを表示して続けます。追加スタックの state を別のバケットに置いている構成には対応していません。
+- スタックごとに「0 件」（撤去済み）か「state なし（未配信）」を表示します。どちらも撤去を止めません。state のファイルがないと `terraform state pull` は何も出力しないため、これを「state なし」と判定します。この出力は[公式ドキュメント](https://developer.hashicorp.com/terraform/cli/commands/state/pull)に記載がなく、Terraform 1.17.1 で確認した挙動です。`terraform show -json` は、state のファイルがない場合とリソースのない state の場合に同じ`{"format_version":"1.0"}` を出力して区別できないため使いません（同じく 1.17.1 で確認）。
+- 認証やネットワークの失敗、state の形式の異常などで state を読めない場合は、0 件として扱わずに止まります。
+
+plan を作った後、スクリプトは plan の削除前の値（state の値）で、補助テーブルの `deletion_protection_enabled` が `false`、SPA バケットの `force_destroy` が `true` であることを確かめます。そうでなければ、スタック名の入力を求める前に止まります。手順 3 の apply が済んでいないので、手順 3 に戻ります（飛ばして destroy すると、保護のないリソースだけを消してから途中で失敗します）。撤去の途中で削除済みのリソースは plan に出ないため、検査を飛ばし、飛ばしたリソースと属性を「plan にないため、削除済みとみなして … の検査を飛ばしました」と表示します。撤去を始める前なのにこの表示が出た場合は、リソース名が変わっていて検査が働いていません。`n` などを入力して中止してください。
+
+plan に既存 Registry の変更や削除がないことを確認し、`main` と入力します。destroy が途中で失敗した場合は、本節の最後の「撤去を中止したとき・destroy が途中で失敗したとき」に従います。
+
+#### 5. 保護を元に戻す
+
+撤去が終わったら、次の 2 つを必ず戻します。
+
+- `infrastructure/main.tf` の `prevent_destroy` の編集を戻します（`git checkout -- infrastructure/main.tf`）。`python3 -m unittest infrastructure/tests/test_teardown_guards.py` が通ることを確認します。
+- `infrastructure/dev.tfvars` から手順 3 の 2 行を削除します。既定値（`table_deletion_protection = true`、`spa_force_destroy = false`）に戻ります。
+
+作り直すときは、4 章の手順で本体、追加スタックの順に配信します。Cognito のグループは撤去で消えるため、ユーザーをグループに割り当て直します（4.1 の 7）。
+
+#### 6. 撤去後に残るものを確認する
+
+次のものは Terraform の管理対象ではないため、撤去後も残ります。削除されていないことと、ほかの利用者に影響がないことを確認してください。
+
+| 残るもの | 補足 |
+| --- | --- |
+| 既存 Registry | 本体は ARN で参照するだけです |
+| Cognito User Pool 本体とドメイン | 本体スタックが追加した client、リソースサーバー、グループは撤去されます |
+| 手動で作った IAM の主体 | `registry-operator`、`RegistryPortalReadOnly`、`RegistryPortalDeployer`、`RegistryPortalBreakGlass` |
+| Discovery 用の Secrets Manager と KMS キー | 発見用 M2M client の secret と、顧客管理キーを使う場合のキー |
+| state バケットと bootstrap の state | 撤去の対象外です。各スタックの state のファイルは、リソースのない状態でバケットに残ります |
+| 補助テーブルのバックアップ | PITR のシステムバックアップ（35 日保持）と、手順 1 で取ったオンデマンドバックアップ |
+
+各スタックに管理対象が残っていないことは、5.3 の `terraform state list` で確認できます。
+
+#### 撤去を中止したとき・destroy が途中で失敗したとき
+
+手順 3 の apply の後で撤去を中止した場合や、手順 4 の destroy が途中で失敗した場合は、保護を外した状態のまま残さないでください。撤去を続けるか、既定値で apply し直して保護を戻します。
+
+- **撤去を続ける場合**: 失敗の原因を取り除いてから、手順 4 をやり直します。削除済みのリソースは plan に出ません。残っているリソースの保護が外れていることは、手順 4 の検査が確かめます。終わったら手順 5 に進みます。
+- **撤去をやめる場合**: 手順 5 と同じく、`infrastructure/main.tf` の編集を戻し、`infrastructure/dev.tfvars` から手順 3 の 2 行を削除します。そのうえで、既定値のまま本体を通常の配信で apply し直します。
+
+```bash
+cd applications/registry_portal
+git checkout -- infrastructure/main.tf
+python3 -m unittest infrastructure/tests/test_teardown_guards.py
+AWS_PROFILE=registry-deploy scripts/deploy.sh infrastructure/backend.hcl infrastructure/dev.tfvars
+```
+
+plan で、補助テーブルの `deletion_protection_enabled` が `true` に、SPA バケットの `force_destroy` が `false` に戻る変更（update in-place）を確認してから、`apply` と入力します。destroy で削除済みのリソースは、plan では作成になります。
+
+- 補助テーブルを削除済みの場合、作り直したテーブルは空です。削除前のデータは、手順 1 のオンデマンドバックアップと PITR のシステムバックアップにあります。
+- SPA バケットを削除済みの場合も、この配信で SPA をビルドしてアップロードし直します。
+- 手順 2 で撤去した追加スタックは、4.5 の手順で配信し直します。Cognito のグループを削除済みの場合は、ユーザーをグループに割り当て直します（4.1 の 7）。
 
 ## 6. トラブルシューティング
 
@@ -485,3 +598,4 @@ bash -n scripts/deploy.sh
 - [ADR-0003 公開 HTTPS と単一 Registry](../adr/0003-public-https-without-waf-and-single-registry.md)
 - [ADR-0004 CI から AWS に反映しない](../adr/0004-no-aws-deployment-from-ci.md)
 - [ADR-0013 本体と追加スタックの state を分けて運用する](../adr/0013-separate-portal-addon-states.md)
+- [ADR-0014 dev の撤去は保護を一時的に外して行い、state バケットと bootstrap は残す](../adr/0014-dev-teardown-protection-and-scope.md)

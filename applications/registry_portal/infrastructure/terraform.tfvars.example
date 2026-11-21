@@ -10,3 +10,9 @@ discovery_client_id         = "existing-discovery-client"
 discovery_client_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:registry-discovery-AbCdEf"
 # discovery_kms_key_arn = "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000000"
 # discovery_scope = "existing-registry/discover"
+
+# 撤去（destroy）するときだけ切り替える。通常は既定値（保護を有効）のまま指定しない。
+# 切り替えて apply してから destroy する。補助テーブルの lifecycle.prevent_destroy は
+# 変数にできないため、撤去時は main.tf の行を手元で外し、その変更はコミットしない。
+# table_deletion_protection = false
+# spa_force_destroy         = true

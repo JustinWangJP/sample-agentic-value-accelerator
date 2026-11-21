@@ -68,7 +68,7 @@ resource "aws_dynamodb_table" "auxiliary" {
   billing_mode                = "PAY_PER_REQUEST"
   hash_key                    = "pk"
   range_key                   = "sk"
-  deletion_protection_enabled = true
+  deletion_protection_enabled = var.table_deletion_protection
   attribute {
     name = "pk"
     type = "S"

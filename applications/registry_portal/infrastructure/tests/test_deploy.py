@@ -6,6 +6,8 @@ import sys
 import tempfile
 import unittest
 
+from teardown_helpers import LOG_GROUP, pulled_state
+
 ROOT = Path(__file__).resolve().parents[2]
 # スタックごとの backend.hcl の state key（各 backend.hcl.example と同じ値）
 STATE_KEYS = {
@@ -14,6 +16,7 @@ STATE_KEYS = {
     "management": "registry-portal/dev/management.tfstate",
     "notification_events": "registry-portal/dev/notification-events.tfstate",
 }
+ADDON_STACKS = tuple(stack for stack in STATE_KEYS if stack != "main")
 FAKE = """#!PYTHON
 import json, os
 from pathlib import Path
@@ -40,8 +43,16 @@ elif name == "aws":
             sys.exit(255)
         print(settings["caller_arn"])
 elif name == "terraform":
-    if "show" in args and "-json" in args:
+    if "show" in args and "-json" in args and args[-1].endswith(".tfplan"):
         print(Path(os.environ["PLAN_FIXTURE"]).read_text())
+    elif args[1:3] == ["state", "pull"]:
+        # FAKE_STATES にないスタックは state のファイルがない（state pull は何も出力しない）
+        stack = Path(args[0].split("=", 1)[1]).name
+        if stack == os.environ.get("FAKE_STATE_PULL_FAILS"):
+            sys.exit(1)
+        states = json.loads(os.environ.get("FAKE_STATES", "{}"))
+        if stack in states:
+            print(json.dumps(states[stack]))
     elif "output" in args:
         outputs = {"spa_bucket_name": "portal-spa",
                    "cloudfront_distribution_id": "EDIST",
@@ -99,6 +110,9 @@ class DeployTests(unittest.TestCase):
         extra_env=None,
         stack_args=(),
         backend_key=None,
+        destroy=False,
+        states=None,
+        addon_backends=None,
     ):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
@@ -119,6 +133,10 @@ class DeployTests(unittest.TestCase):
                 else 'bucket = "registry-portal-state-123456789012"\n'
             )
             variables.touch()
+            # 追加スタックの backend.hcl は、本体の backend.hcl と同じディレクトリの <スタック>/ に置く
+            for addon, text in (addon_backends or {}).items():
+                (work / addon).mkdir()
+                (work / addon / "backend.hcl").write_text(text)
             env = {
                 key: value
                 for key, value in os.environ.items()
@@ -131,10 +149,17 @@ class DeployTests(unittest.TestCase):
                 FAKE_AWS_PROFILES=json.dumps(profiles),
                 COMMAND_LOG=str(commands),
                 PLAN_FIXTURE=str(Path(__file__).parent / f"fixtures/{fixture}.json"),
+                FAKE_STATES=json.dumps(states or {}),
             )
             env.update(extra_env or {})
             result = subprocess.run(
-                [str(ROOT / "scripts/deploy.sh"), *stack_args, str(backend), str(variables)],
+                [
+                    str(ROOT / "scripts/deploy.sh"),
+                    *(("--destroy",) if destroy else ()),
+                    *stack_args,
+                    str(backend),
+                    str(variables),
+                ],
                 env=env,
                 input=confirmation,
                 text=True,
@@ -142,6 +167,17 @@ class DeployTests(unittest.TestCase):
             )
             self.records = [json.loads(line) for line in commands.read_text().splitlines()]
             return result, [record["argv"] for record in self.records]
+
+    def run_destroy(self, fixture="safe", confirmation="main\n", **options):
+        """撤去のモードで実行する。撤去の手順（ガイド 5.4）と同じく、MFA 付きのロールの profile を使う。"""
+        return self.run_deploy(
+            fixture,
+            confirmation,
+            profile="registry-deploy",
+            profiles=ROLE_PROFILES,
+            destroy=True,
+            **options,
+        )
 
     def test_approved_saved_plan_is_applied_then_spa_is_uploaded(self):
         result, commands = self.run_deploy()
@@ -399,6 +435,24 @@ class DeployTests(unittest.TestCase):
                 self.assertIn(f'key          = "{key}"', example)
                 self.assertIn(f'state_key="{key}"', (ROOT / "scripts/deploy.sh").read_text())
 
+    def test_addon_backend_examples_share_the_main_state_bucket(self):
+        # 本体の撤去では、本体の backend.hcl の key だけを差し替えて追加スタックの state を読む
+        infrastructure = ROOT / "infrastructure"
+
+        def settings(path):
+            lines = path.read_text().splitlines()
+            return dict(
+                (part.strip().strip('"') for part in line.split("=", 1))
+                for line in lines
+                if "=" in line and not line.lstrip().startswith("#")
+            )
+
+        main = settings(infrastructure / "backend.hcl.example")
+        for stack in ADDON_STACKS:
+            with self.subTest(stack=stack):
+                addon = settings(infrastructure / stack / "backend.hcl.example")
+                self.assertEqual({**addon, "key": main["key"]}, main)
+
     def test_unknown_stack_is_rejected_before_external_commands(self):
         for stack_args in [
             ("--stack", "bootstrap"),
@@ -409,6 +463,222 @@ class DeployTests(unittest.TestCase):
             with self.subTest(stack_args=stack_args):
                 result, commands = self.run_deploy(stack_args=stack_args)
                 self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(commands, [])
+
+    def test_repeated_options_are_rejected_before_external_commands(self):
+        # 後の指定を黙って使うと、撤去や反映の対象を取り違えるおそれがあるため止める
+        for stack_args, option in [
+            (("--destroy", "--destroy"), "--destroy"),
+            (("--stack", "decision", "--stack", "management"), "--stack"),
+            (("--stack", "decision", "--destroy", "--stack", "decision"), "--stack"),
+        ]:
+            with self.subTest(stack_args=stack_args):
+                result, commands = self.run_deploy(stack_args=stack_args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"{option} は 1 回だけ指定してください", result.stderr)
+                self.assertEqual(commands, [])
+
+    def test_options_can_be_given_in_any_order(self):
+        result, commands = self.run_deploy(
+            confirmation="decision\n",
+            profile="registry-deploy",
+            profiles=ROLE_PROFILES,
+            stack_args=("--stack", "decision", "--destroy"),
+            backend_key=STATE_KEYS["decision"],
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        plan = next(command for command in commands if "plan" in command)
+        self.assertEqual(plan[1], f"-chdir={ROOT / 'infrastructure' / 'decision'}")
+        self.assertIn("-destroy", plan)
+
+    def test_destroy_applies_the_saved_destroy_plan_without_spa_upload(self):
+        # destroy のモードは plan -destroy を保存し、確認後にその plan を apply する。SPA は配信しない
+        result, commands = self.run_deploy(destroy=True, confirmation="main\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        terraform = [command for command in commands if command[0] == "terraform"]
+        plan = next(command for command in terraform if "plan" in command)
+        apply = next(command for command in terraform if "apply" in command)
+        self.assertIn("-destroy", plan)
+        self.assertEqual(next(item[5:] for item in plan if item.startswith("-out=")), apply[-1])
+        self.assertLess(terraform.index(plan), terraform.index(apply))
+        self.assertTrue(
+            any(
+                command[0] == "python3" and command[1].endswith("check_plan.py")
+                for command in commands
+            )
+        )
+        self.assertFalse(any(command[0] == "npm" for command in commands))
+        self.assertFalse(any("s3" in command or "cloudfront" in command for command in commands))
+
+    def test_destroy_guard_failure_or_unmatched_confirmation_never_reaches_apply(self):
+        # 撤去の確認は配信より強く、スタック名と完全に一致しない入力（y や apply を含む）では止まる
+        cases = [
+            ("registry-update", "main\n", (), "check_plan"),
+            ("safe", "y\n", (), "一致しない"),
+            ("safe", "apply\n", (), "一致しない"),
+            ("safe", "main \n", (), "一致しない"),
+            ("safe", "", (), "中止"),
+            ("safe", "main\n", ("--stack", "decision"), "一致しない"),
+        ]
+        for fixture, confirmation, stack_args, reason in cases:
+            with self.subTest(fixture=fixture, confirmation=confirmation, stack_args=stack_args):
+                result, commands = self.run_destroy(
+                    fixture,
+                    confirmation,
+                    stack_args=stack_args,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                if reason != "check_plan":
+                    self.assertIn(reason, result.stderr)
+                self.assertTrue(any("plan" in command for command in commands))
+                self.assertFalse(any("apply" in command for command in commands))
+
+    def test_main_destroy_stops_while_an_addon_stack_state_has_resources(self):
+        # 追加スタックは本体の API・Lambda・ロール・テーブルを借りるため、撤去の順番は「追加スタック → 本体」
+        result, commands = self.run_destroy(states={"management": pulled_state(LOG_GROUP)})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("management（1 件）", result.stderr)
+        self.assertNotIn("decision", result.stderr)
+        terraform = [command for command in commands if command[0] == "terraform"]
+        self.assertIn(
+            [
+                "terraform",
+                f"-chdir={ROOT / 'infrastructure' / 'management'}",
+                "state",
+                "pull",
+            ],
+            terraform,
+        )
+        self.assertFalse(any("plan" in command or "apply" in command for command in terraform))
+        self.assertFalse(
+            any(command[1] == f"-chdir={ROOT / 'infrastructure'}" for command in terraform)
+        )
+
+    def test_main_destroy_stops_when_an_addon_backend_points_to_another_bucket(self):
+        # 追加スタックの state は、本体の backend.hcl の key だけを差し替えて読む。手元の追加スタックの
+        # backend.hcl が別のバケットを指していれば、その前提が崩れるため、state を読む前に止める
+        result, commands = self.run_destroy(
+            addon_backends={"management": 'bucket = "another-state-bucket"\n'}
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("management", result.stderr)
+        self.assertIn("本体の backend.hcl と一致しません", result.stderr)
+        self.assertFalse(any(command[0] == "terraform" for command in commands))
+
+    def test_main_destroy_reports_how_each_addon_backend_is_resolved(self):
+        same_bucket = (
+            'bucket = "registry-portal-state-123456789012"\n'
+            f'key    = "{STATE_KEYS["decision"]}"\n'
+        )
+        result, commands = self.run_destroy(addon_backends={"decision": same_bucket})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "decision: backend.hcl のバケットとリージョンが本体と一致しました", result.stdout
+        )
+        self.assertIn("management: ", result.stdout)
+        self.assertIn("がないため、本体の backend.hcl のバケットとリージョンで", result.stdout)
+
+    def test_main_destroy_stops_when_an_addon_state_cannot_be_read(self):
+        # 認証やネットワークの失敗、JSON の破損は「state なし」や 0 件として扱わない
+        cases = {
+            "state pull の失敗": ({}, {"FAKE_STATE_PULL_FAILS": "management"}),
+            "JSON の破損": ({"management": {"version": 3}}, {}),
+        }
+        for label, (states, extra_env) in cases.items():
+            with self.subTest(label):
+                result, commands = self.run_destroy(
+                    states=states,
+                    extra_env=extra_env,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(any("plan" in command for command in commands))
+
+    def test_main_destroy_proceeds_when_addon_states_are_empty(self):
+        # 撤去済みの追加スタックの state は、リソースのない state か、state のファイル自体がない
+        result, commands = self.run_destroy(states={"decision": pulled_state()})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # 撤去済み（0 件）と未配信（state なし）は、どちらも撤去を止めないが表示では区別する
+        self.assertIn("decision: 0 件", result.stdout)
+        self.assertIn("management: state なし（未配信）", result.stdout)
+        for addon in ADDON_STACKS:
+            with self.subTest(addon=addon):
+                init = next(
+                    command
+                    for command in commands
+                    if command[:2] == ["terraform", f"-chdir={ROOT / 'infrastructure' / addon}"]
+                    and "init" in command
+                )
+                self.assertIn(f"-backend-config=key={STATE_KEYS[addon]}", init)
+        self.assertTrue(any("apply" in command for command in commands))
+
+    def test_addon_state_init_reuses_the_main_backend_settings_with_only_the_key_replaced(self):
+        # 追加スタックの state は本体と同じバケットにあり、key だけが異なる（各 backend.hcl.example）
+        result, commands = self.run_destroy()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        inits = {
+            command[1]: (command[2:], record["profile"])
+            for command, record in zip(commands, self.records)
+            if command[0] == "terraform" and "init" in command
+        }
+        main_args, main_profile = inits[f"-chdir={ROOT / 'infrastructure'}"]
+        for addon in ADDON_STACKS:
+            with self.subTest(addon=addon):
+                args, profile = inits[f"-chdir={ROOT / 'infrastructure' / addon}"]
+                key = f"-backend-config=key={STATE_KEYS[addon]}"
+                self.assertEqual([item for item in args if item != key], main_args)
+                backend = next(item for item in args if item.endswith("backend.hcl"))
+                # 後から指定した値が優先されるため、key は backend.hcl の後に置く
+                self.assertLess(args.index(backend), args.index(key))
+                self.assertEqual(profile, main_profile)
+        checks = [
+            command
+            for command in commands
+            if command[0] == "python3" and command[1].endswith("check_teardown.py")
+        ]
+        self.assertEqual(
+            [command[2] for command in checks],
+            ["addon-backends", "addon-states", "main-protection"],
+        )
+
+    def test_main_destroy_stops_before_apply_while_protection_remains_in_state(self):
+        # 手順 3 の apply を飛ばすと、保護のないリソースだけ消えてから途中で失敗するため、apply の前に止める
+        result, commands = self.run_destroy("destroy-main-protected")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("5.4", result.stderr)
+        self.assertNotIn("スタック名（main）を入力", result.stdout)
+        self.assertFalse(any("apply" in command for command in commands))
+
+    def test_main_destroy_applies_after_protection_is_removed_from_state(self):
+        result, commands = self.run_destroy("destroy-main")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(any("apply" in command for command in commands))
+
+    def test_addon_destroy_does_not_require_the_main_protection_settings(self):
+        result, commands = self.run_destroy(
+            "destroy-main-protected",
+            "decision\n",
+            stack_args=("--stack", "decision"),
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(
+            any(command[0] == "python3" and "check_teardown" in command[1] for command in commands)
+        )
+
+    def test_usage_shows_destroy_mode_and_destroy_is_rejected_from_ci(self):
+        result = subprocess.run(
+            [str(ROOT / "scripts/deploy.sh")],
+            text=True,
+            capture_output=True,
+            env={**os.environ, "CI": ""},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("[--destroy]", result.stderr)
+        self.assertIn("各オプションは 1 回だけ", result.stderr)
+        for stack_args in [(), ("--stack", "decision")]:
+            with self.subTest(stack_args=stack_args):
+                result, commands = self.run_deploy(ci="true", stack_args=stack_args, destroy=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("CI", result.stderr)
                 self.assertEqual(commands, [])
 
 
