@@ -7,6 +7,13 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+# スタックごとの backend.hcl の state key（各 backend.hcl.example と同じ値）
+STATE_KEYS = {
+    "main": "registry-portal/dev/terraform.tfstate",
+    "decision": "registry-portal/dev/decision.tfstate",
+    "management": "registry-portal/dev/management.tfstate",
+    "notification_events": "registry-portal/dev/notification-events.tfstate",
+}
 FAKE = """#!PYTHON
 import json, os
 from pathlib import Path
@@ -91,6 +98,7 @@ class DeployTests(unittest.TestCase):
         profiles=SSO_PROFILES,
         extra_env=None,
         stack_args=(),
+        backend_key=None,
     ):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
@@ -102,7 +110,14 @@ class DeployTests(unittest.TestCase):
                 executable.chmod(0o755)
             backend = work / "backend.hcl"
             variables = work / "dev.tfvars"
-            backend.touch()
+            # 既定は指定したスタックの state key。--stack が不正な場合は本体の key を書く
+            stack = stack_args[1] if len(stack_args) == 2 else "main"
+            key = STATE_KEYS.get(stack, STATE_KEYS["main"]) if backend_key is None else backend_key
+            backend.write_text(
+                f'bucket = "registry-portal-state-123456789012"\nkey    = "{key}"\n'
+                if key
+                else 'bucket = "registry-portal-state-123456789012"\n'
+            )
             variables.touch()
             env = {
                 key: value
@@ -356,8 +371,41 @@ class DeployTests(unittest.TestCase):
                     any(command[1:3] == ["sts", "get-caller-identity"] for command in commands)
                 )
 
+    def test_backend_state_key_of_another_stack_is_rejected_before_external_commands(self):
+        # 本体の backend.hcl を追加スタックに渡す（またはその逆）と、plan に他のスタックの資源の削除が出る
+        for stack_args, backend_key in [
+            (("--stack", "decision"), STATE_KEYS["main"]),
+            (("--stack", "management"), STATE_KEYS["decision"]),
+            ((), STATE_KEYS["notification_events"]),
+            (("--stack", "notification_events"), ""),
+        ]:
+            with self.subTest(stack_args=stack_args, backend_key=backend_key):
+                result, commands = self.run_deploy(
+                    profile="registry-deploy",
+                    profiles=ROLE_PROFILES,
+                    stack_args=stack_args,
+                    backend_key=backend_key,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("state key", result.stderr)
+                self.assertEqual(commands, [])
+
+    def test_backend_examples_use_the_state_keys_the_script_expects(self):
+        infrastructure = ROOT / "infrastructure"
+        for stack, key in STATE_KEYS.items():
+            directory = infrastructure if stack == "main" else infrastructure / stack
+            with self.subTest(stack=stack):
+                example = (directory / "backend.hcl.example").read_text()
+                self.assertIn(f'key          = "{key}"', example)
+                self.assertIn(f'state_key="{key}"', (ROOT / "scripts/deploy.sh").read_text())
+
     def test_unknown_stack_is_rejected_before_external_commands(self):
-        for stack_args in [("--stack", "bootstrap"), ("--stack", "../decision"), ("--stack",)]:
+        for stack_args in [
+            ("--stack", "bootstrap"),
+            ("--stack", "../decision"),
+            ("--stack", "main"),
+            ("--stack",),
+        ]:
             with self.subTest(stack_args=stack_args):
                 result, commands = self.run_deploy(stack_args=stack_args)
                 self.assertNotEqual(result.returncode, 0)

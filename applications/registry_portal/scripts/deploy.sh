@@ -5,29 +5,63 @@ portal_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 infra_dir="$portal_dir/infrastructure"
 
 fail() { printf '%s\n' "$*" >&2; exit 1; }
-usage="使用方法: AWS_PROFILE=<SSO profile またはロールの profile> [TERRAFORM_AWS_PROFILE=<credential_process の profile>] scripts/deploy.sh [--stack decision|management|notification_events] <backend.hcl> <tfvars>"
-# --stack を省略すると本体スタック（infrastructure/）を反映し、SPA も配信する。
+# 反映できるスタックの表。--stack を省略すると本体スタック（main）を反映する。
 # 追加スタック（ADR-0013）は別 state のため、同じ検査と plan ガードを通して Terraform だけを反映する。
-stack=""
+addon_stacks=(decision management notification_events)
+# スタックごとの属性を設定する。引数はスタック名で、表にない名前なら 1 を返す。
+#   stack_subdir: infrastructure/ からの相対ディレクトリ（本体は空）
+#   state_key: backend.hcl の key。別のスタックの state を指定して誤って反映するのを防ぐ
+#   publishes_spa: 反映後に SPA をビルドして配信するか
+#   allows_sso: IAM Identity Center の permission set で反映できるか（permission set は本体向けの権限だけを持つ）
+stack_config() {
+  publishes_spa=false
+  allows_sso=false
+  case "$1" in
+    main)
+      stack_subdir=""
+      state_key="registry-portal/dev/terraform.tfstate"
+      publishes_spa=true
+      allows_sso=true
+      ;;
+    decision)
+      stack_subdir="decision"
+      state_key="registry-portal/dev/decision.tfstate"
+      ;;
+    management)
+      stack_subdir="management"
+      state_key="registry-portal/dev/management.tfstate"
+      ;;
+    notification_events)
+      stack_subdir="notification_events"
+      state_key="registry-portal/dev/notification-events.tfstate"
+      ;;
+    *) return 1 ;;
+  esac
+}
+addon_choices="$(IFS='|'; echo "${addon_stacks[*]}")"
+usage="使用方法: AWS_PROFILE=<SSO profile またはロールの profile> [TERRAFORM_AWS_PROFILE=<credential_process の profile>] scripts/deploy.sh [--stack $addon_choices] <backend.hcl> <tfvars>"
+stack="main"
 if [[ "${1:-}" == "--stack" ]]; then
   [[ $# -ge 2 ]] || fail "$usage"
   stack="$2"
   shift 2
-  case "$stack" in
-    decision | management | notification_events) ;;
-    *) fail "追加スタックには decision・management・notification_events のいずれかを指定してください。" ;;
-  esac
+  [[ "$stack" != main ]] && stack_config "$stack" || fail "追加スタックには ${addon_stacks[*]} のいずれかを指定してください。"
 fi
+stack_config "$stack"
 [[ $# -eq 2 ]] || fail "$usage"
 [[ -z "${CI:-}" && -z "${GITHUB_ACTIONS:-}" ]] || fail "CI からの反映は禁止されています。ローカル端末で実行してください。"
-stack_dir="$infra_dir${stack:+/$stack}"
+stack_dir="$infra_dir${stack_subdir:+/$stack_subdir}"
 [[ -n "${AWS_PROFILE:-}" ]] || fail "AWS_PROFILE に IAM Identity Center の SSO profile か、RegistryPortalDeployer を MFA 付きで引き受ける profile を指定してください。"
 [[ -z "${AWS_ACCESS_KEY_ID:-}" && -z "${AWS_SECRET_ACCESS_KEY:-}" && -z "${AWS_SESSION_TOKEN:-}" ]] || fail "環境変数の AWS 認証情報を解除し、profile を使用してください。"
 [[ -f "$1" && -f "$2" ]] || fail "backend 設定と dev の変数ファイルが必要です。"
 backend_file="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 vars_file="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"
+# 本体の backend.hcl を追加スタックに渡すと、plan に本体の資源の削除が出る。plan ガードは Registry 以外の
+# 削除を止めないため、Terraform を実行する前に state key とスタックの対応を確かめる
+backend_key="$(sed -n 's/^[[:space:]]*key[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$backend_file")"
+[[ "$backend_key" == "$state_key" ]] || fail "backend 設定の key（${backend_key:-未設定}）が ${stack} スタックの state key（${state_key}）と一致しません。infrastructure/${stack_subdir:+$stack_subdir/}backend.hcl.example を確認してください。"
 required_commands=(aws terraform python3)
-[[ -n "$stack" ]] || required_commands+=(npm)
+[[ "$publishes_spa" == true ]] && required_commands+=(npm)
 for command in "${required_commands[@]}"; do command -v "$command" >/dev/null || fail "必要なコマンドがありません: $command"; done
 profile_setting() { aws configure get "$1" --profile "$2" 2>/dev/null || true; }
 caller_of() { aws sts get-caller-identity --query Arn --output text --profile "$1"; }
@@ -39,7 +73,7 @@ mfa_serial="$(profile_setting mfa_serial "$AWS_PROFILE")"
 if [[ -n "$sso_session" || -n "$sso_start_url" ]]; then
   # IAM Identity Center: permission set の SSO ロール。Terraform も同じ profile を使う。
   # bootstrap の permission set は本体スタック向けの権限だけを持つため、追加スタックは扱わない。
-  [[ -z "$stack" ]] || fail "IAM Identity Center の permission set は追加スタックに対応していません。RegistryPortalDeployer を MFA 付きで引き受ける profile で実行してください。"
+  [[ "$allows_sso" == true ]] || fail "IAM Identity Center の permission set は追加スタックに対応していません。RegistryPortalDeployer を MFA 付きで引き受ける profile で実行してください。"
   terraform_profile="$AWS_PROFILE"
   caller_arn="$(caller_of "$AWS_PROFILE")"
   [[ "$caller_arn" == arn:aws:sts::*:assumed-role/AWSReservedSSO_RegistryPortalDeployer_*/* ]] || fail "RegistryPortalDeployer の短期認証情報を使用してください。"
@@ -85,7 +119,7 @@ printf '\n上記 plan と Registry・IAM の変更を確認してください。
 read -r confirmation || fail "反映を中止しました。"
 [[ "$confirmation" == "apply" ]] || fail "反映を中止しました。"
 tf apply -input=false "$work_dir/approved.tfplan"
-if [[ -n "$stack" ]]; then
+if [[ "$publishes_spa" != true ]]; then
   printf '\n%s スタックの反映が完了しました。README の dev 手動受入を実施してください。\n' "$stack"
   exit 0
 fi
