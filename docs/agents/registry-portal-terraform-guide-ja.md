@@ -496,7 +496,11 @@ plan で、補助テーブル（`aws_dynamodb_table.auxiliary`）の `deletion_p
 AWS_PROFILE=registry-deploy scripts/deploy.sh --destroy infrastructure/backend.hcl infrastructure/dev.tfvars
 ```
 
-本体の撤去では `--stack` を付けません。スクリプトは plan を作る前に、本体の `backend.hcl` のバケットで追加 3 スタックの state を読み、リソースが残っていれば「追加スタックの state にリソースが残っています」と表示して止まります。その場合は手順 2 に戻ります。state のファイルがない場合も、リソースのない state と同じく空として扱います。
+本体の撤去では `--stack` を付けません。スクリプトは plan を作る前に、追加 3 スタックの state を `terraform state pull` で読み、リソースが残っていれば「追加スタックの state にリソースが残っています」と表示して止まります。その場合は手順 2 に戻ります。
+
+- 追加スタックの state は、本体と同じバケットにあり key だけが異なる前提です（4.5、各 `backend.hcl.example`）。スクリプトは本体の `backend.hcl` の key だけを追加スタックのもの（1.4 の表）に差し替えて読みます。追加スタックの state を別のバケットに置いている場合、この検査は正しく働きません。
+- スタックごとに「0 件」（撤去済み）か「state なし（未配信）」を表示します。どちらも撤去を止めません。
+- 認証やネットワークの失敗、state の形式の異常などで state を読めない場合は、0 件として扱わずに止まります。
 
 plan に既存 Registry の変更や削除がないことを確認し、`main` と入力します。
 

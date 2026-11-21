@@ -136,10 +136,12 @@ if [[ "$destroy" == true && "$stack" == main ]]; then
   for addon in "${addon_stacks[@]}"; do
     # stack_config は呼び出し元の変数を書き換えるため、サブシェルで追加スタックの値だけを取り出す
     read -r addon_subdir addon_key < <(stack_config "$addon" && printf '%s %s\n' "$stack_subdir" "$state_key")
-    # 本体と同じ state バケットを使い、key だけを追加スタックのものに差し替える
+    # 追加スタックの state は本体と同じバケットにあり、key だけが異なる（各 backend.hcl.example と
+    # ガイド 4.5）。本体の backend.hcl の key だけを追加スタックのものに差し替えて読む
     tf_init "$infra_dir/$addon_subdir" -backend-config="key=$addon_key"
-    tf_at "$infra_dir/$addon_subdir" show -json > "$work_dir/$addon.state.json"
-    addon_states+=("$addon=$work_dir/$addon.state.json")
+    # state のファイルがない（未配信）と、state pull は何も出力しない。読めない場合は set -e で止まる
+    tf_at "$infra_dir/$addon_subdir" state pull > "$work_dir/$addon.tfstate"
+    addon_states+=("$addon=$work_dir/$addon.tfstate")
   done
   python3 "$portal_dir/scripts/check_teardown.py" addon-states "${addon_states[@]}"
 fi

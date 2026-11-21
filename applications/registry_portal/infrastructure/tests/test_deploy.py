@@ -44,11 +44,14 @@ elif name == "aws":
 elif name == "terraform":
     if "show" in args and "-json" in args and args[-1].endswith(".tfplan"):
         print(Path(os.environ["PLAN_FIXTURE"]).read_text())
-    elif "show" in args and "-json" in args:
-        # plan を指定しない show -json は state を表示する。FAKE_STATES にないスタックは state が空
+    elif args[1:3] == ["state", "pull"]:
+        # FAKE_STATES にないスタックは state のファイルがない（state pull は何も出力しない）
         stack = Path(args[0].split("=", 1)[1]).name
+        if stack == os.environ.get("FAKE_STATE_PULL_FAILS"):
+            sys.exit(1)
         states = json.loads(os.environ.get("FAKE_STATES", "{}"))
-        print(json.dumps(states.get(stack, {"format_version": "1.0"})))
+        if stack in states:
+            print(json.dumps(states[stack]))
     elif "output" in args:
         outputs = {"spa_bucket_name": "portal-spa",
                    "cloudfront_distribution_id": "EDIST",
@@ -95,6 +98,11 @@ def with_profile(profiles, name, **changes):
         else:
             settings[key] = value
     return updated
+
+
+def pulled_state(*resources):
+    """terraform state pull が出力する state（format version 4）を返す。"""
+    return {"version": 4, "serial": 1, "lineage": "x", "resources": list(resources)}
 
 
 class DeployTests(unittest.TestCase):
@@ -422,6 +430,24 @@ class DeployTests(unittest.TestCase):
                 self.assertIn(f'key          = "{key}"', example)
                 self.assertIn(f'state_key="{key}"', (ROOT / "scripts/deploy.sh").read_text())
 
+    def test_addon_backend_examples_share_the_main_state_bucket(self):
+        # 本体の撤去では、本体の backend.hcl の key だけを差し替えて追加スタックの state を読む
+        infrastructure = ROOT / "infrastructure"
+
+        def settings(path):
+            lines = path.read_text().splitlines()
+            return dict(
+                (part.strip().strip('"') for part in line.split("=", 1))
+                for line in lines
+                if "=" in line and not line.lstrip().startswith("#")
+            )
+
+        main = settings(infrastructure / "backend.hcl.example")
+        for stack in STATE_KEYS.keys() - {"main"}:
+            with self.subTest(stack=stack):
+                addon = settings(infrastructure / stack / "backend.hcl.example")
+                self.assertEqual({**addon, "key": main["key"]}, main)
+
     def test_unknown_stack_is_rejected_before_external_commands(self):
         for stack_args in [
             ("--stack", "bootstrap"),
@@ -481,42 +507,57 @@ class DeployTests(unittest.TestCase):
 
     def test_main_destroy_stops_while_an_addon_stack_state_has_resources(self):
         # 追加スタックは本体の API・Lambda・ロール・テーブルを借りるため、撤去の順番は「追加スタック → 本体」
-        log_group = {"address": "aws_cloudwatch_log_group.this", "mode": "managed"}
-        cases = {
-            "ルートモジュールに残る": {"root_module": {"resources": [log_group]}},
-            "子モジュールに残る": {
-                "root_module": {
-                    "child_modules": [{"address": "module.logs", "resources": [log_group]}]
-                }
-            },
+        log_group = {
+            "module": "module.logs",
+            "mode": "managed",
+            "type": "aws_cloudwatch_log_group",
+            "name": "this",
+            "instances": [{"attributes": {}}],
         }
-        for label, values in cases.items():
+        result, commands = self.run_deploy(
+            "safe",
+            "main\n",
+            profile="registry-deploy",
+            profiles=ROLE_PROFILES,
+            destroy=True,
+            states={"management": pulled_state(log_group)},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("management（1 件）", result.stderr)
+        self.assertNotIn("decision", result.stderr)
+        terraform = [command for command in commands if command[0] == "terraform"]
+        self.assertIn(
+            [
+                "terraform",
+                f"-chdir={ROOT / 'infrastructure' / 'management'}",
+                "state",
+                "pull",
+            ],
+            terraform,
+        )
+        self.assertFalse(any("plan" in command or "apply" in command for command in terraform))
+        self.assertFalse(
+            any(command[1] == f"-chdir={ROOT / 'infrastructure'}" for command in terraform)
+        )
+
+    def test_main_destroy_stops_when_an_addon_state_cannot_be_read(self):
+        # 認証やネットワークの失敗、JSON の破損は「state なし」や 0 件として扱わない
+        cases = {
+            "state pull の失敗": ({}, {"FAKE_STATE_PULL_FAILS": "management"}),
+            "JSON の破損": ({"management": {"version": 3}}, {}),
+        }
+        for label, (states, extra_env) in cases.items():
             with self.subTest(label):
                 result, commands = self.run_deploy(
-                    "safe",
-                    "main\n",
+                    confirmation="main\n",
                     profile="registry-deploy",
                     profiles=ROLE_PROFILES,
                     destroy=True,
-                    states={"management": {"format_version": "1.0", "values": values}},
+                    states=states,
+                    extra_env=extra_env,
                 )
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("management", result.stderr)
-                self.assertNotIn("decision", result.stderr)
-                terraform = [command for command in commands if command[0] == "terraform"]
-                self.assertTrue(
-                    any(
-                        command[1] == f"-chdir={ROOT / 'infrastructure' / 'management'}"
-                        and "show" in command
-                        for command in terraform
-                    )
-                )
-                self.assertFalse(
-                    any("plan" in command or "apply" in command for command in terraform)
-                )
-                self.assertFalse(
-                    any(command[1] == f"-chdir={ROOT / 'infrastructure'}" for command in terraform)
-                )
+                self.assertFalse(any("plan" in command for command in commands))
 
     def test_main_destroy_proceeds_when_addon_states_are_empty(self):
         # 撤去済みの追加スタックの state は、リソースのない state か、state のファイル自体がない
@@ -525,9 +566,12 @@ class DeployTests(unittest.TestCase):
             profile="registry-deploy",
             profiles=ROLE_PROFILES,
             destroy=True,
-            states={"decision": {"format_version": "1.0", "values": {"root_module": {}}}},
+            states={"decision": pulled_state()},
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # 撤去済み（0 件）と未配信（state なし）は、どちらも撤去を止めないが表示では区別する
+        self.assertIn("decision: 0 件", result.stdout)
+        self.assertIn("management: state なし（未配信）", result.stdout)
         for addon, key in [
             ("decision", STATE_KEYS["decision"]),
             ("management", STATE_KEYS["management"]),
