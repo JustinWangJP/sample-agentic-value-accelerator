@@ -616,7 +616,46 @@ class DeployTests(unittest.TestCase):
             for command in commands
             if command[0] == "python3" and command[1].endswith("check_teardown.py")
         ]
-        self.assertEqual([command[2] for command in checks], ["addon-states"])
+        self.assertEqual([command[2] for command in checks], ["addon-states", "main-protection"])
+
+    def test_main_destroy_stops_before_apply_while_protection_remains_in_state(self):
+        # 手順 3 の apply を飛ばすと、保護のないリソースだけ消えてから途中で失敗するため、apply の前に止める
+        result, commands = self.run_deploy(
+            "destroy-main-protected",
+            "main\n",
+            profile="registry-deploy",
+            profiles=ROLE_PROFILES,
+            destroy=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("5.4", result.stderr)
+        self.assertNotIn("スタック名（main）を入力", result.stdout)
+        self.assertFalse(any("apply" in command for command in commands))
+
+    def test_main_destroy_applies_after_protection_is_removed_from_state(self):
+        result, commands = self.run_deploy(
+            "destroy-main",
+            "main\n",
+            profile="registry-deploy",
+            profiles=ROLE_PROFILES,
+            destroy=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(any("apply" in command for command in commands))
+
+    def test_addon_destroy_does_not_require_the_main_protection_settings(self):
+        result, commands = self.run_deploy(
+            "destroy-main-protected",
+            "decision\n",
+            profile="registry-deploy",
+            profiles=ROLE_PROFILES,
+            stack_args=("--stack", "decision"),
+            destroy=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(
+            any(command[0] == "python3" and "check_teardown" in command[1] for command in commands)
+        )
 
     def test_usage_shows_destroy_mode_and_destroy_is_rejected_from_ci(self):
         result = subprocess.run(

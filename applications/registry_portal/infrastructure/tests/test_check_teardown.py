@@ -9,6 +9,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECK = ROOT / "scripts/check_teardown.py"
+FIXTURES = Path(__file__).parent / "fixtures"
 LOG_GROUP = {
     "mode": "managed",
     "type": "aws_cloudwatch_log_group",
@@ -72,6 +73,81 @@ class AddonStatesTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1)
                 self.assertIn("decision", result.stderr)
                 self.assertIn("読めません", result.stderr)
+
+
+class MainProtectionTests(unittest.TestCase):
+    """本体の destroy の plan で、補助テーブルと SPA バケットの保護が state 上で外れていることを確かめる。"""
+
+    def check_plan(self, plan: dict) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "plan.json"
+            path.write_text(json.dumps(plan))
+            return run_check("main-protection", str(path))
+
+    def destroy_plan(self, **before_changes) -> dict:
+        """保護を外して apply した後の destroy の plan に、削除前の値の変更を加えて返す。"""
+        plan = json.loads((FIXTURES / "destroy-main.json").read_text())
+        for change in plan["resource_changes"]:
+            for address, values in before_changes.items():
+                if change["address"] == address:
+                    change["change"]["before"].update(values)
+        return plan
+
+    def test_plan_after_the_unprotecting_apply_passes(self):
+        result = self.check_plan(self.destroy_plan())
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_protection_still_in_state_stops_with_the_guide_step(self):
+        result = run_check("main-protection", str(FIXTURES / "destroy-main-protected.json"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("aws_dynamodb_table.auxiliary", result.stderr)
+        self.assertIn("deletion_protection_enabled", result.stderr)
+        self.assertIn("aws_s3_bucket.spa", result.stderr)
+        self.assertIn("force_destroy", result.stderr)
+        self.assertIn("5.4", result.stderr)
+
+    def test_each_protection_is_checked_on_its_own(self):
+        cases = {
+            "aws_dynamodb_table.auxiliary": {"deletion_protection_enabled": True},
+            "aws_s3_bucket.spa": {"force_destroy": False},
+        }
+        for address, values in cases.items():
+            with self.subTest(address):
+                result = self.check_plan(self.destroy_plan(**{address: values}))
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(address, result.stderr)
+                (other,) = cases.keys() - {address}
+                self.assertNotIn(other, result.stderr)
+
+    def test_unknown_protection_value_stops(self):
+        # 値が bool でない（属性がない、null）場合は、保護が外れていると確かめられないため止める
+        for value in (None, "false"):
+            with self.subTest(value=value):
+                plan = self.destroy_plan(
+                    **{"aws_dynamodb_table.auxiliary": {"deletion_protection_enabled": value}}
+                )
+                result = self.check_plan(plan)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("aws_dynamodb_table.auxiliary", result.stderr)
+
+    def test_already_deleted_resources_are_not_required(self):
+        # 撤去が途中で失敗した後の再実行では、削除済みのリソースは plan に出ない
+        plan = self.destroy_plan()
+        plan["resource_changes"] = [
+            change
+            for change in plan["resource_changes"]
+            if change["address"] != "aws_s3_bucket.spa"
+        ]
+        result = self.check_plan(plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_unreadable_plan_stops(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "plan.json"
+            path.write_text("{")
+            result = run_check("main-protection", str(path))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("読めません", result.stderr)
 
 
 if __name__ == "__main__":

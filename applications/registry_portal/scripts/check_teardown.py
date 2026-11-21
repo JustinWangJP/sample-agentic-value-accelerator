@@ -8,6 +8,12 @@ addon-states <スタック名>=<terraform state pull の出力> ...
     terraform show -json は、state がない場合とリソースのない state の場合に同じ
     {"format_version":"1.0"} を出力して区別できないため、state pull を使う。どちらの出力も
     公式ドキュメントに記載がなく、Terraform 1.17.1 で確認した。
+
+main-protection <destroy の plan の JSON>
+    本体の destroy の plan で、補助テーブルの削除保護と SPA バケットの force_destroy が、
+    state 上（削除前の値）で外れていることを確かめる。force_destroy は state に入った値が
+    destroy に効くため、保護を外す apply（ガイド 5.4 の手順 3）を飛ばすと、保護のない
+    リソースだけを消してから途中で失敗する。
 """
 
 from __future__ import annotations
@@ -15,6 +21,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
+from typing import Any, NamedTuple
 
 ORDER_HINT = (
     "撤去の順番は「追加スタック → 本体」です。"
@@ -46,6 +53,62 @@ def managed_resource_count(pulled: str) -> int | None:
     )
 
 
+class Protection(NamedTuple):
+    """撤去の前に外しておく保護の設定。値は destroy の plan の削除前の値（state の値）と比べる。"""
+
+    address: str
+    attribute: str
+    teardown_value: bool
+
+
+MAIN_PROTECTIONS = (
+    Protection("aws_dynamodb_table.auxiliary", "deletion_protection_enabled", False),
+    Protection("aws_s3_bucket.spa", "force_destroy", True),
+)
+GUIDE_STEP = (
+    "保護を外す apply（docs/agents/registry-portal-terraform-guide-ja.md の 5.4 の手順 3）を"
+    "済ませてから、撤去をやり直してください。"
+)
+
+
+def remaining_protections(plan: dict[str, Any]) -> list[str]:
+    """destroy の plan で、state 上の保護が撤去用の値になっていないリソースを返す。
+
+    plan に出ないリソース（撤去の途中で削除済み）は対象にしない。
+    """
+    if not str(plan.get("format_version", "")).startswith("1."):
+        raise ValueError("対応する plan JSON の format_version がありません")
+    before = {
+        change["address"]: change["change"].get("before") or {}
+        for change in plan.get("resource_changes", [])
+        if "delete" in change["change"].get("actions", [])
+    }
+    errors = []
+    for protection in MAIN_PROTECTIONS:
+        if protection.address not in before:
+            continue
+        value = before[protection.address].get(protection.attribute)
+        if value is not protection.teardown_value:
+            errors.append(
+                f"{protection.address} の {protection.attribute} が state 上で "
+                f"{json.dumps(value)} です（撤去には {json.dumps(protection.teardown_value)} が必要）"
+            )
+    return errors
+
+
+def check_main_protection(path: str) -> int:
+    try:
+        errors = remaining_protections(json.loads(Path(path).read_text()))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+        print(f"本体の destroy の plan を読めません: {error}", file=sys.stderr)
+        return 1
+    if errors:
+        print("\n".join([*errors, GUIDE_STEP]), file=sys.stderr)
+        return 1
+    print("本体の保護が state 上で外れていることを確認しました")
+    return 0
+
+
 def check_addon_states(arguments: list[str]) -> int:
     remaining = []
     for argument in arguments:
@@ -70,14 +133,18 @@ def check_addon_states(arguments: list[str]) -> int:
     return 0
 
 
+USAGE = """使用方法:
+  check_teardown.py addon-states <スタック名>=<state pull の出力> ...
+  check_teardown.py main-protection <destroy の plan の JSON>"""
+
+
 def main() -> int:
-    if len(sys.argv) < 3 or sys.argv[1] != "addon-states":
-        print(
-            "使用方法: check_teardown.py addon-states <スタック名>=<state pull の出力> ...",
-            file=sys.stderr,
-        )
-        return 2
-    return check_addon_states(sys.argv[2:])
+    if len(sys.argv) >= 3 and sys.argv[1] == "addon-states":
+        return check_addon_states(sys.argv[2:])
+    if len(sys.argv) == 3 and sys.argv[1] == "main-protection":
+        return check_main_protection(sys.argv[2])
+    print(USAGE, file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":

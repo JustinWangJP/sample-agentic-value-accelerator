@@ -1,0 +1,71 @@
+{
+  "format_version": "1.2",
+  "planned_values": {
+    "root_module": {}
+  },
+  "resource_changes": [
+    {
+      "address": "aws_dynamodb_table.auxiliary",
+      "mode": "managed",
+      "type": "aws_dynamodb_table",
+      "name": "auxiliary",
+      "provider_name": "registry.terraform.io/hashicorp/aws",
+      "change": {
+        "actions": [
+          "delete"
+        ],
+        "before": {
+          "name": "registry-portal-dev-supplement",
+          "arn": "arn:aws:dynamodb:us-east-1:123456789012:table/registry-portal-dev-supplement",
+          "deletion_protection_enabled": false
+        },
+        "after": null,
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": false
+      }
+    },
+    {
+      "address": "aws_s3_bucket.spa",
+      "mode": "managed",
+      "type": "aws_s3_bucket",
+      "name": "spa",
+      "provider_name": "registry.terraform.io/hashicorp/aws",
+      "change": {
+        "actions": [
+          "delete"
+        ],
+        "before": {
+          "bucket": "registry-portal-dev-spa",
+          "id": "registry-portal-dev-spa",
+          "arn": "arn:aws:s3:::registry-portal-dev-spa",
+          "force_destroy": true
+        },
+        "after": null,
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": false
+      }
+    },
+    {
+      "address": "aws_cloudwatch_log_group.api",
+      "mode": "managed",
+      "type": "aws_cloudwatch_log_group",
+      "name": "api",
+      "provider_name": "registry.terraform.io/hashicorp/aws",
+      "change": {
+        "actions": [
+          "delete"
+        ],
+        "before": {
+          "name": "/aws/apigateway/registry-portal-dev",
+          "arn": "arn:aws:logs:us-east-1:123456789012:log-group:/aws/apigateway/registry-portal-dev"
+        },
+        "after": null,
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": false
+      }
+    }
+  ]
+}
