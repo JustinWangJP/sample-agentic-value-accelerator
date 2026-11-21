@@ -24,18 +24,35 @@ def resource_block(path: str, resource_type: str, name: str) -> str:
     return match.group(1)
 
 
-def has_setting(block: str, key: str, value: str) -> bool:
-    """コメントを除いた本文に設定があるかを返す。撤去時は行をコメントアウトすることが多いため。"""
+def nested_blocks(code: str, name: str) -> list[str]:
+    """`name { ... }` の形の入れ子のブロックの本文を返す。中括弧の対応をたどって閉じ位置を決める。"""
+    bodies = []
+    for match in re.finditer(rf"\b{name}\s*\{{", code):
+        depth = 1
+        for index in range(match.end(), len(code)):
+            depth += {"{": 1, "}": -1}.get(code[index], 0)
+            if depth == 0:
+                bodies.append(code[match.end() : index])
+                break
+    return bodies
+
+
+def has_setting(block: str, key: str, value: str, within: str | None = None) -> bool:
+    """コメントを除いた本文に設定があるかを返す。撤去時は行をコメントアウトすることが多いため。
+
+    within にブロック名（lifecycle など）を指定すると、そのブロックの中にある設定だけを数える。
+    """
     code = re.sub(r"(#|//).*$", "", block, flags=re.MULTILINE)
     code = re.sub(r"/\*.*?\*/", "", code, flags=re.DOTALL)
-    return re.search(rf"\b{key}\s*=\s*{value}\b", code) is not None
+    scopes = [code] if within is None else nested_blocks(code, within)
+    return any(re.search(rf"\b{key}\s*=\s*{value}\b", scope) for scope in scopes)
 
 
 class TeardownGuardTests(unittest.TestCase):
     def test_auxiliary_table_keeps_prevent_destroy(self):
         block = resource_block("main.tf", "aws_dynamodb_table", "auxiliary")
         self.assertTrue(
-            has_setting(block, "prevent_destroy", "true"),
+            has_setting(block, "prevent_destroy", "true", within="lifecycle"),
             "補助テーブルの lifecycle { prevent_destroy = true } を戻してください。"
             "撤去のために外した変更はコミットしません。",
         )
@@ -43,7 +60,7 @@ class TeardownGuardTests(unittest.TestCase):
     def test_state_bucket_keeps_prevent_destroy_and_no_force_destroy(self):
         block = resource_block("bootstrap/main.tf", "aws_s3_bucket", "state")
         self.assertTrue(
-            has_setting(block, "prevent_destroy", "true"),
+            has_setting(block, "prevent_destroy", "true", within="lifecycle"),
             "state バケットの lifecycle { prevent_destroy = true } を戻してください。"
             "state バケットは撤去の対象に含めません。",
         )
@@ -51,6 +68,46 @@ class TeardownGuardTests(unittest.TestCase):
             has_setting(block, "force_destroy", "false"),
             "state バケットの force_destroy = false を戻してください。",
         )
+
+    def test_tfvars_example_keeps_teardown_variables_commented_out(self):
+        # 例をコピーした dev.tfvars で保護が外れないよう、撤去用の変数は既定値のまま（コメントアウト）にする
+        lines = (INFRA / "terraform.tfvars.example").read_text().splitlines()
+        for variable in ("table_deletion_protection", "spa_force_destroy"):
+            with self.subTest(variable=variable):
+                assignments = [
+                    line for line in lines if re.match(rf"\s*(#\s*)?{variable}\s*=", line)
+                ]
+                self.assertTrue(assignments, f"tfvars の例に {variable} の説明がありません")
+                for line in assignments:
+                    self.assertRegex(
+                        line,
+                        rf"^\s*#\s*{variable}\s*=",
+                        f"tfvars の例では {variable} をコメントアウトしたままにしてください",
+                    )
+
+
+class HasSettingTests(unittest.TestCase):
+    """has_setting が、撤去のための編集（行の削除・コメントアウト・lifecycle の外への移動）を見分けること。"""
+
+    def test_setting_inside_lifecycle_is_found(self):
+        for block in (
+            '  name = "t"\n  lifecycle { prevent_destroy = true }\n',
+            "  lifecycle {\n    ignore_changes  = [tags]\n    prevent_destroy = true\n  }\n",
+        ):
+            with self.subTest(block=block):
+                self.assertTrue(has_setting(block, "prevent_destroy", "true", within="lifecycle"))
+
+    def test_setting_outside_lifecycle_or_commented_out_is_not_found(self):
+        for block in (
+            "  prevent_destroy = true\n  lifecycle { ignore_changes = [tags] }\n",
+            "  lifecycle {\n    ignore_changes = [tags]\n  }\n  prevent_destroy = true\n",
+            "  # lifecycle { prevent_destroy = true }\n",
+            "  lifecycle {\n    # prevent_destroy = true\n  }\n",
+            "  lifecycle {\n    /* prevent_destroy = true */\n  }\n",
+            "  lifecycle { prevent_destroy = false }\n",
+        ):
+            with self.subTest(block=block):
+                self.assertFalse(has_setting(block, "prevent_destroy", "true", within="lifecycle"))
 
 
 if __name__ == "__main__":
