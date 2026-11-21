@@ -4,7 +4,7 @@ GitHub Actions では、テスト、Linter、型検査、`terraform fmt -check` 
 
 IAM Identity Center のない個人 AWS アカウントでは、MFA 付きで引き受けた IAM ロール `RegistryPortalDeployer` の短期認証情報を使う。AWS CLI のロールプロファイルと、`credential_process` で同じセッションを渡す Terraform 用プロファイルを用意する。bootstrap は Identity Center の資源を任意とし、state バケットの主体を `deployer_principal_arn` で指定する。
 
-個人アカウントの MFA ロール経路は、本体と別 state の追加 3 スタックを対象とする。bootstrap の SSO permission set は本体向けの権限だけを持ち、追加スタックの state key や決裁・イベント処理の資源には対応しない。dev は個人アカウントだけで運用するため permission set は広げず、`scripts/deploy.sh` は SSO 経路での追加スタックの反映（`--stack`）を拒否する。
+個人アカウントの MFA ロール経路は、本体スタックと、本体と別 state の追加 3 スタックの両方を反映できる。SSO 経路は本体スタックだけを対象とする。bootstrap の SSO permission set は本体向けの権限だけを持ち、追加スタックの state key や決裁・イベント処理の資源には対応しない。dev は個人アカウントだけで運用するため permission set は広げず、`scripts/deploy.sh` は SSO 経路での追加スタックの反映（`--stack`）を拒否する。
 
 ## Consequences
 

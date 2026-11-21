@@ -1,6 +1,8 @@
 function handler(event) {
   var request = event.request;
   if (request.uri === '/api' || request.uri.indexOf('/api/') === 0) {
+    // body は文字列で直接指定できる（data と encoding を省くとテキストとして扱う）。
+    // https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/functions-event-structure.html#functions-event-structure-response
     return {
       statusCode: 404,
       statusDescription: 'Not Found',
