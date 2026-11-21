@@ -8,7 +8,7 @@ locals {
 
 resource "aws_s3_bucket" "spa" {
   bucket        = var.spa_bucket_name
-  force_destroy = false
+  force_destroy = var.spa_force_destroy
 }
 resource "aws_s3_bucket_public_access_block" "spa" {
   bucket                  = aws_s3_bucket.spa.id
