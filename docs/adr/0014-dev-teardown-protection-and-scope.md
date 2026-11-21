@@ -20,6 +20,6 @@ Registry ポータルの dev 環境を撤去するときは、追加スタック
 ## 影響
 
 - 撤去の順番は「追加スタック → 本体」である。追加スタックは本体の HTTP API・管理 Lambda・実行ロール・補助テーブルを借りて route・Lambda permission・inline policy を足しており、本体を先に消すと追加スタックの state に孤立したリソースが残る。`deploy.sh --destroy` は、本体を撤去する前に追加スタックの state が空であることを確かめ、残っていれば止まる。
-- 撤去の後は、`main.tf` の `prevent_destroy` の編集と tfvars の切り替えを元に戻す。手順は [Terraform ガイドの 5.4](../agents/registry-portal-terraform-guide-ja.md#54-dev-環境を撤去する) に従う。
+- 撤去の後は、`main.tf` の `prevent_destroy` の編集と tfvars の切り替えを元に戻す。保護を外す apply の後で撤去を中止した場合や、destroy が途中で失敗した場合も、撤去を続けるか、既定値で apply し直して保護を戻す。手順は [Terraform ガイドの 5.4](../agents/registry-portal-terraform-guide-ja.md#54-dev-環境を撤去する) に従う。
 - 撤去で消えたロググループは戻らない。必要なログは撤去の前に取得する。
 - 既存 Registry、Cognito User Pool 本体、手動で作った IAM の主体、Discovery 用の Secrets Manager と KMS キーは Terraform の管理対象ではないため、撤去後も残る。

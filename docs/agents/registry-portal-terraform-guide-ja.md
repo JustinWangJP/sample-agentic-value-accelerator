@@ -490,6 +490,8 @@ plan で、補助テーブル（`aws_dynamodb_table.auxiliary`）の `deletion_p
 
 次に、`infrastructure/main.tf` の補助テーブル（`aws_dynamodb_table.auxiliary`）から `lifecycle { prevent_destroy = true }` の行を手元で外します（削除またはコメントアウト）。`prevent_destroy` は Terraform の制約で変数にできません。**この変更はコミットしません。** 外している間は `infrastructure/tests/test_teardown_guards.py` が失敗します。
 
+この後で撤去を中止する場合は、本節の最後の「撤去を中止したとき・destroy が途中で失敗したとき」の手順で保護を戻します。
+
 #### 4. 本体スタックを撤去する
 
 ```bash
@@ -504,7 +506,7 @@ AWS_PROFILE=registry-deploy scripts/deploy.sh --destroy infrastructure/backend.h
 
 plan を作った後、スクリプトは plan の削除前の値（state の値）で、補助テーブルの `deletion_protection_enabled` が `false`、SPA バケットの `force_destroy` が `true` であることを確かめます。そうでなければ、スタック名の入力を求める前に止まります。手順 3 の apply が済んでいないので、手順 3 に戻ります（飛ばして destroy すると、保護のないリソースだけを消してから途中で失敗します）。撤去の途中で削除済みのリソースは plan に出ないため、検査の対象になりません。
 
-plan に既存 Registry の変更や削除がないことを確認し、`main` と入力します。
+plan に既存 Registry の変更や削除がないことを確認し、`main` と入力します。destroy が途中で失敗した場合は、本節の最後の「撤去を中止したとき・destroy が途中で失敗したとき」に従います。
 
 #### 5. 保護を元に戻す
 
@@ -529,6 +531,26 @@ plan に既存 Registry の変更や削除がないことを確認し、`main` �
 | 補助テーブルのバックアップ | PITR のシステムバックアップ（35 日保持）と、手順 1 で取ったオンデマンドバックアップ |
 
 各スタックに管理対象が残っていないことは、5.3 の `terraform state list` で確認できます。
+
+#### 撤去を中止したとき・destroy が途中で失敗したとき
+
+手順 3 の apply の後で撤去を中止した場合や、手順 4 の destroy が途中で失敗した場合は、保護を外した状態のまま残さないでください。撤去を続けるか、既定値で apply し直して保護を戻します。
+
+- **撤去を続ける場合**: 失敗の原因を取り除いてから、手順 4 をやり直します。削除済みのリソースは plan に出ません。残っているリソースの保護が外れていることは、手順 4 の検査が確かめます。終わったら手順 5 に進みます。
+- **撤去をやめる場合**: 手順 5 と同じく、`infrastructure/main.tf` の編集を戻し、`infrastructure/dev.tfvars` から手順 3 の 2 行を削除します。そのうえで、既定値のまま本体を通常の配信で apply し直します。
+
+```bash
+cd applications/registry_portal
+git checkout -- infrastructure/main.tf
+python3 -m unittest infrastructure/tests/test_teardown_guards.py
+AWS_PROFILE=registry-deploy scripts/deploy.sh infrastructure/backend.hcl infrastructure/dev.tfvars
+```
+
+plan で、補助テーブルの `deletion_protection_enabled` が `true` に、SPA バケットの `force_destroy` が `false` に戻る変更（update in-place）を確認してから、`apply` と入力します。destroy で削除済みのリソースは、plan では作成になります。
+
+- 補助テーブルを削除済みの場合、作り直したテーブルは空です。削除前のデータは、手順 1 のオンデマンドバックアップと PITR のシステムバックアップにあります。
+- SPA バケットを削除済みの場合も、この配信で SPA をビルドしてアップロードし直します。
+- 手順 2 で撤去した追加スタックは、4.5 の手順で配信し直します。Cognito のグループを削除済みの場合は、ユーザーをグループに割り当て直します（4.1 の 7）。
 
 ## 6. トラブルシューティング
 
