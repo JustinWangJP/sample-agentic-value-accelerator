@@ -29,7 +29,9 @@ if name == "python3":
         sys.exit(subprocess.run(["PYTHON", *args]).returncode)
 elif name == "aws":
     profiles = json.loads(os.environ["FAKE_AWS_PROFILES"])
-    profile = args[args.index("--profile") + 1] if "--profile" in args else os.environ.get("AWS_PROFILE")
+    profile = os.environ.get("AWS_PROFILE")
+    if "--profile" in args:
+        profile = args[args.index("--profile") + 1]
     settings = profiles.get(profile, {})
     if args[:2] == ["configure", "get"]:
         if args[2] not in settings:
@@ -63,7 +65,9 @@ SSO_PROFILES = {
         ),
     }
 }
-DEPLOYER_SESSION = "arn:aws:sts::123456789012:assumed-role/RegistryPortalDeployer/botocore-session-1"
+DEPLOYER_SESSION = (
+    "arn:aws:sts::123456789012:assumed-role/RegistryPortalDeployer/botocore-session-1"
+)
 # 個人アカウント: MFA 付きのロールのプロファイルと、Terraform 用の credential_process プロファイル
 ROLE_PROFILES = {
     "registry-deploy": {
@@ -234,7 +238,9 @@ class DeployTests(unittest.TestCase):
                 self.assertTrue(terraform)
                 self.assertEqual({r["profile"] for r in terraform}, {terraform_profile})
                 first_identity = next(
-                    command for command in commands if command[1:3] == ["sts", "get-caller-identity"]
+                    command
+                    for command in commands
+                    if command[1:3] == ["sts", "get-caller-identity"]
                 )
                 self.assertIn("registry-deploy", first_identity)
                 self.assertLess(
@@ -276,7 +282,10 @@ class DeployTests(unittest.TestCase):
                 "registry-deploy",
                 with_profile(ROLE_PROFILES, "registry-deploy-tf", caller_arn=other_session),
             ),
-            "credential_process のプロファイルを直接指定する": ("registry-deploy-tf", ROLE_PROFILES),
+            "credential_process のプロファイルを直接指定する": (
+                "registry-deploy-tf",
+                ROLE_PROFILES,
+            ),
             "SSO の別の permission set": (
                 "portal",
                 with_profile(
@@ -533,6 +542,37 @@ class DeployTests(unittest.TestCase):
                 )
                 self.assertIn(f"-backend-config=key={key}", init)
         self.assertTrue(any("apply" in command for command in commands))
+
+    def test_addon_state_init_reuses_the_main_backend_settings_with_only_the_key_replaced(self):
+        # 追加スタックの state は本体と同じバケットにあり、key だけが異なる（各 backend.hcl.example）
+        result, commands = self.run_deploy(
+            confirmation="main\n",
+            profile="registry-deploy",
+            profiles=ROLE_PROFILES,
+            destroy=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        inits = {
+            command[1]: (command[2:], record["profile"])
+            for command, record in zip(commands, self.records)
+            if command[0] == "terraform" and "init" in command
+        }
+        main_args, main_profile = inits[f"-chdir={ROOT / 'infrastructure'}"]
+        for addon in ("decision", "management", "notification_events"):
+            with self.subTest(addon=addon):
+                args, profile = inits[f"-chdir={ROOT / 'infrastructure' / addon}"]
+                key = f"-backend-config=key={STATE_KEYS[addon]}"
+                self.assertEqual([item for item in args if item != key], main_args)
+                backend = next(item for item in args if item.endswith("backend.hcl"))
+                # 後から指定した値が優先されるため、key は backend.hcl の後に置く
+                self.assertLess(args.index(backend), args.index(key))
+                self.assertEqual(profile, main_profile)
+        checks = [
+            command
+            for command in commands
+            if command[0] == "python3" and command[1].endswith("check_teardown.py")
+        ]
+        self.assertEqual([command[2] for command in checks], ["addon-states"])
 
     def test_usage_shows_destroy_mode_and_destroy_is_rejected_from_ci(self):
         result = subprocess.run(
