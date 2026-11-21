@@ -23,17 +23,35 @@ from pathlib import Path
 import sys
 from typing import Any, NamedTuple
 
+
+class Protection(NamedTuple):
+    """撤去の前に外しておく保護の設定。値は destroy の plan の削除前の値（state の値）と比べる。"""
+
+    address: str
+    attribute: str
+    teardown_value: bool
+
+
+MAIN_PROTECTIONS = (
+    Protection("aws_dynamodb_table.auxiliary", "deletion_protection_enabled", False),
+    Protection("aws_s3_bucket.spa", "force_destroy", True),
+)
+# terraform state pull が出力する state の形式（format version）。ほかの形式は件数を数えずに止める
+STATE_FORMAT_VERSION = 4
 ORDER_HINT = (
     "撤去の順番は「追加スタック → 本体」です。"
     "先に scripts/deploy.sh --destroy --stack <追加スタック> で撤去してください。"
 )
+GUIDE_STEP = (
+    "保護を外す apply（docs/agents/registry-portal-terraform-guide-ja.md の 5.4 の手順 3）を"
+    "済ませてから、撤去をやり直してください。"
+)
+USAGE = """使用方法:
+  check_teardown.py addon-states <スタック名>=<state pull の出力> ...
+  check_teardown.py main-protection <destroy の plan の JSON>"""
 
 
-# terraform state pull が出力する state の形式（format version）。ほかの形式は件数を数えずに止める
-STATE_FORMAT_VERSION = 4
-
-
-def managed_resource_count(pulled: str) -> int | None:
+def _managed_resource_count(pulled: str) -> int | None:
     """terraform state pull の出力から、インスタンスを持つ managed のリソースの件数を返す。
 
     state のファイルがない（出力が空）場合は None を返す。読めない場合は ValueError を送出する。
@@ -53,25 +71,7 @@ def managed_resource_count(pulled: str) -> int | None:
     )
 
 
-class Protection(NamedTuple):
-    """撤去の前に外しておく保護の設定。値は destroy の plan の削除前の値（state の値）と比べる。"""
-
-    address: str
-    attribute: str
-    teardown_value: bool
-
-
-MAIN_PROTECTIONS = (
-    Protection("aws_dynamodb_table.auxiliary", "deletion_protection_enabled", False),
-    Protection("aws_s3_bucket.spa", "force_destroy", True),
-)
-GUIDE_STEP = (
-    "保護を外す apply（docs/agents/registry-portal-terraform-guide-ja.md の 5.4 の手順 3）を"
-    "済ませてから、撤去をやり直してください。"
-)
-
-
-def remaining_protections(plan: dict[str, Any]) -> list[str]:
+def _remaining_protections(plan: dict[str, Any]) -> list[str]:
     """destroy の plan で、state 上の保護が撤去用の値になっていないリソースを返す。
 
     plan に出ないリソース（撤去の途中で削除済み）は対象にしない。
@@ -97,8 +97,9 @@ def remaining_protections(plan: dict[str, Any]) -> list[str]:
 
 
 def check_main_protection(path: str) -> int:
+    """destroy の plan の JSON を読み、本体の保護が state 上で外れていれば 0 を返す。"""
     try:
-        errors = remaining_protections(json.loads(Path(path).read_text()))
+        errors = _remaining_protections(json.loads(Path(path).read_text()))
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         print(f"本体の destroy の plan を読めません: {error}", file=sys.stderr)
         return 1
@@ -110,11 +111,12 @@ def check_main_protection(path: str) -> int:
 
 
 def check_addon_states(arguments: list[str]) -> int:
+    """`<スタック名>=<state pull の出力>` の各 state にリソースが残っていなければ 0 を返す。"""
     remaining = []
     for argument in arguments:
         stack, _, path = argument.partition("=")
         try:
-            count = managed_resource_count(Path(path).read_text())
+            count = _managed_resource_count(Path(path).read_text())
         except (OSError, ValueError, AttributeError) as error:
             print(f"{stack} スタックの state を読めません: {error}", file=sys.stderr)
             return 1
@@ -133,12 +135,8 @@ def check_addon_states(arguments: list[str]) -> int:
     return 0
 
 
-USAGE = """使用方法:
-  check_teardown.py addon-states <スタック名>=<state pull の出力> ...
-  check_teardown.py main-protection <destroy の plan の JSON>"""
-
-
 def main() -> int:
+    """サブコマンドを実行し、終了コードを返す。引数が正しくなければ使い方を表示して 2 を返す。"""
     if len(sys.argv) >= 3 and sys.argv[1] == "addon-states":
         return check_addon_states(sys.argv[2:])
     if len(sys.argv) == 3 and sys.argv[1] == "main-protection":
