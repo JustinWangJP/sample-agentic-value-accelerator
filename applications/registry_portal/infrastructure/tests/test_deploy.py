@@ -29,9 +29,7 @@ if name == "python3":
         sys.exit(subprocess.run(["PYTHON", *args]).returncode)
 elif name == "aws":
     profiles = json.loads(os.environ["FAKE_AWS_PROFILES"])
-    profile = os.environ.get("AWS_PROFILE")
-    if "--profile" in args:
-        profile = args[args.index("--profile") + 1]
+    profile = args[args.index("--profile") + 1] if "--profile" in args else os.environ.get("AWS_PROFILE")
     settings = profiles.get(profile, {})
     if args[:2] == ["configure", "get"]:
         if args[2] not in settings:
@@ -68,9 +66,7 @@ SSO_PROFILES = {
         ),
     }
 }
-DEPLOYER_SESSION = (
-    "arn:aws:sts::123456789012:assumed-role/RegistryPortalDeployer/botocore-session-1"
-)
+DEPLOYER_SESSION = "arn:aws:sts::123456789012:assumed-role/RegistryPortalDeployer/botocore-session-1"
 # 個人アカウント: MFA 付きのロールのプロファイルと、Terraform 用の credential_process プロファイル
 ROLE_PROFILES = {
     "registry-deploy": {
@@ -246,9 +242,7 @@ class DeployTests(unittest.TestCase):
                 self.assertTrue(terraform)
                 self.assertEqual({r["profile"] for r in terraform}, {terraform_profile})
                 first_identity = next(
-                    command
-                    for command in commands
-                    if command[1:3] == ["sts", "get-caller-identity"]
+                    command for command in commands if command[1:3] == ["sts", "get-caller-identity"]
                 )
                 self.assertIn("registry-deploy", first_identity)
                 self.assertLess(
@@ -290,10 +284,7 @@ class DeployTests(unittest.TestCase):
                 "registry-deploy",
                 with_profile(ROLE_PROFILES, "registry-deploy-tf", caller_arn=other_session),
             ),
-            "credential_process のプロファイルを直接指定する": (
-                "registry-deploy-tf",
-                ROLE_PROFILES,
-            ),
+            "credential_process のプロファイルを直接指定する": ("registry-deploy-tf", ROLE_PROFILES),
             "SSO の別の permission set": (
                 "portal",
                 with_profile(
