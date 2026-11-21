@@ -6,6 +6,8 @@ import sys
 import tempfile
 import unittest
 
+from teardown_states import LOG_GROUP, pulled_state
+
 ROOT = Path(__file__).resolve().parents[2]
 # スタックごとの backend.hcl の state key（各 backend.hcl.example と同じ値）
 STATE_KEYS = {
@@ -14,6 +16,7 @@ STATE_KEYS = {
     "management": "registry-portal/dev/management.tfstate",
     "notification_events": "registry-portal/dev/notification-events.tfstate",
 }
+ADDON_STACKS = tuple(stack for stack in STATE_KEYS if stack != "main")
 FAKE = """#!PYTHON
 import json, os
 from pathlib import Path
@@ -94,11 +97,6 @@ def with_profile(profiles, name, **changes):
         else:
             settings[key] = value
     return updated
-
-
-def pulled_state(*resources):
-    """terraform state pull が出力する state（format version 4）を返す。"""
-    return {"version": 4, "serial": 1, "lineage": "x", "resources": list(resources)}
 
 
 class DeployTests(unittest.TestCase):
@@ -434,7 +432,7 @@ class DeployTests(unittest.TestCase):
             )
 
         main = settings(infrastructure / "backend.hcl.example")
-        for stack in STATE_KEYS.keys() - {"main"}:
+        for stack in ADDON_STACKS:
             with self.subTest(stack=stack):
                 addon = settings(infrastructure / stack / "backend.hcl.example")
                 self.assertEqual({**addon, "key": main["key"]}, main)
@@ -498,20 +496,13 @@ class DeployTests(unittest.TestCase):
 
     def test_main_destroy_stops_while_an_addon_stack_state_has_resources(self):
         # 追加スタックは本体の API・Lambda・ロール・テーブルを借りるため、撤去の順番は「追加スタック → 本体」
-        log_group = {
-            "module": "module.logs",
-            "mode": "managed",
-            "type": "aws_cloudwatch_log_group",
-            "name": "this",
-            "instances": [{"attributes": {}}],
-        }
         result, commands = self.run_deploy(
             "safe",
             "main\n",
             profile="registry-deploy",
             profiles=ROLE_PROFILES,
             destroy=True,
-            states={"management": pulled_state(log_group)},
+            states={"management": pulled_state(LOG_GROUP)},
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("management（1 件）", result.stderr)
@@ -563,11 +554,7 @@ class DeployTests(unittest.TestCase):
         # 撤去済み（0 件）と未配信（state なし）は、どちらも撤去を止めないが表示では区別する
         self.assertIn("decision: 0 件", result.stdout)
         self.assertIn("management: state なし（未配信）", result.stdout)
-        for addon, key in [
-            ("decision", STATE_KEYS["decision"]),
-            ("management", STATE_KEYS["management"]),
-            ("notification_events", STATE_KEYS["notification_events"]),
-        ]:
+        for addon in ADDON_STACKS:
             with self.subTest(addon=addon):
                 init = next(
                     command
@@ -575,7 +562,7 @@ class DeployTests(unittest.TestCase):
                     if command[:2] == ["terraform", f"-chdir={ROOT / 'infrastructure' / addon}"]
                     and "init" in command
                 )
-                self.assertIn(f"-backend-config=key={key}", init)
+                self.assertIn(f"-backend-config=key={STATE_KEYS[addon]}", init)
         self.assertTrue(any("apply" in command for command in commands))
 
     def test_addon_state_init_reuses_the_main_backend_settings_with_only_the_key_replaced(self):
@@ -593,7 +580,7 @@ class DeployTests(unittest.TestCase):
             if command[0] == "terraform" and "init" in command
         }
         main_args, main_profile = inits[f"-chdir={ROOT / 'infrastructure'}"]
-        for addon in ("decision", "management", "notification_events"):
+        for addon in ADDON_STACKS:
             with self.subTest(addon=addon):
                 args, profile = inits[f"-chdir={ROOT / 'infrastructure' / addon}"]
                 key = f"-backend-config=key={STATE_KEYS[addon]}"

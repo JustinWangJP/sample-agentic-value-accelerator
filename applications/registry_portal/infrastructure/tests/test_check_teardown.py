@@ -7,35 +7,27 @@ import sys
 import tempfile
 import unittest
 
+from teardown_states import LOG_GROUP, pulled_state
+
 ROOT = Path(__file__).resolve().parents[2]
 CHECK = ROOT / "scripts/check_teardown.py"
 FIXTURES = Path(__file__).parent / "fixtures"
-LOG_GROUP = {
-    "mode": "managed",
-    "type": "aws_cloudwatch_log_group",
-    "name": "this",
-    "instances": [{"attributes": {}}],
-}
 
 
 def run_check(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run([sys.executable, str(CHECK), *args], capture_output=True, text=True)
 
 
-def pulled_state(*resources: dict) -> str:
-    """terraform state pull が出力する state（format version 4）を返す。"""
-    return json.dumps({"version": 4, "serial": 3, "lineage": "x", "resources": list(resources)})
-
-
 class AddonStatesTests(unittest.TestCase):
     """本体を撤去する前に、追加スタックの state にリソースが残っていないことを確かめる。"""
 
-    def check_states(self, states: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    def check_states(self, states: dict[str, dict | str]) -> subprocess.CompletedProcess[str]:
+        """state を一時ファイルに書いて検査する。文字列は state pull の出力としてそのまま書く。"""
         with tempfile.TemporaryDirectory() as directory:
             arguments = []
-            for name, text in states.items():
+            for name, state in states.items():
                 path = Path(directory) / f"{name}.json"
-                path.write_text(text)
+                path.write_text(state if isinstance(state, str) else json.dumps(state))
                 arguments.append(f"{name}={path}")
             return run_check("addon-states", *arguments)
 
