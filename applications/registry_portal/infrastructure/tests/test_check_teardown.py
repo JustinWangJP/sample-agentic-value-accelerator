@@ -80,6 +80,74 @@ class AddonStatesTests(unittest.TestCase):
                     self.assertNotIn("decision:", result.stdout)
 
 
+MAIN_BACKEND = """bucket       = "registry-portal-state-123456789012"
+key          = "registry-portal/dev/terraform.tfstate"
+region       = "us-east-1"
+encrypt      = true
+"""
+
+
+class AddonBackendsTests(unittest.TestCase):
+    """本体の撤去で追加スタックの state を読む前に、追加スタックの backend.hcl のバケットを確かめる。"""
+
+    def check_backends(self, addons: dict[str, str | None]) -> subprocess.CompletedProcess[str]:
+        """本体と追加スタックの backend.hcl を書いて検査する。None はファイルを作らない。"""
+        with tempfile.TemporaryDirectory() as directory:
+            main = Path(directory) / "backend.hcl"
+            main.write_text(MAIN_BACKEND)
+            arguments = []
+            for stack, text in addons.items():
+                path = Path(directory) / stack / "backend.hcl"
+                if text is not None:
+                    path.parent.mkdir()
+                    path.write_text(text)
+                arguments.append(f"{stack}={path}")
+            return run_check("addon-backends", str(main), *arguments)
+
+    def test_same_bucket_and_region_with_another_key_passes(self):
+        addon = "# 本体と同じバケットで key だけを分ける\n" + MAIN_BACKEND.replace(
+            "terraform.tfstate", "decision.tfstate"
+        )
+        result = self.check_backends({"decision": addon})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "decision: backend.hcl のバケットとリージョンが本体と一致しました", result.stdout
+        )
+
+    def test_another_bucket_or_region_stops_before_reading_states(self):
+        cases = {
+            "別のバケット": MAIN_BACKEND.replace("123456789012", "210987654321"),
+            "別のリージョン": MAIN_BACKEND.replace("us-east-1", "ap-northeast-1"),
+            "リージョンの指定なし": MAIN_BACKEND.replace('region       = "us-east-1"\n', ""),
+        }
+        for label, text in cases.items():
+            with self.subTest(label):
+                result = self.check_backends({"decision": MAIN_BACKEND, "management": text})
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("management", result.stderr)
+                self.assertIn("本体の backend.hcl と一致しません", result.stderr)
+                self.assertNotIn("decision", result.stderr)
+
+    def test_missing_addon_backend_is_reported_with_the_assumption(self):
+        result = self.check_backends({"notification_events": None})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("notification_events: ", result.stdout)
+        self.assertIn("がないため、本体の backend.hcl のバケットとリージョンで", result.stdout)
+
+    def test_main_backend_without_bucket_stops(self):
+        with tempfile.TemporaryDirectory() as directory:
+            main = Path(directory) / "backend.hcl"
+            main.write_text('key = "registry-portal/dev/terraform.tfstate"\n')
+            result = run_check("addon-backends", str(main), f"decision={directory}/none.hcl")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("bucket", result.stderr)
+
+    def test_malformed_arguments_stop_as_usage_errors(self):
+        result = run_check("addon-backends", "backend.hcl", "decision")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("<スタック名>=<backend.hcl>", result.stderr)
+
+
 class MainProtectionTests(unittest.TestCase):
     """本体の destroy の plan で、補助テーブルと SPA バケットの保護が state 上で外れていることを確かめる。"""
 

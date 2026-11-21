@@ -1,5 +1,11 @@
 """dev の撤去（scripts/deploy.sh --destroy）で、Terraform を反映する前に行う検査。
 
+addon-backends <本体の backend.hcl> <スタック名>=<追加スタックの backend.hcl> ...
+    本体の撤去では、本体の backend.hcl の key だけを追加スタックのものに差し替えて、
+    追加スタックの state を読む（同じバケットで key だけが異なる前提。ガイド 4.5）。
+    その前に、手元にある追加スタックの backend.hcl の bucket と region が本体と一致する
+    ことを確かめる。ファイルがない場合は、前提のとおりに読むことを表示する。
+
 addon-states <スタック名>=<terraform state pull の出力> ...
     本体を撤去する前に、追加スタックの state にリソースが残っていないことを確かめる。
     撤去の順番は「追加スタック → 本体」（ADR-0014）。
@@ -20,6 +26,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any, NamedTuple
 
@@ -57,7 +64,10 @@ GUIDE_STEP = (
     "保護を外す apply（docs/agents/registry-portal-terraform-guide-ja.md の 5.4 の手順 3）を"
     "済ませてから、撤去をやり直してください。"
 )
+# 本体と追加スタックの backend.hcl で一致を確かめる設定。state の場所を決める値
+SHARED_BACKEND_SETTINGS = ("bucket", "region")
 USAGE = """使用方法:
+  check_teardown.py addon-backends <本体の backend.hcl> <スタック名>=<backend.hcl> ...
   check_teardown.py addon-states <スタック名>=<state pull の出力> ...
   check_teardown.py main-protection <destroy の plan の JSON>"""
 
@@ -129,17 +139,18 @@ def check_main_protection(path: str) -> int:
     return 0
 
 
-def _stack_paths(arguments: list[str]) -> list[tuple[str, str]] | None:
+def _stack_paths(arguments: list[str], path_label: str) -> list[tuple[str, str]] | None:
     """`<スタック名>=<パス>` の引数を (スタック名, パス) に分ける。
 
     `=` がない、またはスタック名かパスが空の引数があれば、その旨を表示して None を返す。
+    path_label は、表示する引数の形でパスの部分に書く名前。
     """
     pairs = []
     for argument in arguments:
         stack, separator, path = argument.partition("=")
         if not (separator and stack and path):
             print(
-                f"引数「{argument}」は <スタック名>=<state pull の出力> の形で指定してください。",
+                f"引数「{argument}」は <スタック名>=<{path_label}> の形で指定してください。",
                 file=sys.stderr,
             )
             return None
@@ -152,7 +163,7 @@ def check_addon_states(arguments: list[str]) -> int:
 
     引数の形が正しくなければ、どの state も読まずに 2 を返す。
     """
-    pairs = _stack_paths(arguments)
+    pairs = _stack_paths(arguments, "state pull の出力")
     if pairs is None:
         return 2
     remaining = []
@@ -177,8 +188,64 @@ def check_addon_states(arguments: list[str]) -> int:
     return 0
 
 
+def _backend_settings(text: str) -> dict[str, str]:
+    """backend.hcl の `名前 = "値"` の行を読む。コメントの行と、文字列でない値は読まない。"""
+    return dict(re.findall(r'^\s*(\w+)\s*=\s*"([^"]*)"', text, re.MULTILINE))
+
+
+def check_addon_backends(main_backend: str, arguments: list[str]) -> int:
+    """手元の追加スタックの backend.hcl が、本体と同じ bucket と region を指していれば 0 を返す。
+
+    ファイルがない追加スタックは、本体の bucket と region で key だけを差し替えて読むことを
+    表示し、止めない。引数の形が正しくなければ 2 を返す。
+    """
+    pairs = _stack_paths(arguments, "backend.hcl")
+    if pairs is None:
+        return 2
+    try:
+        main = _backend_settings(Path(main_backend).read_text())
+    except OSError as error:
+        print(f"本体の backend.hcl を読めません: {error}", file=sys.stderr)
+        return 1
+    if not main.get("bucket"):
+        print(f"本体の backend.hcl（{main_backend}）に bucket がありません", file=sys.stderr)
+        return 1
+    expected = {name: main.get(name) for name in SHARED_BACKEND_SETTINGS}
+    mismatched = []
+    for stack, path in pairs:
+        try:
+            text = Path(path).read_text()
+        except FileNotFoundError:
+            print(
+                f"{stack}: {path} がないため、本体の backend.hcl のバケットとリージョンで"
+                "、key だけを差し替えて state を読みます"
+            )
+            continue
+        except OSError as error:
+            print(f"{stack} スタックの backend.hcl を読めません: {error}", file=sys.stderr)
+            return 1
+        settings = _backend_settings(text)
+        actual = {name: settings.get(name) for name in SHARED_BACKEND_SETTINGS}
+        if actual != expected:
+            mismatched.append(f"{stack}（{path}: {json.dumps(actual, ensure_ascii=False)}）")
+            continue
+        print(f"{stack}: backend.hcl のバケットとリージョンが本体と一致しました")
+    if mismatched:
+        print(
+            f"追加スタックの backend.hcl のバケットかリージョンが、本体の backend.hcl と一致しません"
+            f"（本体: {json.dumps(expected, ensure_ascii=False)}）: {' '.join(mismatched)}。"
+            "本体の撤去は、追加スタックの state が本体と同じバケットにあり key だけが異なる前提で"
+            "検査します（ガイド 4.5）。",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
 def main() -> int:
     """サブコマンドを実行し、終了コードを返す。引数が正しくなければ使い方を表示して 2 を返す。"""
+    if len(sys.argv) >= 4 and sys.argv[1] == "addon-backends":
+        return check_addon_backends(sys.argv[2], sys.argv[3:])
     if len(sys.argv) >= 3 and sys.argv[1] == "addon-states":
         return check_addon_states(sys.argv[2:])
     if len(sys.argv) == 3 and sys.argv[1] == "main-protection":

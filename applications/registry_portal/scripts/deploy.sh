@@ -149,15 +149,27 @@ if [[ "$is_main_destroy" == true ]]; then
   # 追加スタックは本体の HTTP API・Lambda・実行ロール・補助テーブルを借りて route や権限を足している。
   # 本体を先に消すと追加スタックの state に孤立したリソースが残るため、撤去の順番は「追加スタック → 本体」とし、
   # 追加スタックの state にリソースが残っていれば、本体の plan を作る前に止める
-  addon_states=()
+  addon_subdirs=()
+  addon_keys=()
+  addon_backends=()
   for addon in "${addon_stacks[@]}"; do
     # stack_config は呼び出し元の変数を書き換えるため、サブシェルで追加スタックの値だけを取り出す
     read -r addon_subdir addon_key < <(stack_config "$addon" && printf '%s %s\n' "$stack_subdir" "$state_key")
-    # 追加スタックの state は本体と同じバケットにあり、key だけが異なる（各 backend.hcl.example と
-    # ガイド 4.5）。本体の backend.hcl の key だけを追加スタックのものに差し替えて読む
-    tf_init "$infra_dir/$addon_subdir" -backend-config="key=$addon_key"
+    addon_subdirs+=("$addon_subdir")
+    addon_keys+=("$addon_key")
+    # 手元の追加スタックの backend.hcl は、本体の backend.hcl と同じディレクトリの <スタック>/ に置く（ガイド 5.4）
+    addon_backends+=("$addon=$(dirname "$backend_file")/$addon_subdir/backend.hcl")
+  done
+  # 追加スタックの state は本体と同じバケットにあり、key だけが異なる前提で読む（各 backend.hcl.example と
+  # ガイド 4.5）。手元の追加スタックの backend.hcl が別のバケットやリージョンを指していれば、読む前に止める
+  python3 "$portal_dir/scripts/check_teardown.py" addon-backends "$backend_file" "${addon_backends[@]}"
+  addon_states=()
+  for i in "${!addon_stacks[@]}"; do
+    addon="${addon_stacks[i]}"
+    # 本体の backend.hcl の key だけを追加スタックのものに差し替えて読む
+    tf_init "$infra_dir/${addon_subdirs[i]}" -backend-config="key=${addon_keys[i]}"
     # state のファイルがない（未配信）と、state pull は何も出力しない。読めない場合は set -e で止まる
-    tf_at "$infra_dir/$addon_subdir" state pull > "$work_dir/$addon.tfstate"
+    tf_at "$infra_dir/${addon_subdirs[i]}" state pull > "$work_dir/$addon.tfstate"
     addon_states+=("$addon=$work_dir/$addon.tfstate")
   done
   python3 "$portal_dir/scripts/check_teardown.py" addon-states "${addon_states[@]}"

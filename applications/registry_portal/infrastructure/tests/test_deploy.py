@@ -112,6 +112,7 @@ class DeployTests(unittest.TestCase):
         backend_key=None,
         destroy=False,
         states=None,
+        addon_backends=None,
     ):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
@@ -132,6 +133,10 @@ class DeployTests(unittest.TestCase):
                 else 'bucket = "registry-portal-state-123456789012"\n'
             )
             variables.touch()
+            # 追加スタックの backend.hcl は、本体の backend.hcl と同じディレクトリの <スタック>/ に置く
+            for addon, text in (addon_backends or {}).items():
+                (work / addon).mkdir()
+                (work / addon / "backend.hcl").write_text(text)
             env = {
                 key: value
                 for key, value in os.environ.items()
@@ -549,6 +554,30 @@ class DeployTests(unittest.TestCase):
             any(command[1] == f"-chdir={ROOT / 'infrastructure'}" for command in terraform)
         )
 
+    def test_main_destroy_stops_when_an_addon_backend_points_to_another_bucket(self):
+        # 追加スタックの state は、本体の backend.hcl の key だけを差し替えて読む。手元の追加スタックの
+        # backend.hcl が別のバケットを指していれば、その前提が崩れるため、state を読む前に止める
+        result, commands = self.run_destroy(
+            addon_backends={"management": 'bucket = "another-state-bucket"\n'}
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("management", result.stderr)
+        self.assertIn("本体の backend.hcl と一致しません", result.stderr)
+        self.assertFalse(any(command[0] == "terraform" for command in commands))
+
+    def test_main_destroy_reports_how_each_addon_backend_is_resolved(self):
+        same_bucket = (
+            'bucket = "registry-portal-state-123456789012"\n'
+            f'key    = "{STATE_KEYS["decision"]}"\n'
+        )
+        result, commands = self.run_destroy(addon_backends={"decision": same_bucket})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "decision: backend.hcl のバケットとリージョンが本体と一致しました", result.stdout
+        )
+        self.assertIn("management: ", result.stdout)
+        self.assertIn("がないため、本体の backend.hcl のバケットとリージョンで", result.stdout)
+
     def test_main_destroy_stops_when_an_addon_state_cannot_be_read(self):
         # 認証やネットワークの失敗、JSON の破損は「state なし」や 0 件として扱わない
         cases = {
@@ -606,7 +635,10 @@ class DeployTests(unittest.TestCase):
             for command in commands
             if command[0] == "python3" and command[1].endswith("check_teardown.py")
         ]
-        self.assertEqual([command[2] for command in checks], ["addon-states", "main-protection"])
+        self.assertEqual(
+            [command[2] for command in checks],
+            ["addon-backends", "addon-states", "main-protection"],
+        )
 
     def test_main_destroy_stops_before_apply_while_protection_remains_in_state(self):
         # 手順 3 の apply を飛ばすと、保護のないリソースだけ消えてから途中で失敗するため、apply の前に止める
