@@ -71,6 +71,12 @@ locals {
   spa_arn             = "arn:aws:s3:::${var.spa_bucket_name}"
   pool_arn            = "arn:aws:cognito-idp:${local.region}:${var.aws_account_id}:userpool/${var.cognito_user_pool_id}"
   use_identity_center = var.identity_center_instance_arn != null
+  # Registry の書き込み action。反映前ガード（scripts/check_plan.py）と同じファイルを読み、一覧を 1 か所に保つ
+  registry_write = jsondecode(file("${path.module}/../../scripts/registry_write_actions.json"))
+  registry_write_actions = [
+    for pair in setproduct(local.registry_write.service_prefixes, local.registry_write.actions) :
+    "${pair[0]}:${pair[1]}"
+  ]
   # 本体スタック（infrastructure/main.tf）の state key と資源名。bootstrap は本体より先に適用するため、
   # 本体の資源を参照できず名前から組み立てる。本体と同じ規則にし、tests/test_bootstrap_names.py で照合する
   main_stack = {
@@ -167,13 +173,8 @@ resource "aws_ssoadmin_permission_set_inline_policy" "deployer" {
       {
         Sid    = "DenyRegistryMutation"
         Effect = "Deny"
-        Action = [
-          "agent-registry:CreateRegistry", "agent-registry:UpdateRegistry", "agent-registry:DeleteRegistry",
-          "agent-registry:CreateRegistryRecord", "agent-registry:UpdateRegistryRecord",
-          "agent-registry:UpdateRegistryRecordStatus", "agent-registry:DeleteRegistryRecord",
-          "agent-registry:SubmitRegistryRecordForApproval", "bedrock-agentcore:SubmitRegistryRecordForApproval",
-          "bedrock-agentcore:CreateRegistry*", "bedrock-agentcore:UpdateRegistry*", "bedrock-agentcore:DeleteRegistry*"
-        ]
+        # 反映前ガード（scripts/check_plan.py）と同じ一覧から、両方の prefix の action を作る
+        Action   = local.registry_write_actions
         Resource = "*"
       },
       {

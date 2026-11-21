@@ -258,6 +258,15 @@ class PlanGuardTests(unittest.TestCase):
                 ).read_text()
                 self.assertIn(f'resource "aws_iam_role_policy" "{policy.name}"', module_main)
 
+    def test_bootstrap_denies_the_same_registry_write_actions_as_the_guard(self):
+        # 書き込み action の一覧は 1 つのファイルに置き、ガードと bootstrap の Deny の両方が読む
+        bootstrap = (ROOT / "infrastructure/bootstrap/main.tf").read_text()
+        self.assertIn(
+            'jsondecode(file("${path.module}/../../scripts/registry_write_actions.json"))',
+            bootstrap,
+        )
+        self.assertIn("Action   = local.registry_write_actions", bootstrap)
+
     def test_forbidden_actions_cover_both_registry_service_prefixes(self):
         sys.path.insert(0, str(ROOT / "scripts"))
         try:

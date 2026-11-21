@@ -6,18 +6,13 @@ from pathlib import Path
 import sys
 from typing import Any, NamedTuple
 
-# Registry の書き込み action。IAM では agent-registry と bedrock-agentcore の両方の prefix で禁止する
-REGISTRY_SERVICE_PREFIXES = ("agent-registry", "bedrock-agentcore")
-REGISTRY_WRITE_ACTIONS = (
-    "CreateRegistry",
-    "UpdateRegistry",
-    "DeleteRegistry",
-    "CreateRegistryRecord",
-    "UpdateRegistryRecord",
-    "UpdateRegistryRecordStatus",
-    "SubmitRegistryRecordForApproval",
-    "DeleteRegistryRecord",
+# Registry の書き込み action。IAM では agent-registry と bedrock-agentcore の両方の prefix で禁止する。
+# bootstrap の permission set（Deny）と同じファイルを読み、一覧を 1 か所に保つ
+_REGISTRY_WRITE = json.loads(
+    Path(__file__).with_name("registry_write_actions.json").read_text(encoding="utf-8")
 )
+REGISTRY_SERVICE_PREFIXES: tuple[str, ...] = tuple(_REGISTRY_WRITE["service_prefixes"])
+REGISTRY_WRITE_ACTIONS: tuple[str, ...] = tuple(_REGISTRY_WRITE["actions"])
 FORBIDDEN_ACTIONS = tuple(
     f"{prefix}:{action}"
     for prefix in REGISTRY_SERVICE_PREFIXES
@@ -27,6 +22,8 @@ FORBIDDEN_ACTIONS = tuple(
     "lambda:UpdateFunctionUrlConfig",
     "lambda:InvokeFunctionUrl",
 )
+# IAM の action 名は大文字と小文字を区別しないため、照合は小文字どうしで行う
+_FORBIDDEN_LOWER = tuple(action.lower() for action in FORBIDDEN_ACTIONS)
 
 
 class ScopedPolicy(NamedTuple):
@@ -40,7 +37,10 @@ class ScopedPolicy(NamedTuple):
         return f"module.{self.module}.aws_iam_role_policy.{self.name}"
 
 
-# 例外として、対象 Registry に限って書き込みを許可する policy と action（小文字）
+# 例外として、対象 Registry に限って書き込みを許可する policy と action（小文字）。
+# policy は plan 上のアドレス（module 呼び出し名と resource 名）で特定する。ガードの側で決める例外のため、
+# Terraform 側の目印（Sid など）には頼らない。Terraform 側で改名すると例外が外れて中止になる（安全側に倒れる）。
+# 改名に気づけるよう、tests/test_plan_guard.py がこのアドレスが追加スタックの定義に実在することを確かめる
 ROLE_SCOPED_ACTIONS = {
     ScopedPolicy("management_drafts", "management_drafts"): {
         "agent-registry:createregistryrecord",
@@ -76,6 +76,15 @@ MANAGED_POLICY_ATTACHMENTS = {
     "aws_ssoadmin_customer_managed_policy_attachment",
     "aws_ssoadmin_customer_managed_policy_attachments_exclusive",
 }
+
+
+def _as_list(value: Any) -> list[Any]:
+    """IAM policy の要素（Statement・Action・Resource）は単一の値でもよいため、list にそろえる。"""
+    if value is None:
+        return []
+    if isinstance(value, (str, dict)):
+        return [value]
+    return list(value)
 
 
 def _resources(module: dict[str, Any]) -> list[dict[str, Any]]:
@@ -115,9 +124,7 @@ def _limited_to_registry(statement: dict[str, Any], registry_arn: str | None) ->
     """Resource が対象 Registry 本体とそのレコードだけに限られているかを返す。"""
     if registry_arn is None or "NotResource" in statement:
         return False
-    resources = statement.get("Resource", [])
-    if isinstance(resources, str):
-        resources = [resources]
+    resources = _as_list(statement.get("Resource"))
     record_prefix = f"{registry_arn}/record/"
     return bool(resources) and all(
         isinstance(item, str)
@@ -185,33 +192,25 @@ def check_plan(plan: dict[str, Any]) -> list[str]:
             else set()
         )
         for policy in _policies(values):
-            statements = policy["Statement"]
-            if isinstance(statements, dict):
-                statements = [statements]
-            for statement in statements:
+            for statement in _as_list(policy["Statement"]):
                 if statement.get("Effect") != "Allow":
                     continue
                 if "NotAction" in statement:
                     errors.append(f"{address}: Allow の NotAction は使用できません")
-                actions = statement.get("Action", [])
-                if isinstance(actions, str):
-                    actions = [actions]
-                for action in actions:
-                    if action.lower() in scoped:
+                for action in _as_list(statement.get("Action")):
+                    lowered = action.lower()
+                    if lowered in scoped:
                         if not _limited_to_registry(statement, registry_arn):
                             errors.append(
                                 f"{address}: {action} の Resource は対象 Registry"
                                 f"（{registry_arn or '不明'}）とそのレコードに限ってください"
                             )
                         continue
-                    if any(
-                        fnmatch.fnmatchcase(item.lower(), action.lower())
-                        for item in FORBIDDEN_ACTIONS
-                    ):
+                    if any(fnmatch.fnmatchcase(item, lowered) for item in _FORBIDDEN_LOWER):
                         errors.append(f"{address}: 禁止 action {action}")
                     if (
                         resource_type != "aws_ssoadmin_permission_set_inline_policy"
-                        and fnmatch.fnmatchcase("iam:passrole", action.lower())
+                        and fnmatch.fnmatchcase("iam:passrole", lowered)
                     ):
                         errors.append(f"{address}: 実行ロールに iam:PassRole を付与できません")
     return sorted(set(errors))
