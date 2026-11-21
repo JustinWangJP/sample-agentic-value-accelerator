@@ -445,11 +445,11 @@ dev 環境を作り直すときの撤去の手順です。方針と理由は [AD
 - 撤去の順番は「追加スタック → 本体」です。追加スタックは本体の HTTP API・管理 Lambda・実行ロール・補助テーブルを借りて、route・Lambda permission・inline policy を足しています。本体を先に消すと、追加スタックの state に孤立したリソースが残ります。
 - 撤去は `scripts/deploy.sh --destroy` で行います。配信と同じ主体の検査と `check_plan.py` を通し、`terraform plan -destroy` で保存した plan を表示します。撤去するスタック名を入力したときだけ、その plan を apply します（`y` や `apply` では進みません）。SPA の配信は行いません。
 - `deploy.sh` は SSO プロファイルと `--stack` の組み合わせを拒否するため、個人アカウントの MFA 付き IAM ロール（`registry-deploy`）で実行します。
-- この手順で dev の撤去と再作成を通す確認は、まだ行っていません（Issue #53）。
+- この手順で dev の撤去と再作成を通す確認は、まだ行っていません（Issue #57）。
 
 #### 1. 必要ならデータとログを退避する
 
-補助テーブルは PITR が有効なので、テーブルを削除すると DynamoDB が 35 日保持のシステムバックアップを自動で作ります。それより長く残したい場合だけ、撤去の前にオンデマンドバックアップを取ります。オンデマンドバックアップは、削除するまで残ります。
+補助テーブルは PITR が有効なので、テーブルを削除すると DynamoDB が 35 日保持のシステムバックアップを自動で作ります（[DynamoDB のドキュメント](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/PointInTimeRecovery_Howitworks.html#howitworks-pitr-deleting-table)）。それより長く残したい場合だけ、撤去の前にオンデマンドバックアップを取ります。オンデマンドバックアップは、削除するまで残ります。
 
 ```bash
 cd applications/registry_portal
@@ -486,9 +486,11 @@ spa_force_destroy         = true
 AWS_PROFILE=registry-deploy scripts/deploy.sh infrastructure/backend.hcl infrastructure/dev.tfvars
 ```
 
-plan で、補助テーブル（`aws_dynamodb_table.auxiliary`）の `deletion_protection_enabled` と SPA バケット（`aws_s3_bucket.spa`）の `force_destroy` が、作り直しではなく変更（update in-place）になっていることを確認します。`force_destroy` は state に入った値で destroy に効くため、destroy の前にこの apply が必要です。SPA バケットはバージョニングが有効ですが、`force_destroy = true` なら Terraform が旧バージョンを含めて中身を消します。
+plan で、補助テーブル（`aws_dynamodb_table.auxiliary`）の `deletion_protection_enabled` と SPA バケット（`aws_s3_bucket.spa`）の `force_destroy` が、作り直しではなく変更（update in-place）になっていることを確認します。`force_destroy` は state に入った値で destroy に効くため、destroy の前にこの apply が必要です（true にした後、apply が成功するまでは効きません）。`force_destroy` が state で `true` なら、destroy のときに Terraform がバケットのすべてのオブジェクト（ロックされたものを含む）を削除してからバケットを削除します。削除したオブジェクトは復元できません（[AWS provider 6.71.0 の aws_s3_bucket](https://registry.terraform.io/providers/hashicorp/aws/6.71.0/docs/resources/s3_bucket)）。
 
-次に、`infrastructure/main.tf` の補助テーブル（`aws_dynamodb_table.auxiliary`）から `lifecycle { prevent_destroy = true }` の行を手元で外します（削除またはコメントアウト）。`prevent_destroy` は Terraform の制約で変数にできません。**この変更はコミットしません。** 外している間は `infrastructure/tests/test_teardown_guards.py` が失敗します。
+次に、`infrastructure/main.tf` の補助テーブル（`aws_dynamodb_table.auxiliary`）から `lifecycle { prevent_destroy = true }` の行を手元で外します（削除またはコメントアウト）。`prevent_destroy` は Terraform の制約で変数にできません（lifecycle の設定にはリテラル値しか使えません。[Terraform の lifecycle](https://developer.hashicorp.com/terraform/language/meta-arguments/lifecycle)）。**この変更はコミットしません。** 外している間は `infrastructure/tests/test_teardown_guards.py` が失敗します。
+
+この後で撤去を中止する場合は、本節の最後の「撤去を中止したとき・destroy が途中で失敗したとき」の手順で保護を戻します。
 
 #### 4. 本体スタックを撤去する
 
@@ -496,9 +498,15 @@ plan で、補助テーブル（`aws_dynamodb_table.auxiliary`）の `deletion_p
 AWS_PROFILE=registry-deploy scripts/deploy.sh --destroy infrastructure/backend.hcl infrastructure/dev.tfvars
 ```
 
-本体の撤去では `--stack` を付けません。スクリプトは plan を作る前に、本体の `backend.hcl` のバケットで追加 3 スタックの state を読み、リソースが残っていれば「追加スタックの state にリソースが残っています」と表示して止まります。その場合は手順 2 に戻ります。state のファイルがない場合も、リソースのない state と同じく空として扱います。
+本体の撤去では `--stack` を付けません。スクリプトは plan を作る前に、追加 3 スタックの state を `terraform state pull` で読み、リソースが残っていれば「追加スタックの state にリソースが残っています」と表示して止まります。その場合は手順 2 に戻ります。
 
-plan に既存 Registry の変更や削除がないことを確認し、`main` と入力します。
+- 追加スタックの state は、本体と同じバケットにあり key だけが異なる前提です（4.5、各 `backend.hcl.example`）。スクリプトは本体の `backend.hcl` の key だけを追加スタックのもの（1.4 の表）に差し替えて読みます。追加スタックの state を別のバケットに置いている場合、この検査は正しく働きません。
+- スタックごとに「0 件」（撤去済み）か「state なし（未配信）」を表示します。どちらも撤去を止めません。state のファイルがないと `terraform state pull` は何も出力しないため、これを「state なし」と判定します。この出力は[公式ドキュメント](https://developer.hashicorp.com/terraform/cli/commands/state/pull)に記載がなく、Terraform 1.17.1 で確認した挙動です。`terraform show -json` は、state のファイルがない場合とリソースのない state の場合に同じ`{"format_version":"1.0"}` を出力して区別できないため使いません（同じく 1.17.1 で確認）。
+- 認証やネットワークの失敗、state の形式の異常などで state を読めない場合は、0 件として扱わずに止まります。
+
+plan を作った後、スクリプトは plan の削除前の値（state の値）で、補助テーブルの `deletion_protection_enabled` が `false`、SPA バケットの `force_destroy` が `true` であることを確かめます。そうでなければ、スタック名の入力を求める前に止まります。手順 3 の apply が済んでいないので、手順 3 に戻ります（飛ばして destroy すると、保護のないリソースだけを消してから途中で失敗します）。撤去の途中で削除済みのリソースは plan に出ないため、検査の対象になりません。
+
+plan に既存 Registry の変更や削除がないことを確認し、`main` と入力します。destroy が途中で失敗した場合は、本節の最後の「撤去を中止したとき・destroy が途中で失敗したとき」に従います。
 
 #### 5. 保護を元に戻す
 
@@ -523,6 +531,26 @@ plan に既存 Registry の変更や削除がないことを確認し、`main` �
 | 補助テーブルのバックアップ | PITR のシステムバックアップ（35 日保持）と、手順 1 で取ったオンデマンドバックアップ |
 
 各スタックに管理対象が残っていないことは、5.3 の `terraform state list` で確認できます。
+
+#### 撤去を中止したとき・destroy が途中で失敗したとき
+
+手順 3 の apply の後で撤去を中止した場合や、手順 4 の destroy が途中で失敗した場合は、保護を外した状態のまま残さないでください。撤去を続けるか、既定値で apply し直して保護を戻します。
+
+- **撤去を続ける場合**: 失敗の原因を取り除いてから、手順 4 をやり直します。削除済みのリソースは plan に出ません。残っているリソースの保護が外れていることは、手順 4 の検査が確かめます。終わったら手順 5 に進みます。
+- **撤去をやめる場合**: 手順 5 と同じく、`infrastructure/main.tf` の編集を戻し、`infrastructure/dev.tfvars` から手順 3 の 2 行を削除します。そのうえで、既定値のまま本体を通常の配信で apply し直します。
+
+```bash
+cd applications/registry_portal
+git checkout -- infrastructure/main.tf
+python3 -m unittest infrastructure/tests/test_teardown_guards.py
+AWS_PROFILE=registry-deploy scripts/deploy.sh infrastructure/backend.hcl infrastructure/dev.tfvars
+```
+
+plan で、補助テーブルの `deletion_protection_enabled` が `true` に、SPA バケットの `force_destroy` が `false` に戻る変更（update in-place）を確認してから、`apply` と入力します。destroy で削除済みのリソースは、plan では作成になります。
+
+- 補助テーブルを削除済みの場合、作り直したテーブルは空です。削除前のデータは、手順 1 のオンデマンドバックアップと PITR のシステムバックアップにあります。
+- SPA バケットを削除済みの場合も、この配信で SPA をビルドしてアップロードし直します。
+- 手順 2 で撤去した追加スタックは、4.5 の手順で配信し直します。Cognito のグループを削除済みの場合は、ユーザーをグループに割り当て直します（4.1 の 7）。
 
 ## 6. トラブルシューティング
 

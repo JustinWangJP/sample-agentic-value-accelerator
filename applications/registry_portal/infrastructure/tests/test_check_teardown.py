@@ -1,0 +1,154 @@
+"""scripts/check_teardown.py（deploy.sh --destroy が Terraform を反映する前に行う検査）のテスト。"""
+
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[2]
+CHECK = ROOT / "scripts/check_teardown.py"
+FIXTURES = Path(__file__).parent / "fixtures"
+LOG_GROUP = {
+    "mode": "managed",
+    "type": "aws_cloudwatch_log_group",
+    "name": "this",
+    "instances": [{"attributes": {}}],
+}
+
+
+def run_check(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run([sys.executable, str(CHECK), *args], capture_output=True, text=True)
+
+
+def pulled_state(*resources: dict) -> str:
+    """terraform state pull が出力する state（format version 4）を返す。"""
+    return json.dumps({"version": 4, "serial": 3, "lineage": "x", "resources": list(resources)})
+
+
+class AddonStatesTests(unittest.TestCase):
+    """本体を撤去する前に、追加スタックの state にリソースが残っていないことを確かめる。"""
+
+    def check_states(self, states: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            arguments = []
+            for name, text in states.items():
+                path = Path(directory) / f"{name}.json"
+                path.write_text(text)
+                arguments.append(f"{name}={path}")
+            return run_check("addon-states", *arguments)
+
+    def test_remaining_resources_stop_with_the_stack_and_count(self):
+        in_module = dict(LOG_GROUP, module="module.logs")
+        result = self.check_states(
+            {"management": pulled_state(LOG_GROUP, in_module), "decision": pulled_state()}
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("management（2 件）", result.stderr)
+        self.assertNotIn("decision", result.stderr)
+        self.assertIn("追加スタック → 本体", result.stderr)
+
+    def test_data_sources_and_resources_without_instances_are_not_counted(self):
+        data = {"mode": "data", "type": "aws_caller_identity", "name": "current", "instances": [{}]}
+        emptied = dict(LOG_GROUP, instances=[])
+        result = self.check_states({"decision": pulled_state(data, emptied)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_missing_state_and_empty_state_both_pass_but_are_reported_differently(self):
+        # state のファイルがないと、terraform state pull は何も出力しない（Terraform 1.17.1 で確認）
+        result = self.check_states({"decision": "", "management": pulled_state()})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("decision: state なし（未配信）", result.stdout)
+        self.assertIn("management: 0 件", result.stdout)
+
+    def test_unreadable_state_stops_instead_of_counting_as_empty(self):
+        for label, text in {
+            "JSON の破損": "{",
+            "想定外の形式（version）": json.dumps({"version": 3, "resources": []}),
+            "resources がない": json.dumps({"version": 4}),
+        }.items():
+            with self.subTest(label):
+                result = self.check_states({"decision": text})
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("decision", result.stderr)
+                self.assertIn("読めません", result.stderr)
+
+
+class MainProtectionTests(unittest.TestCase):
+    """本体の destroy の plan で、補助テーブルと SPA バケットの保護が state 上で外れていることを確かめる。"""
+
+    def check_plan(self, plan: dict) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "plan.json"
+            path.write_text(json.dumps(plan))
+            return run_check("main-protection", str(path))
+
+    def destroy_plan(self, **before_changes) -> dict:
+        """保護を外して apply した後の destroy の plan に、削除前の値の変更を加えて返す。"""
+        plan = json.loads((FIXTURES / "destroy-main.json").read_text())
+        for change in plan["resource_changes"]:
+            for address, values in before_changes.items():
+                if change["address"] == address:
+                    change["change"]["before"].update(values)
+        return plan
+
+    def test_plan_after_the_unprotecting_apply_passes(self):
+        result = self.check_plan(self.destroy_plan())
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_protection_still_in_state_stops_with_the_guide_step(self):
+        result = run_check("main-protection", str(FIXTURES / "destroy-main-protected.json"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("aws_dynamodb_table.auxiliary", result.stderr)
+        self.assertIn("deletion_protection_enabled", result.stderr)
+        self.assertIn("aws_s3_bucket.spa", result.stderr)
+        self.assertIn("force_destroy", result.stderr)
+        self.assertIn("5.4", result.stderr)
+
+    def test_each_protection_is_checked_on_its_own(self):
+        cases = {
+            "aws_dynamodb_table.auxiliary": {"deletion_protection_enabled": True},
+            "aws_s3_bucket.spa": {"force_destroy": False},
+        }
+        for address, values in cases.items():
+            with self.subTest(address):
+                result = self.check_plan(self.destroy_plan(**{address: values}))
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(address, result.stderr)
+                (other,) = cases.keys() - {address}
+                self.assertNotIn(other, result.stderr)
+
+    def test_unknown_protection_value_stops(self):
+        # 値が bool でない（属性がない、null）場合は、保護が外れていると確かめられないため止める
+        for value in (None, "false"):
+            with self.subTest(value=value):
+                plan = self.destroy_plan(
+                    **{"aws_dynamodb_table.auxiliary": {"deletion_protection_enabled": value}}
+                )
+                result = self.check_plan(plan)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("aws_dynamodb_table.auxiliary", result.stderr)
+
+    def test_already_deleted_resources_are_not_required(self):
+        # 撤去が途中で失敗した後の再実行では、削除済みのリソースは plan に出ない
+        plan = self.destroy_plan()
+        plan["resource_changes"] = [
+            change
+            for change in plan["resource_changes"]
+            if change["address"] != "aws_s3_bucket.spa"
+        ]
+        result = self.check_plan(plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_unreadable_plan_stops(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "plan.json"
+            path.write_text("{")
+            result = run_check("main-protection", str(path))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("読めません", result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
