@@ -59,7 +59,19 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 stack_config "$stack"
-[[ "$destroy" == true ]] && publishes_spa=false
+# 撤去のモードで変わる設定は、ここで一度だけ決める。
+#   is_main_destroy: 本体の撤去か。追加スタックの state と本体の保護を、apply の前に検査する
+#   plan_args: terraform plan の引数。撤去では destroy の plan を保存する
+#   completion_message: apply が成功し、SPA を配信しないときに表示する
+is_main_destroy=false
+plan_args=(-input=false)
+completion_message="${stack} スタックの反映が完了しました。README の dev 手動受入を実施してください。"
+if [[ "$destroy" == true ]]; then
+  publishes_spa=false
+  plan_args+=(-destroy)
+  completion_message="${stack} スタックの撤去が完了しました。"
+  if [[ "$stack" == main ]]; then is_main_destroy=true; fi
+fi
 [[ $# -eq 2 ]] || fail "$usage"
 [[ -z "${CI:-}" && -z "${GITHUB_ACTIONS:-}" ]] || fail "CI からの反映は禁止されています。ローカル端末で実行してください。"
 stack_dir="$infra_dir${stack_subdir:+/$stack_subdir}"
@@ -128,7 +140,7 @@ tf_init() {
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/registry-portal-deploy.XXXXXX")"
 trap 'rm -rf "$work_dir"' EXIT
-if [[ "$destroy" == true && "$stack" == main ]]; then
+if [[ "$is_main_destroy" == true ]]; then
   # 追加スタックは本体の HTTP API・Lambda・実行ロール・補助テーブルを借りて route や権限を足している。
   # 本体を先に消すと追加スタックの state に孤立したリソースが残るため、撤去の順番は「追加スタック → 本体」とし、
   # 追加スタックの state にリソースが残っていれば、本体の plan を作る前に止める
@@ -145,8 +157,7 @@ if [[ "$destroy" == true && "$stack" == main ]]; then
   done
   python3 "$portal_dir/scripts/check_teardown.py" addon-states "${addon_states[@]}"
 fi
-plan_args=(-input=false -var-file="$vars_file" -out="$work_dir/approved.tfplan")
-[[ "$destroy" == true ]] && plan_args+=(-destroy)
+plan_args+=(-var-file="$vars_file" -out="$work_dir/approved.tfplan")
 # 共通の Lambda ZIP は、変数 lambda_zip_path を持つスタック（本体・decision・notification_events）にだけ渡す
 if grep -qs '^variable "lambda_zip_path"' "$stack_dir"/*.tf; then
   python3 "$portal_dir/scripts/build_lambda.py" --output "$work_dir/lambda.zip"
@@ -159,7 +170,7 @@ tf show -json "$work_dir/approved.tfplan" > "$work_dir/plan.json"
 python3 "$portal_dir/scripts/check_plan.py" "$work_dir/plan.json"
 # 本体の撤去では、保護を外す apply（ガイド 5.4 の手順 3）が state に入っていることを apply の前に確かめる。
 # 飛ばすと、保護のないリソースだけを消してから途中で失敗する
-if [[ "$destroy" == true && "$stack" == main ]]; then
+if [[ "$is_main_destroy" == true ]]; then
   python3 "$portal_dir/scripts/check_teardown.py" main-protection "$work_dir/plan.json"
 fi
 tf show -no-color "$work_dir/approved.tfplan"
@@ -174,12 +185,8 @@ else
   [[ "$confirmation" == "apply" ]] || fail "反映を中止しました。"
 fi
 tf apply -input=false "$work_dir/approved.tfplan"
-if [[ "$destroy" == true ]]; then
-  printf '\n%s スタックの撤去が完了しました。\n' "$stack"
-  exit 0
-fi
 if [[ "$publishes_spa" != true ]]; then
-  printf '\n%s スタックの反映が完了しました。README の dev 手動受入を実施してください。\n' "$stack"
+  printf '\n%s\n' "$completion_message"
   exit 0
 fi
 spa_bucket="$(tf output -raw spa_bucket_name)"
