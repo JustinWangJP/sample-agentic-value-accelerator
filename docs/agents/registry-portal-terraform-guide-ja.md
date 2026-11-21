@@ -445,7 +445,7 @@ dev 環境を作り直すときの撤去の手順です。方針と理由は [AD
 - 撤去の順番は「追加スタック → 本体」です。追加スタックは本体の HTTP API・管理 Lambda・実行ロール・補助テーブルを借りて、route・Lambda permission・inline policy を足しています。本体を先に消すと、追加スタックの state に孤立したリソースが残ります。
 - 撤去は `scripts/deploy.sh --destroy` で行います。配信と同じ主体の検査と `check_plan.py` を通し、`terraform plan -destroy` で保存した plan を表示します。撤去するスタック名を入力したときだけ、その plan を apply します（`y` や `apply` では進みません）。SPA の配信は行いません。
 - `deploy.sh` は SSO プロファイルと `--stack` の組み合わせを拒否するため、個人アカウントの MFA 付き IAM ロール（`registry-deploy`）で実行します。
-- この手順で dev の撤去と再作成を通す確認は、まだ行っていません（Issue #53）。
+- この手順で dev の撤去と再作成を通す確認は、まだ行っていません（Issue #57）。
 
 #### 1. 必要ならデータとログを退避する
 
