@@ -6,8 +6,8 @@ Registry ポータルの dev 環境を撤去するときは、追加スタック
 
 | 対象 | 決定 | 理由 |
 | --- | --- | --- |
-| 補助テーブル | 削除保護（`deletion_protection_enabled`）を変数 `table_deletion_protection`（既定値 `true`）にする。`lifecycle { prevent_destroy = true }` は撤去するときだけ手元で行を外し、その変更はコミットしない | `prevent_destroy` は Terraform の制約で変数にできない。PITR が有効なので、テーブルを削除すると DynamoDB が 35 日保持のシステムバックアップを自動で作る。データの退避はこれに任せ、必要な場合だけオンデマンドバックアップを取る |
-| SPA バケット | `force_destroy` を変数 `spa_force_destroy`（既定値 `false`）にする。撤去の前に `true` で apply してから destroy する | バージョニングが有効なため、旧バージョンを含めて空にしないとバケットを削除できない。全バージョンを消す手作業の手順より、変数の切り替えのほうが誤りにくい |
+| 補助テーブル | 削除保護（`deletion_protection_enabled`）を変数 `table_deletion_protection`（既定値 `true`）にする。`lifecycle { prevent_destroy = true }` は撤去するときだけ手元で行を外し、その変更はコミットしない | `prevent_destroy` は Terraform の制約で変数にできない（lifecycle の設定にはリテラル値しか使えない。[Terraform の lifecycle](https://developer.hashicorp.com/terraform/language/meta-arguments/lifecycle)）。PITR が有効なので、テーブルを削除すると DynamoDB が 35 日保持のシステムバックアップを自動で作る（[DynamoDB のドキュメント](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/PointInTimeRecovery_Howitworks.html#howitworks-pitr-deleting-table)）。データの退避はこれに任せ、必要な場合だけオンデマンドバックアップを取る |
+| SPA バケット | `force_destroy` を変数 `spa_force_destroy`（既定値 `false`）にする。撤去の前に `true` で apply してから destroy する | S3 は空のバケットしか削除できず（[S3 のドキュメント](https://docs.aws.amazon.com/AmazonS3/latest/userguide/delete-bucket.html)）、バージョニングが有効なため旧バージョンも残る。`force_destroy` は state に入った値が destroy に効くため、destroy の前に apply が必要になる（[AWS provider 6.71.0 の aws_s3_bucket](https://registry.terraform.io/providers/hashicorp/aws/6.71.0/docs/resources/s3_bucket)）。全バージョンを消す手作業の手順より、変数の切り替えのほうが誤りにくい |
 | CloudWatch Logs | `skip_destroy` は付けない。撤去するとロググループも消える | dev は作り直しを前提にする。`skip_destroy` で残したロググループは、作り直すときに同じ名前で作成できず、import が必要になる |
 | state バケットと bootstrap | 撤去の対象に含めない。dev の作り直しは追加スタックと本体に限る | state バケットは全スタックの state を持ち、作り直しの土台になる。bootstrap の state はローカルにあり、`prevent_destroy` と `force_destroy = false` で保護している |
 

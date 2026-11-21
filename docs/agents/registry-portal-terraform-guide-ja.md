@@ -449,7 +449,7 @@ dev 環境を作り直すときの撤去の手順です。方針と理由は [AD
 
 #### 1. 必要ならデータとログを退避する
 
-補助テーブルは PITR が有効なので、テーブルを削除すると DynamoDB が 35 日保持のシステムバックアップを自動で作ります。それより長く残したい場合だけ、撤去の前にオンデマンドバックアップを取ります。オンデマンドバックアップは、削除するまで残ります。
+補助テーブルは PITR が有効なので、テーブルを削除すると DynamoDB が 35 日保持のシステムバックアップを自動で作ります（[DynamoDB のドキュメント](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/PointInTimeRecovery_Howitworks.html#howitworks-pitr-deleting-table)）。それより長く残したい場合だけ、撤去の前にオンデマンドバックアップを取ります。オンデマンドバックアップは、削除するまで残ります。
 
 ```bash
 cd applications/registry_portal
@@ -486,9 +486,9 @@ spa_force_destroy         = true
 AWS_PROFILE=registry-deploy scripts/deploy.sh infrastructure/backend.hcl infrastructure/dev.tfvars
 ```
 
-plan で、補助テーブル（`aws_dynamodb_table.auxiliary`）の `deletion_protection_enabled` と SPA バケット（`aws_s3_bucket.spa`）の `force_destroy` が、作り直しではなく変更（update in-place）になっていることを確認します。`force_destroy` は state に入った値で destroy に効くため、destroy の前にこの apply が必要です。SPA バケットはバージョニングが有効ですが、`force_destroy = true` なら Terraform が旧バージョンを含めて中身を消します。
+plan で、補助テーブル（`aws_dynamodb_table.auxiliary`）の `deletion_protection_enabled` と SPA バケット（`aws_s3_bucket.spa`）の `force_destroy` が、作り直しではなく変更（update in-place）になっていることを確認します。`force_destroy` は state に入った値で destroy に効くため、destroy の前にこの apply が必要です（true にした後、apply が成功するまでは効きません）。`force_destroy` が state で `true` なら、destroy のときに Terraform がバケットのすべてのオブジェクト（ロックされたものを含む）を削除してからバケットを削除します。削除したオブジェクトは復元できません（[AWS provider 6.71.0 の aws_s3_bucket](https://registry.terraform.io/providers/hashicorp/aws/6.71.0/docs/resources/s3_bucket)）。
 
-次に、`infrastructure/main.tf` の補助テーブル（`aws_dynamodb_table.auxiliary`）から `lifecycle { prevent_destroy = true }` の行を手元で外します（削除またはコメントアウト）。`prevent_destroy` は Terraform の制約で変数にできません。**この変更はコミットしません。** 外している間は `infrastructure/tests/test_teardown_guards.py` が失敗します。
+次に、`infrastructure/main.tf` の補助テーブル（`aws_dynamodb_table.auxiliary`）から `lifecycle { prevent_destroy = true }` の行を手元で外します（削除またはコメントアウト）。`prevent_destroy` は Terraform の制約で変数にできません（lifecycle の設定にはリテラル値しか使えません。[Terraform の lifecycle](https://developer.hashicorp.com/terraform/language/meta-arguments/lifecycle)）。**この変更はコミットしません。** 外している間は `infrastructure/tests/test_teardown_guards.py` が失敗します。
 
 この後で撤去を中止する場合は、本節の最後の「撤去を中止したとき・destroy が途中で失敗したとき」の手順で保護を戻します。
 
@@ -501,7 +501,7 @@ AWS_PROFILE=registry-deploy scripts/deploy.sh --destroy infrastructure/backend.h
 本体の撤去では `--stack` を付けません。スクリプトは plan を作る前に、追加 3 スタックの state を `terraform state pull` で読み、リソースが残っていれば「追加スタックの state にリソースが残っています」と表示して止まります。その場合は手順 2 に戻ります。
 
 - 追加スタックの state は、本体と同じバケットにあり key だけが異なる前提です（4.5、各 `backend.hcl.example`）。スクリプトは本体の `backend.hcl` の key だけを追加スタックのもの（1.4 の表）に差し替えて読みます。追加スタックの state を別のバケットに置いている場合、この検査は正しく働きません。
-- スタックごとに「0 件」（撤去済み）か「state なし（未配信）」を表示します。どちらも撤去を止めません。
+- スタックごとに「0 件」（撤去済み）か「state なし（未配信）」を表示します。どちらも撤去を止めません。state のファイルがないと `terraform state pull` は何も出力しないため、これを「state なし」と判定します。この出力は[公式ドキュメント](https://developer.hashicorp.com/terraform/cli/commands/state/pull)に記載がなく、Terraform 1.17.1 で確認した挙動です。`terraform show -json` は、state のファイルがない場合とリソースのない state の場合に同じ`{"format_version":"1.0"}` を出力して区別できないため使いません（同じく 1.17.1 で確認）。
 - 認証やネットワークの失敗、state の形式の異常などで state を読めない場合は、0 件として扱わずに止まります。
 
 plan を作った後、スクリプトは plan の削除前の値（state の値）で、補助テーブルの `deletion_protection_enabled` が `false`、SPA バケットの `force_destroy` が `true` であることを確かめます。そうでなければ、スタック名の入力を求める前に止まります。手順 3 の apply が済んでいないので、手順 3 に戻ります（飛ばして destroy すると、保護のないリソースだけを消してから途中で失敗します）。撤去の途中で削除済みのリソースは plan に出ないため、検査の対象になりません。
