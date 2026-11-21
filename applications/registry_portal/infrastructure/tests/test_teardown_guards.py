@@ -9,6 +9,8 @@ from pathlib import Path
 import re
 import unittest
 
+from teardown_helpers import main_protections
+
 INFRA = Path(__file__).resolve().parents[1]
 
 
@@ -72,7 +74,7 @@ class TeardownGuardTests(unittest.TestCase):
     def test_tfvars_example_keeps_teardown_variables_commented_out(self):
         # 例をコピーした dev.tfvars で保護が外れないよう、撤去用の変数は既定値のまま（コメントアウト）にする
         lines = (INFRA / "terraform.tfvars.example").read_text().splitlines()
-        for variable in ("table_deletion_protection", "spa_force_destroy"):
+        for variable in (protection.variable for protection in main_protections()):
             with self.subTest(variable=variable):
                 assignments = [
                     line for line in lines if re.match(rf"\s*(#\s*)?{variable}\s*=", line)

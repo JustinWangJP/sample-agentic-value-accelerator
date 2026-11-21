@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 
-from teardown_states import LOG_GROUP, pulled_state
+from teardown_helpers import LOG_GROUP, pulled_state
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECK = ROOT / "scripts/check_teardown.py"

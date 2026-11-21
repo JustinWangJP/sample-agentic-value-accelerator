@@ -25,16 +25,27 @@ from typing import Any, NamedTuple
 
 
 class Protection(NamedTuple):
-    """撤去の前に外しておく保護の設定。値は destroy の plan の削除前の値（state の値）と比べる。"""
+    """撤去の前に外しておく保護の設定。値は destroy の plan の削除前の値（state の値）と比べる。
+
+    variable は、属性に渡す変数（variables.tf）の名前。撤去のときは tfvars でこの変数に
+    teardown_value を指定して apply する（ガイド 5.4 の手順 3）。
+    """
 
     address: str
     attribute: str
+    variable: str
     teardown_value: bool
 
 
+# 撤去の保護の対象の、Python 側の唯一の情報源。テストもここから値を取る
 MAIN_PROTECTIONS = (
-    Protection("aws_dynamodb_table.auxiliary", "deletion_protection_enabled", False),
-    Protection("aws_s3_bucket.spa", "force_destroy", True),
+    Protection(
+        "aws_dynamodb_table.auxiliary",
+        "deletion_protection_enabled",
+        "table_deletion_protection",
+        False,
+    ),
+    Protection("aws_s3_bucket.spa", "force_destroy", "spa_force_destroy", True),
 )
 # terraform state pull が出力する state の形式（format version）。ほかの形式は件数を数えずに止める
 STATE_FORMAT_VERSION = 4

@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 
-from teardown_states import LOG_GROUP, pulled_state
+from teardown_helpers import LOG_GROUP, pulled_state
 
 ROOT = Path(__file__).resolve().parents[2]
 # スタックごとの backend.hcl の state key（各 backend.hcl.example と同じ値）
