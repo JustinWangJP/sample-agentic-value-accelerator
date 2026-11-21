@@ -7,35 +7,27 @@ import sys
 import tempfile
 import unittest
 
+from teardown_helpers import LOG_GROUP, pulled_state
+
 ROOT = Path(__file__).resolve().parents[2]
 CHECK = ROOT / "scripts/check_teardown.py"
 FIXTURES = Path(__file__).parent / "fixtures"
-LOG_GROUP = {
-    "mode": "managed",
-    "type": "aws_cloudwatch_log_group",
-    "name": "this",
-    "instances": [{"attributes": {}}],
-}
 
 
 def run_check(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run([sys.executable, str(CHECK), *args], capture_output=True, text=True)
 
 
-def pulled_state(*resources: dict) -> str:
-    """terraform state pull が出力する state（format version 4）を返す。"""
-    return json.dumps({"version": 4, "serial": 3, "lineage": "x", "resources": list(resources)})
-
-
 class AddonStatesTests(unittest.TestCase):
     """本体を撤去する前に、追加スタックの state にリソースが残っていないことを確かめる。"""
 
-    def check_states(self, states: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    def check_states(self, states: dict[str, dict | str]) -> subprocess.CompletedProcess[str]:
+        """state を一時ファイルに書いて検査する。文字列は state pull の出力としてそのまま書く。"""
         with tempfile.TemporaryDirectory() as directory:
             arguments = []
-            for name, text in states.items():
+            for name, state in states.items():
                 path = Path(directory) / f"{name}.json"
-                path.write_text(text)
+                path.write_text(state if isinstance(state, str) else json.dumps(state))
                 arguments.append(f"{name}={path}")
             return run_check("addon-states", *arguments)
 
@@ -73,6 +65,87 @@ class AddonStatesTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1)
                 self.assertIn("decision", result.stderr)
                 self.assertIn("読めません", result.stderr)
+
+    def test_malformed_arguments_stop_as_usage_errors_before_reading_states(self):
+        # `=` がない、スタック名やパスが空の引数は、どの state も読まずに使い方の誤りとして止める
+        with tempfile.TemporaryDirectory() as directory:
+            valid = Path(directory) / "decision.json"
+            valid.write_text(json.dumps(pulled_state()))
+            for argument in ("management", "=state.json", "management=", "="):
+                with self.subTest(argument=argument):
+                    result = run_check("addon-states", f"decision={valid}", argument)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn(f"「{argument}」", result.stderr)
+                    self.assertIn("<スタック名>=<state pull の出力>", result.stderr)
+                    self.assertNotIn("decision:", result.stdout)
+
+
+MAIN_BACKEND = """bucket       = "registry-portal-state-123456789012"
+key          = "registry-portal/dev/terraform.tfstate"
+region       = "us-east-1"
+encrypt      = true
+"""
+
+
+class AddonBackendsTests(unittest.TestCase):
+    """本体の撤去で追加スタックの state を読む前に、追加スタックの backend.hcl のバケットを確かめる。"""
+
+    def check_backends(self, addons: dict[str, str | None]) -> subprocess.CompletedProcess[str]:
+        """本体と追加スタックの backend.hcl を書いて検査する。None はファイルを作らない。"""
+        with tempfile.TemporaryDirectory() as directory:
+            main = Path(directory) / "backend.hcl"
+            main.write_text(MAIN_BACKEND)
+            arguments = []
+            for stack, text in addons.items():
+                path = Path(directory) / stack / "backend.hcl"
+                if text is not None:
+                    path.parent.mkdir()
+                    path.write_text(text)
+                arguments.append(f"{stack}={path}")
+            return run_check("addon-backends", str(main), *arguments)
+
+    def test_same_bucket_and_region_with_another_key_passes(self):
+        addon = "# 本体と同じバケットで key だけを分ける\n" + MAIN_BACKEND.replace(
+            "terraform.tfstate", "decision.tfstate"
+        )
+        result = self.check_backends({"decision": addon})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "decision: backend.hcl のバケットとリージョンが本体と一致しました", result.stdout
+        )
+
+    def test_another_bucket_or_region_stops_before_reading_states(self):
+        cases = {
+            "別のバケット": MAIN_BACKEND.replace("123456789012", "210987654321"),
+            "別のリージョン": MAIN_BACKEND.replace("us-east-1", "ap-northeast-1"),
+            "リージョンの指定なし": MAIN_BACKEND.replace('region       = "us-east-1"\n', ""),
+        }
+        for label, text in cases.items():
+            with self.subTest(label):
+                result = self.check_backends({"decision": MAIN_BACKEND, "management": text})
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("management", result.stderr)
+                self.assertIn("本体の backend.hcl と一致しません", result.stderr)
+                self.assertNotIn("decision", result.stderr)
+
+    def test_missing_addon_backend_is_reported_with_the_assumption(self):
+        result = self.check_backends({"notification_events": None})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("notification_events: ", result.stdout)
+        self.assertIn("がないため、本体の backend.hcl のバケットとリージョンで", result.stdout)
+
+    def test_main_backend_without_bucket_stops(self):
+        with tempfile.TemporaryDirectory() as directory:
+            main = Path(directory) / "backend.hcl"
+            main.write_text('key = "registry-portal/dev/terraform.tfstate"\n')
+            result = run_check("addon-backends", str(main), f"decision={directory}/none.hcl")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("bucket", result.stderr)
+
+    def test_malformed_arguments_stop_as_usage_errors(self):
+        result = run_check("addon-backends", "backend.hcl", "decision")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("<スタック名>=<backend.hcl>", result.stderr)
 
 
 class MainProtectionTests(unittest.TestCase):
@@ -140,6 +213,10 @@ class MainProtectionTests(unittest.TestCase):
         ]
         result = self.check_plan(plan)
         self.assertEqual(result.returncode, 0, result.stderr)
+        # リソース名の変更でも plan に出なくなるため、飛ばした検査を表示して気づけるようにする
+        self.assertIn("aws_s3_bucket.spa は plan にないため", result.stdout)
+        self.assertIn("force_destroy の検査を飛ばしました", result.stdout)
+        self.assertNotIn("aws_dynamodb_table.auxiliary", result.stdout)
 
     def test_unreadable_plan_stops(self):
         with tempfile.TemporaryDirectory() as directory:

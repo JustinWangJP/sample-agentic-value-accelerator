@@ -500,11 +500,12 @@ AWS_PROFILE=registry-deploy scripts/deploy.sh --destroy infrastructure/backend.h
 
 本体の撤去では `--stack` を付けません。スクリプトは plan を作る前に、追加 3 スタックの state を `terraform state pull` で読み、リソースが残っていれば「追加スタックの state にリソースが残っています」と表示して止まります。その場合は手順 2 に戻ります。
 
-- 追加スタックの state は、本体と同じバケットにあり key だけが異なる前提です（4.5、各 `backend.hcl.example`）。スクリプトは本体の `backend.hcl` の key だけを追加スタックのもの（1.4 の表）に差し替えて読みます。追加スタックの state を別のバケットに置いている場合、この検査は正しく働きません。
+- 追加スタックの state は、本体と同じバケットにあり key だけが異なる前提です（4.5、各 `backend.hcl.example`）。スクリプトは本体の `backend.hcl` の key だけを追加スタックのもの（1.4 の表）に差し替えて読みます。
+- state を読む前に、本体の `backend.hcl` と同じディレクトリの `<スタック>/backend.hcl`（上の例では `infrastructure/<スタック>/backend.hcl`）を確かめます。ファイルがあれば、その `bucket` と `region` が本体の `backend.hcl` と一致することを確かめ、一致しなければ「本体の backend.hcl と一致しません」と表示して止まります。ファイルがなければ、本体のバケットとリージョンで key だけを差し替えて読むことを表示して続けます。追加スタックの state を別のバケットに置いている構成には対応していません。
 - スタックごとに「0 件」（撤去済み）か「state なし（未配信）」を表示します。どちらも撤去を止めません。state のファイルがないと `terraform state pull` は何も出力しないため、これを「state なし」と判定します。この出力は[公式ドキュメント](https://developer.hashicorp.com/terraform/cli/commands/state/pull)に記載がなく、Terraform 1.17.1 で確認した挙動です。`terraform show -json` は、state のファイルがない場合とリソースのない state の場合に同じ`{"format_version":"1.0"}` を出力して区別できないため使いません（同じく 1.17.1 で確認）。
 - 認証やネットワークの失敗、state の形式の異常などで state を読めない場合は、0 件として扱わずに止まります。
 
-plan を作った後、スクリプトは plan の削除前の値（state の値）で、補助テーブルの `deletion_protection_enabled` が `false`、SPA バケットの `force_destroy` が `true` であることを確かめます。そうでなければ、スタック名の入力を求める前に止まります。手順 3 の apply が済んでいないので、手順 3 に戻ります（飛ばして destroy すると、保護のないリソースだけを消してから途中で失敗します）。撤去の途中で削除済みのリソースは plan に出ないため、検査の対象になりません。
+plan を作った後、スクリプトは plan の削除前の値（state の値）で、補助テーブルの `deletion_protection_enabled` が `false`、SPA バケットの `force_destroy` が `true` であることを確かめます。そうでなければ、スタック名の入力を求める前に止まります。手順 3 の apply が済んでいないので、手順 3 に戻ります（飛ばして destroy すると、保護のないリソースだけを消してから途中で失敗します）。撤去の途中で削除済みのリソースは plan に出ないため、検査を飛ばし、飛ばしたリソースと属性を「plan にないため、削除済みとみなして … の検査を飛ばしました」と表示します。撤去を始める前なのにこの表示が出た場合は、リソース名が変わっていて検査が働いていません。`n` などを入力して中止してください。
 
 plan に既存 Registry の変更や削除がないことを確認し、`main` と入力します。destroy が途中で失敗した場合は、本節の最後の「撤去を中止したとき・destroy が途中で失敗したとき」に従います。
 

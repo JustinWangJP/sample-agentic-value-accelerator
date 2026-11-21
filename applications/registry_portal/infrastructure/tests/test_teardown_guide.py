@@ -1,10 +1,13 @@
 """撤去手順書（Terraform ガイドの 5.4）が、変数・deploy.sh・保護の設定の実装と一致することを確かめる。"""
 
+import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import unittest
+
+from teardown_helpers import main_protections
 
 INFRA = Path(__file__).resolve().parents[1]
 PORTAL = INFRA.parent
@@ -56,13 +59,12 @@ class TeardownGuideTests(unittest.TestCase):
             for block in code_blocks(section, "hcl")
             for name in re.findall(r"^\s*(\w+)\s*=", block, re.MULTILINE)
         }
-        self.assertTrue(
-            {"table_deletion_protection", "spa_force_destroy"} <= assigned,
-            "撤去の tfvars の例に table_deletion_protection と spa_force_destroy がありません",
-        )
         self.assertLessEqual(assigned, declared, "variables.tf にない変数をガイドが指定しています")
-        self.assertRegex(section, r"table_deletion_protection\s*=\s*false")
-        self.assertRegex(section, r"spa_force_destroy\s*=\s*true")
+        for protection in main_protections():
+            with self.subTest(variable=protection.variable):
+                self.assertIn(protection.variable, assigned, "撤去の tfvars の例に変数がありません")
+                value = json.dumps(protection.teardown_value)
+                self.assertRegex(section, rf"{protection.variable}\s*=\s*{value}\b")
 
     def test_guide_deploy_commands_use_only_options_in_the_usage(self):
         usage = deploy_usage()

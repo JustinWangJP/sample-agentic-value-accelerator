@@ -6,6 +6,8 @@ import sys
 import tempfile
 import unittest
 
+from teardown_helpers import LOG_GROUP, pulled_state
+
 ROOT = Path(__file__).resolve().parents[2]
 # スタックごとの backend.hcl の state key（各 backend.hcl.example と同じ値）
 STATE_KEYS = {
@@ -14,6 +16,7 @@ STATE_KEYS = {
     "management": "registry-portal/dev/management.tfstate",
     "notification_events": "registry-portal/dev/notification-events.tfstate",
 }
+ADDON_STACKS = tuple(stack for stack in STATE_KEYS if stack != "main")
 FAKE = """#!PYTHON
 import json, os
 from pathlib import Path
@@ -29,9 +32,7 @@ if name == "python3":
         sys.exit(subprocess.run(["PYTHON", *args]).returncode)
 elif name == "aws":
     profiles = json.loads(os.environ["FAKE_AWS_PROFILES"])
-    profile = os.environ.get("AWS_PROFILE")
-    if "--profile" in args:
-        profile = args[args.index("--profile") + 1]
+    profile = args[args.index("--profile") + 1] if "--profile" in args else os.environ.get("AWS_PROFILE")
     settings = profiles.get(profile, {})
     if args[:2] == ["configure", "get"]:
         if args[2] not in settings:
@@ -68,9 +69,7 @@ SSO_PROFILES = {
         ),
     }
 }
-DEPLOYER_SESSION = (
-    "arn:aws:sts::123456789012:assumed-role/RegistryPortalDeployer/botocore-session-1"
-)
+DEPLOYER_SESSION = "arn:aws:sts::123456789012:assumed-role/RegistryPortalDeployer/botocore-session-1"
 # 個人アカウント: MFA 付きのロールのプロファイルと、Terraform 用の credential_process プロファイル
 ROLE_PROFILES = {
     "registry-deploy": {
@@ -100,11 +99,6 @@ def with_profile(profiles, name, **changes):
     return updated
 
 
-def pulled_state(*resources):
-    """terraform state pull が出力する state（format version 4）を返す。"""
-    return {"version": 4, "serial": 1, "lineage": "x", "resources": list(resources)}
-
-
 class DeployTests(unittest.TestCase):
     def run_deploy(
         self,
@@ -118,6 +112,7 @@ class DeployTests(unittest.TestCase):
         backend_key=None,
         destroy=False,
         states=None,
+        addon_backends=None,
     ):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
@@ -138,6 +133,10 @@ class DeployTests(unittest.TestCase):
                 else 'bucket = "registry-portal-state-123456789012"\n'
             )
             variables.touch()
+            # 追加スタックの backend.hcl は、本体の backend.hcl と同じディレクトリの <スタック>/ に置く
+            for addon, text in (addon_backends or {}).items():
+                (work / addon).mkdir()
+                (work / addon / "backend.hcl").write_text(text)
             env = {
                 key: value
                 for key, value in os.environ.items()
@@ -168,6 +167,17 @@ class DeployTests(unittest.TestCase):
             )
             self.records = [json.loads(line) for line in commands.read_text().splitlines()]
             return result, [record["argv"] for record in self.records]
+
+    def run_destroy(self, fixture="safe", confirmation="main\n", **options):
+        """撤去のモードで実行する。撤去の手順（ガイド 5.4）と同じく、MFA 付きのロールの profile を使う。"""
+        return self.run_deploy(
+            fixture,
+            confirmation,
+            profile="registry-deploy",
+            profiles=ROLE_PROFILES,
+            destroy=True,
+            **options,
+        )
 
     def test_approved_saved_plan_is_applied_then_spa_is_uploaded(self):
         result, commands = self.run_deploy()
@@ -246,9 +256,7 @@ class DeployTests(unittest.TestCase):
                 self.assertTrue(terraform)
                 self.assertEqual({r["profile"] for r in terraform}, {terraform_profile})
                 first_identity = next(
-                    command
-                    for command in commands
-                    if command[1:3] == ["sts", "get-caller-identity"]
+                    command for command in commands if command[1:3] == ["sts", "get-caller-identity"]
                 )
                 self.assertIn("registry-deploy", first_identity)
                 self.assertLess(
@@ -290,10 +298,7 @@ class DeployTests(unittest.TestCase):
                 "registry-deploy",
                 with_profile(ROLE_PROFILES, "registry-deploy-tf", caller_arn=other_session),
             ),
-            "credential_process のプロファイルを直接指定する": (
-                "registry-deploy-tf",
-                ROLE_PROFILES,
-            ),
+            "credential_process のプロファイルを直接指定する": ("registry-deploy-tf", ROLE_PROFILES),
             "SSO の別の permission set": (
                 "portal",
                 with_profile(
@@ -443,7 +448,7 @@ class DeployTests(unittest.TestCase):
             )
 
         main = settings(infrastructure / "backend.hcl.example")
-        for stack in STATE_KEYS.keys() - {"main"}:
+        for stack in ADDON_STACKS:
             with self.subTest(stack=stack):
                 addon = settings(infrastructure / stack / "backend.hcl.example")
                 self.assertEqual({**addon, "key": main["key"]}, main)
@@ -459,6 +464,32 @@ class DeployTests(unittest.TestCase):
                 result, commands = self.run_deploy(stack_args=stack_args)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(commands, [])
+
+    def test_repeated_options_are_rejected_before_external_commands(self):
+        # 後の指定を黙って使うと、撤去や反映の対象を取り違えるおそれがあるため止める
+        for stack_args, option in [
+            (("--destroy", "--destroy"), "--destroy"),
+            (("--stack", "decision", "--stack", "management"), "--stack"),
+            (("--stack", "decision", "--destroy", "--stack", "decision"), "--stack"),
+        ]:
+            with self.subTest(stack_args=stack_args):
+                result, commands = self.run_deploy(stack_args=stack_args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"{option} は 1 回だけ指定してください", result.stderr)
+                self.assertEqual(commands, [])
+
+    def test_options_can_be_given_in_any_order(self):
+        result, commands = self.run_deploy(
+            confirmation="decision\n",
+            profile="registry-deploy",
+            profiles=ROLE_PROFILES,
+            stack_args=("--stack", "decision", "--destroy"),
+            backend_key=STATE_KEYS["decision"],
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        plan = next(command for command in commands if "plan" in command)
+        self.assertEqual(plan[1], f"-chdir={ROOT / 'infrastructure' / 'decision'}")
+        self.assertIn("-destroy", plan)
 
     def test_destroy_applies_the_saved_destroy_plan_without_spa_upload(self):
         # destroy のモードは plan -destroy を保存し、確認後にその plan を apply する。SPA は配信しない
@@ -491,13 +522,10 @@ class DeployTests(unittest.TestCase):
         ]
         for fixture, confirmation, stack_args, reason in cases:
             with self.subTest(fixture=fixture, confirmation=confirmation, stack_args=stack_args):
-                result, commands = self.run_deploy(
+                result, commands = self.run_destroy(
                     fixture,
                     confirmation,
-                    profile="registry-deploy",
-                    profiles=ROLE_PROFILES,
                     stack_args=stack_args,
-                    destroy=True,
                 )
                 self.assertNotEqual(result.returncode, 0)
                 if reason != "check_plan":
@@ -507,21 +535,7 @@ class DeployTests(unittest.TestCase):
 
     def test_main_destroy_stops_while_an_addon_stack_state_has_resources(self):
         # 追加スタックは本体の API・Lambda・ロール・テーブルを借りるため、撤去の順番は「追加スタック → 本体」
-        log_group = {
-            "module": "module.logs",
-            "mode": "managed",
-            "type": "aws_cloudwatch_log_group",
-            "name": "this",
-            "instances": [{"attributes": {}}],
-        }
-        result, commands = self.run_deploy(
-            "safe",
-            "main\n",
-            profile="registry-deploy",
-            profiles=ROLE_PROFILES,
-            destroy=True,
-            states={"management": pulled_state(log_group)},
-        )
+        result, commands = self.run_destroy(states={"management": pulled_state(LOG_GROUP)})
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("management（1 件）", result.stderr)
         self.assertNotIn("decision", result.stderr)
@@ -540,6 +554,30 @@ class DeployTests(unittest.TestCase):
             any(command[1] == f"-chdir={ROOT / 'infrastructure'}" for command in terraform)
         )
 
+    def test_main_destroy_stops_when_an_addon_backend_points_to_another_bucket(self):
+        # 追加スタックの state は、本体の backend.hcl の key だけを差し替えて読む。手元の追加スタックの
+        # backend.hcl が別のバケットを指していれば、その前提が崩れるため、state を読む前に止める
+        result, commands = self.run_destroy(
+            addon_backends={"management": 'bucket = "another-state-bucket"\n'}
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("management", result.stderr)
+        self.assertIn("本体の backend.hcl と一致しません", result.stderr)
+        self.assertFalse(any(command[0] == "terraform" for command in commands))
+
+    def test_main_destroy_reports_how_each_addon_backend_is_resolved(self):
+        same_bucket = (
+            'bucket = "registry-portal-state-123456789012"\n'
+            f'key    = "{STATE_KEYS["decision"]}"\n'
+        )
+        result, commands = self.run_destroy(addon_backends={"decision": same_bucket})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "decision: backend.hcl のバケットとリージョンが本体と一致しました", result.stdout
+        )
+        self.assertIn("management: ", result.stdout)
+        self.assertIn("がないため、本体の backend.hcl のバケットとリージョンで", result.stdout)
+
     def test_main_destroy_stops_when_an_addon_state_cannot_be_read(self):
         # 認証やネットワークの失敗、JSON の破損は「state なし」や 0 件として扱わない
         cases = {
@@ -548,11 +586,7 @@ class DeployTests(unittest.TestCase):
         }
         for label, (states, extra_env) in cases.items():
             with self.subTest(label):
-                result, commands = self.run_deploy(
-                    confirmation="main\n",
-                    profile="registry-deploy",
-                    profiles=ROLE_PROFILES,
-                    destroy=True,
+                result, commands = self.run_destroy(
                     states=states,
                     extra_env=extra_env,
                 )
@@ -561,22 +595,12 @@ class DeployTests(unittest.TestCase):
 
     def test_main_destroy_proceeds_when_addon_states_are_empty(self):
         # 撤去済みの追加スタックの state は、リソースのない state か、state のファイル自体がない
-        result, commands = self.run_deploy(
-            confirmation="main\n",
-            profile="registry-deploy",
-            profiles=ROLE_PROFILES,
-            destroy=True,
-            states={"decision": pulled_state()},
-        )
+        result, commands = self.run_destroy(states={"decision": pulled_state()})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         # 撤去済み（0 件）と未配信（state なし）は、どちらも撤去を止めないが表示では区別する
         self.assertIn("decision: 0 件", result.stdout)
         self.assertIn("management: state なし（未配信）", result.stdout)
-        for addon, key in [
-            ("decision", STATE_KEYS["decision"]),
-            ("management", STATE_KEYS["management"]),
-            ("notification_events", STATE_KEYS["notification_events"]),
-        ]:
+        for addon in ADDON_STACKS:
             with self.subTest(addon=addon):
                 init = next(
                     command
@@ -584,17 +608,12 @@ class DeployTests(unittest.TestCase):
                     if command[:2] == ["terraform", f"-chdir={ROOT / 'infrastructure' / addon}"]
                     and "init" in command
                 )
-                self.assertIn(f"-backend-config=key={key}", init)
+                self.assertIn(f"-backend-config=key={STATE_KEYS[addon]}", init)
         self.assertTrue(any("apply" in command for command in commands))
 
     def test_addon_state_init_reuses_the_main_backend_settings_with_only_the_key_replaced(self):
         # 追加スタックの state は本体と同じバケットにあり、key だけが異なる（各 backend.hcl.example）
-        result, commands = self.run_deploy(
-            confirmation="main\n",
-            profile="registry-deploy",
-            profiles=ROLE_PROFILES,
-            destroy=True,
-        )
+        result, commands = self.run_destroy()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         inits = {
             command[1]: (command[2:], record["profile"])
@@ -602,7 +621,7 @@ class DeployTests(unittest.TestCase):
             if command[0] == "terraform" and "init" in command
         }
         main_args, main_profile = inits[f"-chdir={ROOT / 'infrastructure'}"]
-        for addon in ("decision", "management", "notification_events"):
+        for addon in ADDON_STACKS:
             with self.subTest(addon=addon):
                 args, profile = inits[f"-chdir={ROOT / 'infrastructure' / addon}"]
                 key = f"-backend-config=key={STATE_KEYS[addon]}"
@@ -616,41 +635,29 @@ class DeployTests(unittest.TestCase):
             for command in commands
             if command[0] == "python3" and command[1].endswith("check_teardown.py")
         ]
-        self.assertEqual([command[2] for command in checks], ["addon-states", "main-protection"])
+        self.assertEqual(
+            [command[2] for command in checks],
+            ["addon-backends", "addon-states", "main-protection"],
+        )
 
     def test_main_destroy_stops_before_apply_while_protection_remains_in_state(self):
         # 手順 3 の apply を飛ばすと、保護のないリソースだけ消えてから途中で失敗するため、apply の前に止める
-        result, commands = self.run_deploy(
-            "destroy-main-protected",
-            "main\n",
-            profile="registry-deploy",
-            profiles=ROLE_PROFILES,
-            destroy=True,
-        )
+        result, commands = self.run_destroy("destroy-main-protected")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("5.4", result.stderr)
         self.assertNotIn("スタック名（main）を入力", result.stdout)
         self.assertFalse(any("apply" in command for command in commands))
 
     def test_main_destroy_applies_after_protection_is_removed_from_state(self):
-        result, commands = self.run_deploy(
-            "destroy-main",
-            "main\n",
-            profile="registry-deploy",
-            profiles=ROLE_PROFILES,
-            destroy=True,
-        )
+        result, commands = self.run_destroy("destroy-main")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue(any("apply" in command for command in commands))
 
     def test_addon_destroy_does_not_require_the_main_protection_settings(self):
-        result, commands = self.run_deploy(
+        result, commands = self.run_destroy(
             "destroy-main-protected",
             "decision\n",
-            profile="registry-deploy",
-            profiles=ROLE_PROFILES,
             stack_args=("--stack", "decision"),
-            destroy=True,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(
@@ -666,6 +673,7 @@ class DeployTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("[--destroy]", result.stderr)
+        self.assertIn("各オプションは 1 回だけ", result.stderr)
         for stack_args in [(), ("--stack", "decision")]:
             with self.subTest(stack_args=stack_args):
                 result, commands = self.run_deploy(ci="true", stack_args=stack_args, destroy=True)

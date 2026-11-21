@@ -9,6 +9,8 @@ from pathlib import Path
 import re
 import unittest
 
+from teardown_helpers import main_protections
+
 INFRA = Path(__file__).resolve().parents[1]
 
 
@@ -69,10 +71,30 @@ class TeardownGuardTests(unittest.TestCase):
             "state バケットの force_destroy = false を戻してください。",
         )
 
+    def test_main_protections_name_resources_and_attributes_in_the_source(self):
+        # check_teardown.py は plan に出ないアドレスを削除済みとみなして検査を飛ばすため、
+        # リソース名や属性名の変更に追従しないと、保護の検査が黙って働かなくなる
+        sources = {path.name: path.read_text() for path in sorted(INFRA.glob("*.tf"))}
+        for protection in main_protections():
+            resource_type, name = protection.address.split(".")
+            with self.subTest(address=protection.address):
+                blocks = [
+                    resource_block(path, resource_type, name)
+                    for path, source in sources.items()
+                    if f'resource "{resource_type}" "{name}" {{' in source
+                ]
+                self.assertEqual(
+                    len(blocks), 1, f"{protection.address} が infrastructure/ にありません"
+                )
+                self.assertTrue(
+                    has_setting(blocks[0], protection.attribute, rf"var\.{protection.variable}"),
+                    f"{protection.attribute} = var.{protection.variable} がありません",
+                )
+
     def test_tfvars_example_keeps_teardown_variables_commented_out(self):
         # 例をコピーした dev.tfvars で保護が外れないよう、撤去用の変数は既定値のまま（コメントアウト）にする
         lines = (INFRA / "terraform.tfvars.example").read_text().splitlines()
-        for variable in ("table_deletion_protection", "spa_force_destroy"):
+        for variable in (protection.variable for protection in main_protections()):
             with self.subTest(variable=variable):
                 assignments = [
                     line for line in lines if re.match(rf"\s*(#\s*)?{variable}\s*=", line)
