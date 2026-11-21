@@ -460,6 +460,32 @@ class DeployTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(commands, [])
 
+    def test_repeated_options_are_rejected_before_external_commands(self):
+        # 後の指定を黙って使うと、撤去や反映の対象を取り違えるおそれがあるため止める
+        for stack_args, option in [
+            (("--destroy", "--destroy"), "--destroy"),
+            (("--stack", "decision", "--stack", "management"), "--stack"),
+            (("--stack", "decision", "--destroy", "--stack", "decision"), "--stack"),
+        ]:
+            with self.subTest(stack_args=stack_args):
+                result, commands = self.run_deploy(stack_args=stack_args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"{option} は 1 回だけ指定してください", result.stderr)
+                self.assertEqual(commands, [])
+
+    def test_options_can_be_given_in_any_order(self):
+        result, commands = self.run_deploy(
+            confirmation="decision\n",
+            profile="registry-deploy",
+            profiles=ROLE_PROFILES,
+            stack_args=("--stack", "decision", "--destroy"),
+            backend_key=STATE_KEYS["decision"],
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        plan = next(command for command in commands if "plan" in command)
+        self.assertEqual(plan[1], f"-chdir={ROOT / 'infrastructure' / 'decision'}")
+        self.assertIn("-destroy", plan)
+
     def test_destroy_applies_the_saved_destroy_plan_without_spa_upload(self):
         # destroy のモードは plan -destroy を保存し、確認後にその plan を apply する。SPA は配信しない
         result, commands = self.run_deploy(destroy=True, confirmation="main\n")
@@ -615,6 +641,7 @@ class DeployTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("[--destroy]", result.stderr)
+        self.assertIn("各オプションは 1 回だけ", result.stderr)
         for stack_args in [(), ("--stack", "decision")]:
             with self.subTest(stack_args=stack_args):
                 result, commands = self.run_deploy(ci="true", stack_args=stack_args, destroy=True)

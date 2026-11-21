@@ -39,18 +39,23 @@ stack_config() {
   esac
 }
 addon_choices="$(IFS='|'; echo "${addon_stacks[*]}")"
-usage="使用方法: AWS_PROFILE=<SSO profile またはロールの profile> [TERRAFORM_AWS_PROFILE=<credential_process の profile>] scripts/deploy.sh [--destroy] [--stack $addon_choices] <backend.hcl> <tfvars>"
+usage="使用方法: AWS_PROFILE=<SSO profile またはロールの profile> [TERRAFORM_AWS_PROFILE=<credential_process の profile>] scripts/deploy.sh [--destroy] [--stack $addon_choices] <backend.hcl> <tfvars>（各オプションは 1 回だけ指定できます。順番は自由です）"
 # --destroy: 指定した 1 つのスタックを撤去する。配信と同じ検査と plan ガードを通し、SPA は配信しない
+# 同じオプションを 2 回指定した場合は、後の指定を黙って使わずに止める（撤去の対象の取り違えを防ぐ）
 destroy=false
 stack="main"
+stack_given=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --destroy)
+      [[ "$destroy" == false ]] || fail "--destroy は 1 回だけ指定してください。"
       destroy=true
       shift
       ;;
     --stack)
+      [[ "$stack_given" == false ]] || fail "--stack は 1 回だけ指定してください。"
       [[ $# -ge 2 ]] || fail "$usage"
+      stack_given=true
       stack="$2"
       shift 2
       [[ "$stack" != main ]] && stack_config "$stack" || fail "追加スタックには ${addon_stacks[*]} のいずれかを指定してください。"
