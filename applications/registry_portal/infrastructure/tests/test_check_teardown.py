@@ -67,6 +67,20 @@ class AddonStatesTests(unittest.TestCase):
                 self.assertIn("読めません", result.stderr)
 
 
+    def test_malformed_arguments_stop_as_usage_errors_before_reading_states(self):
+        # `=` がない、スタック名やパスが空の引数は、どの state も読まずに使い方の誤りとして止める
+        with tempfile.TemporaryDirectory() as directory:
+            valid = Path(directory) / "decision.json"
+            valid.write_text(json.dumps(pulled_state()))
+            for argument in ("management", "=state.json", "management=", "="):
+                with self.subTest(argument=argument):
+                    result = run_check("addon-states", f"decision={valid}", argument)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn(f"「{argument}」", result.stderr)
+                    self.assertIn("<スタック名>=<state pull の出力>", result.stderr)
+                    self.assertNotIn("decision:", result.stdout)
+
+
 class MainProtectionTests(unittest.TestCase):
     """本体の destroy の plan で、補助テーブルと SPA バケットの保護が state 上で外れていることを確かめる。"""
 

@@ -121,11 +121,34 @@ def check_main_protection(path: str) -> int:
     return 0
 
 
-def check_addon_states(arguments: list[str]) -> int:
-    """`<スタック名>=<state pull の出力>` の各 state にリソースが残っていなければ 0 を返す。"""
-    remaining = []
+def _stack_paths(arguments: list[str]) -> list[tuple[str, str]] | None:
+    """`<スタック名>=<パス>` の引数を (スタック名, パス) に分ける。
+
+    `=` がない、またはスタック名かパスが空の引数があれば、その旨を表示して None を返す。
+    """
+    pairs = []
     for argument in arguments:
-        stack, _, path = argument.partition("=")
+        stack, separator, path = argument.partition("=")
+        if not (separator and stack and path):
+            print(
+                f"引数「{argument}」は <スタック名>=<state pull の出力> の形で指定してください。",
+                file=sys.stderr,
+            )
+            return None
+        pairs.append((stack, path))
+    return pairs
+
+
+def check_addon_states(arguments: list[str]) -> int:
+    """`<スタック名>=<state pull の出力>` の各 state にリソースが残っていなければ 0 を返す。
+
+    引数の形が正しくなければ、どの state も読まずに 2 を返す。
+    """
+    pairs = _stack_paths(arguments)
+    if pairs is None:
+        return 2
+    remaining = []
+    for stack, path in pairs:
         try:
             count = _managed_resource_count(Path(path).read_text())
         except (OSError, ValueError, AttributeError) as error:
