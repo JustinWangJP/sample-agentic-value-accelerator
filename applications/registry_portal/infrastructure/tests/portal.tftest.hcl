@@ -216,3 +216,31 @@ run "customer_managed_secret_key" {
     error_message = "顧客管理キーの復号は、Secrets Manager 経由と対象 secret の完全一致（StringEquals）に限定してください。"
   }
 }
+
+run "teardown_protection_defaults" {
+  command = plan
+  assert {
+    condition     = aws_dynamodb_table.auxiliary.deletion_protection_enabled == true
+    error_message = "既定値では補助テーブルの削除保護を有効にしてください。無効にするのは撤去のときだけです。"
+  }
+  assert {
+    condition     = aws_s3_bucket.spa.force_destroy == false
+    error_message = "既定値では SPA バケットの force_destroy を false にしてください。true にするのは撤去のときだけです。"
+  }
+}
+
+run "teardown_switches" {
+  command = plan
+  variables {
+    table_deletion_protection = false
+    spa_force_destroy         = true
+  }
+  assert {
+    condition     = aws_dynamodb_table.auxiliary.deletion_protection_enabled == false
+    error_message = "table_deletion_protection = false で補助テーブルの削除保護を外せるようにしてください。"
+  }
+  assert {
+    condition     = aws_s3_bucket.spa.force_destroy == true
+    error_message = "spa_force_destroy = true で SPA バケットを中身ごと削除できるようにしてください。"
+  }
+}

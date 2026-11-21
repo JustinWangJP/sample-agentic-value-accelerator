@@ -88,3 +88,13 @@ variable "lambda_zip_path" {
   type        = string
   default     = "../backend/build/lambda.zip"
 }
+variable "table_deletion_protection" {
+  description = "補助テーブルの削除保護（deletion_protection_enabled）。撤去するときだけ false で apply してから destroy する。lifecycle.prevent_destroy は変数にできないため、撤去時は手元で行を外し、その変更はコミットしない。"
+  type        = bool
+  default     = true
+}
+variable "spa_force_destroy" {
+  description = "SPA バケットを中身ごと削除できるようにするか（force_destroy）。撤去するときだけ true で apply してから destroy する。"
+  type        = bool
+  default     = false
+}
