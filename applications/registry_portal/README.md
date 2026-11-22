@@ -274,7 +274,11 @@ terraform -chdir=infrastructure/bootstrap validate
 terraform -chdir=infrastructure/bootstrap test
 ```
 
-これらは AWS の認証情報を必要としません。Terraform test は mock provider を使います。JSON ガードは `python3 scripts/check_plan.py <plan.json>` で再実行できます。既存 Registry の create、update、delete、置換、禁止 action の Allow、managed policy の付与、未確定 IAM policy、Function URL を拒否します。ただし、IAM ロールの作成時に provider が computed として未確定にする `managed_policy_arns` と `inline_policy` は、plan の `configuration` でその属性に式がない（`managed_policy_arns` は定数の `[]` も含む）場合に限って許可します。設定で値を渡している場合や、`configuration` と照合できない場合は拒否します。Allow の `NotAction` と全権限ワイルドカードも拒否し、Deny 文は許可します。禁止 action のうち、管理ロールの inline policy（`module.management_drafts.aws_iam_role_policy.management_drafts`）には `CreateRegistryRecord`・`UpdateRegistryRecord`・`SubmitRegistryRecordForApproval` を、決裁ロールの inline policy（`module.decision.aws_iam_role_policy.decision`）には `UpdateRegistryRecordStatus` だけを、ワイルドカードを使わない `agent-registry:` の action 名に限って許可します。許可するのは、その文の `Resource` が plan のルート変数 `registry_arn` の Registry 本体とそのレコード（`<registry_arn>/record/*` など）だけを指す場合です。`*`、別の Registry、前方一致のワイルドカード、`NotResource` は拒否し、plan に `registry_arn` がない場合も拒否します。ロールは名前ではなく資源アドレス（`check_plan.py` の `ScopedPolicy`。module 呼び出し名と resource 名）で識別するため、イベント処理ロールやその他の主体、`aws_iam_policy` には引き続き禁止します。アドレスが追加スタックの定義に実在することは `test_plan_guard.py` が検査します。追加スタック（`management`・`decision`・`notification_events`）は別 state のため、`scripts/deploy.sh --stack <スタック>` で各スタックの保存した plan を同じ `check_plan.py` に通してから apply します。手順書の plan ファイル（`*.tfplan`）と `plan.json` は `.gitignore` の対象です。`decision` と `notification_events` のポリシーは、ロググループ（と DLQ）の ARN を名前・アカウント ID・リージョンから組み立てるため、初回作成の plan でも確定してガードを通ります。ガードは `management_role_name` の取り違えを検出できません。本体の同名 output と plan を照合し、管理 Lambda のロールを指していることを目視で確認してください。権限の境界を変えるときは、ガードの許可境界と fixture も更新してください。
+これらは AWS の認証情報を必要としません。Terraform test は mock provider を使います。保存済み plan を検査するには、plan を作成したスタックのディレクトリで `python3 <check_plan.py のパス> --saved-plan <tfplan>` を実行します。ガードは既存 Registry の create、update、delete、置換、禁止 action の Allow、managed policy の付与、未確定 IAM policy、Function URL を拒否します。
+
+IAM ロールの作成時に AWS provider が未確定にする `managed_policy_arns` は、plan の `configuration` で式がないか定数の `[]` である場合に限って許可します。`inline_policy` の例外には、属性全体が未確定で、`configuration` に式がなく、同じ保存済み plan の設定を検証できることが必要です。Terraform の plan JSON は `dynamic` ブロックの式を含まないため、ガードは対象モジュールの保存済み設定も確認します。対象モジュールに `.tf.json` がある場合、または `.tf` のコメントや文字列も含めて `dynamic` が含まれる場合は、未確定の `inline_policy` を拒否します。JSON 単独の検査には `python3 scripts/check_plan.py <plan.json>` を使えます。この入力では未確定の `inline_policy` を拒否します。 [Terraform の plan JSON 仕様](https://developer.hashicorp.com/terraform/internals/json-format#expression-representation) [保存済み plan の仕様](https://developer.hashicorp.com/terraform/cli/commands/plan#other-options) [AWS provider 6.71.0 の IAM ロール定義](https://github.com/hashicorp/terraform-provider-aws/blob/v6.71.0/internal/service/iam/role.go#L105-L152)
+
+Allow の `NotAction` と全権限ワイルドカードも拒否し、Deny 文は許可します。禁止 action のうち、管理ロールの inline policy（`module.management_drafts.aws_iam_role_policy.management_drafts`）には `CreateRegistryRecord`・`UpdateRegistryRecord`・`SubmitRegistryRecordForApproval` を、決裁ロールの inline policy（`module.decision.aws_iam_role_policy.decision`）には `UpdateRegistryRecordStatus` だけを、ワイルドカードを使わない `agent-registry:` の action 名に限って許可します。許可するのは、その文の `Resource` が plan のルート変数 `registry_arn` の Registry 本体とそのレコード（`<registry_arn>/record/*` など）だけを指す場合です。`*`、別の Registry、前方一致のワイルドカード、`NotResource` は拒否し、plan に `registry_arn` がない場合も拒否します。ロールは名前ではなく資源アドレス（`check_plan.py` の `ScopedPolicy`。module 呼び出し名と resource 名）で識別するため、イベント処理ロールやその他の主体、`aws_iam_policy` には引き続き禁止します。アドレスが追加スタックの定義に実在することは `test_plan_guard.py` が検査します。追加スタック（`management`・`decision`・`notification_events`）は別 state のため、`scripts/deploy.sh --stack <スタック>` で各スタックの保存した plan を同じ `check_plan.py` に通してから apply します。手順書の plan ファイル（`*.tfplan`）と `plan.json` は `.gitignore` の対象です。`decision` と `notification_events` のポリシーは、ロググループ（と DLQ）の ARN を名前・アカウント ID・リージョンから組み立てるため、初回作成の plan でも確定してガードを通ります。ガードは `management_role_name` の取り違えを検出できません。本体の同名 output と plan を照合し、管理 Lambda のロールを指していることを目視で確認してください。権限の境界を変えるときは、ガードの許可境界と fixture も更新してください。
 
 ### dev の手動受入を記録する
 
@@ -430,8 +434,7 @@ cp backend.hcl.example backend.hcl
   terraform init -backend-config=backend.hcl -backend-config=encrypt=true -backend-config=use_lockfile=true
   terraform validate
   terraform plan -out=tfplan
-  terraform show -json tfplan > plan.json
-  python3 ../../scripts/check_plan.py plan.json
+  python3 ../../scripts/check_plan.py --saved-plan tfplan
   terraform show tfplan
   printf 'IAM と既存資源の変更を確認し、反映する場合は apply と入力してください: '
   read -r confirmation
@@ -440,7 +443,7 @@ cp backend.hcl.example backend.hcl
     exit 1
   fi
   terraform apply tfplan
-  rm tfplan plan.json
+  rm tfplan
 )
 ```
 
@@ -578,8 +581,7 @@ cp backend.hcl.example backend.hcl
   terraform init -backend-config=backend.hcl -backend-config=encrypt=true -backend-config=use_lockfile=true
   terraform validate
   terraform plan -out=tfplan
-  terraform show -json tfplan > plan.json
-  python3 ../../scripts/check_plan.py plan.json
+  python3 ../../scripts/check_plan.py --saved-plan tfplan
   terraform show tfplan
   printf 'IAM と既存資源の変更を確認し、反映する場合は apply と入力してください: '
   read -r confirmation
@@ -588,7 +590,7 @@ cp backend.hcl.example backend.hcl
     exit 1
   fi
   terraform apply tfplan
-  rm tfplan plan.json
+  rm tfplan
 )
 ```
 

@@ -183,11 +183,14 @@ fi
 tf_init "$stack_dir"
 tf validate
 tf plan "${plan_args[@]}"
-tf show -json "$work_dir/approved.tfplan" > "$work_dir/plan.json"
-python3 "$portal_dir/scripts/check_plan.py" "$work_dir/plan.json"
+(
+  cd "$stack_dir"
+  AWS_PROFILE="$terraform_profile" python3 "$portal_dir/scripts/check_plan.py" --saved-plan "$work_dir/approved.tfplan"
+)
 # 本体の撤去では、保護を外す apply（ガイド 5.4 の手順 3）が state に入っていることを apply の前に確かめる。
 # 飛ばすと、保護のないリソースだけを消してから途中で失敗する
 if [[ "$is_main_destroy" == true ]]; then
+  tf show -json "$work_dir/approved.tfplan" > "$work_dir/plan.json"
   python3 "$portal_dir/scripts/check_teardown.py" main-protection "$work_dir/plan.json"
 fi
 tf show -no-color "$work_dir/approved.tfplan"

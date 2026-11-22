@@ -21,10 +21,12 @@ FAKE = """#!PYTHON
 import json, os
 from pathlib import Path
 import subprocess, sys
+from zipfile import ZipFile
 name = Path(sys.argv[0]).name
 args = sys.argv[1:]
 with open(os.environ["COMMAND_LOG"], "a") as log:
-    log.write(json.dumps({"argv": [name, *args], "profile": os.environ.get("AWS_PROFILE")}) + "\\n")
+    log.write(json.dumps({"argv": [name, *args], "profile": os.environ.get("AWS_PROFILE"),
+                          "cwd": os.getcwd()}) + "\\n")
 if name == "python3":
     if args and args[0].endswith("build_lambda.py"):
         Path(args[args.index("--output") + 1]).write_bytes(b"test zip")
@@ -43,7 +45,12 @@ elif name == "aws":
             sys.exit(255)
         print(settings["caller_arn"])
 elif name == "terraform":
-    if "show" in args and "-json" in args and args[-1].endswith(".tfplan"):
+    if "plan" in args:
+        plan_path = next(arg[5:] for arg in args if arg.startswith("-out="))
+        with ZipFile(plan_path, "w") as plan:
+            plan.writestr("tfconfig/modules.json", json.dumps([{"Key": "", "Dir": "."}]))
+            plan.writestr("tfconfig/m-/main.tf", "terraform {}")
+    elif "show" in args and "-json" in args and args[-1].endswith(".tfplan"):
         print(Path(os.environ["PLAN_FIXTURE"]).read_text())
     elif args[1:3] == ["state", "pull"]:
         # FAKE_STATES にないスタックは state のファイルがない（state pull は何も出力しない）
@@ -208,8 +215,16 @@ class DeployTests(unittest.TestCase):
             ],
         )
         plan = next(command for command in commands if "plan" in command)
+        guard = next(
+            command
+            for command in commands
+            if command[0] == "python3" and command[1].endswith("check_plan.py")
+        )
         apply = next(command for command in commands if "apply" in command)
         self.assertEqual(next(item[5:] for item in plan if item.startswith("-out=")), apply[-1])
+        self.assertEqual(guard[2:], ["--saved-plan", apply[-1]])
+        self.assertLess(commands.index(plan), commands.index(guard))
+        self.assertLess(commands.index(guard), commands.index(apply))
         init = next(command for command in commands if "init" in command)
         self.assertIn("-backend-config=encrypt=true", init)
         self.assertIn("-backend-config=use_lockfile=true", init)
@@ -338,14 +353,17 @@ class DeployTests(unittest.TestCase):
                     profile="registry-deploy", profiles=ROLE_PROFILES, stack_args=("--stack", stack)
                 )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                terraform = [command for command in commands if command[0] == "terraform"]
+                terraform = [record for record in self.records if record["argv"][0] == "terraform"]
+                stack_dir = ROOT / "infrastructure" / stack
                 self.assertTrue(terraform)
                 self.assertTrue(
                     all(
-                        command[1] == f"-chdir={ROOT / 'infrastructure' / stack}"
-                        for command in terraform
+                        record["argv"][1] == f"-chdir={stack_dir}"
+                        or Path(record["cwd"]).resolve() == stack_dir
+                        for record in terraform
                     )
                 )
+                terraform = [record["argv"] for record in terraform]
                 init = next(command for command in terraform if "init" in command)
                 self.assertIn("-backend-config=use_lockfile=true", init)
                 self.assertTrue(
