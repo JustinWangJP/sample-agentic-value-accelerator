@@ -3,8 +3,11 @@ from __future__ import annotations
 import fnmatch
 import json
 from pathlib import Path
+import re
+import subprocess
 import sys
 from typing import Any, NamedTuple
+import zipfile
 
 # Registry の書き込み action。IAM では agent-registry と bedrock-agentcore の両方の prefix で禁止する。
 # bootstrap の permission set（Deny）と同じファイルを読み、一覧を 1 か所に保つ
@@ -76,6 +79,7 @@ MANAGED_POLICY_ATTACHMENTS = {
     "aws_ssoadmin_customer_managed_policy_attachment",
     "aws_ssoadmin_customer_managed_policy_attachments_exclusive",
 }
+_MODULE_NAME = r"[^.\[\]/]+"
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -111,6 +115,106 @@ def _policies(values: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _module_names(change: dict[str, Any]) -> tuple[str, ...] | None:
+    address = change.get("module_address") or ""
+    # Terraform が生成する HCL の引用文字列は、エスケープや ] も含めて添字として読む。
+    step = rf'module\.({_MODULE_NAME})(?:\[(?:[0-9]+|"(?:[^"\\]|\\.)*")\])?'
+    if not isinstance(address, str) or (
+        address and re.fullmatch(rf"{step}(?:\.{step})*", address) is None
+    ):
+        return None
+    return tuple(re.findall(step, address))
+
+
+def _configured_resource(plan: dict[str, Any], change: dict[str, Any]) -> dict[str, Any] | None:
+    """resource_changes の要素に対応する configuration の resource を返す。照合できなければ None。"""
+    module = (plan.get("configuration") or {}).get("root_module")
+    names = _module_names(change)
+    if module is None or names is None:
+        return None
+    for name in names:
+        module = ((module.get("module_calls") or {}).get(name) or {}).get("module")
+        if module is None:
+            return None
+    address = f"{change.get('type')}.{change.get('name')}"
+    return next(
+        (
+            resource
+            for resource in module.get("resources", [])
+            if resource.get("mode") == "managed" and resource.get("address") == address
+        ),
+        None,
+    )
+
+
+def _verified_modules(saved_plan: Path) -> frozenset[tuple[str, ...]]:
+    """同じ保存 plan の設定から、dynamic がない native HCL の module だけを確認する。"""
+    try:
+        with zipfile.ZipFile(saved_plan) as archive:
+            entries = archive.namelist()
+            if len(entries) != len(set(entries)):
+                return frozenset()
+            manifest = json.loads(archive.read("tfconfig/modules.json"))
+            if not isinstance(manifest, list):
+                return frozenset()
+            keys = [item.get("Key") for item in manifest if isinstance(item, dict)]
+            if (
+                len(keys) != len(manifest)
+                or any(not isinstance(key, str) for key in keys)
+                or len(keys) != len(set(keys))
+                or "" not in keys
+            ):
+                return frozenset()
+            verified = set()
+            for key in keys:
+                if key and re.fullmatch(rf"{_MODULE_NAME}(?:\.{_MODULE_NAME})*", key) is None:
+                    return frozenset()
+                prefix = f"tfconfig/m-{key}/"
+                sources = [
+                    name for name in entries if name.startswith(prefix) and not name.endswith("/")
+                ]
+                if (
+                    any(name.endswith(".tf") for name in sources)
+                    and not any(name.endswith(".tf.json") for name in sources)
+                    and all(b"dynamic" not in archive.read(name) for name in sources)
+                ):
+                    verified.add(tuple(key.split(".")) if key else ())
+            return frozenset(verified)
+    except (OSError, ValueError, KeyError, RuntimeError, zipfile.BadZipFile):
+        return frozenset()
+
+
+def _computed_on_create(
+    plan: dict[str, Any],
+    change: dict[str, Any],
+    key: str,
+    verified_modules: frozenset[tuple[str, ...]],
+) -> bool:
+    """ロールの作成で、設定にない属性が provider の computed のために未確定になっているかを返す。
+
+    inline_policy の式は dynamic ブロックでも省略されるため、保存 plan のソース確認も必要とする。
+    """
+    if (
+        key not in {"managed_policy_arns", "inline_policy"}
+        or change.get("type") != "aws_iam_role"
+        or "create" not in change["change"].get("actions", [])
+    ):
+        return False
+    resource = _configured_resource(plan, change)
+    if resource is None:
+        return False
+    expressions = resource.get("expressions")
+    if not isinstance(expressions, dict):
+        return False
+    if key == "managed_policy_arns":
+        return key not in expressions or expressions[key] == {"constant_value": []}
+    return (
+        key not in expressions
+        and change["change"].get("after_unknown", {}).get(key) is True
+        and _module_names(change) in verified_modules
+    )
+
+
 def _target_registry_arn(plan: dict[str, Any]) -> str | None:
     """追加スタックのルート変数 registry_arn（借用する既存 Registry）を返す。"""
     variable = (plan.get("variables") or {}).get("registry_arn") or {}
@@ -136,7 +240,9 @@ def _limited_to_registry(statement: dict[str, Any], registry_arn: str | None) ->
     )
 
 
-def check_plan(plan: dict[str, Any]) -> list[str]:
+def check_plan(
+    plan: dict[str, Any], verified_modules: frozenset[tuple[str, ...]] = frozenset()
+) -> list[str]:
     """保存済み plan から安全条件に違反する箇所を返す。"""
     if not str(plan.get("format_version", "")).startswith("1."):
         raise ValueError("対応する plan JSON の format_version がありません")
@@ -162,7 +268,11 @@ def check_plan(plan: dict[str, Any]) -> list[str]:
         ):
             errors.append(f"{address}: 既存 Registry を Terraform の管理対象にできません")
         if resource_type in POLICY_TYPES:
-            unknown = resource["change"].get("after_unknown", {})
+            unknown = {
+                key: value
+                for key, value in (resource["change"].get("after_unknown") or {}).items()
+                if value and not _computed_on_create(plan, resource, key, verified_modules)
+            }
             if resource_type == "aws_iam_role" and unknown.get("managed_policy_arns"):
                 errors.append(f"{address}: 未確定の managed policy の付与は検査できません")
             if any(unknown.get(key) for key in ("policy", "inline_policy")):
@@ -218,8 +328,27 @@ def check_plan(plan: dict[str, Any]) -> list[str]:
 
 def main() -> int:
     try:
-        plan = json.loads(Path(sys.argv[1]).read_text())
-        errors = check_plan(plan)
+        args = sys.argv[1:]
+        verified_modules = frozenset()
+        if len(args) == 2 and args[0] == "--saved-plan":
+            saved_plan = Path(args[1]).resolve()
+            try:
+                result = subprocess.run(
+                    ["terraform", "show", "-json", str(saved_plan)],
+                    capture_output=True,
+                    check=True,
+                )
+            except (OSError, subprocess.CalledProcessError):
+                raise ValueError("保存 plan を Terraform で読み取れません") from None
+            plan = json.loads(result.stdout)
+            verified_modules = _verified_modules(saved_plan)
+        elif len(args) == 1 and not args[0].startswith("-"):
+            plan = json.loads(Path(args[0]).read_text())
+        else:
+            raise ValueError(
+                "使い方: check_plan.py <plan.json> または check_plan.py --saved-plan <tfplan>"
+            )
+        errors = check_plan(plan, verified_modules)
     except (IndexError, OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         print(f"plan を検査できません: {error}", file=sys.stderr)
         return 1

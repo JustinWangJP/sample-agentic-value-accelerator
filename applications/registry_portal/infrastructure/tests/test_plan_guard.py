@@ -1,10 +1,12 @@
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -24,25 +26,62 @@ TEMPLATE_VALUES = {
 }
 
 
-def run_guard(plan_path):
+def run_guard(plan_path, *args, **kwargs):
     return subprocess.run(
-        [sys.executable, str(ROOT / "scripts/check_plan.py"), str(plan_path)],
+        [sys.executable, str(ROOT / "scripts/check_plan.py"), str(plan_path), *args],
         capture_output=True,
         text=True,
+        **kwargs,
     )
+
+
+def run_guard_json(plan):
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "plan.json"
+        path.write_text(json.dumps(plan))
+        return run_guard(path)
+
+
+def run_guard_saved(
+    plan, sources=None, manifest=None, show_status=0, raw_snapshot=None, duplicate_entry=False
+):
+    if sources is None:
+        sources = {"": {"main.tf": b"terraform {}\n"}, "events": {"main.tf": b"terraform {}\n"}}
+    if manifest is None:
+        manifest = [{"Key": key, "Dir": "."} for key in sources]
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory).resolve()
+        saved = root / "saved.tfplan"
+        if raw_snapshot is None:
+            with zipfile.ZipFile(saved, "w") as archive:
+                archive.writestr("tfconfig/modules.json", json.dumps(manifest))
+                if duplicate_entry:
+                    archive.writestr("tfconfig/modules.json", json.dumps(manifest))
+                for key, files in sources.items():
+                    for name, source in files.items():
+                        archive.writestr(f"tfconfig/m-{key}/{name}", source)
+        else:
+            saved.write_bytes(raw_snapshot)
+        (root / "show.json").write_text(json.dumps(plan))
+        terraform = root / "terraform"
+        terraform.write_text(
+            f"#!{sys.executable}\n"
+            "import pathlib, sys\n"
+            "root = pathlib.Path(__file__).parent\n"
+            "assert pathlib.Path.cwd() == root\n"
+            "assert sys.argv[1:] == ['show', '-json', str(root / 'saved.tfplan')]\n"
+            "print((root / 'show.json').read_text())\n"
+            "print('表示しない検証用メッセージ', file=sys.stderr)\n"
+            f"sys.exit({show_status})\n"
+        )
+        terraform.chmod(0o755)
+        env = dict(os.environ, PATH=f"{root}{os.pathsep}{os.environ.get('PATH', '')}")
+        return run_guard("--saved-plan", "saved.tfplan", cwd=root, env=env)
 
 
 class PlanGuardTests(unittest.TestCase):
     def test_registry_update_is_rejected(self):
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / "scripts/check_plan.py"),
-                str(FIXTURES / "registry-update.json"),
-            ],
-            capture_output=True,
-            text=True,
-        )
+        result = run_guard(FIXTURES / "registry-update.json")
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("既存 Registry", result.stderr)
 
@@ -66,15 +105,7 @@ class PlanGuardTests(unittest.TestCase):
             ("legacy-submit-registry-approval", False),
         ]:
             with self.subTest(fixture=fixture):
-                result = subprocess.run(
-                    [
-                        sys.executable,
-                        str(ROOT / "scripts/check_plan.py"),
-                        str(FIXTURES / f"{fixture}.json"),
-                    ],
-                    capture_output=True,
-                    text=True,
-                )
+                result = run_guard(FIXTURES / f"{fixture}.json")
                 self.assertEqual(
                     result.returncode, 0 if allowed else 1, result.stdout + result.stderr
                 )
@@ -141,10 +172,7 @@ class PlanGuardTests(unittest.TestCase):
         for label, (extra, allowed) in cases.items():
             with self.subTest(label):
                 plan = dict(base, resource_changes=[*base["resource_changes"], *extra])
-                with tempfile.TemporaryDirectory() as directory:
-                    path = Path(directory) / "plan.json"
-                    path.write_text(json.dumps(plan))
-                    result = run_guard(path)
+                result = run_guard_json(plan)
                 self.assertEqual(
                     result.returncode, 0 if allowed else 1, result.stdout + result.stderr
                 )
@@ -240,10 +268,7 @@ class PlanGuardTests(unittest.TestCase):
                     "resource_changes": [],
                     "planned_values": {"root_module": {"resources": [resource]}},
                 }
-                with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as saved:
-                    json.dump(plan, saved)
-                    saved.flush()
-                    result = run_guard(saved.name)
+                result = run_guard_json(plan)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_function_url_is_rejected_from_either_plan_section(self):
@@ -271,10 +296,7 @@ class PlanGuardTests(unittest.TestCase):
                 else:
                     change = {key: resource[key] for key in ("address", "mode", "type")}
                     plan["resource_changes"] = [dict(change, change={"after": after})]
-                with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as saved:
-                    json.dump(plan, saved)
-                    saved.flush()
-                    result = run_guard(saved.name)
+                result = run_guard_json(plan)
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertIn("Function URL は使用できません", result.stderr)
 
@@ -293,16 +315,174 @@ class PlanGuardTests(unittest.TestCase):
                     else:
                         change = dict(resource, change={"after": resource["values"]})
                         plan["resource_changes"] = [change]
-                    with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as saved:
-                        json.dump(plan, saved)
-                        saved.flush()
-                        result = subprocess.run(
-                            [sys.executable, str(ROOT / "scripts/check_plan.py"), saved.name],
-                            capture_output=True,
-                            text=True,
-                        )
+                    result = run_guard_json(plan)
                     self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                     self.assertIn("managed policy", result.stderr)
+
+    def test_role_creation_with_provider_computed_policies_requires_saved_sources(self):
+        # AWS provider 6.71.0 の実際の plan JSON。ロールの作成時は、設定で policy を付けていなくても
+        # managed_policy_arns と inline_policy が未確定になる（managed_policy_arns = [] も未指定として扱われる）
+        plan = json.loads((FIXTURES / "create-role-computed-policies.json").read_text())
+        roles = {
+            change["address"]: change["change"]
+            for change in plan["resource_changes"]
+            if change["type"] == "aws_iam_role"
+        }
+        self.assertEqual(
+            set(roles), {"aws_iam_role.management", "module.events.aws_iam_role.events[0]"}
+        )
+        for change in roles.values():
+            self.assertEqual(change["actions"], ["create"])
+            self.assertTrue(change["after_unknown"]["managed_policy_arns"])
+            self.assertTrue(change["after_unknown"]["inline_policy"])
+
+        result = run_guard(FIXTURES / "create-role-computed-policies.json")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("未確定の IAM policy は検査できません", result.stderr)
+
+        result = run_guard_saved(plan)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_saved_source_verification_rejects_ambiguous_or_unavailable_sources(self):
+        plan = json.loads((FIXTURES / "create-role-computed-policies.json").read_text())
+        events = {"events": {"main.tf": b"terraform {}\n"}}
+        cases = {
+            "コメントに dynamic がある": {"sources": {"": {"main.tf": b"# dynamic\n"}, **events}},
+            "JSON 設定がある": {
+                "sources": {"": {"main.tf": b"terraform {}\n", "extra.tf.json": b"{}"}, **events}
+            },
+            "native HCL がない": {"sources": {"": {"notes.txt": b""}, **events}},
+            "root のソースがない": {"sources": {"events": {"main.tf": b"terraform {}\n"}}},
+            "module のソースがない": {"sources": {"": {"main.tf": b"terraform {}\n"}}},
+            "manifest が未知の形式": {"manifest": {"Modules": [{"Key": ""}]}},
+            "manifest の Key が重複": {"manifest": [{"Key": ""}, {"Key": ""}]},
+            "ZIP が読めない": {"raw_snapshot": b""},
+        }
+        for label, kwargs in cases.items():
+            with self.subTest(label):
+                result = run_guard_saved(plan, **kwargs)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("未確定の IAM policy は検査できません", result.stderr)
+                if label in {"コメントに dynamic がある", "JSON 設定がある", "native HCL がない"}:
+                    self.assertIn("aws_iam_role.management:", result.stderr)
+                    self.assertNotIn("module.events.aws_iam_role.events[0]:", result.stderr)
+        with self.assertWarns(UserWarning):
+            result = run_guard_saved(plan, duplicate_entry=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("未確定の IAM policy は検査できません", result.stderr)
+
+    def test_saved_sources_match_indexed_and_nested_module_instances(self):
+        base = json.loads((FIXTURES / "create-role-computed-policies.json").read_text())
+        for address in [
+            "module.events[0]",
+            'module.events["east"]',
+            'module.events["a]b.c"]',
+            'module.events["a\\"b\\\\c]"].module.worker[2]',
+        ]:
+            with self.subTest(address):
+                plan = json.loads(json.dumps(base))
+                role = plan["resource_changes"][1]
+                role["module_address"] = address
+                role["address"] = f"{address}.aws_iam_role.events[0]"
+                events = plan["configuration"]["root_module"]["module_calls"]["events"]
+                key = "events"
+                if ".module.worker" in address:
+                    events["module"] = {"module_calls": {"worker": events.copy()}}
+                    key = "events.worker"
+                sources = {
+                    "": {"main.tf": b"terraform {}\n"},
+                    key: {"main.tf": b"terraform {}\n"},
+                }
+                result = run_guard_saved(plan, sources=sources)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        # HCL 識別子に使える結合文字も configuration と snapshot の同じ名前で照合する。
+        plan = json.loads(json.dumps(base))
+        name = "eve\u0301nts"
+        calls = plan["configuration"]["root_module"]["module_calls"]
+        calls[name] = calls.pop("events")
+        plan["resource_changes"][1]["module_address"] = f"module.{name}"
+        plan["resource_changes"][1]["address"] = f"module.{name}.aws_iam_role.events[0]"
+        result = run_guard_saved(
+            plan,
+            sources={"": {"main.tf": b"terraform {}\n"}, name: {"main.tf": b"terraform {}\n"}},
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_saved_source_confirmation_does_not_exempt_other_unknown_policy_shapes(self):
+        base = json.loads((FIXTURES / "create-role-computed-policies.json").read_text())
+        for key, value in [
+            ("inline_policy", [{"policy": True}]),
+            ("policy", True),
+        ]:
+            with self.subTest(key=key):
+                plan = json.loads(json.dumps(base))
+                plan["resource_changes"][0]["change"]["after_unknown"][key] = value
+                result = run_guard_saved(plan)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("未確定の IAM policy は検査できません", result.stderr)
+
+    def test_terraform_show_failure_hides_its_output_and_rejects_the_plan(self):
+        plan = json.loads((FIXTURES / "safe.json").read_text())
+        result = run_guard_saved(plan, show_status=1)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("保存 plan を Terraform で読み取れません", result.stderr)
+        self.assertNotIn("表示しない検証用メッセージ", result.stderr + result.stdout)
+        self.assertNotIn("format_version", result.stderr + result.stdout)
+
+    def test_guard_usage_errors_are_in_japanese(self):
+        for args in [[], ["--saved-plan"], ["--other"], ["a", "b"], ["--saved-plan", "a", "b"]]:
+            with self.subTest(args=args):
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / "scripts/check_plan.py"), *args],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("使い方", result.stderr)
+
+    def test_role_creation_with_configured_unknown_policies_is_rejected(self):
+        # 設定で未確定の値を渡す場合は、作成時でも中止する（AWS provider 6.71.0 の実際の plan JSON）
+        for fixture, message in [
+            (
+                "create-role-unknown-managed-policy",
+                "未確定の managed policy の付与は検査できません",
+            ),
+            ("create-role-unknown-inline-policy", "未確定の IAM policy は検査できません"),
+        ]:
+            with self.subTest(fixture=fixture):
+                plan = json.loads((FIXTURES / f"{fixture}.json").read_text())
+                result = run_guard_saved(plan)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(f"aws_iam_role.management: {message}", result.stderr)
+
+    def test_unknown_role_policies_are_rejected_without_creation_or_configuration(self):
+        # 作成以外の変更や、設定を照合できない plan では、未確定の policy をこれまでどおり中止する
+        base = json.loads((FIXTURES / "create-role-computed-policies.json").read_text())
+
+        def update_only(plan):
+            for change in plan["resource_changes"]:
+                change["change"]["actions"] = ["update"]
+
+        def unknown_module(plan):
+            plan["configuration"]["root_module"]["module_calls"].clear()
+
+        def missing_expressions(plan):
+            plan["configuration"]["root_module"]["resources"][0].pop("expressions")
+
+        cases = {
+            "作成以外の変更": update_only,
+            "configuration がない": lambda plan: plan.pop("configuration"),
+            "module の設定がない": unknown_module,
+            "resource の式が確認できない": missing_expressions,
+        }
+        for name, mutate in cases.items():
+            with self.subTest(case=name):
+                plan = json.loads(json.dumps(base))
+                mutate(plan)
+                result = run_guard_saved(plan)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("未確定の IAM policy は検査できません", result.stderr)
 
     def test_role_scoped_policies_exist_in_the_addon_stack_definitions(self):
         # 書き込みを許可する policy は、別 state の追加スタックの module 名と resource 名で特定する。

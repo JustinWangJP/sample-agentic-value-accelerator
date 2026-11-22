@@ -422,7 +422,7 @@ bash -n scripts/deploy.sh
 | 本体スタックを配信する | 4.2 のコマンド |
 | 追加スタックを適用する | `AWS_PROFILE=registry-deploy scripts/deploy.sh --stack <management\|decision\|notification_events> infrastructure/<スタック>/backend.hcl infrastructure/<スタック>/terraform.tfvars`（本体と同じ主体の検査・`check_plan.py`・`apply` の入力確認を通す） |
 | スタックを撤去する（追加スタック → 本体の順） | `AWS_PROFILE=registry-deploy scripts/deploy.sh --destroy [--stack <management\|decision\|notification_events>] <backend.hcl> <tfvars>`（保護の解除と順番は 5.4。確認ではスタック名を入力する） |
-| plan の JSON を手で検査する（`applications/registry_portal` から） | `python3 scripts/check_plan.py <plan.json>` |
+| 保存済み plan を手で検査する（各スタックのディレクトリから） | `python3 <check_plan.py のパス> --saved-plan <tfplan>` |
 
 ### 5.3 state の操作
 
