@@ -18,7 +18,7 @@ locals {
 
 resource "aws_cognito_resource_server" "portal" {
   identifier   = "registry-portal"
-  name         = "Registry ポータル"
+  name         = "Registry Portal"
   user_pool_id = var.cognito_user_pool_id
   scope {
     scope_name        = local.portal_api_scope_name
@@ -83,7 +83,6 @@ resource "aws_dynamodb_table" "auxiliary" {
     attribute_name = "expiresAt"
     enabled        = true
   }
-  lifecycle { prevent_destroy = true }
 }
 
 module "management_log_group" {

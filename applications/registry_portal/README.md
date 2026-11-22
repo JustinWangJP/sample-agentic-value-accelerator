@@ -197,6 +197,8 @@ CI とローカルの `terraform test` には Terraform 1.17.1 を使います�
 
 Issue #2 の読み取り確認で、既存 Registry、Cognito User Pool、SSO の IdP 名、発見用 M2M client と secret ARN を確定してください。既存 Registry と User Pool 本体は Terraform の管理対象にしません。User Pool の既存ドメインを使い、ポータル用の client、リソースサーバー、業務ロールと `team-*` グループだけを追加します。既に同名のグループや `registry-portal` リソースサーバーがある場合は、その所有者と調整して import してから plan を確認してください。
 
+Cognito リソースサーバーの表示名には、Cognito API の文字制約を満たす `Registry Portal` を使います。OAuth スコープは識別子 `registry-portal` とスコープ名 `api.invoke` で構成します。 [Cognito CreateResourceServer API](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_CreateResourceServer.html#CognitoUserPools-CreateResourceServer-request-Name)
+
 1. 初回だけ、state バケットを管理できる短期認証情報で bootstrap を実行します。IAM Identity Center のない個人アカウントでは、MFA 付きで引き受けた IAM ロール `RegistryPortalDeployer` を使い、Terraform には手順 3 の `credential_process` の profile を渡します（例: `aws sts get-caller-identity --profile registry-deploy` で MFA コードを入力してから `export AWS_PROFILE=registry-deploy-tf`）。`infrastructure/bootstrap/terraform.tfvars.example` を同ディレクトリの `terraform.tfvars` にコピーし、値を置き換えます。
 
    ```bash

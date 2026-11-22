@@ -56,6 +56,10 @@ variables {
 run "security_boundaries" {
   command = plan
   assert {
+    condition     = can(regex("^[\\w\\s+=,.@-]{1,256}$", aws_cognito_resource_server.portal.name))
+    error_message = "Cognito のリソースサーバー表示名は、API が許可する文字で1〜256文字にしてください。"
+  }
+  assert {
     condition     = length(aws_iam_role.management.managed_policy_arns) == 0
     error_message = "管理 Lambda には managed policy を付与せず、空集合を plan で確定してください。"
   }
