@@ -3,6 +3,7 @@ from __future__ import annotations
 import fnmatch
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any, NamedTuple
 
@@ -111,6 +112,47 @@ def _policies(values: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _configured_resource(plan: dict[str, Any], change: dict[str, Any]) -> dict[str, Any] | None:
+    """resource_changes の要素に対応する configuration の resource を返す。照合できなければ None。"""
+    module = (plan.get("configuration") or {}).get("root_module")
+    module_address = change.get("module_address") or ""
+    # module.<呼び出し名>[<添字>] を "." でつないだ形だけを扱う。読めない形は照合できないものとして中止させる
+    step = r"module\.([^.\[\]]+)(?:\[[^\]]*\])?"
+    readable = not module_address or re.fullmatch(rf"{step}(?:\.{step})*", module_address)
+    if module is None or not readable:
+        return None
+    for name in re.findall(step, module_address):
+        module = ((module.get("module_calls") or {}).get(name) or {}).get("module")
+        if module is None:
+            return None
+    address = f"{change.get('type')}.{change.get('name')}"
+    return next(
+        (
+            resource
+            for resource in module.get("resources", [])
+            if resource.get("mode") == "managed" and resource.get("address") == address
+        ),
+        None,
+    )
+
+
+def _computed_on_create(plan: dict[str, Any], change: dict[str, Any], key: str) -> bool:
+    """ロールの作成で、設定にない属性が provider の computed のために未確定になっているかを返す。
+
+    aws_iam_role の managed_policy_arns と inline_policy は computed のため、作成時は設定で何も付けていなくても
+    未確定になる（managed_policy_arns = [] も未指定として扱われる）。設定で値を渡している場合は中止する。
+    """
+    if change.get("type") != "aws_iam_role" or "create" not in change["change"].get("actions", []):
+        return False
+    resource = _configured_resource(plan, change)
+    if resource is None:
+        return False
+    expression = (resource.get("expressions") or {}).get(key)
+    return expression is None or (
+        key == "managed_policy_arns" and expression == {"constant_value": []}
+    )
+
+
 def _target_registry_arn(plan: dict[str, Any]) -> str | None:
     """追加スタックのルート変数 registry_arn（借用する既存 Registry）を返す。"""
     variable = (plan.get("variables") or {}).get("registry_arn") or {}
@@ -162,7 +204,11 @@ def check_plan(plan: dict[str, Any]) -> list[str]:
         ):
             errors.append(f"{address}: 既存 Registry を Terraform の管理対象にできません")
         if resource_type in POLICY_TYPES:
-            unknown = resource["change"].get("after_unknown", {})
+            unknown = {
+                key: value
+                for key, value in (resource["change"].get("after_unknown") or {}).items()
+                if value and not _computed_on_create(plan, resource, key)
+            }
             if resource_type == "aws_iam_role" and unknown.get("managed_policy_arns"):
                 errors.append(f"{address}: 未確定の managed policy の付与は検査できません")
             if any(unknown.get(key) for key in ("policy", "inline_policy")):

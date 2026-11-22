@@ -304,6 +304,64 @@ class PlanGuardTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                     self.assertIn("managed policy", result.stderr)
 
+    def test_role_creation_with_provider_computed_policies_is_allowed(self):
+        # AWS provider 6.71.0 の実際の plan JSON。ロールの作成時は、設定で policy を付けていなくても
+        # managed_policy_arns と inline_policy が未確定になる（managed_policy_arns = [] も未指定として扱われる）
+        plan = json.loads((FIXTURES / "create-role-computed-policies.json").read_text())
+        roles = {
+            change["address"]: change["change"]
+            for change in plan["resource_changes"]
+            if change["type"] == "aws_iam_role"
+        }
+        self.assertEqual(
+            set(roles), {"aws_iam_role.management", "module.events.aws_iam_role.events[0]"}
+        )
+        for change in roles.values():
+            self.assertEqual(change["actions"], ["create"])
+            self.assertTrue(change["after_unknown"]["managed_policy_arns"])
+            self.assertTrue(change["after_unknown"]["inline_policy"])
+
+        result = run_guard(FIXTURES / "create-role-computed-policies.json")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_role_creation_with_configured_unknown_policies_is_rejected(self):
+        # 設定で未確定の値を渡す場合は、作成時でも中止する（AWS provider 6.71.0 の実際の plan JSON）
+        for fixture, message in [
+            ("create-role-unknown-managed-policy", "未確定の managed policy の付与は検査できません"),
+            ("create-role-unknown-inline-policy", "未確定の IAM policy は検査できません"),
+        ]:
+            with self.subTest(fixture=fixture):
+                result = run_guard(FIXTURES / f"{fixture}.json")
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(f"aws_iam_role.management: {message}", result.stderr)
+
+    def test_unknown_role_policies_are_rejected_without_creation_or_configuration(self):
+        # 作成以外の変更や、設定を照合できない plan では、未確定の policy をこれまでどおり中止する
+        base = json.loads((FIXTURES / "create-role-computed-policies.json").read_text())
+
+        def update_only(plan):
+            for change in plan["resource_changes"]:
+                change["change"]["actions"] = ["update"]
+
+        def unknown_module(plan):
+            plan["configuration"]["root_module"]["module_calls"].clear()
+
+        cases = {
+            "作成以外の変更": update_only,
+            "configuration がない": lambda plan: plan.pop("configuration"),
+            "module の設定がない": unknown_module,
+        }
+        for name, mutate in cases.items():
+            with self.subTest(case=name):
+                plan = json.loads(json.dumps(base))
+                mutate(plan)
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as saved:
+                    json.dump(plan, saved)
+                    saved.flush()
+                    result = run_guard(saved.name)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("未確定の IAM policy は検査できません", result.stderr)
+
     def test_role_scoped_policies_exist_in_the_addon_stack_definitions(self):
         # 書き込みを許可する policy は、別 state の追加スタックの module 名と resource 名で特定する。
         # 定義の改名に追従しないと許可が外れるため、定義に実在することを確かめる
