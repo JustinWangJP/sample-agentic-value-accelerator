@@ -85,6 +85,7 @@ resource "aws_dynamodb_table" "auxiliary" {
     attribute_name = "expiresAt"
     enabled        = true
   }
+  lifecycle { prevent_destroy = true }
 }
 
 module "management_log_group" {
