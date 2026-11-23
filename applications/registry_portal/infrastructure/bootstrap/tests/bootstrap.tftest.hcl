@@ -175,6 +175,16 @@ run "identity_center_permission_set" {
     error_message = "deployer に REST API のリソースポリシーの更新（apigateway:UpdateRestApiPolicy）を許可してください。"
   }
   assert {
+    # 本体の lambda_reserved_concurrency の設定と解除に必要。
+    # 設定は PutFunctionConcurrency、null に戻すときは DeleteFunctionConcurrency を呼ぶ
+    condition = anytrue([
+      for statement in jsondecode(aws_ssoadmin_permission_set_inline_policy.deployer[0].inline_policy).Statement :
+      contains(statement.Action, "lambda:PutFunctionConcurrency") && contains(statement.Action, "lambda:DeleteFunctionConcurrency")
+      if statement.Sid == "ManagementFunction"
+    ])
+    error_message = "deployer に管理 Lambda の予約同時実行数の設定と解除（lambda:PutFunctionConcurrency・lambda:DeleteFunctionConcurrency）を許可してください。"
+  }
+  assert {
     condition     = length(replace(aws_ssoadmin_permission_set_inline_policy.deployer[0].inline_policy, "/\\s/", "")) <= 10240
     error_message = "permission set の inline policy は非空白10240文字以内にしてください。"
   }
