@@ -400,6 +400,20 @@ Cognito のログイン画面と CloudFront の SPA は表示できても、REST
 
 締め出された場合は、配信権限のある AWS CLI プロファイルを使い、正しい CIDR を環境変数に設定して同じ本体スタックを配信し直します。REST API の接続元制限はポータルへの呼び出しに適用されます。Terraform や API Gateway の更新権限は、従来どおり IAM で管理します。
 
+接続元 IP の変更は、必ず `scripts/deploy.sh` で反映します。REST API のリソースポリシーは、新しいデプロイを作ってステージを切り替えるまで公開されません。Terraform のデプロイ（`aws_api_gateway_deployment`）には `triggers` を付けず、再デプロイは `deploy.sh` が apply のたびに行います（[ADR-0015](../adr/0015-rest-api-with-source-ip-policy-and-script-deployment.md) のデプロイ方式）。`terraform apply` を直接実行すると、古いポリシーが公開されたままになります。許可元を外した場合は、外したはずの IP からも呼び出せる状態が続きます。直接実行してしまった場合は、同じ認証情報で次の 2 つを実行し、ステージを新しいデプロイに切り替えます。
+
+```bash
+# REST API の ID・ステージ名・リージョンは、本体の output から取る（deploy.sh と同じ値）
+infra=applications/registry_portal/infrastructure
+api_id="$(terraform -chdir="$infra" output -json rest_api | jq -r .id)"
+stage="$(terraform -chdir="$infra" output -json rest_api | jq -r .stage_name)"
+region="$(terraform -chdir="$infra" output -raw api_region)"
+deployment_id="$(aws apigateway create-deployment --rest-api-id "$api_id" \
+  --region "$region" --query id --output text)"
+aws apigateway update-stage --rest-api-id "$api_id" --stage-name "$stage" \
+  --patch-operations "op=replace,path=/deploymentId,value=$deployment_id" --region "$region"
+```
+
 #### HTTP API から切り替える
 
 1. 管理者が対象リージョンで `aws apigateway get-account --region us-east-1 --query cloudwatchRoleArn` を実行します。すでに有効なロールが設定されていれば、そのロールを使います。ロール設定がなければ bootstrap で `manage_api_gateway_account = true` を設定し、再適用します。この設定はリージョン内の API Gateway REST API で共有されます。既存ロールを使う場合も、Identity Center の deployer を使う環境では REST API の更新権限を反映するため、bootstrap を再適用します。
