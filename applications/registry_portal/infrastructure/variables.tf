@@ -98,3 +98,8 @@ variable "spa_force_destroy" {
   type        = bool
   default     = false
 }
+variable "lambda_reserved_concurrency" {
+  description = "管理 Lambda の予約同時実行数（reserved_concurrent_executions）。暴走や大量リクエストによる課金を抑える上限。null なら予約しない。アカウントの同時実行数の上限（aws lambda get-account-settings）を確認してから指定する。"
+  type        = number
+  default     = null
+}

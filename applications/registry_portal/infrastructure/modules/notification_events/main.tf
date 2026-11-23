@@ -78,6 +78,8 @@ resource "aws_lambda_function" "events" {
   handler          = "registry_portal.handlers.events.handler"
   timeout          = 30
   memory_size      = 256
+  # null なら属性を設定せず、予約しない（既定の動作のまま）。上限に達した呼び出しは再試行と DLQ に回る
+  reserved_concurrent_executions = var.lambda_reserved_concurrency
   dead_letter_config {
     target_arn = aws_sqs_queue.events_dead_letter.arn
   }

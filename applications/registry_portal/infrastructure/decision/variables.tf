@@ -84,3 +84,9 @@ variable "portal_api_scope" {
   type        = string
   description = "route の JWT authorizer が検証するポータル用のカスタム scope。本体スタックの output portal_api_scope を転記する"
 }
+
+variable "lambda_reserved_concurrency" {
+  type        = number
+  description = "決裁 Lambda の予約同時実行数（reserved_concurrent_executions）。暴走や大量リクエストによる課金を抑える上限。null なら予約しない。アカウントの同時実行数の上限（aws lambda get-account-settings）を確認してから指定する"
+  default     = null
+}

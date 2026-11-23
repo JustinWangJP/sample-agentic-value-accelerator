@@ -28,3 +28,9 @@ variable "supplement_table_arn" {
   type        = string
   description = "補助 DynamoDB テーブルの ARN"
 }
+
+variable "lambda_reserved_concurrency" {
+  type        = number
+  description = "イベント処理 Lambda の予約同時実行数（reserved_concurrent_executions）。null なら予約しない。EventBridge から呼ばれ、上限に達すると再試行や DLQ に回るため、本体の API より余裕のある値にする。アカウントの同時実行数の上限（aws lambda get-account-settings）を確認してから指定する"
+  default     = null
+}

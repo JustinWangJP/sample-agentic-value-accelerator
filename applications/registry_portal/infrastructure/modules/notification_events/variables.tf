@@ -32,3 +32,9 @@ variable "supplement_table_arn" {
     error_message = "補助 DynamoDB テーブルの ARN を指定してください。"
   }
 }
+
+variable "lambda_reserved_concurrency" {
+  type        = number
+  description = "イベント処理 Lambda の予約同時実行数（reserved_concurrent_executions）。null なら予約しない"
+  default     = null
+}

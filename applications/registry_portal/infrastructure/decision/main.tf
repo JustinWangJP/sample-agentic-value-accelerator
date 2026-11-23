@@ -27,4 +27,6 @@ module "decision" {
   }
   # secret が顧客管理 KMS キーで暗号化されている場合だけ指定する（本体スタックと同じ値）
   discovery_kms_key_arn = var.discovery_kms_key_arn
+  # 予約同時実行数。null なら予約しない（#61 実装案 5）
+  lambda_reserved_concurrency = var.lambda_reserved_concurrency
 }
