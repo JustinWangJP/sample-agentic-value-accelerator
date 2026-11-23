@@ -117,3 +117,65 @@ run "deployer_principal_must_not_be_session" {
   }
   expect_failures = [var.deployer_principal_arn]
 }
+# 月額の予算アラート。上限と通知先の両方を指定したときだけ作る（通知先は TF_VAR_budget_notification_emails で渡す）
+run "budget_with_limit_and_emails" {
+  command = plan
+  variables {
+    budget_limit_usd           = 5
+    budget_notification_emails = ["portal-owner@example.com"]
+  }
+  assert {
+    condition     = length(aws_budgets_budget.monthly) == 1
+    error_message = "上限と通知先の両方を指定した場合は予算を 1 つ作ってください。"
+  }
+  assert {
+    condition = (
+      aws_budgets_budget.monthly[0].budget_type == "COST" &&
+      aws_budgets_budget.monthly[0].time_unit == "MONTHLY" &&
+      tonumber(aws_budgets_budget.monthly[0].limit_amount) == 5 &&
+      aws_budgets_budget.monthly[0].limit_unit == "USD"
+    )
+    error_message = "予算は月額の COST 予算とし、上限を USD で指定してください。"
+  }
+  assert {
+    condition = toset([
+      for n in aws_budgets_budget.monthly[0].notification :
+      "${n.notification_type}:${n.comparison_operator}:${n.threshold}:${n.threshold_type}"
+    ]) == toset(["ACTUAL:GREATER_THAN:80:PERCENTAGE", "FORECASTED:GREATER_THAN:100:PERCENTAGE"])
+    error_message = "通知は実績 80% と予測 100% の 2 つにしてください。"
+  }
+  assert {
+    condition = alltrue([
+      for n in aws_budgets_budget.monthly[0].notification :
+      toset(n.subscriber_email_addresses) == toset(["portal-owner@example.com"])
+    ])
+    error_message = "どちらの通知も指定したメールアドレスに送ってください。"
+  }
+}
+run "budget_not_created_by_default" {
+  command = plan
+  assert {
+    condition     = length(aws_budgets_budget.monthly) == 0
+    error_message = "既定値では予算を作らないでください。"
+  }
+}
+run "budget_not_created_without_emails" {
+  command = plan
+  variables {
+    budget_limit_usd = 5
+  }
+  assert {
+    condition     = length(aws_budgets_budget.monthly) == 0
+    error_message = "通知先を指定しない場合は予算を作らないでください。"
+  }
+}
+run "budget_not_created_without_limit" {
+  command = plan
+  variables {
+    budget_notification_emails = ["portal-owner@example.com"]
+  }
+  assert {
+    condition     = length(aws_budgets_budget.monthly) == 0
+    error_message = "上限を指定しない場合は予算を作らないでください。"
+  }
+}
