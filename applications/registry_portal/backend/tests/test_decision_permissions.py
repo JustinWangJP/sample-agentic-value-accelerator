@@ -86,17 +86,12 @@ def test_module_creates_the_decision_lambda_with_its_own_role_and_log_group():
         # 発見用 secret が顧客管理キーの場合だけ付ける kms:Decrypt（#49）
         "aws_iam_role_policy",
         "aws_lambda_function",
-        "aws_apigatewayv2_integration",
-        "aws_apigatewayv2_route",
-        # 審査と決裁、/api/records/ 以下の path（for_each。管理レコードの検索を含む）、回復の path
-        "aws_lambda_permission",
-        "aws_lambda_permission",
-        "aws_lambda_permission",
     ]
     # ロググループと発見用 M2M の設定は、本体スタックと共通のモジュールで作る
     assert re.findall(r'^module "([^"]+)" \{\n\s*source\s*=\s*"([^"]+)"', main, re.MULTILINE) == [
         ("log_group", "../lambda_log_group"),
         ("discovery_client", "../discovery_client"),
+        ("decision_routes", "../management_routes"),
     ]
     # 実行ロールは決裁 Lambda 専用に新しく作る（管理 Lambda のロールを流用しない）
     assert 'Principal = { Service = "lambda.amazonaws.com" }' in main
@@ -112,54 +107,33 @@ def test_module_creates_the_decision_lambda_with_its_own_role_and_log_group():
 
 
 def test_module_routes_only_curator_and_recovery_apis_to_the_decision_lambda():
-    """審査・決裁・公開管理・見送り・管理レコードの検索と Admin の回復の route だけを決裁 Lambda に割り当てる。
-
-    既存の JWT authorizer を適用し、HTTP API と authorizer は作らない。
-    """
-    main = (MODULE / "main.tf").read_text()
-    (paths,) = re.findall(r"decision_record_paths = \{(.*?)\n  \}\n", main, re.DOTALL)
-    # /api/records/ 以下の path は、静的な管理レコードの検索も含めて、route と呼び出し許可の両方を
-    # 同じ定義から作る
-    record_paths = re.findall(r'method\s*=\s*"([A-Z]+)"\s*\n\s*path\s*=\s*"([^"]+)"', paths)
-    assert record_paths == [
-        ("POST", "{recordId}/adopt"),
-        ("POST", "{recordId}/reassign-owner"),
-        ("POST", "{recordId}/suspend"),
-        ("POST", "{recordId}/deprecate"),
-        ("GET", "{recordId}/publication"),
-        ("GET", "publication"),
-        ("POST", "{recordId}/deprecation-requests/decline"),
-    ]
-    (routes,) = re.findall(r"routes = concat\((.*?)\n  \)\n", main, re.DOTALL)
-    assert (
-        '"${entry.method} /api/records/${entry.path}"' in routes
-        and "values(local.decision_record_paths)" in routes
-    )
-    assert re.findall(r'^\s*"([A-Z]+ /api/[^"]+)",$', routes, re.MULTILINE) == [
+    """審査・決裁・公開管理・回復の経路を、決裁 Lambda に割り当てる。"""
+    routes_module = MODULE.parent / "management_routes"
+    routes = json.loads((routes_module / "routes.json").read_text())["decision"]
+    assert {route["route_key"] for route in routes.values()} == {
         "GET /api/reviews",
         "GET /api/reviews/{recordId}",
         "POST /api/reviews/{recordId}/approve",
         "POST /api/reviews/{recordId}/reject",
+        "POST /api/records/{recordId}/adopt",
+        "POST /api/records/{recordId}/reassign-owner",
+        "POST /api/records/{recordId}/suspend",
+        "POST /api/records/{recordId}/deprecate",
+        "GET /api/records/{recordId}/publication",
+        "GET /api/records/publication",
+        "POST /api/records/{recordId}/deprecation-requests/decline",
         "GET /api/records/{recordId}/recovery",
         "POST /api/records/{recordId}/recovery",
-    ]
-    assert re.search(r'authorization_type\s+= "JWT"', main)
-    assert re.search(r"authorizer_id\s+= var\.jwt_authorizer_id", main)
-    # 本体スタックの route と同じポータル用のカスタム scope を JWT authorizer で検証する
-    # scope は本体スタックの output portal_api_scope を転記した変数で受け取る
-    assert re.search(r"authorization_scopes = \[var\.portal_api_scope\]", main)
-    assert 'payload_format_version = "2.0"' in main
-    # HTTP API と authorizer は借用し、作成しない
-    assert 'resource "aws_apigatewayv2_api"' not in main
-    assert 'resource "aws_apigatewayv2_authorizer"' not in main
-    # 呼び出し許可は審査と決裁、/api/records/ 以下の path、回復の path だけに限る。
-    # {recordId} はワイルドカードに置き換え、静的な検索の path は完全一致で許可する
-    source_arns = re.findall(r'source_arn\s*=\s*"(.+)"$', main, re.MULTILINE)
-    assert [arn.split("/*/*")[1] for arn in source_arns] == [
-        "/api/reviews*",
-        '/api/records/${replace(each.value.path, "{recordId}", "*")}',
-        "/api/records/*/recovery",
-    ]
+    }
+
+    main = (MODULE / "main.tf").read_text()
+    (wiring,) = re.findall(r'module "decision_routes" \{(.*?)\n\}', main, re.DOTALL)
+    assert 'routes.json")).decision' in wiring
+    assert re.search(r"lambda_invoke_arn\s*=\s*aws_lambda_function\.decision\.invoke_arn", wiring)
+    assert re.search(
+        r"management_function_name\s*=\s*aws_lambda_function\.decision\.function_name", wiring
+    )
+    assert re.search(r"authorization_scope\s*=\s*var\.portal_api_scope", wiring)
 
 
 def test_arn_validation_does_not_pin_a_region():
