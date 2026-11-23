@@ -87,6 +87,7 @@ run "events_policy_is_known_on_first_plan" {
 }
 
 # ログの保持期間（#62）。追加スタックの Lambda のロググループも、本体と同じ変数で保持日数を変えられる
+# 不正な値の検証は、本体と同じく modules/lambda_log_group が行う（portal.tftest.hcl の log_retention_dev_value の説明）
 run "decision_log_retention_dev_value" {
   command = plan
   module {

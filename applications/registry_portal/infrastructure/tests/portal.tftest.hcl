@@ -243,6 +243,9 @@ run "customer_managed_secret_key" {
 }
 
 # ログの保持期間（#62）。dev では dev.tfvars で短くし、API と管理 Lambda のロググループの両方に効かせる
+# スタックの log_retention_in_days は検証せず、そのまま modules/lambda_log_group に渡す。不正な値（例: 10）は
+# そのモジュールの検証で plan が止まる（shared_modules.tftest.hcl の lambda_log_group_rejects_unsupported_retention）。
+# expect_failures は子モジュールの変数を指定できないため、ここでは値がモジュールに届くことだけを確かめる
 run "log_retention_dev_value" {
   command = plan
   variables {
