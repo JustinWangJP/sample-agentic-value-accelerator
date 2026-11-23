@@ -86,8 +86,9 @@ resource "aws_dynamodb_table" "auxiliary" {
 }
 
 module "management_log_group" {
-  source        = "./modules/lambda_log_group"
-  function_name = local.management_name
+  source            = "./modules/lambda_log_group"
+  function_name     = local.management_name
+  retention_in_days = var.log_retention_in_days
 }
 
 # ロググループを追加スタックと共通のモジュールに移した。適用済みの state は moved で引き継ぐ
@@ -110,7 +111,7 @@ module "discovery_client" {
 
 resource "aws_cloudwatch_log_group" "api" {
   name              = "/aws/apigateway/${var.name_prefix}"
-  retention_in_days = 365
+  retention_in_days = var.log_retention_in_days
 }
 
 resource "aws_iam_role" "management" {

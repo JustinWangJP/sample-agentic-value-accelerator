@@ -11,6 +11,10 @@ discovery_client_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:sec
 # discovery_kms_key_arn = "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000000"
 # discovery_scope = "existing-registry/discover"
 
+# dev の利用料金を抑えるため、API と Lambda のログの保持日数を短くする（既定は 365 日）。
+# CloudWatch Logs が受け付ける値（1, 3, 5, 7, 14, 30, ...）だけを指定できる。追加スタックの tfvars にも同じ値を書く
+log_retention_in_days = 14
+
 # dev の費用を抑える設定。SPA バケットの古いバージョン（配信で置き換わったビルド）を 7 日で消す。
 # 配信は手元のビルドを上書きするだけで、古いバージョンには頼らない（戻すときは前のコミットから配信し直す）。
 # 指定しない（null）と古いバージョンを残し続ける。

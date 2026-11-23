@@ -4,3 +4,5 @@ lambda_zip_path       = "../../backend/build/lambda.zip"
 registry_arn          = "arn:aws:agent-registry:us-east-1:123456789012:registry/abcdEFGH1234"
 supplement_table_name = "registry-auxiliary"
 supplement_table_arn  = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-auxiliary"
+# イベント処理 Lambda のログの保持日数。dev では本体スタックの dev.tfvars と同じ値にする（既定は 365 日）
+log_retention_in_days = 14
