@@ -14,6 +14,17 @@ mock_provider "aws" {
   }
 }
 
+# 追加スタックが本体の output rest_api から転記する値。各 run で共通に使う
+variables {
+  rest_api = {
+    id                   = "a1b2c3d4e5"
+    stage_name           = "v1"
+    authorizer_id        = "abc123"
+    portal_api_scope     = "registry-portal/api.invoke"
+    cors_allowed_origins = ["https://portal.example.cloudfront.net"]
+  }
+}
+
 run "decision_policy_is_known_on_first_plan" {
   command = plan
   module {
@@ -27,13 +38,6 @@ run "decision_policy_is_known_on_first_plan" {
     registry_arn          = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
     supplement_table_name = "registry-auxiliary"
     supplement_table_arn  = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-auxiliary"
-    rest_api = {
-      id                   = "a1b2c3d4e5"
-      stage_name           = "v1"
-      authorizer_id        = "abc123"
-      portal_api_scope     = "registry-portal/api.invoke"
-      cors_allowed_origins = ["https://portal.example.cloudfront.net"]
-    }
     discovery_client = {
       token_url         = "https://example.auth.us-east-1.amazoncognito.com/oauth2/token"
       client_id         = "discovery-client"
@@ -96,13 +100,6 @@ run "decision_log_retention_dev_value" {
     registry_arn          = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
     supplement_table_name = "registry-auxiliary"
     supplement_table_arn  = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-auxiliary"
-    rest_api = {
-      id                   = "a1b2c3d4e5"
-      stage_name           = "v1"
-      authorizer_id        = "abc123"
-      portal_api_scope     = "registry-portal/api.invoke"
-      cors_allowed_origins = ["https://portal.example.cloudfront.net"]
-    }
     discovery_client = {
       token_url         = "https://example.auth.us-east-1.amazoncognito.com/oauth2/token"
       client_id         = "discovery-client"
@@ -143,20 +140,13 @@ run "decision_stack_rejects_unsupported_log_retention" {
     source = "./decision"
   }
   variables {
-    region                = "us-east-1"
-    lambda_zip_path       = "tests/fixtures/safe.json"
-    cognito_user_pool_id  = "us-east-1_Example"
-    human_client_id       = "human-spa-client"
-    registry_arn          = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
-    supplement_table_name = "registry-auxiliary"
-    supplement_table_arn  = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-auxiliary"
-    rest_api = {
-      id                   = "a1b2c3d4e5"
-      stage_name           = "v1"
-      authorizer_id        = "abc123"
-      portal_api_scope     = "registry-portal/api.invoke"
-      cors_allowed_origins = ["https://portal.example.cloudfront.net"]
-    }
+    region                      = "us-east-1"
+    lambda_zip_path             = "tests/fixtures/safe.json"
+    cognito_user_pool_id        = "us-east-1_Example"
+    human_client_id             = "human-spa-client"
+    registry_arn                = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
+    supplement_table_name       = "registry-auxiliary"
+    supplement_table_arn        = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-auxiliary"
     discovery_token_url         = "https://example.auth.us-east-1.amazoncognito.com/oauth2/token"
     discovery_client_id         = "discovery-client"
     discovery_client_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:discovery-AbCdEf"
@@ -196,13 +186,6 @@ run "decision_reserved_concurrency" {
     registry_arn          = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
     supplement_table_name = "registry-auxiliary"
     supplement_table_arn  = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-auxiliary"
-    rest_api = {
-      id                   = "a1b2c3d4e5"
-      stage_name           = "v1"
-      authorizer_id        = "abc123"
-      portal_api_scope     = "registry-portal/api.invoke"
-      cors_allowed_origins = ["https://portal.example.cloudfront.net"]
-    }
     discovery_client = {
       token_url         = "https://example.auth.us-east-1.amazoncognito.com/oauth2/token"
       client_id         = "discovery-client"
@@ -230,13 +213,6 @@ run "decision_reserved_concurrency_default" {
     registry_arn          = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
     supplement_table_name = "registry-auxiliary"
     supplement_table_arn  = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-auxiliary"
-    rest_api = {
-      id                   = "a1b2c3d4e5"
-      stage_name           = "v1"
-      authorizer_id        = "abc123"
-      portal_api_scope     = "registry-portal/api.invoke"
-      cors_allowed_origins = ["https://portal.example.cloudfront.net"]
-    }
     discovery_client = {
       token_url         = "https://example.auth.us-east-1.amazoncognito.com/oauth2/token"
       client_id         = "discovery-client"

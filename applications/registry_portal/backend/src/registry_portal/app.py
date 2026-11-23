@@ -291,17 +291,6 @@ def _with_cors(
     return handler
 
 
-def _serve(
-    routes: Mapping[str, Route],
-    settings: AuthSettings,
-    cors_origins: frozenset[str],
-    *,
-    preflight: bool = False,
-) -> Handler:
-    """ルート表を、CORS を処理する Lambda handler にする。"""
-    return _with_cors(_route_dispatcher(routes, settings), cors_origins, preflight=preflight)
-
-
 class _SupplementStores(NamedTuple):
     """同じ補助テーブルを、同じ DynamoDB クライアントで読み書きするストア。"""
 
@@ -507,7 +496,9 @@ def create_management_handler(
         "POST /api/notifications/read": read_notifications,
     }
 
-    return _serve(routes, settings, load_cors_origins(environ), preflight=True)
+    return _with_cors(
+        _route_dispatcher(routes, settings), load_cors_origins(environ), preflight=True
+    )
 
 
 def create_curation_handler(
@@ -642,7 +633,9 @@ def create_curation_handler(
         "POST /api/records/{recordId}/recovery": recover_operation,
     }
 
-    return _serve(routes, settings, load_cors_origins(environ))
+    return _with_cors(
+        _route_dispatcher(routes, settings), load_cors_origins(environ), preflight=False
+    )
 
 
 def create_event_handler(

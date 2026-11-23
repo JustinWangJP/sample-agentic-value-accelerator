@@ -78,12 +78,12 @@ run "security_boundaries" {
     error_message = "人間用 client は secret のない code flow とカスタム scope が必要です。"
   }
   assert {
-    condition     = toset([for route in values(module.management_routes.routes) : route.route_key]) == toset(["GET /api/me", "GET /api/catalog", "POST /api/catalog/search", "GET /api/catalog/{recordId}"])
+    condition     = toset([for route in values(module.main_routes.routes) : route.route_key]) == toset(["GET /api/me", "GET /api/catalog", "POST /api/catalog/search", "GET /api/catalog/{recordId}"])
     error_message = "本体スタックの route は主体とカタログ（一覧・検索・詳細）だけにしてください。決裁と管理の追加 route は追加スタックが作ります。"
   }
   assert {
-    condition     = alltrue([for route in values(module.management_routes.routes) : route.authorization_type == "COGNITO_USER_POOLS" && route.authorization_scopes == toset(["registry-portal/api.invoke"])])
-    error_message = "すべての route に人間用 JWT と scope の検証が必要です。"
+    condition     = alltrue([for route in values(module.main_routes.routes) : route.authorization_type == "COGNITO_USER_POOLS" && route.authorization_scopes == toset(["registry-portal/api.invoke"])])
+    error_message = "すべての route で、Cognito User Pools authorizer によるアクセストークンと scope の検証が必要です。"
   }
   assert {
     condition     = aws_dynamodb_table.auxiliary.billing_mode == "PAY_PER_REQUEST" && aws_dynamodb_table.auxiliary.deletion_protection_enabled && aws_dynamodb_table.auxiliary.point_in_time_recovery[0].enabled && aws_dynamodb_table.auxiliary.server_side_encryption[0].enabled
@@ -101,7 +101,8 @@ run "security_boundaries" {
   assert {
     condition = (
       keys(aws_api_gateway_method.preflight) == keys(aws_api_gateway_integration.preflight)
-      && length(aws_api_gateway_method.preflight) == 26
+      # 経路表（routes.json）の全グループのパスごとに 1 つ。追加スタックの経路のパスも本体が作る
+      && toset(keys(aws_api_gateway_method.preflight)) == toset(flatten([for group in values(jsondecode(file("modules/api_routes/routes.json"))) : [for route in values(group) : route.path]]))
       && alltrue([for method in aws_api_gateway_method.preflight : method.http_method == "OPTIONS" && method.authorization == "NONE"])
       && alltrue([for integration in aws_api_gateway_integration.preflight : integration.type == "AWS_PROXY"])
       && alltrue([for response in aws_api_gateway_gateway_response.cors : response.response_parameters["gatewayresponse.header.Access-Control-Allow-Origin"] == "method.request.header.Origin"])
@@ -169,21 +170,21 @@ run "security_boundaries" {
 run "lambda_invoke_permissions" {
   command = apply
   assert {
-    condition = toset([for permission in values(module.management_routes.invoke_permissions) : trimprefix(permission.source_arn, "${aws_api_gateway_rest_api.portal.execution_arn}/*/")]) == toset([
+    condition = toset([for permission in values(module.main_routes.invoke_permissions) : trimprefix(permission.source_arn, "${aws_api_gateway_rest_api.portal.execution_arn}/*/")]) == toset([
       "GET/api/me", "GET/api/catalog", "POST/api/catalog/search", "GET/api/catalog/*",
     ])
     error_message = "管理 Lambda の呼び出し許可は、本体スタックの route のメソッドと path に限ってください。"
   }
   assert {
     # route と呼び出し許可を同じ map（{route_key, statement_id}）から作り、キーとメソッドを対応させる
-    condition = keys(module.management_routes.routes) == keys(module.management_routes.invoke_permissions) && alltrue([
-      for name, route in module.management_routes.routes :
-      startswith(module.management_routes.invoke_permissions[name].source_arn, "${aws_api_gateway_rest_api.portal.execution_arn}/*/${split(" ", route.route_key)[0]}/")
+    condition = keys(module.main_routes.routes) == keys(module.main_routes.invoke_permissions) && alltrue([
+      for name, route in module.main_routes.routes :
+      startswith(module.main_routes.invoke_permissions[name].source_arn, "${aws_api_gateway_rest_api.portal.execution_arn}/*/${split(" ", route.route_key)[0]}/")
     ])
     error_message = "本体スタックの route と呼び出し許可は、同じキーの 1 つの map から作り、メソッドを一致させてください。"
   }
   assert {
-    condition     = alltrue([for permission in values(module.management_routes.invoke_permissions) : permission.principal == "apigateway.amazonaws.com" && permission.source_account == var.aws_account_id && permission.function_name == aws_lambda_function.management.function_name])
+    condition     = alltrue([for permission in values(module.main_routes.invoke_permissions) : permission.principal == "apigateway.amazonaws.com" && permission.source_account == var.aws_account_id && permission.function_name == aws_lambda_function.management.function_name])
     error_message = "管理 Lambda は同じアカウントの API Gateway からだけ呼び出せるようにしてください。"
   }
 }

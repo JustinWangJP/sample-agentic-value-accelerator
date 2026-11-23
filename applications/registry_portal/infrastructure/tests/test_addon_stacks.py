@@ -20,6 +20,36 @@ def aws_provider_version(stack_dir: Path) -> str:
     return match.group(1)
 
 
+# 本体の output rest_api を転記する変数。Terraform には型の別名がないため、同じ型を 3 か所に書く
+REST_API_VARIABLES = (
+    INFRA / "management/variables.tf",
+    INFRA / "decision/variables.tf",
+    INFRA / "modules/decision/variables.tf",
+)
+
+
+def rest_api_type(path: Path) -> dict[str, str]:
+    """variable "rest_api" の object 型を、属性名 → 型の辞書にする。"""
+    match = re.search(
+        r'variable "rest_api" \{\s*type\s*=\s*object\(\{(.*?)\}\)', path.read_text(), re.S
+    )
+    if not match:
+        raise AssertionError(f"variable rest_api の object 型がありません: {path}")
+    return dict(re.findall(r"^\s*(\w+)\s*=\s*(\S+)\s*$", match.group(1), re.M))
+
+
+def rest_api_output_attributes() -> set[str]:
+    """本体スタックの output rest_api の属性名。"""
+    match = re.search(
+        r'output "rest_api" \{.*?value\s*=\s*\{(.*?)\n  \}',
+        (INFRA / "outputs.tf").read_text(),
+        re.S,
+    )
+    if not match:
+        raise AssertionError("本体スタックに output rest_api がありません。")
+    return set(re.findall(r"^\s*(\w+)\s*=", match.group(1), re.M))
+
+
 def backend_settings(path: Path) -> dict[str, str]:
     settings = {}
     for line in path.read_text().splitlines():
@@ -35,6 +65,15 @@ class AddonStackTests(unittest.TestCase):
         for stack in ADDON_STACKS:
             with self.subTest(stack=stack):
                 self.assertEqual(aws_provider_version(INFRA / stack), "= 6.71.0")
+
+    def test_rest_api_variables_share_one_type_matching_the_main_output(self):
+        # output rest_api をそのまま転記できるよう、3 か所の型と output の属性をそろえる。
+        # 属性を足すときは、本体の outputs.tf と REST_API_VARIABLES のすべてを直す
+        expected = rest_api_type(REST_API_VARIABLES[0])
+        self.assertEqual(set(expected), rest_api_output_attributes())
+        for path in REST_API_VARIABLES[1:]:
+            with self.subTest(path=path.relative_to(INFRA)):
+                self.assertEqual(rest_api_type(path), expected)
 
     def test_backend_examples_keep_every_state_under_the_dev_prefix(self):
         # key はガイド 1.4 の表どおり。本体と同じバケットで key だけを分ける

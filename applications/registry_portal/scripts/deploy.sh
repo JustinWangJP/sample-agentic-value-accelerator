@@ -68,6 +68,11 @@ stack_config "$stack"
 #   is_main_destroy: 本体の撤去か。追加スタックの state と本体の保護を、apply の前に検査する
 #   plan_args: terraform plan の引数。撤去では destroy の plan を保存する
 #   completion_message: apply が成功し、SPA を配信しないときに表示する
+#   redeploy_from: apply の後に REST API を再デプロイする先（ID・ステージ名・リージョン）の取得元。
+#     output: 本体。apply 後の output rest_api から取る
+#     plan: 追加スタック。検査済み plan の変数 rest_api（本体の output の転記）から取る。
+#           撤去でも反映でも同じ値を使い、追加スタックには再デプロイ先のための output を持たせない
+#     none: 通知スタックと本体の撤去。REST API の経路を変えないか、REST API ごと消える
 is_main_destroy=false
 plan_args=(-input=false)
 completion_message="${stack} スタックの反映が完了しました。README の dev 手動受入を実施してください。"
@@ -77,6 +82,12 @@ if [[ "$destroy" == true ]]; then
   completion_message="${stack} スタックの撤去が完了しました。"
   if [[ "$stack" == main ]]; then is_main_destroy=true; fi
 fi
+case "$stack" in
+  main) redeploy_from=output ;;
+  management | decision) redeploy_from=plan ;;
+  *) redeploy_from=none ;;
+esac
+if [[ "$is_main_destroy" == true ]]; then redeploy_from=none; fi
 [[ $# -eq 2 ]] || fail "$usage"
 [[ -z "${CI:-}" && -z "${GITHUB_ACTIONS:-}" ]] || fail "CI からの反映は禁止されています。ローカル端末で実行してください。"
 stack_dir="$infra_dir${stack_subdir:+/$stack_subdir}"
@@ -94,6 +105,22 @@ required_commands=(aws terraform python3)
 for command in "${required_commands[@]}"; do command -v "$command" >/dev/null || fail "必要なコマンドがありません: $command"; done
 profile_setting() { aws configure get "$1" --profile "$2" 2>/dev/null || true; }
 caller_of() { aws sts get-caller-identity --query Arn --output text --profile "$1"; }
+# 標準入力の JSON から、引数で指定したドット区切りの場所の値を空白区切りで 1 行に出す
+json_values() {
+  python3 -c '
+import json
+import sys
+
+data = json.load(sys.stdin)
+values = []
+for path in sys.argv[1:]:
+    value = data
+    for key in path.split("."):
+        value = value[key]
+    values.append(str(value))
+print(*values)
+' "$@"
+}
 
 sso_session="$(profile_setting sso_session "$AWS_PROFILE")"
 sso_start_url="$(profile_setting sso_start_url "$AWS_PROFILE")"
@@ -204,32 +231,17 @@ else
   read -r confirmation || fail "反映を中止しました。"
   [[ "$confirmation" == "apply" ]] || fail "反映を中止しました。"
 fi
-if [[ "$stack" == management || "$stack" == decision ]]; then
-  # 追加スタックの再デプロイ先は、検査済み plan の変数 rest_api（本体の output rest_api の転記）から取得する。
-  # 撤去でも反映でも同じ値を使い、追加スタックには再デプロイ先のための output を持たせない
-  api_target="$(tf show -json "$work_dir/approved.tfplan" | python3 -c '
-import json
-import sys
-
-variables = json.load(sys.stdin)["variables"]
-rest_api = variables["rest_api"]["value"]
-print(rest_api["id"], rest_api["stage_name"], variables["region"]["value"])
-')"
-  read -r api_id api_stage api_region <<<"$api_target"
+if [[ "$redeploy_from" == plan ]]; then
+  # 撤去の apply の後は state から値を読めないため、apply の前に plan から読む
+  read -r api_id api_stage api_region <<<"$(tf show -json "$work_dir/approved.tfplan" \
+    | json_values variables.rest_api.value.id variables.rest_api.value.stage_name variables.region.value)"
 fi
 tf apply -input=false "$work_dir/approved.tfplan"
-if [[ "$stack" != notification_events && "$is_main_destroy" != true ]]; then
-  if [[ "$stack" == main ]]; then
-    api_target="$(tf output -json rest_api | python3 -c '
-import json
-import sys
-
-rest_api = json.load(sys.stdin)
-print(rest_api["id"], rest_api["stage_name"])
-')"
-    read -r api_id api_stage <<<"$api_target"
-    api_region="$(tf output -raw api_region)"
-  fi
+if [[ "$redeploy_from" == output ]]; then
+  read -r api_id api_stage <<<"$(tf output -json rest_api | json_values id stage_name)"
+  api_region="$(tf output -raw api_region)"
+fi
+if [[ "$redeploy_from" != none ]]; then
   deployment_id="$(aws apigateway create-deployment --rest-api-id "$api_id" \
     --region "$api_region" --profile "$AWS_PROFILE" --query id --output text)"
   [[ -n "$deployment_id" && "$deployment_id" != None ]] || fail "REST API のデプロイ ID を取得できませんでした。"

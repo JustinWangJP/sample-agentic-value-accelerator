@@ -48,7 +48,7 @@ class PortalScopeTests(unittest.TestCase):
         main = (INFRA / "rest_api.tf").read_text()
         self.assertRegex(
             main,
-            r'module "management_routes" \{[^}]*authorization_scope\s*=\s*local\.portal_api_scope\n',
+            r'module "main_routes" \{[^}]*authorization_scope\s*=\s*local\.portal_api_scope\n',
         )
 
     def test_addon_stack_routes_require_the_transcribed_scope(self):

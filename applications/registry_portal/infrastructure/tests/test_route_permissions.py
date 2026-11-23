@@ -88,8 +88,8 @@ class RouteManifestTests(unittest.TestCase):
 
     def test_all_route_keys_and_statement_ids_are_unique(self):
         routes = routes_for("main", "management", "decision")
-        self.assertEqual(len({route_key(route) for route in routes}), 29)
-        self.assertEqual(len({route["statement_id"] for route in routes}), 29)
+        self.assertEqual(len({route_key(route) for route in routes}), len(routes))
+        self.assertEqual(len({route["statement_id"] for route in routes}), len(routes))
 
 
 class RoutePermissionTests(unittest.TestCase):

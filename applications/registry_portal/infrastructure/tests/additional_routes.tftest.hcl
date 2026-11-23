@@ -17,6 +17,17 @@ mock_provider "aws" {
   }
 }
 
+# 追加スタックが本体の output rest_api から転記する値。各 run で共通に使う
+variables {
+  rest_api = {
+    id                   = "abcde12345"
+    stage_name           = "v1"
+    authorizer_id        = "abc123"
+    portal_api_scope     = "registry-portal/api.invoke"
+    cors_allowed_origins = ["https://portal.example.cloudfront.net"]
+  }
+}
+
 run "decision_routes_require_portal_scope" {
   command = plan
   module {
@@ -30,13 +41,6 @@ run "decision_routes_require_portal_scope" {
     registry_arn          = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
     supplement_table_name = "registry-portal-dev-auxiliary"
     supplement_table_arn  = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-portal-dev-auxiliary"
-    rest_api = {
-      id                   = "abcde12345"
-      stage_name           = "v1"
-      authorizer_id        = "abc123"
-      portal_api_scope     = "registry-portal/api.invoke"
-      cors_allowed_origins = ["https://portal.example.cloudfront.net"]
-    }
     discovery_client = {
       token_url         = "https://example.auth.us-east-1.amazoncognito.com/oauth2/token"
       client_id         = "discovery-client"
@@ -45,7 +49,7 @@ run "decision_routes_require_portal_scope" {
     }
   }
   assert {
-    condition     = length(module.decision_routes.routes) == 13 && alltrue([for route in values(module.decision_routes.routes) : route.authorization_type == "COGNITO_USER_POOLS" && route.authorization_scopes == toset(["registry-portal/api.invoke"])])
+    condition     = length(module.decision_routes.routes) == length(jsondecode(file("modules/api_routes/routes.json")).decision) && alltrue([for route in values(module.decision_routes.routes) : route.authorization_type == "COGNITO_USER_POOLS" && route.authorization_scopes == toset(["registry-portal/api.invoke"])])
     error_message = "決裁の route も、本体スタックと同じポータル用の scope を Cognito User Pools authorizer で検証してください。"
   }
 }
@@ -62,16 +66,9 @@ run "management_routes_require_portal_scope" {
     registry_arn             = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
     supplement_table_arn     = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-portal-dev-auxiliary"
     management_function_name = "registry-portal-dev-management"
-    rest_api = {
-      id                   = "abcde12345"
-      stage_name           = "v1"
-      authorizer_id        = "abc123"
-      portal_api_scope     = "registry-portal/api.invoke"
-      cors_allowed_origins = ["https://portal.example.cloudfront.net"]
-    }
   }
   assert {
-    condition     = length(module.management_routes.routes) == 12 && alltrue([for route in values(module.management_routes.routes) : route.authorization_type == "COGNITO_USER_POOLS" && route.authorization_scopes == toset(["registry-portal/api.invoke"]) && route.authorizer_id == var.rest_api.authorizer_id && endswith(route.target, ":function:registry-portal-dev-management/invocations")])
+    condition     = length(module.management_routes.routes) == length(jsondecode(file("modules/api_routes/routes.json")).management) && alltrue([for route in values(module.management_routes.routes) : route.authorization_type == "COGNITO_USER_POOLS" && route.authorization_scopes == toset(["registry-portal/api.invoke"]) && route.authorizer_id == var.rest_api.authorizer_id && endswith(route.target, ":function:registry-portal-dev-management/invocations")])
     error_message = "管理 handler の追加 route も、本体スタックと同じポータル用の scope を Cognito User Pools authorizer で検証してください。"
   }
   assert {

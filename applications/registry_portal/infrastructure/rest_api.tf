@@ -85,7 +85,7 @@ resource "aws_api_gateway_resource" "depth5" {
 }
 
 # 本体の経路（routes.json の main）も管理 Lambda に割り当てる
-module "management_routes" {
+module "main_routes" {
   source              = "./modules/api_routes"
   route_group         = "main"
   authorization_scope = local.portal_api_scope
@@ -100,7 +100,14 @@ module "management_routes" {
 # （同じ移動先を持つ moved が 2 つあると Terraform が拒否するため）
 moved {
   from = aws_lambda_permission.api
-  to   = module.management_routes.aws_lambda_permission.management_api
+  to   = module.main_routes.aws_lambda_permission.management_api
+}
+
+# HTTP API の時期は管理 Lambda の経路を management_routes と呼んでいた。route_group が main であることに
+# 名前を合わせた。適用済みの state は moved で引き継ぐ
+moved {
+  from = module.management_routes
+  to   = module.main_routes
 }
 
 resource "aws_api_gateway_method" "preflight" {
@@ -148,7 +155,7 @@ resource "aws_api_gateway_deployment" "initial" {
     aws_api_gateway_rest_api_policy.portal,
     aws_api_gateway_integration.preflight,
     aws_api_gateway_gateway_response.cors,
-    module.management_routes,
+    module.main_routes,
   ]
 }
 

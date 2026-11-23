@@ -10,12 +10,12 @@ import pytest
 
 from catalog_helpers import (
     ENV,
-    HUMAN_CLIENT_ID,
     ISSUER,
     REGISTRY_ARN,
     SUPPLEMENT_TABLE,
     FakeSecrets,
     FakeTransport,
+    access_claims,
     json_response,
     summary,
 )
@@ -91,17 +91,14 @@ def test_reviews_require_the_curator_role_before_any_aws_call():
         stub.assert_no_pending_responses()
 
 
-def _rest_review_list(groups):
+def _rest_review_list(groups, headers=None):
     """REST API（Cognito User Pools authorizer）の審査一覧のイベント。groups はカンマ区切り。"""
     claims = {
-        "iss": ISSUER,
-        "sub": "carol",
-        "client_id": HUMAN_CLIENT_ID,
-        "token_use": "access",
+        **access_claims(),
         "scope": "openid registry-portal/api.invoke",
         "cognito:groups": groups,
     }
-    return rest_api_event("GET", "/api/reviews", claims)
+    return rest_api_event("GET", "/api/reviews", claims, headers=headers)
 
 
 @mock_aws
@@ -126,13 +123,12 @@ def test_decision_handler_adds_cors_to_rest_api_forbidden_response():
         {
             **ENV,
             "SUPPLEMENT_TABLE_NAME": SUPPLEMENT_TABLE,
-            "CORS_ALLOWED_ORIGINS": '["http://localhost:5173"]',
+            "CORS_ALLOWED_ORIGINS": json.dumps([origin]),
         },
         registry_client=registry,
         store_client=db,
     )
-    request = _rest_review_list("registry-publisher,team-payments")
-    request["headers"] = {"Origin": origin}
+    request = _rest_review_list("registry-publisher,team-payments", headers={"Origin": origin})
 
     response = handler(request, None)
 
