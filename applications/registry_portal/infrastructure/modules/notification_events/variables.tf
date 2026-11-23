@@ -32,3 +32,9 @@ variable "supplement_table_arn" {
     error_message = "補助 DynamoDB テーブルの ARN を指定してください。"
   }
 }
+
+variable "log_retention_in_days" {
+  type        = number
+  description = "イベント処理 Lambda のロググループの保持日数。許容値の検証はルートモジュールの変数で行う"
+  default     = 365
+}

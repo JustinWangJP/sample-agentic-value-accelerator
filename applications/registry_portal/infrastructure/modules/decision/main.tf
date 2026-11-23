@@ -10,8 +10,9 @@ locals {
 
 # ロググループと、plan 時に確定するその ARN（本体スタック・notification_events と共通のモジュール）
 module "log_group" {
-  source        = "../lambda_log_group"
-  function_name = local.name
+  source            = "../lambda_log_group"
+  function_name     = local.name
+  retention_in_days = var.log_retention_in_days
 }
 
 # ロググループを共通のモジュールに移した。適用済みの state は moved で引き継ぐ

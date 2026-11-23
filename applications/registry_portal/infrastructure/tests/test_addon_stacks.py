@@ -67,6 +67,14 @@ class AddonStackTests(unittest.TestCase):
                 )
                 self.assertIn(f"terraform -chdir=infrastructure/{stack} validate", workflow)
 
+    def test_tfvars_examples_shorten_log_retention_for_dev(self):
+        # dev.tfvars と追加スタックの tfvars は各例をコピーして作る（ガイド 4.3）。
+        # ロググループを持つスタックの例には、dev の保持日数（14 日）を有効な行で書く（#62）
+        for stack in (".", "decision", "notification_events"):
+            with self.subTest(stack=stack):
+                example = (INFRA / stack / "terraform.tfvars.example").read_text()
+                self.assertRegex(example, r"(?m)^log_retention_in_days\s*=\s*14\s*$")
+
     def test_local_backend_settings_and_lambda_zip_are_not_committed(self):
         paths = [
             "backend/build/lambda.zip",

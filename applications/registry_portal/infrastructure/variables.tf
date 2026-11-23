@@ -83,6 +83,15 @@ variable "discovery_scope" {
   type        = string
   default     = ""
 }
+variable "log_retention_in_days" {
+  description = "API のアクセスログと管理 Lambda のロググループの保持日数。既定は 365 日。dev では dev.tfvars で 14 にする。CloudWatch Logs が受け付ける値だけを指定できる。"
+  type        = number
+  default     = 365
+  validation {
+    condition     = contains([1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653], var.log_retention_in_days)
+    error_message = "CloudWatch Logs が受け付ける保持日数（1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653）を指定してください。"
+  }
+}
 variable "lambda_zip_path" {
   description = "管理・決裁・イベント処理 Lambda 共通の ZIP のパス。scripts/build_lambda.py で生成する。deploy.sh は一時ディレクトリの ZIP を指定する。"
   type        = string

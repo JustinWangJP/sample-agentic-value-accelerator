@@ -102,7 +102,7 @@ AWS 上の構成図は [`docs/diagrams/agent-registry-mvp1-aws-architecture-ja.d
 | `modules/decision` | `decision` | 決裁 Lambda（`registry_portal.handlers.curation.handler`）。権限は `UpdateRegistryRecordStatus` と読み取り、発見用 secret の取得、補助テーブルの操作（`decision-policy.json.tftpl`） |
 | `modules/notification_events` | `notification_events` | イベント処理 Lambda（`registry_portal.handlers.events.handler`）。Registry の読み取りと、通知用のパーティションキーに限った PutItem（`events-policy.json.tftpl`） |
 
-Lambda はどれも Python 3.13、arm64、タイムアウト 30 秒、メモリ 256 MB です。ロググループの保存期間は 365 日です。
+Lambda はどれも Python 3.13、arm64、タイムアウト 30 秒、メモリ 256 MB です。ロググループの保存期間は既定で 365 日です。各スタックの変数 `log_retention_in_days` で変えられ、dev では 14 日にします。
 
 ### 1.6 IAM の主体と職責
 
@@ -457,7 +457,7 @@ TABLE="$(AWS_PROFILE=registry-deploy-tf terraform -chdir=infrastructure output -
 aws dynamodb create-backup --table-name "$TABLE" --backup-name "$TABLE-before-teardown" --profile registry-deploy
 ```
 
-ロググループ（本体の API と管理 Lambda、決裁 Lambda、イベント処理 Lambda）には `skip_destroy` がないため、撤去で消えます。365 日の保持は引き継がれません。必要なログは撤去の前に取得してください。
+ロググループ（本体の API と管理 Lambda、決裁 Lambda、イベント処理 Lambda）には `skip_destroy` がないため、撤去で消えます。設定した保持期間（`log_retention_in_days`）に関係なく、ログは引き継がれません。必要なログは撤去の前に取得してください。
 
 #### 2. 追加スタックを撤去する
 

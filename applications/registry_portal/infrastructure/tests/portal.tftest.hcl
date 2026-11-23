@@ -100,9 +100,9 @@ run "security_boundaries" {
     error_message = "補助テーブルの TTL 属性はアプリ（services/dynamodb.py）と同じ expiresAt にしてください。"
   }
   assert {
-    # 管理 Lambda のロググループの保存期間は modules/lambda_log_group（tests/shared_modules.tftest.hcl）で確かめる
-    condition     = module.management_log_group.name == "/aws/lambda/registry-portal-dev-management" && aws_cloudwatch_log_group.api.retention_in_days == 365
-    error_message = "ログは365日保存し、管理 Lambda のロググループは共通のモジュールで作ってください。"
+    # 既定値（log_retention_in_days を指定しない）では、今までどおり 365 日保存する
+    condition     = module.management_log_group.name == "/aws/lambda/registry-portal-dev-management" && aws_cloudwatch_log_group.api.retention_in_days == 365 && module.management_log_group.retention_in_days == 365
+    error_message = "既定ではログを365日保存し、管理 Lambda のロググループは共通のモジュールで作ってください。"
   }
   assert {
     condition     = aws_lambda_function.management.environment[0].variables["REGISTRY_ARN"] == var.registry_arn && aws_lambda_function.management.environment[0].variables["DISCOVERY_CLIENT_SECRET_ARN"] == var.discovery_client_secret_arn
@@ -219,6 +219,26 @@ run "customer_managed_secret_key" {
     }]
     error_message = "顧客管理キーの復号は、Secrets Manager 経由と対象 secret の完全一致（StringEquals）に限定してください。"
   }
+}
+
+# ログの保持期間（#62）。dev では dev.tfvars で短くし、API と管理 Lambda のロググループの両方に効かせる
+run "log_retention_dev_value" {
+  command = plan
+  variables {
+    log_retention_in_days = 14
+  }
+  assert {
+    condition     = aws_cloudwatch_log_group.api.retention_in_days == 14 && module.management_log_group.retention_in_days == 14
+    error_message = "log_retention_in_days の値を、API と管理 Lambda のロググループの保持期間に使ってください。"
+  }
+}
+
+run "log_retention_rejects_unsupported_value" {
+  command = plan
+  variables {
+    log_retention_in_days = 10
+  }
+  expect_failures = [var.log_retention_in_days]
 }
 
 run "teardown_protection_defaults" {

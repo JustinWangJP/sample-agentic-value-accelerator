@@ -17,3 +17,5 @@ discovery_client_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:sec
 discovery_scope             = "registry/discovery.read"
 # secret を顧客管理 KMS キーで暗号化している場合だけ、本体スタックと同じキー ARN を指定する（AWS 管理キーなら不要）
 # discovery_kms_key_arn = "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000000"
+# 決裁 Lambda のログの保持日数。dev では本体スタックの dev.tfvars と同じ値にする（既定は 365 日）
+log_retention_in_days = 14
