@@ -205,7 +205,7 @@ resource "aws_ssoadmin_permission_set_inline_policy" "deployer" {
       {
         Sid      = "SpaBucket"
         Effect   = "Allow"
-        Action   = ["s3:CreateBucket", "s3:GetBucket*", "s3:ListBucket", "s3:GetEncryptionConfiguration", "s3:GetLifecycleConfiguration", "s3:GetAccelerateConfiguration", "s3:GetReplicationConfiguration", "s3:PutBucket*", "s3:PutEncryptionConfiguration", "s3:DeleteBucketPolicy"]
+        Action   = ["s3:CreateBucket", "s3:GetBucket*", "s3:ListBucket", "s3:GetEncryptionConfiguration", "s3:GetLifecycleConfiguration", "s3:GetAccelerateConfiguration", "s3:GetReplicationConfiguration", "s3:PutBucket*", "s3:PutEncryptionConfiguration", "s3:PutLifecycleConfiguration", "s3:DeleteBucketPolicy"]
         Resource = local.spa_arn
       },
       {
