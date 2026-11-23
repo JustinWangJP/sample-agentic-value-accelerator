@@ -248,3 +248,44 @@ run "teardown_switches" {
     error_message = "spa_force_destroy = true で SPA バケットを中身ごと削除できるようにしてください。"
   }
 }
+
+run "spa_noncurrent_versions_kept_by_default" {
+  command = plan
+  assert {
+    condition     = length(aws_s3_bucket_lifecycle_configuration.spa) == 0
+    error_message = "既定値では SPA バケットにライフサイクル設定を作らず、古いバージョンを残してください。"
+  }
+}
+
+run "spa_noncurrent_versions_expire_in_dev" {
+  command = plan
+  variables {
+    # dev.tfvars の推奨値
+    spa_noncurrent_version_expiration_days = 7
+  }
+  assert {
+    condition     = length(aws_s3_bucket_lifecycle_configuration.spa) == 1 && length(aws_s3_bucket_lifecycle_configuration.spa[0].rule) == 1
+    error_message = "日数を指定した場合は、SPA バケットにライフサイクル設定を 1 つ（規則 1 つ）作ってください。"
+  }
+  assert {
+    condition     = aws_s3_bucket_lifecycle_configuration.spa[0].rule[0].status == "Enabled" && aws_s3_bucket_lifecycle_configuration.spa[0].rule[0].noncurrent_version_expiration[0].noncurrent_days == 7
+    error_message = "古いバージョンは指定した日数（dev では 7 日）で消してください。"
+  }
+  assert {
+    condition     = aws_s3_bucket_lifecycle_configuration.spa[0].rule[0].abort_incomplete_multipart_upload[0].days_after_initiation == 1
+    error_message = "未完了のマルチパートアップロードは 1 日で中止してください。"
+  }
+  assert {
+    # prefix は provider が plan 時に未確定（computed）にするため、条件を絞る要素（tag・and）がないことで確かめる
+    condition     = length(aws_s3_bucket_lifecycle_configuration.spa[0].rule[0].filter) == 1 && length(aws_s3_bucket_lifecycle_configuration.spa[0].rule[0].filter[0].tag) == 0 && length(aws_s3_bucket_lifecycle_configuration.spa[0].rule[0].filter[0].and) == 0
+    error_message = "規則の filter は空にして、バケット全体を対象にしてください。"
+  }
+}
+
+run "spa_noncurrent_version_expiration_days_must_be_positive_integer" {
+  command = plan
+  variables {
+    spa_noncurrent_version_expiration_days = 0
+  }
+  expect_failures = [var.spa_noncurrent_version_expiration_days]
+}
