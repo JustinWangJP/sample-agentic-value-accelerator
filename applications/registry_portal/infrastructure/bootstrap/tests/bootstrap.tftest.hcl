@@ -166,6 +166,15 @@ run "identity_center_permission_set" {
     error_message = "deployer に SPA バケットのライフサイクル設定の変更（s3:PutLifecycleConfiguration）を許可してください。"
   }
   assert {
+    # REST API のリソースポリシーの作成・更新には、apigateway:PATCH と apigateway:UpdateRestApiPolicy の両方が必要
+    condition = anytrue([
+      for statement in jsondecode(aws_ssoadmin_permission_set_inline_policy.deployer[0].inline_policy).Statement :
+      contains(statement.Action, "apigateway:PATCH") && contains(statement.Action, "apigateway:UpdateRestApiPolicy") && contains(statement.Resource, "arn:aws:apigateway:us-east-1::/restapis/*")
+      if statement.Sid == "PortalApis"
+    ])
+    error_message = "deployer に REST API のリソースポリシーの更新（apigateway:UpdateRestApiPolicy）を許可してください。"
+  }
+  assert {
     condition     = length(replace(aws_ssoadmin_permission_set_inline_policy.deployer[0].inline_policy, "/\\s/", "")) <= 10240
     error_message = "permission set の inline policy は非空白10240文字以内にしてください。"
   }

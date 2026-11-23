@@ -293,7 +293,9 @@ resource "aws_ssoadmin_permission_set_inline_policy" "deployer" {
       {
         Sid    = "PortalApis"
         Effect = "Allow"
-        Action = ["apigateway:GET", "apigateway:POST", "apigateway:PATCH", "apigateway:PUT", "apigateway:DELETE"]
+        # REST API のリソースポリシー（接続元 IP の制限）の更新には、apigateway:PATCH に加えて
+        # apigateway:UpdateRestApiPolicy が必要（apigateway-resource-policies-create-attach.html の Prerequisites）。
+        Action = ["apigateway:GET", "apigateway:POST", "apigateway:PATCH", "apigateway:PUT", "apigateway:DELETE", "apigateway:UpdateRestApiPolicy"]
         # 移行で既存 HTTP API を削除するため、/apis への権限も必要。
         Resource = [
           "arn:aws:apigateway:${local.region}::/apis", "arn:aws:apigateway:${local.region}::/apis/*",
