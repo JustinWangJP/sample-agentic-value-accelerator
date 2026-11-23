@@ -98,7 +98,7 @@ AWS 上の構成図は [`docs/diagrams/agent-registry-mvp1-aws-architecture-ja.d
 | モジュール | 呼び出し元 | 内容 |
 | --- | --- | --- |
 | `modules/management_drafts` | `management` | 既存の管理ロールに、Registry レコードの作成・更新・取得・一覧・申請と、補助テーブルの GetItem / PutItem / DeleteItem / Query / ConditionCheckItem を追加する（`draft-policy.json.tftpl`） |
-| `modules/management_routes` | 本体・管理・決裁 | 共通の経路表からメソッドと Lambda 統合を作り、そのメソッドと path に限った `lambda:InvokeFunction` を許可する |
+| `modules/api_routes` | 本体・管理・決裁 | 共通の経路表（`routes.json`）の 1 グループ（`main`・`management`・`decision`）について、メソッドと Lambda 統合を作り、そのメソッドと path に限った `lambda:InvokeFunction` を許可する |
 | `modules/decision` | `decision` | 決裁 Lambda（`registry_portal.handlers.curation.handler`）。権限は `UpdateRegistryRecordStatus` と読み取り、発見用 secret の取得、補助テーブルの操作（`decision-policy.json.tftpl`） |
 | `modules/notification_events` | `notification_events` | イベント処理 Lambda（`registry_portal.handlers.events.handler`）。Registry の読み取りと、通知用のパーティションキーに限った PutItem（`events-policy.json.tftpl`） |
 
@@ -405,8 +405,8 @@ Cognito のログイン画面と CloudFront の SPA は表示できても、REST
 
 1. 管理者が対象リージョンで `aws apigateway get-account --region us-east-1 --query cloudwatchRoleArn` を実行します。すでに有効なロールが設定されていれば、そのロールを使います。ロール設定がなければ bootstrap で `manage_api_gateway_account = true` を設定し、再適用します。この設定はリージョン内の API Gateway REST API で共有されます。既存ロールを使う場合も、Identity Center の deployer を使う環境では REST API の更新権限を反映するため、bootstrap を再適用します。
 2. 本体を配信します。既存 HTTP API が REST API に置き換わるため、追加スタックを反映するまで、その経路は利用できません。
-3. 本体の新しい output を 4.3 に沿って転記し、管理・決裁を順に配信します。ローカル SPA の設定も、新しい URL に `/v1` を含めて更新します。追加スタックの既存 state はそのまま使います。
-4. `local_dev_origins` を後から変更した場合も、`cors_allowed_origins` を決裁スタックへ転記して反映します。
+3. 本体の新しい output `rest_api` を 4.3 に沿って転記し、管理・決裁を順に配信します。ローカル SPA の設定も、新しい URL に `/v1` を含めて更新します。追加スタックは撤去せず、既存 state をそのまま使います。HTTP API と一緒に削除された route は、追加スタックの plan の refresh で state から外れます。旧 HTTP API 向けの Lambda 呼び出し許可は、REST API 向けの許可への置き換えとして plan に表示されます（[ADR-0015](../adr/0015-rest-api-with-source-ip-policy-and-script-deployment.md)）。
+4. `local_dev_origins` を後から変更した場合も、本体の output `rest_api` を決裁スタックへ転記し直して反映します（`cors_allowed_origins` が変わるため）。
 
 ### 4.3 追加スタックに渡す値を集める
 
@@ -425,15 +425,14 @@ AWS_PROFILE=registry-deploy-tf terraform -chdir=infrastructure output
 | `supplement_table_arn` | 同名の本体 output | すべて |
 | `management_role_name` | 同名の本体 output | management |
 | `management_function_name` | 同名の本体 output | management |
-| `rest_api_id` | 同名の本体 output | management、decision |
-| `authorizer_id` | 同名の本体 output | management、decision |
-| `portal_api_scope` | 同名の本体 output（route の Cognito User Pools authorizer が検証するカスタム scope） | management、decision |
-| `cors_allowed_origins` | 同名の本体 output（CloudFront とローカル SPA の origin） | decision |
+| `rest_api` | 同名の本体 output をそのまま転記する（REST API の ID、ステージ名、Cognito User Pools authorizer の ID、route の authorizer が検証するカスタム scope `portal_api_scope`、CloudFront とローカル SPA の origin `cors_allowed_origins`） | management、decision |
 | `cognito_user_pool_id` | 本体の `dev.tfvars` と同じ値 | decision |
 | `human_client_id` | 同名の本体 output | decision |
 | `discovery_token_url`、`discovery_client_id`、`discovery_client_secret_arn`、`discovery_scope` | 本体の `dev.tfvars` と同じ値。secret の ARN は末尾の 6 文字を含む完全な ARN にする（ワイルドカード不可） | decision |
 | `discovery_kms_key_arn` | 本体の `dev.tfvars` と同じ値。顧客管理キーの場合だけ ARN を指定し、AWS 管理キーなら省略または `null` | decision |
 | `lambda_zip_path` | 4.4 で作った共通 ZIP のパス | decision、notification_events |
+
+`rest_api` は `terraform -chdir=infrastructure output rest_api` が表示するオブジェクトを、そのまま `rest_api = { ... }` として貼り付けます。management は `cors_allowed_origins` を使いませんが、両スタックで同じ値を転記します。`scripts/deploy.sh` は追加スタックの再デプロイ先（REST API の ID とステージ名）を、この値から読みます。
 
 `cognito_issuer` の output は確認用です。decision のルートスタックは `region` と `cognito_user_pool_id` から issuer を組み立てるため、tfvars に `cognito_issuer` を追加しません。
 
@@ -668,7 +667,7 @@ plan で、補助テーブルの `deletion_protection_enabled` が `true` に、
 | --- | --- | --- |
 | 1 | 解消済み | 本体の補助テーブルの TTL 属性はアプリと同じ `expiresAt`。AWS による期限切れ項目の削除は配信後に確認する |
 | 2 | 解消済み | 管理 Lambda に `SUPPLEMENT_TABLE_NAME`、`REGISTRY_ARN`、`DISCOVERY_*` を設定する。`A2A_SEARCH_ENABLED` は未設定なら無効（`config.py` の `load_catalog_settings`）。`isA2A` の補完と確認（#16）が終わるまで設定せず、無効のまま配信する |
-| 3 | 解消済み | CORS は SPA の origin だけを許可し、`GET`・`POST`・`PATCH`・`OPTIONS` と `Authorization`・`Content-Type`・`Idempotency-Key` を許可する。各 route は `registry-portal/api.invoke` の scope を検証する（scope の値は本体の `local.portal_api_scope` だけに定義し、追加スタックは output `portal_api_scope` を tfvars に転記して、SPA は `frontend_config` から受け取る。`test_portal_scope.py` で検査する）。管理 Lambda の呼び出し許可 `GET/api/records/*` は決裁 Lambda の GET の route 3 本の実行 ARN にも一致するが、API Gateway は route の統合先だけを呼び出すため影響はない。一致する route の集合は `test_route_permissions.py` で固定する |
+| 3 | 解消済み | CORS は SPA の origin だけを許可し、`GET`・`POST`・`PATCH`・`OPTIONS` と `Authorization`・`Content-Type`・`Idempotency-Key` を許可する。各 route は `registry-portal/api.invoke` の scope を検証する（scope の値は本体の `local.portal_api_scope` だけに定義し、追加スタックは output `rest_api`（`portal_api_scope` を含む）を tfvars に転記して、SPA は `frontend_config` から受け取る。`test_portal_scope.py` で検査する）。管理 Lambda の呼び出し許可 `GET/api/records/*` は決裁 Lambda の GET の route 3 本の実行 ARN にも一致するが、API Gateway は route の統合先だけを呼び出すため影響はない。一致する route の集合は `test_route_permissions.py` で固定する |
 | 4 | 解消済み。対象ロールは目視確認 | ガードは `module.management_drafts.aws_iam_role_policy.management_drafts` に作成・更新・申請を、`module.decision.aws_iam_role_policy.decision` に決裁だけを許可する。アドレスは `check_plan.py` の `ScopedPolicy`（module 呼び出し名と resource 名）で持ち、追加スタックの定義に実在することを `test_plan_guard.py` で検査する。policy の資源アドレスで役割を判定するため、`management_role_name` の取り違えは検出できない。本体の output と plan を照合する。決裁・イベント処理のロググループと DLQ の ARN は初回 plan でも確定する |
 | 5 | 解消済み | bootstrap の Identity Center 資源は任意。個人アカウントでは `identity_center_instance_arn` と `deployer_group_id` を省略し、state バケットだけを作る |
 | 6 | 個人アカウント対応済み | state バケットは `deployer_principal_arn` を照合する。`deploy.sh` は MFA 付きのロールプロファイルと `credential_process` の Terraform 用プロファイルに対応する。SSO permission set は本体向けで、`deploy.sh` は SSO プロファイルでの `--stack` を拒否する。dev は個人アカウントだけで運用するため、追加スタック向けの permission set の拡張は行わない（4.2） |
