@@ -62,6 +62,16 @@ variable "deployer_group_id" {
     error_message = "identity_center_instance_arn と deployer_group_id は両方指定するか、両方とも省略してください。"
   }
 }
+variable "budget_limit_usd" {
+  description = "月額の予算アラートの上限（USD）。null（既定）なら予算を作らない。dev の推奨値は 5。budget_notification_emails と両方を指定したときだけ予算を作る。"
+  type        = number
+  default     = null
+}
+variable "budget_notification_emails" {
+  description = "予算アラートの通知先メールアドレス。空（既定）なら予算を作らない。個人情報なので tfvars にはコミットせず、環境変数 TF_VAR_budget_notification_emails で渡す。"
+  type        = list(string)
+  default     = []
+}
 
 data "aws_region" "current" {}
 
@@ -114,6 +124,23 @@ resource "aws_s3_bucket_ownership_controls" "state" {
 resource "aws_s3_bucket_versioning" "state" {
   bucket = aws_s3_bucket.state.id
   versioning_configuration { status = "Enabled" }
+}
+# state の更新のたびに残る古いバージョンを期限で消す。古い state に戻す場合に備えて日数は長めにし、
+# 直近のバージョンは日数にかかわらず残す。現行の state は失効させない。
+resource "aws_s3_bucket_lifecycle_configuration" "state" {
+  bucket = aws_s3_bucket.state.id
+  rule {
+    id     = "expire-noncurrent-state-versions"
+    status = "Enabled"
+    filter {}
+    noncurrent_version_expiration {
+      noncurrent_days           = 90
+      newer_noncurrent_versions = 10
+    }
+    abort_incomplete_multipart_upload { days_after_initiation = 1 }
+  }
+  # バージョニングが有効になってからライフサイクル設定を適用する
+  depends_on = [aws_s3_bucket_versioning.state]
 }
 resource "aws_s3_bucket_server_side_encryption_configuration" "state" {
   bucket = aws_s3_bucket.state.id
@@ -281,6 +308,32 @@ resource "aws_ssoadmin_account_assignment" "deployer" {
   target_id          = var.aws_account_id
   target_type        = "AWS_ACCOUNT"
   depends_on         = [aws_ssoadmin_permission_set_inline_policy.deployer]
+}
+# 想定外の課金に早く気づくための月額の予算アラート。ポータルを撤去しても残るよう、撤去の対象外である
+# bootstrap に置く（ADR-0014）。上限と通知先の両方を指定したときだけ作る
+resource "aws_budgets_budget" "monthly" {
+  count        = var.budget_limit_usd != null && length(var.budget_notification_emails) > 0 ? 1 : 0
+  name         = "${var.name_prefix}-monthly"
+  budget_type  = "COST"
+  time_unit    = "MONTHLY"
+  limit_amount = tostring(var.budget_limit_usd)
+  limit_unit   = "USD"
+  # 実績が上限の 80% を超えたとき
+  notification {
+    notification_type          = "ACTUAL"
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 80
+    threshold_type             = "PERCENTAGE"
+    subscriber_email_addresses = var.budget_notification_emails
+  }
+  # 月末の予測が上限を超えたとき
+  notification {
+    notification_type          = "FORECASTED"
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 100
+    threshold_type             = "PERCENTAGE"
+    subscriber_email_addresses = var.budget_notification_emails
+  }
 }
 output "state_bucket_name" {
   description = "本体の backend.hcl に設定するバケット名。"
