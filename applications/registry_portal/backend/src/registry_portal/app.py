@@ -1,7 +1,11 @@
 """Lambda handler の組み立て。
 
-handler は API Gateway HTTP API（payload format 2.0）のイベントを受け取る。
-検証済みの claims は `requestContext.authorizer.jwt.claims` から読む。
+handler は API Gateway の次の 2 つのイベント形式を受け取る（REST API への移行中。仕様 #61 実装案 8）。
+
+- HTTP API（payload format 2.0、JWT authorizer）: claims は `requestContext.authorizer.jwt.claims`、
+  メソッドとパスは `requestContext.http`
+- REST API（Lambda プロキシ統合、Cognito User Pools authorizer）: claims は
+  `requestContext.authorizer.claims`、メソッドとパスは最上位の `httpMethod` と `path`
 """
 
 from __future__ import annotations
@@ -98,14 +102,23 @@ def _request_context(event: LambdaEvent) -> Mapping[str, Any]:
 
 
 def _claims_of(event: LambdaEvent) -> Mapping[str, Any] | None:
+    """検証済みの claims。HTTP API は `authorizer.jwt.claims`、REST API は `authorizer.claims`。"""
     authorizer = _mapping_or_empty(_request_context(event).get("authorizer"))
-    claims = _mapping_or_empty(authorizer.get("jwt")).get("claims")
+    jwt = authorizer.get("jwt")
+    claims = _mapping_or_empty(jwt).get("claims") if jwt is not None else authorizer.get("claims")
     return claims if isinstance(claims, Mapping) else None
 
 
 def _route_key(event: LambdaEvent) -> str:
+    """ルート表と照合するキー（例: GET /api/me）。
+
+    HTTP API は `requestContext.http` の method と path、REST API は最上位の `httpMethod` と `path`
+    （ステージ名を含まない）から作る。
+    """
     http = _mapping_or_empty(_request_context(event).get("http"))
-    return f"{http.get('method', '')} {http.get('path', '')}"
+    if http:
+        return f"{http.get('method', '')} {http.get('path', '')}"
+    return f"{event.get('httpMethod', '')} {event.get('path', '')}"
 
 
 # ルート表のキーに含まれる path パラメーター（例: {recordId}）。1つのルートに1つまで

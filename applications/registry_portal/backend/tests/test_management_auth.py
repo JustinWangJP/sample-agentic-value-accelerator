@@ -13,6 +13,8 @@ from registry_portal import app as app_module
 from registry_portal.app import create_management_handler
 from registry_portal.config import ConfigurationError
 
+from event_helpers import rest_api_event
+
 ISSUER = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_EXAMPLE"
 HUMAN_CLIENT_ID = "human-spa-client"
 DISCOVERY_CLIENT_ID = "discovery-m2m-client"
@@ -98,6 +100,31 @@ def test_roles_and_teams_are_derived_from_cognito_groups(groups: Any) -> None:
     status, body = call(http_event(claims=access_claims(**{"cognito:groups": groups})))
 
     assert status == 200
+    assert body["roles"] == ["Viewer", "Publisher", "Curator", "Admin"]
+    assert body["teams"] == ["team-cards", "team-payments"]
+
+
+@pytest.mark.parametrize(
+    "groups",
+    [
+        # REST API の Cognito User Pools authorizer が渡す文字列の形は公式文書に記載がない（未確認）。
+        # カンマ区切りと HTTP API と同じ "[a b]" 形式の両方を受け付ける
+        "team-payments,registry-curator,registry-publisher,registry-admin,team-cards",
+        "[team-payments registry-curator registry-publisher registry-admin team-cards]",
+        # REST API の JWT authorizer は claim を JSON の型のまま渡す（rest-api-jwt-authorizer-claims.html）
+        ["team-payments", "registry-curator", "registry-publisher", "registry-admin", "team-cards"],
+    ],
+    ids=["comma-separated", "bracketed", "json-array"],
+)
+def test_rest_api_cognito_authorizer_claims_derive_roles_and_teams(groups: Any) -> None:
+    claims = access_claims(
+        **{"cognito:groups": groups, "scope": "openid registry-portal/api.invoke"}
+    )
+
+    status, body = call(rest_api_event(claims=claims))
+
+    assert status == 200
+    assert body["principal"]["subject"] == "11111111-2222-3333-4444-555555555555"
     assert body["roles"] == ["Viewer", "Publisher", "Curator", "Admin"]
     assert body["teams"] == ["team-cards", "team-payments"]
 
@@ -211,6 +238,22 @@ def test_malformed_authorizer_context_is_rejected_with_401(authorizer: Any) -> N
 
     assert status == 401
     assert body["error"]["code"] == "UNAUTHENTICATED"
+
+
+@pytest.mark.parametrize(
+    "authorizer",
+    [{"claims": None, "scopes": None}, {"claims": "[a b]"}, None],
+    ids=["claims-null", "claims-string", "no-authorizer"],
+)
+def test_rest_api_event_without_valid_claims_is_rejected_with_401(authorizer: Any) -> None:
+    event = rest_api_event(claims=None)
+    event["requestContext"]["authorizer"] = authorizer
+
+    status, body = call(event)
+
+    assert status == 401
+    assert body["error"]["code"] == "UNAUTHENTICATED"
+    assert body["error"]["requestId"] == "req-rest"
 
 
 def test_x_user_email_header_does_not_change_principal() -> None:
