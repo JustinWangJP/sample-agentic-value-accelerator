@@ -55,6 +55,7 @@ class CognitoChecklistGuideTests(unittest.TestCase):
     def test_user_mfa_is_checked_with_admin_get_user(self):
         commands = [c for c in aws_commands(cognito_section()) if " admin-get-user " in c]
         self.assertTrue(commands, "ユーザーごとの MFA を確かめるコマンドがありません")
+        self.assertIn('--username "$PORTAL_USERNAME"', commands[0])
         self.assertIn("UserMFASettingList", query_of(commands[0]))
 
     def test_checklist_commands_only_read(self):
@@ -72,6 +73,7 @@ class CognitoChecklistGuideTests(unittest.TestCase):
             "API_DescribeUserPool.html",
             "API_AdminCreateUserConfigType.html",
             "API_UserPoolType.html",
+            "API_SetUserPoolMfaConfig.html",
             "API_AdminGetUser.html",
         ):
             with self.subTest(page=page):

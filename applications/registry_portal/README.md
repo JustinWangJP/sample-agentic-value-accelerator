@@ -140,7 +140,7 @@ A2A の判定と検索用の写しの設計理由は [ADR-0006](../../docs/adr/0
 
 ### Terraform の dev 設定
 
-本体と追加スタックは、それぞれの `dev.tfvars` に値を設定します。
+本体は `infrastructure/dev.tfvars` に値を設定します。決裁は `infrastructure/decision/terraform.tfvars`、イベント処理は `infrastructure/notification_events/terraform.tfvars` に設定します。
 
 | 変数 | 対象と既定値 | dev の推奨値 |
 |---|---|---|
@@ -150,7 +150,7 @@ A2A の判定と検索用の写しの設計理由は [ADR-0006](../../docs/adr/0
 | `allowed_source_cidrs` | REST API が許可する接続元の IPv4 CIDR。必須 | `TF_VAR_allowed_source_cidrs` に許可する CIDR を JSON 配列で設定 |
 | `lambda_reserved_concurrency` | 本体、決裁、イベント処理。既定は `null`（予約なし） | アカウント上限に余裕がある場合、本体と決裁は 5、イベント処理は 2〜5 |
 
-予約する前に、対象リージョンで `aws lambda get-account-settings` を実行して `AccountLimit.ConcurrentExecutions` と既存の予約を確認します。予約後もアカウントに未予約の同時実行枠を 100 残す必要があります。イベント処理は、上限に達したときの再試行やデッドレターキューへの転送も考慮して値を決めます。
+予約する前に、対象リージョンで `aws lambda get-account-settings` を実行します。`AccountLimit.ConcurrentExecutions` で上限を、`AccountLimit.UnreservedConcurrentExecutions` で未予約の枠を確認します。予約後も未予約の枠を 100 残す必要があります。イベント処理は、上限に達したときの再試行やデッドレターキューへの転送も考慮して値を決めます。 [Lambda のアカウント上限](https://docs.aws.amazon.com/lambda/latest/api/API_AccountLimit.html) · [予約同時実行数の設定](https://docs.aws.amazon.com/lambda/latest/dg/configuration-concurrency.html)
 
 bootstrap で月額予算を作る場合は、`budget_limit_usd` に dev の目安である `5` を指定し、通知先を JSON 配列として環境変数 `TF_VAR_budget_notification_emails` で渡します。両方を指定すると、実績が 80%、予測が 100% を超えたときに通知します。state バケットは直近 10 本の旧バージョンを保持し、それより古い旧バージョンを 90 日で期限切れにします。
 
@@ -211,7 +211,8 @@ GitHub Actions（`.github/workflows/registry-portal-ci.yml`）では上記に加
 日々の機能確認は、手元の開発サーバー（`npm run dev`、`http://localhost:5173`）から dev の API と Cognito に接続して行えます。配信を待たずに確認でき、SPA の配信も不要です。CloudFront の SPA は配信後の確認に使います。
 
 1. 本体スタックの tfvars（`infrastructure/dev.tfvars`）に `local_dev_origins = ["http://localhost:5173"]` を設定し（`terraform.tfvars.example` に記載済み）、通常の配信（[dev に手動配信する](#dev-に手動配信する)）で反映します。人間用 client のコールバック URL・ログアウト URL に `http://localhost:5173/` が、REST API の CORS に `http://localhost:5173` が追加されます。既定値（`[]`）では追加しません。
-   - 指定できるのは `http://localhost:<port>` と `http://127.0.0.1:<port>`（末尾の `/` なし）だけです。Cognito の OAuth が HTTP のコールバック URL を許すのは localhost だけのため、ほかの origin は `validation` で拒否します。
+   - `local_dev_origins` に指定できるのは `http://localhost:<port>` と `http://127.0.0.1:<port>` です。末尾の `/` は省いてください。
+   - テスト用の HTTP コールバックについて、Cognito の作成 API の資料は `localhost`、`127.0.0.1`、`[::1]` を例外として挙げています。更新 API の資料が挙げる例外は `localhost` です。既存のアプリクライアントを `127.0.0.1` で更新する動作は実環境で未確認です。 [作成 API のコールバック URL の要件](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_CreateUserPoolClient.html) · [更新 API のコールバック URL の要件](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_UpdateUserPoolClient.html)
 2. 本体スタックの output `frontend_config` を確認し、`frontend/.env.example` を `frontend/.env.local` にコピーして値を設定します。`VITE_REDIRECT_URI` だけは CloudFront の URL ではなく `http://localhost:5173/` にします。
 
    ```bash
