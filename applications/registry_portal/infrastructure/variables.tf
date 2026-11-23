@@ -129,7 +129,7 @@ variable "local_dev_origins" {
   type        = list(string)
   default     = []
   validation {
-    # Cognito の OAuth が HTTP のコールバック URL を許すのは localhost だけのため、ほかの origin は受け付けない
+    # 開発用の HTTP コールバック先は localhost と 127.0.0.1 に限定する
     condition     = alltrue([for o in var.local_dev_origins : can(regex("^http://(localhost|127\\.0\\.0\\.1):[0-9]{1,5}$", o))])
     error_message = "local_dev_origins には http://localhost:<port> または http://127.0.0.1:<port> を、末尾の / なしで指定してください。"
   }

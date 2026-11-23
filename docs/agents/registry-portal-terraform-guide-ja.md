@@ -313,7 +313,7 @@ aws cognito-idp describe-user-pool --profile registry-read --region "$COGNITO_RE
 ```
 
 - `adminCreateOnly` が `true` であることを確認します。
-- `mfa` が `ON` なら、全ユーザーが MFA を使います。`OPTIONAL` なら、下の手順でユーザーごとに確認します。AWS の API リファレンスでは、`ON` は User Pool の作成時にだけ指定できるとされています。
+- `mfa` が `ON` なら、全ユーザーに MFA が必須です。`OPTIONAL` なら、下の手順でポータル利用者ごとに確認します。既存の User Pool でも `SetUserPoolMfaConfig` で `ON` に設定できます。 [SetUserPoolMfaConfig の API リファレンス](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_SetUserPoolMfaConfig.html)
 - `tier` が `LITE` か `ESSENTIALS` であることを確認します。`PLUS` の場合は、`threatProtection`（脅威保護）が `OFF` 以外で使われていないかもあわせて記録します。プランを下げるには、上位のプランにしかない機能を先に止める必要があります（[Turning off features to change feature plans](https://docs.aws.amazon.com/cognito/latest/developerguide/feature-plans-deactivate.html)）。
 
 Lite と Essentials のどちらで足りるかは、ログイン画面の種類で決まります。managed login は Essentials 以上が必要で、Lite で使えるのは classic hosted UI だけです。ドメインのブランディングは次のコマンドで確認します（`domain` の値。`customDomain` があればそちら）。
@@ -327,17 +327,16 @@ aws cognito-idp describe-user-pool-domain --profile registry-read --region "$COG
 
 `managedLoginVersion` が `2` なら managed login で、Essentials 以上が必要です。`1` なら classic hosted UI で、Lite でも使えます。ただし、ポータルが classic hosted UI でログインできるかは未確認です（README の受入確認は managed login を前提にしています）。料金は [Amazon Cognito の料金](https://aws.amazon.com/cognito/pricing/)で確認してください。
 
-ユーザーごとの MFA は、Cognito でユーザーを作った後（4.1 の 7）に確認します。`AdminGetUser` は `RegistryPortalReadOnly` の権限（`Describe*`、`List*`）に含まれないため、`registry-deploy` を使います。`identity_providers` に外部の IdP を指定した場合、その IdP のユーザーの MFA は IdP 側の設定で確認します。
+`mfa` が `OPTIONAL` の場合は、Cognito でユーザーを作った後（4.1 の 7）に、ポータルを使うユーザーの MFA を確認します。`AdminGetUser` は照会したユーザーを課金用の月間アクティブユーザー（MAU）に算入するため、対象のユーザー名を 1 人ずつ指定してください。照会には `registry-deploy` を使います。外部 IdP のユーザーは、IdP 側の MFA 設定を確認してください。 [Amazon Cognito の MAU 集計ルール](https://docs.aws.amazon.com/cognito/latest/developerguide/quotas.html)
 
 ```bash
-for USERNAME in $(aws cognito-idp list-users --profile registry-read --region "$COGNITO_REGION" --user-pool-id "$USER_POOL_ID" --query 'Users[].Username' --output text); do
-  aws cognito-idp admin-get-user --profile registry-deploy --region "$COGNITO_REGION" \
-    --user-pool-id "$USER_POOL_ID" --username "$USERNAME" \
-    --query '{user:Username,mfa:UserMFASettingList,preferred:PreferredMfaSetting}' --output json
-done
+PORTAL_USERNAME='確認対象のポータル利用者の Cognito ユーザー名'
+aws cognito-idp admin-get-user --profile registry-deploy --region "$COGNITO_REGION" \
+  --user-pool-id "$USER_POOL_ID" --username "$PORTAL_USERNAME" \
+  --query '{user:Username,mfa:UserMFASettingList,preferred:PreferredMfaSetting}' --output json
 ```
 
-`mfa` が空（`null`）のユーザーは MFA を設定していません。ポータルを使うユーザーなら、MFA を設定してもらってから使い始めます。
+`mfa` が `null` または空の配列なら、ポータルを使い始める前に、そのユーザーに MFA を設定してもらってください。
 
 出典（AWS の公式文書）：
 
