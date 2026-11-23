@@ -30,6 +30,9 @@ DISCOVERY_ENV = {
     "DISCOVERY_CLIENT_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:123456789012:secret:x",
 }
 ENV = {**AUTH_ENV, **DISCOVERY_ENV}
+LOCAL_ORIGIN = "http://localhost:5173"
+SPA_ORIGIN = "https://portal.example.cloudfront.net"
+CORS_ENV = {**ENV, "CORS_ALLOWED_ORIGINS": json.dumps([LOCAL_ORIGIN, SPA_ORIGIN])}
 
 
 def access_claims(**overrides: Any) -> dict[str, Any]:
@@ -254,6 +257,54 @@ def test_rest_api_event_without_valid_claims_is_rejected_with_401(authorizer: An
     assert status == 401
     assert body["error"]["code"] == "UNAUTHENTICATED"
     assert body["error"]["requestId"] == "req-rest"
+
+
+@pytest.mark.parametrize("origin", [LOCAL_ORIGIN, SPA_ORIGIN, "https://other.example", None])
+def test_rest_api_preflight_and_success_match_allowed_origins(origin: str | None) -> None:
+    handler = create_management_handler(CORS_ENV)
+    headers = {"oRiGiN": origin} if origin is not None else {}
+    preflight = handler(rest_api_event("OPTIONS", headers=headers), None)
+    response = handler(rest_api_event(claims=access_claims(), headers=headers), None)
+
+    assert preflight["statusCode"] == 204
+    assert preflight["body"] == ""
+    assert response["statusCode"] == 200
+    for result in (preflight, response):
+        assert result["headers"]["Vary"] == "Origin"
+        assert result["headers"].get("Access-Control-Allow-Origin") == (
+            origin if origin in (LOCAL_ORIGIN, SPA_ORIGIN) else None
+        )
+    if origin in (LOCAL_ORIGIN, SPA_ORIGIN):
+        assert preflight["headers"]["Access-Control-Allow-Methods"] == "GET, POST, PATCH, OPTIONS"
+        assert preflight["headers"]["Access-Control-Allow-Headers"] == (
+            "Authorization, Content-Type, Idempotency-Key"
+        )
+    else:
+        assert not any(name.startswith("Access-Control-") for name in preflight["headers"])
+
+
+def test_rest_api_errors_include_cors_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken_route(*_args: Any) -> Any:
+        raise RuntimeError("テスト用の障害")
+
+    monkeypatch.setitem(app_module.MANAGEMENT_ROUTES, "GET /api/me", broken_route)
+    handler = create_management_handler(CORS_ENV)
+    headers = {"Origin": LOCAL_ORIGIN}
+    for status, request in (
+        (401, rest_api_event(headers=headers)),
+        (404, rest_api_event(path="/api/unknown", claims=access_claims(), headers=headers)),
+        (500, rest_api_event(claims=access_claims(), headers=headers)),
+    ):
+        response = handler(request, None)
+        assert response["statusCode"] == status
+        assert response["headers"]["Access-Control-Allow-Origin"] == LOCAL_ORIGIN
+
+
+def test_http_api_responses_keep_gateway_managed_cors() -> None:
+    request = http_event(claims=access_claims(), headers={"Origin": LOCAL_ORIGIN})
+    assert create_management_handler(CORS_ENV)(request, None) == create_management_handler(ENV)(
+        request, None
+    )
 
 
 def test_x_user_email_header_does_not_change_principal() -> None:

@@ -31,6 +31,7 @@ from registry_portal.config import (
     ConfigurationError,
     load_auth_settings,
     load_catalog_settings,
+    load_cors_origins,
     load_discovery_settings,
     load_registry_settings,
 )
@@ -204,10 +205,16 @@ MANAGEMENT_ROUTES: Mapping[str, Route] = {
 }
 
 
-def _serve(routes: Mapping[str, Route], settings: AuthSettings) -> Handler:
+def _serve(
+    routes: Mapping[str, Route],
+    settings: AuthSettings,
+    cors_origins: frozenset[str],
+    *,
+    preflight: bool = False,
+) -> Handler:
     """ルート表を Lambda handler にする。認可・エラー応答はすべての handler で共通。"""
 
-    def handler(event: LambdaEvent, context: Any) -> LambdaResponse:
+    def dispatch(event: LambdaEvent) -> LambdaResponse:
         request_id = _request_context(event).get("requestId")
         try:
             caller = authorize(_claims_of(event), settings)
@@ -225,6 +232,39 @@ def _serve(routes: Mapping[str, Route], settings: AuthSettings) -> Handler:
         except Exception:
             logger.exception("想定外のエラー: request_id=%s", request_id)
             return _json_response(500, ApiError().to_dto(request_id))
+
+    def handler(event: LambdaEvent, context: Any) -> LambdaResponse:
+        rest_method = event.get("httpMethod")
+        if not isinstance(rest_method, str):
+            return dispatch(event)
+
+        cors_headers = {"Vary": "Origin"} if cors_origins else {}
+        origin = next(
+            (
+                value
+                for name, value in _mapping_or_empty(event.get("headers")).items()
+                if name.lower() == "origin"
+            ),
+            None,
+        )
+        if isinstance(origin, str) and origin in cors_origins:
+            cors_headers["Access-Control-Allow-Origin"] = origin
+        if preflight and rest_method == "OPTIONS":
+            if "Access-Control-Allow-Origin" in cors_headers:
+                cors_headers.update(
+                    {
+                        "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
+                        "Access-Control-Allow-Headers": (
+                            "Authorization, Content-Type, Idempotency-Key"
+                        ),
+                        "Access-Control-Max-Age": "300",
+                    }
+                )
+            return {"statusCode": 204, "headers": cors_headers, "body": ""}
+
+        response = dispatch(event)
+        response["headers"].update(cors_headers)
+        return response
 
     return handler
 
@@ -434,7 +474,7 @@ def create_management_handler(
         "POST /api/notifications/read": read_notifications,
     }
 
-    return _serve(routes, settings)
+    return _serve(routes, settings, load_cors_origins(environ), preflight=True)
 
 
 def create_curation_handler(
@@ -569,7 +609,7 @@ def create_curation_handler(
         "POST /api/records/{recordId}/recovery": recover_operation,
     }
 
-    return _serve(routes, settings)
+    return _serve(routes, settings, load_cors_origins(environ))
 
 
 def create_event_handler(

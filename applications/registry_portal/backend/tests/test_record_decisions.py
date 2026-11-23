@@ -119,6 +119,29 @@ def test_decision_handler_reads_the_curator_role_from_rest_api_events():
 
 
 @mock_aws
+def test_decision_handler_adds_cors_to_rest_api_forbidden_response():
+    registry, db = clients()
+    origin = "http://localhost:5173"
+    handler = create_curation_handler(
+        {
+            **ENV,
+            "SUPPLEMENT_TABLE_NAME": SUPPLEMENT_TABLE,
+            "CORS_ALLOWED_ORIGINS": '["http://localhost:5173"]',
+        },
+        registry_client=registry,
+        store_client=db,
+    )
+    request = _rest_review_list("registry-publisher,team-payments")
+    request["headers"] = {"Origin": origin}
+
+    response = handler(request, None)
+
+    assert response["statusCode"] == 403
+    assert response["headers"]["Access-Control-Allow-Origin"] == origin
+    assert response["headers"]["Vary"] == "Origin"
+
+
+@mock_aws
 def test_review_list_joins_aws_pending_records_with_submission_snapshots():
     registry, db = clients()
     with Stubber(registry) as stub:

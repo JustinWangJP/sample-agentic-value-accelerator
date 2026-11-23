@@ -159,6 +159,7 @@ bootstrap で月額予算を作る場合は、`budget_limit_usd` に dev の目�
 |---|---|
 | `COGNITO_ISSUER` | Cognito User Pool の issuer（`https://cognito-idp.us-east-1.amazonaws.com/<pool-id>`） |
 | `HUMAN_CLIENT_ID` | 人間用の公開 SPA client の client_id |
+| `CORS_ALLOWED_ORIGINS` | 管理・決裁 Lambda が REST API の応答で許可する origin の JSON 配列。CloudFront の origin と `local_dev_origins` を渡す。既定は `[]` |
 | `REGISTRY_ARN` | 既存 Registry の ARN（`arn:aws:agent-registry:<region>:<account>:registry/<id>`）。リージョンは ARN から導出する |
 | `DISCOVERY_TOKEN_URL` | 発見用 M2M client のトークンエンドポイント（`https://<domain>/oauth2/token`）。https に限る |
 | `DISCOVERY_CLIENT_ID` | 発見用 M2M client の client_id |
