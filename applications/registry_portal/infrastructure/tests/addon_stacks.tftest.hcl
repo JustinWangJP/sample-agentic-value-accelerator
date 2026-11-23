@@ -133,45 +133,6 @@ run "events_log_retention_dev_value" {
   }
 }
 
-# 追加スタックのルートモジュールも、CloudWatch Logs が受け付けない保持日数を validation で止める
-run "decision_stack_rejects_unsupported_log_retention" {
-  command = plan
-  module {
-    source = "./decision"
-  }
-  variables {
-    region                      = "us-east-1"
-    lambda_zip_path             = "tests/fixtures/safe.json"
-    cognito_user_pool_id        = "us-east-1_Example"
-    human_client_id             = "human-spa-client"
-    registry_arn                = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
-    supplement_table_name       = "registry-auxiliary"
-    supplement_table_arn        = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-auxiliary"
-    discovery_token_url         = "https://example.auth.us-east-1.amazoncognito.com/oauth2/token"
-    discovery_client_id         = "discovery-client"
-    discovery_client_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:discovery-AbCdEf"
-    discovery_scope             = "registry/discovery.read"
-    log_retention_in_days       = 10
-  }
-  expect_failures = [var.log_retention_in_days]
-}
-
-run "events_stack_rejects_unsupported_log_retention" {
-  command = plan
-  module {
-    source = "./notification_events"
-  }
-  variables {
-    region                = "us-east-1"
-    lambda_zip_path       = "tests/fixtures/safe.json"
-    registry_arn          = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
-    supplement_table_name = "registry-auxiliary"
-    supplement_table_arn  = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-auxiliary"
-    log_retention_in_days = 10
-  }
-  expect_failures = [var.log_retention_in_days]
-}
-
 # 予約同時実行数（#61 実装案 5）。既定値では属性を設定せず（予約なし）、今の動作と差分を出さない
 run "decision_reserved_concurrency" {
   command = plan

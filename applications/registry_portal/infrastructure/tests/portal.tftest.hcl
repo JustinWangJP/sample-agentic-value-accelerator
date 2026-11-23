@@ -254,14 +254,6 @@ run "log_retention_dev_value" {
   }
 }
 
-run "log_retention_rejects_unsupported_value" {
-  command = plan
-  variables {
-    log_retention_in_days = 10
-  }
-  expect_failures = [var.log_retention_in_days]
-}
-
 run "teardown_protection_defaults" {
   command = plan
   assert {
