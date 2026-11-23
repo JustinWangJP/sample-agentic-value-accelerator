@@ -72,6 +72,20 @@ class RouteManifestTests(unittest.TestCase):
                     self.assertLessEqual(len(PATH_PARAMETER.findall(route["path"])), 1)
                     self.assertRegex(route["statement_id"], r"^[A-Za-z0-9_-]{1,100}$")
 
+    def test_openapi_documents_exactly_the_routes(self):
+        # OpenAPI 仕様（backend/openapi.yaml）の operation は、経路表の経路と一致させる。
+        # CI の infrastructure ジョブは YAML のライブラリを持たないため、paths の字下げから読む
+        lines = (INFRA.parent / "backend/openapi.yaml").read_text().splitlines()
+        paths = lines[lines.index("paths:") + 1 : lines.index("components:")]
+        documented, path = set(), None
+        for line in paths:
+            if match := re.fullmatch(r"  (/\S+):", line):
+                path = match.group(1)
+            elif match := re.fullmatch(r"    (get|post|put|patch|delete):", line):
+                documented.add(f"{match.group(1).upper()} {path}")
+        expected = {route_key(route) for route in routes_for("main", "management", "decision")}
+        self.assertEqual(documented, expected)
+
     def test_all_route_keys_and_statement_ids_are_unique(self):
         routes = routes_for("main", "management", "decision")
         self.assertEqual(len({route_key(route) for route in routes}), 29)

@@ -12,7 +12,7 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 | `backend/src/registry_portal/handlers/curation.py` | 決裁 handler の Lambda エントリーポイント。認証設定または補助テーブルがなければ初期化に失敗する |
 | `backend/src/registry_portal/handlers/events.py` | イベント処理 handler の Lambda エントリーポイント（#15）。Registry の ARN または補助テーブルがなければ初期化に失敗する |
 | `backend/src/registry_portal/app.py` | API Gateway REST API と HTTP API のイベントを受け取り、route を振り分ける |
-| `backend/openapi.yaml` | 管理 handler と決裁 handler の全 API の OpenAPI 3.1.0 仕様。route を足す・変えるときは、`app.py` のルート表と一緒に更新する。Lint の設定は `backend/redocly.yaml` |
+| `backend/openapi.yaml` | 管理 handler と決裁 handler の全 API の OpenAPI 3.1.0 仕様。route を足す・変えるときは、`app.py` のルート表と共通の経路表（`infrastructure/modules/api_routes/routes.json`）と一緒に更新する（`infrastructure/tests/test_route_permissions.py` が経路表との一致を検査する）。Lint の設定は `backend/redocly.yaml` |
 | `backend/src/registry_portal/auth.py` | 認可。検証済みの claims から主体・業務ロール・所属チームを導出する |
 | `backend/src/registry_portal/errors.py` | 共通エラー DTO と日本語メッセージ |
 | `backend/src/registry_portal/catalog.py` | カタログの一覧・検索・詳細 API。入力の検証、DTO への変換、サービス層の失敗の API エラーへの変換 |
