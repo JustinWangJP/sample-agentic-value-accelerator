@@ -309,3 +309,23 @@ run "spa_noncurrent_version_expiration_days_must_be_positive_integer" {
   }
   expect_failures = [var.spa_noncurrent_version_expiration_days]
 }
+
+# 予約同時実行数（#61 実装案 5）。既定値では属性を設定せず（予約なし）、今の動作と差分を出さない
+run "lambda_reserved_concurrency_default" {
+  command = plan
+  assert {
+    condition     = aws_lambda_function.management.reserved_concurrent_executions == null
+    error_message = "lambda_reserved_concurrency を指定しないときは、管理 Lambda の同時実行数を予約しないでください。"
+  }
+}
+
+run "lambda_reserved_concurrency_set" {
+  command = plan
+  variables {
+    lambda_reserved_concurrency = 5
+  }
+  assert {
+    condition     = aws_lambda_function.management.reserved_concurrent_executions == 5
+    error_message = "lambda_reserved_concurrency を指定したら、管理 Lambda の reserved_concurrent_executions に渡してください。"
+  }
+}

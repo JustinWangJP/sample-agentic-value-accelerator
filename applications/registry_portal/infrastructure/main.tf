@@ -173,6 +173,8 @@ resource "aws_lambda_function" "management" {
   handler          = "registry_portal.handlers.management.handler"
   timeout          = 30
   memory_size      = 256
+  # null なら属性を設定せず、予約しない（既定の動作のまま）
+  reserved_concurrent_executions = var.lambda_reserved_concurrency
   environment {
     # A2A_SEARCH_ENABLED は isA2A の補完と確認（#16）が終わるまで設定しない（未設定は無効）
     variables = merge(module.discovery_client.environment, {

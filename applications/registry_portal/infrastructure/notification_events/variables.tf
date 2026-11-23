@@ -39,3 +39,9 @@ variable "log_retention_in_days" {
     error_message = "CloudWatch Logs が受け付ける保持日数（1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653）を指定してください。"
   }
 }
+
+variable "lambda_reserved_concurrency" {
+  type        = number
+  description = "イベント処理 Lambda の予約同時実行数（reserved_concurrent_executions）。null なら予約しない。EventBridge から呼ばれ、上限に達すると再試行や DLQ に回るため、本体の API より余裕のある値にする。アカウントの同時実行数の上限（aws lambda get-account-settings）を確認してから指定する"
+  default     = null
+}

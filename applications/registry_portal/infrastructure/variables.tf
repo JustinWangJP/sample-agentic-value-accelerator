@@ -117,3 +117,9 @@ variable "spa_noncurrent_version_expiration_days" {
     error_message = "spa_noncurrent_version_expiration_days は null または 1 以上の整数にしてください。"
   }
 }
+
+variable "lambda_reserved_concurrency" {
+  description = "管理 Lambda の予約同時実行数（reserved_concurrent_executions）。暴走や大量リクエストによる課金を抑える上限。null なら予約しない。アカウントの同時実行数の上限（aws lambda get-account-settings）を確認してから指定する。"
+  type        = number
+  default     = null
+}

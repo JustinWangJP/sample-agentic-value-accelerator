@@ -38,3 +38,9 @@ variable "log_retention_in_days" {
   description = "イベント処理 Lambda のロググループの保持日数。許容値の検証はルートモジュールの変数で行う"
   default     = 365
 }
+
+variable "lambda_reserved_concurrency" {
+  type        = number
+  description = "イベント処理 Lambda の予約同時実行数（reserved_concurrent_executions）。null なら予約しない"
+  default     = null
+}
