@@ -431,7 +431,7 @@ AWS_PROFILE=registry-deploy-tf terraform -chdir=infrastructure output
 | `discovery_kms_key_arn` | 本体の `dev.tfvars` と同じ値。顧客管理キーの場合だけ ARN を指定し、AWS 管理キーなら省略または `null` | decision |
 | `lambda_zip_path` | 4.4 で作った共通 ZIP のパス | decision、notification_events |
 
-`rest_api` は `terraform -chdir=infrastructure output rest_api` が表示するオブジェクトを、そのまま `rest_api = { ... }` として貼り付けます。management は `cors_allowed_origins` を使いませんが、両スタックで同じ値を転記します。`scripts/deploy.sh` は追加スタックの再デプロイ先（REST API の ID とステージ名）を、この値から読みます。
+`rest_api` は `terraform -chdir=infrastructure output rest_api` が表示するオブジェクトを、そのまま `rest_api = { ... }` として貼り付けます。management は `cors_allowed_origins` を使わないため変数の型に含めていません。それでも両スタックで同じ値を転記します（型にない属性は Terraform が捨てます）。`scripts/deploy.sh` は追加スタックの再デプロイ先（REST API の ID とステージ名）を、この値から読みます。
 
 `cognito_issuer` の output は確認用です。decision のルートスタックは `region` と `cognito_user_pool_id` から issuer を組み立てるため、tfvars に `cognito_issuer` を追加しません。
 

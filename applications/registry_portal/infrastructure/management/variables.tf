@@ -20,13 +20,12 @@ variable "supplement_table_arn" {
 
 variable "rest_api" {
   type = object({
-    id                   = string
-    stage_name           = string
-    authorizer_id        = string
-    portal_api_scope     = string
-    cors_allowed_origins = list(string)
+    id               = string
+    stage_name       = string
+    authorizer_id    = string
+    portal_api_scope = string
   })
-  description = "管理 handler の route を割り当てる既存 REST API。本体スタックの output rest_api をそのまま転記する。stage_name は deploy.sh の再デプロイ先に使い、cors_allowed_origins はこのスタックでは使わない"
+  description = "管理 handler の route を割り当てる既存 REST API。本体スタックの output rest_api をそのまま転記する。stage_name は deploy.sh の再デプロイ先に使う。output の cors_allowed_origins はこのスタックでは使わないため型に含めず、転記しても Terraform が型の変換で捨てる"
 }
 
 variable "management_function_name" {

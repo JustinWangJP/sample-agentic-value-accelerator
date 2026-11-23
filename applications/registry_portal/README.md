@@ -752,7 +752,7 @@ AWS の `ListRegistryRecords` の `name` フィルターは[公式文書](https:
 
 廃止依頼と履歴のメソッド・統合は、management スタックから既存の REST API パスに追加します。次の値を `terraform.tfvars` に転記します。
 
-- `rest_api`: 本体の output `rest_api` をそのまま転記する（決裁と同じ値）。REST API の ID、ステージ名（`scripts/deploy.sh` の再デプロイ先）、Cognito User Pools authorizer の ID、route の authorizer が検証するカスタム scope（`portal_api_scope`）を含む。`cors_allowed_origins` はこのスタックでは使わない
+- `rest_api`: 本体の output `rest_api` をそのまま転記する（決裁と同じ値）。REST API の ID、ステージ名（`scripts/deploy.sh` の再デプロイ先）、Cognito User Pools authorizer の ID、route の authorizer が検証するカスタム scope（`portal_api_scope`）を含む。`cors_allowed_origins` はこのスタックでは使わないため変数の型に含めず、転記しても Terraform が捨てる
 - `management_function_name`: 既存の管理 Lambda の関数名（この2つの path に限った呼び出し許可を追加する）
 
 REST API のパスと authorizer は本体スタックから借用し、本体の output を tfvars に転記します。管理 route のメソッドと統合は別 state の `management` から適用します。現在は state を移動しません。後続 Issue で統合する場合だけ、移行先の import と移行元の `terraform state rm` を行います（[ADR-0013](../../docs/adr/0013-separate-portal-addon-states.md)）。管理 Lambda のロールには、廃止依頼の保存でロックを確かめるための `dynamodb:ConditionCheckItem` を [下書き用モジュールのポリシー](infrastructure/modules/management_drafts/draft-policy.json.tftpl) に追加しています。
