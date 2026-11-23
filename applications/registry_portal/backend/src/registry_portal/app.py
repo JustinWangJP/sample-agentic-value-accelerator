@@ -102,24 +102,37 @@ def _request_context(event: LambdaEvent) -> Mapping[str, Any]:
     return _mapping_or_empty(event.get("requestContext"))
 
 
-def _claims_of(event: LambdaEvent) -> Mapping[str, Any] | None:
-    """検証済みの claims。HTTP API は `authorizer.jwt.claims`、REST API は `authorizer.claims`。"""
-    authorizer = _mapping_or_empty(_request_context(event).get("authorizer"))
-    jwt = authorizer.get("jwt")
-    claims = _mapping_or_empty(jwt).get("claims") if jwt is not None else authorizer.get("claims")
-    return claims if isinstance(claims, Mapping) else None
+class _ApiRequest(NamedTuple):
+    """2 つのイベント形式の差を吸収した要求。形式の判定は _api_request だけで行う。"""
+
+    rest_api: bool
+    method: str
+    # ルート表と照合するキー（例: GET /api/me）
+    route_key: str
+    # 検証済みの claims。トークンがない、または想定外の型なら None
+    claims: Mapping[str, Any] | None
 
 
-def _route_key(event: LambdaEvent) -> str:
-    """ルート表と照合するキー（例: GET /api/me）。
+def _api_request(event: LambdaEvent) -> _ApiRequest:
+    """イベントの形式を判定し、メソッド・ルート表のキー・claims を取り出す。
 
-    HTTP API は `requestContext.http` の method と path、REST API は最上位の `httpMethod` と `path`
-    （ステージ名を含まない）から作る。
+    REST API は最上位の `httpMethod` と `path`（ステージ名を含まない）と `authorizer.claims`、
+    HTTP API は `requestContext.http` の method と path と `authorizer.jwt.claims` を使う。
+    HTTP API のイベントは最上位に `httpMethod` を持たない。
     """
-    http = _mapping_or_empty(_request_context(event).get("http"))
-    if http:
-        return f"{http.get('method', '')} {http.get('path', '')}"
-    return f"{event.get('httpMethod', '')} {event.get('path', '')}"
+    context = _request_context(event)
+    authorizer = _mapping_or_empty(context.get("authorizer"))
+    rest_method = event.get("httpMethod")
+    if isinstance(rest_method, str):
+        rest_api, method, path = True, rest_method, event.get("path", "")
+        claims = authorizer.get("claims")
+    else:
+        http = _mapping_or_empty(context.get("http"))
+        rest_api, method, path = False, str(http.get("method", "")), http.get("path", "")
+        claims = _mapping_or_empty(authorizer.get("jwt")).get("claims")
+    return _ApiRequest(
+        rest_api, method, f"{method} {path}", claims if isinstance(claims, Mapping) else None
+    )
 
 
 # ルート表のキーに含まれる path パラメーター（例: {recordId}）。1つのルートに1つまで
@@ -146,7 +159,7 @@ def _route_template(key: str, templates: Iterable[str]) -> tuple[str, dict[str, 
 
 
 def _path_parameter(event: LambdaEvent) -> str:
-    """ルート表との照合で得た path パラメーターの値（_serve が pathParameters に設定する）。"""
+    """ルート表との照合で得た path パラメーターの値（_route_dispatcher が pathParameters に設定する）。"""
     parameters = _mapping_or_empty(event.get("pathParameters"))
     return str(next(iter(parameters.values()), ""))
 
@@ -205,20 +218,17 @@ MANAGEMENT_ROUTES: Mapping[str, Route] = {
 }
 
 
-def _serve(
-    routes: Mapping[str, Route],
-    settings: AuthSettings,
-    cors_origins: frozenset[str],
-    *,
-    preflight: bool = False,
-) -> Handler:
-    """ルート表を Lambda handler にする。認可・エラー応答はすべての handler で共通。"""
+RequestHandler = Callable[[LambdaEvent, _ApiRequest], LambdaResponse]
 
-    def dispatch(event: LambdaEvent) -> LambdaResponse:
+
+def _route_dispatcher(routes: Mapping[str, Route], settings: AuthSettings) -> RequestHandler:
+    """ルート表で要求を処理する関数を作る。認可・エラー応答はすべての handler で共通。"""
+
+    def dispatch(event: LambdaEvent, request: _ApiRequest) -> LambdaResponse:
         request_id = _request_context(event).get("requestId")
         try:
-            caller = authorize(_claims_of(event), settings)
-            template, parameters = _route_template(_route_key(event), routes)
+            caller = authorize(request.claims, settings)
+            template, parameters = _route_template(request.route_key, routes)
             route = routes.get(template)
             if route is None:
                 raise RouteNotFoundError()
@@ -233,10 +243,22 @@ def _serve(
             logger.exception("想定外のエラー: request_id=%s", request_id)
             return _json_response(500, ApiError().to_dto(request_id))
 
+    return dispatch
+
+
+def _with_cors(
+    dispatch: RequestHandler, cors_origins: frozenset[str], *, preflight: bool
+) -> Handler:
+    """REST API の応答に、Origin を許可リストと照合した CORS ヘッダーを付ける。
+
+    HTTP API の CORS は API Gateway の設定が処理するため、HTTP API 形式の応答には付けない。
+    preflight が真なら、OPTIONS をルート表に渡さず 204 で応答する。
+    """
+
     def handler(event: LambdaEvent, context: Any) -> LambdaResponse:
-        rest_method = event.get("httpMethod")
-        if not isinstance(rest_method, str):
-            return dispatch(event)
+        request = _api_request(event)
+        if not request.rest_api:
+            return dispatch(event, request)
 
         cors_headers = {"Vary": "Origin"} if cors_origins else {}
         origin = next(
@@ -249,7 +271,7 @@ def _serve(
         )
         if isinstance(origin, str) and origin in cors_origins:
             cors_headers["Access-Control-Allow-Origin"] = origin
-        if preflight and rest_method == "OPTIONS":
+        if preflight and request.method == "OPTIONS":
             if "Access-Control-Allow-Origin" in cors_headers:
                 cors_headers.update(
                     {
@@ -262,11 +284,22 @@ def _serve(
                 )
             return {"statusCode": 204, "headers": cors_headers, "body": ""}
 
-        response = dispatch(event)
+        response = dispatch(event, request)
         response["headers"].update(cors_headers)
         return response
 
     return handler
+
+
+def _serve(
+    routes: Mapping[str, Route],
+    settings: AuthSettings,
+    cors_origins: frozenset[str],
+    *,
+    preflight: bool = False,
+) -> Handler:
+    """ルート表を、CORS を処理する Lambda handler にする。"""
+    return _with_cors(_route_dispatcher(routes, settings), cors_origins, preflight=preflight)
 
 
 class _SupplementStores(NamedTuple):

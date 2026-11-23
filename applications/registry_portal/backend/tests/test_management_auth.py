@@ -259,6 +259,19 @@ def test_rest_api_event_without_valid_claims_is_rejected_with_401(authorizer: An
     assert body["error"]["requestId"] == "req-rest"
 
 
+def test_claims_are_read_only_from_the_location_of_the_event_format() -> None:
+    # 形式はイベントの形（最上位の httpMethod の有無）で 1 回だけ決め、claims の場所を混ぜない
+    rest = rest_api_event(claims=None)
+    rest["requestContext"]["authorizer"] = {"jwt": {"claims": access_claims()}}
+    http = http_event(claims=None)
+    http["requestContext"]["authorizer"] = {"claims": access_claims()}
+
+    for event in (rest, http):
+        status, body = call(event)
+        assert status == 401
+        assert body["error"]["code"] == "UNAUTHENTICATED"
+
+
 @pytest.mark.parametrize("origin", [LOCAL_ORIGIN, SPA_ORIGIN, "https://other.example", None])
 def test_rest_api_preflight_and_success_match_allowed_origins(origin: str | None) -> None:
     handler = create_management_handler(CORS_ENV)
