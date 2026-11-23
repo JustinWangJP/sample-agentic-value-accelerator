@@ -3,6 +3,11 @@ mock_provider "aws" {
   mock_data "aws_region" {
     defaults = { region = "us-east-1" }
   }
+  # 実際の S3 バケットと同じく ID をバケット名にする（plan の時点で付属設定の対象バケットを確かめるため）
+  mock_resource "aws_s3_bucket" {
+    override_during = plan
+    defaults        = { id = "portal-state-test-123456789012" }
+  }
   mock_resource "aws_ssoadmin_permission_set" {
     defaults = { arn = "arn:aws:sso:::permissionSet/ssoins-0000000000000000/ps-0000000000000000" }
   }
@@ -55,6 +60,43 @@ run "personal_account_without_identity_center" {
   assert {
     condition     = !strcontains(aws_s3_bucket_policy.state.policy, "AWSReservedSSO")
     error_message = "個人アカウントの state バケットポリシーに SSO ロールを固定しないでください。"
+  }
+}
+# state の古いバージョンは期限で消す。古い state に戻せるよう、日数は長めにし、直近のバージョンは常に残す。
+# prevent_destroy は tftest では検査できないため、infrastructure/tests/test_teardown_guards.py で確認する。
+run "state_bucket_expires_old_versions" {
+  command = plan
+  assert {
+    condition     = aws_s3_bucket_versioning.state.versioning_configuration[0].status == "Enabled"
+    error_message = "ライフサイクル設定を追加しても、state のバージョニングは有効のまま残してください。"
+  }
+  assert {
+    condition     = aws_s3_bucket_lifecycle_configuration.state.bucket == "portal-state-test-123456789012"
+    error_message = "ライフサイクル設定は state バケットに付けてください。"
+  }
+  assert {
+    condition = anytrue([
+      for rule in aws_s3_bucket_lifecycle_configuration.state.rule :
+      rule.status == "Enabled" &&
+      try(rule.noncurrent_version_expiration[0].noncurrent_days, 0) >= 90 &&
+      try(rule.noncurrent_version_expiration[0].newer_noncurrent_versions, 0) >= 1
+    ])
+    error_message = "古いバージョンは 90 日以上残してから消し、直近のバージョンは常に残してください。"
+  }
+  assert {
+    condition = anytrue([
+      for rule in aws_s3_bucket_lifecycle_configuration.state.rule :
+      rule.status == "Enabled" &&
+      try(rule.abort_incomplete_multipart_upload[0].days_after_initiation, 0) == 1
+    ])
+    error_message = "未完了のマルチパートアップロードは 1 日で中止してください。"
+  }
+  assert {
+    condition = alltrue([
+      for rule in aws_s3_bucket_lifecycle_configuration.state.rule :
+      length(rule.expiration) == 0 && length(rule.transition) == 0
+    ])
+    error_message = "現行の state を失効・移行させないでください。消すのは古いバージョンだけです。"
   }
 }
 run "identity_center_permission_set" {
