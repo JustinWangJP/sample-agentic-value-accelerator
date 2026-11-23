@@ -83,6 +83,15 @@ variable "discovery_scope" {
   type        = string
   default     = ""
 }
+variable "log_retention_in_days" {
+  description = "API のアクセスログと管理 Lambda のロググループの保持日数。既定は 365 日。dev では dev.tfvars で 14 にする。CloudWatch Logs が受け付ける値だけを指定できる。"
+  type        = number
+  default     = 365
+  validation {
+    condition     = contains([1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653], var.log_retention_in_days)
+    error_message = "CloudWatch Logs が受け付ける保持日数（1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653）を指定してください。"
+  }
+}
 variable "lambda_zip_path" {
   description = "管理・決裁・イベント処理 Lambda 共通の ZIP のパス。scripts/build_lambda.py で生成する。deploy.sh は一時ディレクトリの ZIP を指定する。"
   type        = string
@@ -97,4 +106,31 @@ variable "spa_force_destroy" {
   description = "SPA バケットを中身ごと削除できるようにするか（force_destroy）。撤去するときだけ true で apply してから destroy する。"
   type        = bool
   default     = false
+}
+variable "spa_noncurrent_version_expiration_days" {
+  description = "SPA バケットの古いバージョン（noncurrent）を消すまでの日数。null（既定）ではライフサイクル設定を作らず、古いバージョンを残す。dev の推奨値は 7。"
+  type        = number
+  default     = null
+  validation {
+    # S3 のライフサイクル規則は 1 以上の整数日だけを受け付ける。apply の前に plan で止める
+    condition     = var.spa_noncurrent_version_expiration_days == null || try(var.spa_noncurrent_version_expiration_days >= 1 && floor(var.spa_noncurrent_version_expiration_days) == var.spa_noncurrent_version_expiration_days, false)
+    error_message = "spa_noncurrent_version_expiration_days は null または 1 以上の整数にしてください。"
+  }
+}
+
+variable "lambda_reserved_concurrency" {
+  description = "管理 Lambda の予約同時実行数（reserved_concurrent_executions）。暴走や大量リクエストによる課金を抑える上限。null なら予約しない。アカウントの同時実行数の上限（aws lambda get-account-settings）を確認してから指定する。"
+  type        = number
+  default     = null
+}
+
+variable "local_dev_origins" {
+  description = "ローカルの開発サーバー（npm run dev）から dev に接続するための origin。人間用 client のコールバック URL・ログアウト URL（末尾に / を付ける）と HTTP API の CORS に追加する。既定値の [] では追加しない。"
+  type        = list(string)
+  default     = []
+  validation {
+    # Cognito の OAuth が HTTP のコールバック URL を許すのは localhost だけのため、ほかの origin は受け付けない
+    condition     = alltrue([for o in var.local_dev_origins : can(regex("^http://(localhost|127\\.0\\.0\\.1):[0-9]{1,5}$", o))])
+    error_message = "local_dev_origins には http://localhost:<port> または http://127.0.0.1:<port> を、末尾の / なしで指定してください。"
+  }
 }

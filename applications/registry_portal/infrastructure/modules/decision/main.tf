@@ -10,8 +10,9 @@ locals {
 
 # ロググループと、plan 時に確定するその ARN（本体スタック・notification_events と共通のモジュール）
 module "log_group" {
-  source        = "../lambda_log_group"
-  function_name = local.name
+  source            = "../lambda_log_group"
+  function_name     = local.name
+  retention_in_days = var.log_retention_in_days
 }
 
 # ロググループを共通のモジュールに移した。適用済みの state は moved で引き継ぐ
@@ -71,6 +72,8 @@ resource "aws_lambda_function" "decision" {
   handler          = "registry_portal.handlers.curation.handler"
   timeout          = 30
   memory_size      = 256
+  # null なら属性を設定せず、予約しない（既定の動作のまま）
+  reserved_concurrent_executions = var.lambda_reserved_concurrency
   environment {
     variables = merge(module.discovery_client.environment, {
       COGNITO_ISSUER        = var.cognito_issuer

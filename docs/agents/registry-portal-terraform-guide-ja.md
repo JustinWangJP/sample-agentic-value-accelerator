@@ -102,7 +102,7 @@ AWS 上の構成図は [`docs/diagrams/agent-registry-mvp1-aws-architecture-ja.d
 | `modules/decision` | `decision` | 決裁 Lambda（`registry_portal.handlers.curation.handler`）。権限は `UpdateRegistryRecordStatus` と読み取り、発見用 secret の取得、補助テーブルの操作（`decision-policy.json.tftpl`） |
 | `modules/notification_events` | `notification_events` | イベント処理 Lambda（`registry_portal.handlers.events.handler`）。Registry の読み取りと、通知用のパーティションキーに限った PutItem（`events-policy.json.tftpl`） |
 
-Lambda はどれも Python 3.13、arm64、タイムアウト 30 秒、メモリ 256 MB です。ロググループの保存期間は 365 日です。
+Lambda はどれも Python 3.13、arm64、タイムアウト 30 秒、メモリ 256 MB です。ロググループの保存期間は既定で 365 日です。各スタックの変数 `log_retention_in_days` で変えられ、dev では 14 日にします。
 
 ### 1.6 IAM の主体と職責
 
@@ -260,7 +260,9 @@ terraform -chdir=infrastructure/bootstrap apply bootstrap.tfplan
 rm infrastructure/bootstrap/bootstrap.tfplan
 ```
 
-bootstrap はバージョニング、AES256 暗号化、公開アクセス禁止、TLS 必須のバケットポリシーを設定します。バケットには `prevent_destroy` を付けています。bootstrap 自身の state はローカルに作るため、初回管理者が暗号化した場所で保管してください。本体や追加スタックの state と混ぜません。
+bootstrap はバージョニング、AES256 暗号化、公開アクセス禁止、TLS 必須のバケットポリシーを設定します。バケットには `prevent_destroy` を付けています。ライフサイクル規則は直近 10 本の旧バージョンを保持し、それより古い旧バージョンを 90 日で期限切れにします。未完了のマルチパートアップロードは 1 日で中止します。bootstrap 自身の state はローカルに作るため、初回管理者が暗号化した場所で保管してください。本体や追加スタックの state と混ぜません。
+
+月額予算を作る場合は、bootstrap の設定で `budget_limit_usd = 5` を目安にし、`TF_VAR_budget_notification_emails` に通知先の JSON 配列を設定して plan と apply を実行します。メールアドレスは tfvars に書かず、コミットしません。上限と通知先を両方指定したときだけ予算を作り、実績が上限の 80%、予測が 100% を超えたときに通知します。
 
 Identity Center を使う環境では、`identity_center_instance_arn` と `deployer_group_id` を両方指定すると permission set と割り当ても作ります。`deployer_principal_arn` には既存の SSO ロール ARN パターンを指定します。既存 permission set の import を含む手順は [README の手動配信](../../applications/registry_portal/README.md#dev-に手動配信する)を参照してください。
 
@@ -275,7 +277,77 @@ cp infrastructure/terraform.tfvars.example infrastructure/dev.tfvars
 - `backend.hcl` の `bucket` には、3.5 で作ったバケット名を設定します。key は `registry-portal/dev/terraform.tfstate` のままにします。
 - `dev.tfvars` には、アカウント ID、SPA バケット名、`name_prefix`（既定は `registry-portal-dev`）などを設定します。secret の値は書きません。
 
+| 変数 | dev の推奨値 | 設定先 |
+| --- | --- | --- |
+| `log_retention_in_days` | `14`（既定は 365 日） | 本体・決裁・イベント処理 |
+| `spa_noncurrent_version_expiration_days` | `7`（既定は `null`、旧バージョンを保持） | 本体 |
+| `local_dev_origins` | `["http://localhost:5173"]`（既定は `[]`） | 本体 |
+| `lambda_reserved_concurrency` | 本体と決裁は `5`、イベント処理は `2`〜`5`（既定は `null`、予約なし） | 本体・決裁・イベント処理 |
+
+予約同時実行数を設定する前に、対象リージョンで `aws lambda get-account-settings` を実行して `AccountLimit.ConcurrentExecutions` と既存の予約を確認します。予約後も未予約の枠を 100 残せる場合に設定してください。イベント処理では、上限に達した場合の再試行とデッドレターキューへの転送を考慮してください。
+
+Identity Center の deployer で SPA のライフサイクル設定を初めて反映する前に、管理者が bootstrap を再適用して deployer に `s3:PutLifecycleConfiguration` を付与します。
+
 `dev.tfvars` と `backend.hcl` は `.gitignore` の対象です。コミット前に `git status` でも確認してください。
+
+### 3.7 Cognito User Pool の設定を確認する
+
+既存の Cognito User Pool は Terraform の管理対象外です（2.1）。本体スタックは子リソースを追加するだけで、自己サインアップ、MFA、料金プラン（feature plan）は変更しません。そのため、配信の前に次の 3 点を手で確認します。満たさない項目は差分として記録し、User Pool の設定を変える場合はポータルの配信とは別に行います。
+
+| 確認項目 | 期待する値（`describe-user-pool` の項目） | 理由 |
+| --- | --- | --- |
+| 自己サインアップが無効 | `AdminCreateUserConfig.AllowAdminCreateUserOnly` が `true` | `false` のときは、誰でも `SignUp` でユーザーを作れます。設計では、ユーザーは Admin が作ります（4.1 の 7） |
+| ポータルを使うユーザーに MFA が設定されている | `MfaConfiguration` が `ON`、または `OPTIONAL` で、ポータルを使う全ユーザーに MFA が設定されている | `OFF` では MFA を使えません。`OPTIONAL` では、MFA を設定していないユーザーがパスワードだけでログインできます |
+| 料金プランが Lite か Essentials | `UserPoolTier` が `LITE` または `ESSENTIALS`（`PLUS` でない） | Plus は Essentials に脅威保護（`UserPoolAddOns.AdvancedSecurityMode`）などを加えたプランで、dev には不要です |
+
+自己サインアップ、MFA、料金プランは、`registry-read` で確認できます（`RegistryPortalReadOnly` は `cognito-idp:Describe*` と `List*` を持ちます）。
+
+```bash
+COGNITO_REGION=us-east-1
+USER_POOL_ID='dev.tfvars の cognito_user_pool_id'
+
+aws cognito-idp describe-user-pool --profile registry-read --region "$COGNITO_REGION" \
+  --user-pool-id "$USER_POOL_ID" \
+  --query 'UserPool.{adminCreateOnly:AdminCreateUserConfig.AllowAdminCreateUserOnly,mfa:MfaConfiguration,tier:UserPoolTier,threatProtection:UserPoolAddOns.AdvancedSecurityMode,domain:Domain,customDomain:CustomDomain}' \
+  --output json
+```
+
+- `adminCreateOnly` が `true` であることを確認します。
+- `mfa` が `ON` なら、全ユーザーが MFA を使います。`OPTIONAL` なら、下の手順でユーザーごとに確認します。AWS の API リファレンスでは、`ON` は User Pool の作成時にだけ指定できるとされています。
+- `tier` が `LITE` か `ESSENTIALS` であることを確認します。`PLUS` の場合は、`threatProtection`（脅威保護）が `OFF` 以外で使われていないかもあわせて記録します。プランを下げるには、上位のプランにしかない機能を先に止める必要があります（[Turning off features to change feature plans](https://docs.aws.amazon.com/cognito/latest/developerguide/feature-plans-deactivate.html)）。
+
+Lite と Essentials のどちらで足りるかは、ログイン画面の種類で決まります。managed login は Essentials 以上が必要で、Lite で使えるのは classic hosted UI だけです。ドメインのブランディングは次のコマンドで確認します（`domain` の値。`customDomain` があればそちら）。
+
+```bash
+COGNITO_DOMAIN_NAME='上の domain または customDomain の値'
+aws cognito-idp describe-user-pool-domain --profile registry-read --region "$COGNITO_REGION" \
+  --domain "$COGNITO_DOMAIN_NAME" \
+  --query 'DomainDescription.{managedLoginVersion:ManagedLoginVersion,status:Status}' --output json
+```
+
+`managedLoginVersion` が `2` なら managed login で、Essentials 以上が必要です。`1` なら classic hosted UI で、Lite でも使えます。ただし、ポータルが classic hosted UI でログインできるかは未確認です（README の受入確認は managed login を前提にしています）。料金は [Amazon Cognito の料金](https://aws.amazon.com/cognito/pricing/)で確認してください。
+
+ユーザーごとの MFA は、Cognito でユーザーを作った後（4.1 の 7）に確認します。`AdminGetUser` は `RegistryPortalReadOnly` の権限（`Describe*`、`List*`）に含まれないため、`registry-deploy` を使います。`identity_providers` に外部の IdP を指定した場合、その IdP のユーザーの MFA は IdP 側の設定で確認します。
+
+```bash
+for USERNAME in $(aws cognito-idp list-users --profile registry-read --region "$COGNITO_REGION" --user-pool-id "$USER_POOL_ID" --query 'Users[].Username' --output text); do
+  aws cognito-idp admin-get-user --profile registry-deploy --region "$COGNITO_REGION" \
+    --user-pool-id "$USER_POOL_ID" --username "$USERNAME" \
+    --query '{user:Username,mfa:UserMFASettingList,preferred:PreferredMfaSetting}' --output json
+done
+```
+
+`mfa` が空（`null`）のユーザーは MFA を設定していません。ポータルを使うユーザーなら、MFA を設定してもらってから使い始めます。
+
+出典（AWS の公式文書）：
+
+- [DescribeUserPool](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_DescribeUserPool.html)（出力は `UserPool` の下に入る）
+- [AdminCreateUserConfigType](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_AdminCreateUserConfigType.html)（`AllowAdminCreateUserOnly`）
+- [UserPoolType](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_UserPoolType.html)（`MfaConfiguration` の `OFF | ON | OPTIONAL`、`UserPoolTier` の `LITE | ESSENTIALS | PLUS`）
+- [UserPoolAddOnsType](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_UserPoolAddOnsType.html)（`AdvancedSecurityMode`）
+- [DomainDescriptionType](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_DomainDescriptionType.html)（`ManagedLoginVersion`。managed login は Lite 以外のプランが必要）
+- [AdminGetUser](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_AdminGetUser.html)（`UserMFASettingList`、`PreferredMfaSetting`）
+- [User pool feature plans](https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-sign-in-feature-plans.html)、[Essentials plan features](https://docs.aws.amazon.com/cognito/latest/developerguide/feature-plans-features-essentials.html)
 
 ## 4. 配信の手順
 
@@ -283,14 +355,14 @@ cp infrastructure/terraform.tfvars.example infrastructure/dev.tfvars
 
 | 順序 | 作業 | プロファイル |
 | --- | --- | --- |
-| 0 | Issue #2 の読み取り確認で、既存資源の値を確定する | `registry-read` |
+| 0 | Issue #2 の読み取り確認で、既存資源の値を確定する。Cognito User Pool の設定を確認する（3.7） | `registry-read` |
 | 1 | IAM ユーザーとロールを作る（3.3） | ルートユーザーまたは管理者 |
 | 2 | bootstrap で state 用バケットを作る（3.5） | `registry-deploy-tf` |
 | 3 | 本体スタックを配信する（4.2） | `registry-deploy-tf` と `registry-deploy` |
 | 4 | `management`（下書き権限と管理 route） | `registry-deploy-tf` |
 | 5 | `decision`（決裁 Lambda と route） | `registry-deploy-tf` |
 | 6 | `notification_events`（通知） | `registry-deploy-tf` |
-| 7 | Cognito でユーザーを作り、グループに割り当てる | コンソール（`registry-deploy`） |
+| 7 | Cognito でユーザーを作り、グループに割り当てる。ユーザーごとの MFA を確認する（3.7） | コンソール（`registry-deploy`） |
 | 8 | dev で受入確認を行う（Issue #5 の README のチェックリスト） | — |
 
 4〜6の順序に依存関係はありませんが、本体スタックの資源を借りるため、3の後に実行します。本体の output を各スタックの tfvars に転記してください。
@@ -457,7 +529,7 @@ TABLE="$(AWS_PROFILE=registry-deploy-tf terraform -chdir=infrastructure output -
 aws dynamodb create-backup --table-name "$TABLE" --backup-name "$TABLE-before-teardown" --profile registry-deploy
 ```
 
-ロググループ（本体の API と管理 Lambda、決裁 Lambda、イベント処理 Lambda）には `skip_destroy` がないため、撤去で消えます。365 日の保持は引き継がれません。必要なログは撤去の前に取得してください。
+ロググループ（本体の API と管理 Lambda、決裁 Lambda、イベント処理 Lambda）には `skip_destroy` がないため、撤去で消えます。設定した保持期間（`log_retention_in_days`）に関係なく、ログは引き継がれません。必要なログは撤去の前に取得してください。
 
 #### 2. 追加スタックを撤去する
 

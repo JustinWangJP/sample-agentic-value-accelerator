@@ -31,6 +31,22 @@ resource "aws_s3_bucket_versioning" "spa" {
   bucket = aws_s3_bucket.spa.id
   versioning_configuration { status = "Enabled" }
 }
+resource "aws_s3_bucket_lifecycle_configuration" "spa" {
+  count  = var.spa_noncurrent_version_expiration_days == null ? 0 : 1
+  bucket = aws_s3_bucket.spa.id
+  rule {
+    id     = "expire-noncurrent-versions"
+    status = "Enabled"
+    filter {}
+    noncurrent_version_expiration {
+      noncurrent_days = var.spa_noncurrent_version_expiration_days
+    }
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
+    }
+  }
+  depends_on = [aws_s3_bucket_versioning.spa]
+}
 resource "aws_cloudfront_origin_access_control" "spa" {
   name                              = var.name_prefix
   origin_access_control_origin_type = "s3"

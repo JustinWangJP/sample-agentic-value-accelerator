@@ -100,9 +100,9 @@ run "security_boundaries" {
     error_message = "補助テーブルの TTL 属性はアプリ（services/dynamodb.py）と同じ expiresAt にしてください。"
   }
   assert {
-    # 管理 Lambda のロググループの保存期間は modules/lambda_log_group（tests/shared_modules.tftest.hcl）で確かめる
-    condition     = module.management_log_group.name == "/aws/lambda/registry-portal-dev-management" && aws_cloudwatch_log_group.api.retention_in_days == 365
-    error_message = "ログは365日保存し、管理 Lambda のロググループは共通のモジュールで作ってください。"
+    # 既定値（log_retention_in_days を指定しない）では、今までどおり 365 日保存する
+    condition     = module.management_log_group.name == "/aws/lambda/registry-portal-dev-management" && aws_cloudwatch_log_group.api.retention_in_days == 365 && module.management_log_group.retention_in_days == 365
+    error_message = "既定ではログを365日保存し、管理 Lambda のロググループは共通のモジュールで作ってください。"
   }
   assert {
     condition     = aws_lambda_function.management.environment[0].variables["REGISTRY_ARN"] == var.registry_arn && aws_lambda_function.management.environment[0].variables["DISCOVERY_CLIENT_SECRET_ARN"] == var.discovery_client_secret_arn
@@ -221,6 +221,26 @@ run "customer_managed_secret_key" {
   }
 }
 
+# ログの保持期間（#62）。dev では dev.tfvars で短くし、API と管理 Lambda のロググループの両方に効かせる
+run "log_retention_dev_value" {
+  command = plan
+  variables {
+    log_retention_in_days = 14
+  }
+  assert {
+    condition     = aws_cloudwatch_log_group.api.retention_in_days == 14 && module.management_log_group.retention_in_days == 14
+    error_message = "log_retention_in_days の値を、API と管理 Lambda のロググループの保持期間に使ってください。"
+  }
+}
+
+run "log_retention_rejects_unsupported_value" {
+  command = plan
+  variables {
+    log_retention_in_days = 10
+  }
+  expect_failures = [var.log_retention_in_days]
+}
+
 run "teardown_protection_defaults" {
   command = plan
   assert {
@@ -247,4 +267,130 @@ run "teardown_switches" {
     condition     = aws_s3_bucket.spa.force_destroy == true
     error_message = "spa_force_destroy = true で SPA バケットを中身ごと削除できるようにしてください。"
   }
+}
+
+run "spa_noncurrent_versions_kept_by_default" {
+  command = plan
+  assert {
+    condition     = length(aws_s3_bucket_lifecycle_configuration.spa) == 0
+    error_message = "既定値では SPA バケットにライフサイクル設定を作らず、古いバージョンを残してください。"
+  }
+}
+
+run "spa_noncurrent_versions_expire_in_dev" {
+  command = plan
+  variables {
+    # dev.tfvars の推奨値
+    spa_noncurrent_version_expiration_days = 7
+  }
+  assert {
+    condition     = length(aws_s3_bucket_lifecycle_configuration.spa) == 1 && length(aws_s3_bucket_lifecycle_configuration.spa[0].rule) == 1
+    error_message = "日数を指定した場合は、SPA バケットにライフサイクル設定を 1 つ（規則 1 つ）作ってください。"
+  }
+  assert {
+    condition     = aws_s3_bucket_lifecycle_configuration.spa[0].rule[0].status == "Enabled" && aws_s3_bucket_lifecycle_configuration.spa[0].rule[0].noncurrent_version_expiration[0].noncurrent_days == 7
+    error_message = "古いバージョンは指定した日数（dev では 7 日）で消してください。"
+  }
+  assert {
+    condition     = aws_s3_bucket_lifecycle_configuration.spa[0].rule[0].abort_incomplete_multipart_upload[0].days_after_initiation == 1
+    error_message = "未完了のマルチパートアップロードは 1 日で中止してください。"
+  }
+  assert {
+    # prefix は provider が plan 時に未確定（computed）にするため、条件を絞る要素（tag・and）がないことで確かめる
+    condition     = length(aws_s3_bucket_lifecycle_configuration.spa[0].rule[0].filter) == 1 && length(aws_s3_bucket_lifecycle_configuration.spa[0].rule[0].filter[0].tag) == 0 && length(aws_s3_bucket_lifecycle_configuration.spa[0].rule[0].filter[0].and) == 0
+    error_message = "規則の filter は空にして、バケット全体を対象にしてください。"
+  }
+}
+
+run "spa_noncurrent_version_expiration_days_must_be_positive_integer" {
+  command = plan
+  variables {
+    spa_noncurrent_version_expiration_days = 0
+  }
+  expect_failures = [var.spa_noncurrent_version_expiration_days]
+}
+
+# 予約同時実行数（#61 実装案 5）。既定値では属性を設定せず（予約なし）、今の動作と差分を出さない
+run "lambda_reserved_concurrency_default" {
+  command = plan
+  assert {
+    condition     = aws_lambda_function.management.reserved_concurrent_executions == null
+    error_message = "lambda_reserved_concurrency を指定しないときは、管理 Lambda の同時実行数を予約しないでください。"
+  }
+}
+
+run "lambda_reserved_concurrency_set" {
+  command = plan
+  variables {
+    lambda_reserved_concurrency = 5
+  }
+  assert {
+    condition     = aws_lambda_function.management.reserved_concurrent_executions == 5
+    error_message = "lambda_reserved_concurrency を指定したら、管理 Lambda の reserved_concurrent_executions に渡してください。"
+  }
+}
+
+run "local_dev_origins_default" {
+  command = plan
+  assert {
+    condition = (
+      aws_cognito_user_pool_client.human.callback_urls == toset(["https://portal.example.cloudfront.net/"])
+      && aws_cognito_user_pool_client.human.logout_urls == toset(["https://portal.example.cloudfront.net/"])
+      && aws_apigatewayv2_api.portal.cors_configuration[0].allow_origins == toset(["https://portal.example.cloudfront.net"])
+    )
+    error_message = "既定値（local_dev_origins = []）では、コールバック URL・ログアウト URL・CORS に CloudFront の SPA の origin だけを許可してください。"
+  }
+}
+
+run "local_dev_origins_added" {
+  command = plan
+  variables {
+    local_dev_origins = ["http://localhost:5173"]
+  }
+  assert {
+    condition = (
+      aws_cognito_user_pool_client.human.callback_urls == toset(["https://portal.example.cloudfront.net/", "http://localhost:5173/"])
+      && aws_cognito_user_pool_client.human.logout_urls == toset(["https://portal.example.cloudfront.net/", "http://localhost:5173/"])
+    )
+    error_message = "local_dev_origins の origin を、末尾に / を付けて人間用 client のコールバック URL とログアウト URL に追加してください。"
+  }
+  assert {
+    condition     = aws_apigatewayv2_api.portal.cors_configuration[0].allow_origins == toset(["https://portal.example.cloudfront.net", "http://localhost:5173"])
+    error_message = "local_dev_origins の origin を、HTTP API の CORS で許可する origin に追加してください。"
+  }
+}
+
+run "local_dev_origins_accepts_loopback_address" {
+  command = plan
+  variables {
+    local_dev_origins = ["http://127.0.0.1:4173"]
+  }
+  assert {
+    condition     = contains(aws_cognito_user_pool_client.human.callback_urls, "http://127.0.0.1:4173/") && contains(aws_apigatewayv2_api.portal.cors_configuration[0].allow_origins, "http://127.0.0.1:4173")
+    error_message = "http://127.0.0.1:<port> の形の origin も受け付けてください。"
+  }
+}
+
+run "local_dev_origins_rejects_non_localhost" {
+  command = plan
+  variables {
+    local_dev_origins = ["https://example.com"]
+  }
+  expect_failures = [var.local_dev_origins]
+}
+
+run "local_dev_origins_rejects_trailing_slash" {
+  command = plan
+  variables {
+    local_dev_origins = ["http://localhost:5173/"]
+  }
+  expect_failures = [var.local_dev_origins]
+}
+
+run "local_dev_origins_rejects_lookalike_host" {
+  command = plan
+  variables {
+    local_dev_origins = ["http://localhost.example.com:5173"]
+  }
+  expect_failures = [var.local_dev_origins]
 }
