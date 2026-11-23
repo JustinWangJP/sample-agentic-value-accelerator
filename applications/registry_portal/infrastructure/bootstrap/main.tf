@@ -294,7 +294,8 @@ resource "aws_ssoadmin_permission_set_inline_policy" "deployer" {
         Sid    = "PortalApis"
         Effect = "Allow"
         # REST API のリソースポリシー（接続元 IP の制限）の更新には、apigateway:PATCH に加えて
-        # apigateway:UpdateRestApiPolicy が必要（apigateway-resource-policies-create-attach.html の Prerequisites）。
+        # apigateway:UpdateRestApiPolicy が必要（API Gateway 開発者ガイド「リソースポリシーの作成とアタッチ」の Prerequisites:
+        # https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-resource-policies-create-attach.html）。
         Action = ["apigateway:GET", "apigateway:POST", "apigateway:PATCH", "apigateway:PUT", "apigateway:DELETE", "apigateway:UpdateRestApiPolicy"]
         # 移行で既存 HTTP API を削除するため、/apis への権限も必要。
         Resource = [
@@ -349,8 +350,6 @@ resource "aws_budgets_budget" "monthly" {
   }
 }
 # API Gateway の CloudWatch ロール設定（REST API のアクセスログに必要。リージョン内で共有）
-data "aws_partition" "current" {}
-
 resource "aws_iam_role" "api_gateway_logs" {
   count = var.manage_api_gateway_account ? 1 : 0
   name  = "${var.name_prefix}-api-gateway-logs"
@@ -367,7 +366,7 @@ resource "aws_iam_role" "api_gateway_logs" {
 resource "aws_iam_role_policy_attachment" "api_gateway_logs" {
   count      = length(aws_iam_role.api_gateway_logs)
   role       = aws_iam_role.api_gateway_logs[count.index].name
-  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
 }
 
 resource "aws_api_gateway_account" "portal" {

@@ -1,7 +1,4 @@
 mock_provider "aws" {
-  mock_data "aws_partition" {
-    defaults = { partition = "aws" }
-  }
   # provider のリージョン（us-east-1 に固定）
   mock_data "aws_region" {
     defaults = { region = "us-east-1" }
