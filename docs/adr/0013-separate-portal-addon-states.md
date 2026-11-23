@@ -4,6 +4,8 @@ Registry ポータルの本体スタックと、`management`・`decision`・`not
 
 本体は SPA、HTTP API、JWT authorizer、管理 Lambda とその統合、補助テーブル、Cognito の子リソースを所有する。`management` は管理 Lambda の実行ロールに付ける追加ポリシーと下書き・申請・操作照会を含む管理 handler の追加 route を所有する。`decision` は決裁 Lambda と決裁 route を、`notification_events` はイベント処理 Lambda・EventBridge ルール・DLQ を所有する。本体から同じ route を重ねて定義しない。
 
+> **REST API への移行後**：[ADR-0015](0015-rest-api-with-source-ip-policy-and-script-deployment.md) で HTTP API を REST API に移した。本体は、全スタックの経路のパスに当たるリソースの木、`OPTIONS`、エラー時の応答、ステージも所有する。追加スタックは、自分の経路のメソッド・統合・呼び出し許可だけを所有する。デプロイは `scripts/deploy.sh` が作る。state の分け方は変えない。
+
 この分割は、既存の追加スタックを本体の構成に接続するための決定である。配信時に state の移行を重ねず、各スタックの plan を個別に確認できる形を維持する。
 
 ## 検討した選択肢
