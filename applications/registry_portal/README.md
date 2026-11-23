@@ -11,7 +11,7 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 | `backend/src/registry_portal/handlers/management.py` | 管理 handler の Lambda エントリーポイント。認証設定がなければ初期化に失敗する |
 | `backend/src/registry_portal/handlers/curation.py` | 決裁 handler の Lambda エントリーポイント。認証設定または補助テーブルがなければ初期化に失敗する |
 | `backend/src/registry_portal/handlers/events.py` | イベント処理 handler の Lambda エントリーポイント（#15）。Registry の ARN または補助テーブルがなければ初期化に失敗する |
-| `backend/src/registry_portal/app.py` | API Gateway HTTP API（payload format 2.0）のイベントを受け取り、route を振り分ける |
+| `backend/src/registry_portal/app.py` | API Gateway REST API と HTTP API のイベントを受け取り、route を振り分ける |
 | `backend/openapi.yaml` | 管理 handler と決裁 handler の全 API の OpenAPI 3.1.0 仕様。route を足す・変えるときは、`app.py` のルート表と一緒に更新する。Lint の設定は `backend/redocly.yaml` |
 | `backend/src/registry_portal/auth.py` | 認可。検証済みの claims から主体・業務ロール・所属チームを導出する |
 | `backend/src/registry_portal/errors.py` | 共通エラー DTO と日本語メッセージ |
@@ -62,7 +62,7 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 
 メールアドレスや `x-user-email` などのリクエストヘッダーは、主体や権限の判定に使いません。
 
-認証できないトークン（トークンなし、ID トークン、別 issuer、`sub` なし）は 401 `UNAUTHENTICATED` で拒否します。署名は正しいが人間用 SPA client 以外に発行されたトークン（別 client、発見用 M2M client）は、ログインし直しても解決しないため 403 `FORBIDDEN` で拒否します。SPA が「もう一度ログインする」を表示するのは、401 とログインの失敗のときだけです。API Gateway の JWT authorizer が返す 401（共通 DTO ではない）も、同じ認証エラーとして扱います（設計書「401 と 403 の使い分け」）。
+認証できないトークン（トークンなし、ID トークン、別 issuer、`sub` なし）は 401 `UNAUTHENTICATED` で拒否します。署名は正しいが人間用 SPA client 以外に発行されたトークン（別 client、発見用 M2M client）は、ログインし直しても解決しないため 403 `FORBIDDEN` で拒否します。SPA が「もう一度ログインする」を表示するのは、401 とログインの失敗のときだけです。API Gateway の Cognito User Pools authorizer が返す 401（共通 DTO ではない）も、同じ認証エラーとして扱います（設計書「401 と 403 の使い分け」）。
 
 ### API
 
@@ -128,7 +128,7 @@ A2A の判定と検索用の写しの設計理由は [ADR-0006](../../docs/adr/0
 
 スナップショットがない場合（補助テーブルが未設定、または未管理レコードなど）、API はこれらの値を `null` で返し、SPA は「未取得」と表示します。スナップショットはあるが属性がない場合は空文字で返し、「未登録」と表示します。関連参照は、空のリストなら「関連参照はありません」と表示します。Agent 以外の関連参照は常に空です。属性の型が契約と異なる場合は 502 `DISCOVERY_UNAVAILABLE` を返します。
 
-デプロイ先の HTTP API で `POST /api/catalog/search` と `GET /api/catalog/{recordId}` を管理 Lambda に割り当て、既存の JWT authorizer を適用してください。SPA と API のオリジンが異なる場合は、CORS で `POST`、`Authorization`、`Content-Type` を許可してください。
+デプロイ先の REST API で `POST /api/catalog/search` と `GET /api/catalog/{recordId}` を管理 Lambda に割り当て、既存の Cognito User Pools authorizer を適用してください。SPA と API のオリジンが異なる場合は、CORS で `POST`、`Authorization`、`Content-Type` を許可してください。
 
 エラーは共通 DTO で返します。
 
@@ -147,6 +147,7 @@ A2A の判定と検索用の写しの設計理由は [ADR-0006](../../docs/adr/0
 | `log_retention_in_days` | 本体の API と管理 Lambda、決裁 Lambda、イベント処理 Lambda。既定は 365 日 | 各スタックで 14 日 |
 | `spa_noncurrent_version_expiration_days` | 本体の SPA バケット。既定は `null`（古いバージョンを保持） | 7 日 |
 | `local_dev_origins` | 本体の Cognito コールバック・ログアウト URL と API の CORS。既定は `[]` | ローカルから接続する場合は `["http://localhost:5173"]` |
+| `allowed_source_cidrs` | REST API が許可する接続元の IPv4 CIDR。必須 | `TF_VAR_allowed_source_cidrs` に許可する CIDR を JSON 配列で設定 |
 | `lambda_reserved_concurrency` | 本体、決裁、イベント処理。既定は `null`（予約なし） | アカウント上限に余裕がある場合、本体と決裁は 5、イベント処理は 2〜5 |
 
 予約する前に、対象リージョンで `aws lambda get-account-settings` を実行して `AccountLimit.ConcurrentExecutions` と既存の予約を確認します。予約後もアカウントに未予約の同時実行枠を 100 残す必要があります。イベント処理は、上限に達したときの再試行やデッドレターキューへの転送も考慮して値を決めます。
@@ -176,9 +177,11 @@ bootstrap で月額予算を作る場合は、`budget_limit_usd` に dev の目�
 
 ### フロントエンド
 
+`VITE_API_BASE_URL` には API のステージ `/v1` までを含めます。ローカル SPA を開く端末の外向き IPv4 アドレスも許可リストに含めてください。更新と復旧の手順は [Terraform ガイド](../../docs/agents/registry-portal-terraform-guide-ja.md#接続元-ip-を更新する) を参照してください。
+
 `frontend/.env.example` を `frontend/.env.local` にコピーして値を設定します。必須項目が未設定なら、SPA はエラーを表示し、ログイン処理を行いません。
 
-`VITE_COGNITO_SCOPES` には、`openid` とポータル用のカスタム scope `registry-portal/api.invoke` をスペース区切りで指定します（必須）。HTTP API の route は、本体スタックの route も追加スタック（management・decision）の route も、JWT authorizer でこの scope を検証します。route に scope を設定すると、トークンがそのいずれかを含まない要求を API Gateway は拒否します（[JWT authorizer による HTTP API のアクセス制御](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-jwt-authorizer.html)）。scope の値は Terraform の本体スタック（`local.portal_api_scope`）だけに定義します。配信時は本体スタックの `frontend_config` 出力がこの値を含み、追加スタックには output の `portal_api_scope` を `terraform.tfvars` に転記して渡します。SPA は既定値を持ちません。`infrastructure/tests/test_portal_scope.py` が、ほかの定義に値を書いていないことと、設定例（`.env.example`・`terraform.tfvars.example`）が本体の値と一致することを検査します。
+`VITE_COGNITO_SCOPES` には、`openid` とポータル用のカスタム scope `registry-portal/api.invoke` をスペース区切りで指定します（必須）。REST API の route は、本体スタックの route も追加スタック（management・decision）の route も、Cognito User Pools authorizer でこの scope を検証します。route に scope を設定すると、トークンがそのいずれかを含まない要求を API Gateway は拒否します（[Cognito User Pools authorizer による REST API のアクセス制御](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-jwt-authorizer.html)）。scope の値は Terraform の本体スタック（`local.portal_api_scope`）だけに定義します。配信時は本体スタックの `frontend_config` 出力がこの値を含み、追加スタックには output の `portal_api_scope` を `terraform.tfvars` に転記して渡します。SPA は既定値を持ちません。`infrastructure/tests/test_portal_scope.py` が、ほかの定義に値を書いていないことと、設定例（`.env.example`・`terraform.tfvars.example`）が本体の値と一致することを検査します。
 
 本番ビルド（`npm run build`）は、`VITE_API_BASE_URL` と `VITE_COGNITO_DOMAIN` の origin だけを `connect-src` に許可する CSP を `index.html` に meta で埋め込みます（`src/connectCsp.ts`）。両方とも未設定のビルドでは埋め込まず、片方だけ設定したビルドは失敗します。
 
@@ -207,7 +210,7 @@ GitHub Actions（`.github/workflows/registry-portal-ci.yml`）では上記に加
 
 日々の機能確認は、手元の開発サーバー（`npm run dev`、`http://localhost:5173`）から dev の API と Cognito に接続して行えます。配信を待たずに確認でき、SPA の配信も不要です。CloudFront の SPA は配信後の確認に使います。
 
-1. 本体スタックの tfvars（`infrastructure/dev.tfvars`）に `local_dev_origins = ["http://localhost:5173"]` を設定し（`terraform.tfvars.example` に記載済み）、通常の配信（[dev に手動配信する](#dev-に手動配信する)）で反映します。人間用 client のコールバック URL・ログアウト URL に `http://localhost:5173/` が、HTTP API の CORS に `http://localhost:5173` が追加されます。既定値（`[]`）では追加しません。
+1. 本体スタックの tfvars（`infrastructure/dev.tfvars`）に `local_dev_origins = ["http://localhost:5173"]` を設定し（`terraform.tfvars.example` に記載済み）、通常の配信（[dev に手動配信する](#dev-に手動配信する)）で反映します。人間用 client のコールバック URL・ログアウト URL に `http://localhost:5173/` が、REST API の CORS に `http://localhost:5173` が追加されます。既定値（`[]`）では追加しません。
    - 指定できるのは `http://localhost:<port>` と `http://127.0.0.1:<port>`（末尾の `/` なし）だけです。Cognito の OAuth が HTTP のコールバック URL を許すのは localhost だけのため、ほかの origin は `validation` で拒否します。
 2. 本体スタックの output `frontend_config` を確認し、`frontend/.env.example` を `frontend/.env.local` にコピーして値を設定します。`VITE_REDIRECT_URI` だけは CloudFront の URL ではなく `http://localhost:5173/` にします。
 
@@ -281,9 +284,9 @@ Cognito リソースサーバーの表示名には、Cognito API の文字制約
 
    個人アカウントの IAM ロール `RegistryPortalDeployer` は `AdministratorAccess` を持ち、Identity Center の permission set（Registry への書き込みを明示的に Deny し、対象の ARN と action に絞ったもの）より権限が広くなります。Registry に書き込めるロールを新しく作ることも IAM では防げません。この差は、plan の JSON ガード（`scripts/check_plan.py`）と apply 前の目視確認で補います。`apply` と入力する前に、既存 Registry の作成・変更・削除がないこと、作成・変更される IAM ロールとポリシーが意図した ARN と action に限られることを必ず確認してください。デプロイ対象が固まったら、必要なサービスだけのポリシーにするか、作成するロールに permissions boundary を必須にすることを検討します。
 
-4. 本体の apply 後は Terraform の `frontend_config` 出力を使って SPA をビルドします。`openid registry-portal/api.invoke` を含む scope と専用の HTTP API URL が設定され、`connect-src` をその HTTP API に限る meta の CSP も埋め込まれます。ハッシュ付きアセットを S3 に同期し、最後に `index.html` を `no-cache` で配置して CloudFront を無効化します。配信の cache policy は管理ポリシーの CachingOptimized で、最小 TTL が 1 秒のため `no-cache` の `index.html` も最大 1 秒はキャッシュされます（[管理キャッシュポリシー](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/using-managed-cache-policies.html#managed-cache-caching-optimized)）。生成 ZIP と plan JSON は一時ディレクトリから削除します。
+4. 本体の apply 後、スクリプトは REST API を再デプロイしてステージ `v1` を更新します。その後、Terraform の `frontend_config` 出力を使って SPA をビルドします。`openid registry-portal/api.invoke` を含む scope と`/v1` を含む専用の REST API URL が設定され、`connect-src` をその REST API に限る meta の CSP も埋め込まれます。ハッシュ付きアセットを S3 に同期し、最後に `index.html` を `no-cache` で配置して CloudFront を無効化します。配信の cache policy は管理ポリシーの CachingOptimized で、最小 TTL が 1 秒のため `no-cache` の `index.html` も最大 1 秒はキャッシュされます（[管理キャッシュポリシー](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/using-managed-cache-policies.html#managed-cache-caching-optimized)）。生成 ZIP と plan JSON は一時ディレクトリから削除します。
 
-5. 本体の output を追加 3 スタックの tfvars に手動で転記し、各スタックを別 state に配信します（[ADR-0013](../../docs/adr/0013-separate-portal-addon-states.md)）。追加スタックも同じ `scripts/deploy.sh` に `--stack <management|decision|notification_events>` を付けて実行します。本体と同じ主体の検査、CI 内と環境変数の認証情報の拒否、一時ディレクトリでの plan、JSON ガード、`apply` の入力確認を通し、Terraform だけを反映します（SPA の配信はしません）。決裁とイベント処理には共通 ZIP を一時ディレクトリに作って渡します。
+5. 本体の output を追加 3 スタックの tfvars に手動で転記し、各スタックを別 state に配信します（[ADR-0013](../../docs/adr/0013-separate-portal-addon-states.md)）。追加スタックも同じ `scripts/deploy.sh` に `--stack <management|decision|notification_events>` を付けて実行します。本体と同じ主体の検査、CI 内と環境変数の認証情報の拒否、一時ディレクトリでの plan、JSON ガード、`apply` の入力確認を通し、Terraform を反映します。管理・決裁の反映後は REST API を再デプロイします。決裁とイベント処理には共通 ZIP を一時ディレクトリに作って渡します。
 
    ```bash
    AWS_PROFILE=registry-deploy scripts/deploy.sh --stack management infrastructure/management/backend.hcl infrastructure/management/terraform.tfvars
@@ -291,9 +294,9 @@ Cognito リソースサーバーの表示名には、Cognito API の文字制約
 
    値の対応表とスタックごとの実行例は [Terraform ガイドの配信手順](../../docs/agents/registry-portal-terraform-guide-ja.md#43-追加スタックに渡す値を集める)を参照してください。
 
-CloudFront の接続先は非公開 S3 の REST endpoint だけです。深い SPA URL は viewer request function で `index.html` に解決します。API は独立した HTTP API origin で提供し、CloudFront のエラー差し替えは使いません。CloudFront 側に誤って `/api/*` を送った場合も JSON の 404 を返します。API の CORS は当該 CloudFront origin だけに限定します。CloudFront のレスポンスヘッダーの CSP で HTTP API の URL を参照すると、この CORS との依存が循環するため、ヘッダーの `connect-src` は Cognito の指定ドメインと us-east-1 の HTTP API ドメイン（`https://*.execute-api.us-east-1.amazonaws.com`）を許可します。自分の HTTP API への限定は、SPA のビルドが `index.html` に埋め込む meta の CSP で行います。ブラウザは両方の CSP を満たす通信だけを許可するため（[CSP Level 3「複数のポリシーの効果」](https://www.w3.org/TR/CSP3/#multiple-policies)。meta 要素による配信は[同「meta 要素」](https://www.w3.org/TR/CSP3/#meta-element)）、実際の接続先は自分の HTTP API と Cognito に限られます。
+CloudFront の接続先は非公開 S3 の REST endpoint だけです。深い SPA URL は viewer request function で `index.html` に解決します。API は独立した REST API origin で提供し、CloudFront のエラー差し替えは使いません。CloudFront 側に誤って `/api/*` を送った場合も JSON の 404 を返します。Lambda の CORS は CloudFront と `local_dev_origins` の origin を許可します。CloudFront のレスポンスヘッダーの CSP で REST API の URL を参照すると、この CORS との依存が循環するため、ヘッダーの `connect-src` は Cognito の指定ドメインと us-east-1 の REST API ドメイン（`https://*.execute-api.us-east-1.amazonaws.com`）を許可します。自分の REST API への限定は、SPA のビルドが `index.html` に埋め込む meta の CSP で行います。ブラウザは両方の CSP を満たす通信だけを許可するため（[CSP Level 3「複数のポリシーの効果」](https://www.w3.org/TR/CSP3/#multiple-policies)。meta 要素による配信は[同「meta 要素」](https://www.w3.org/TR/CSP3/#meta-element)）、実際の接続先は自分の REST API と Cognito に限られます。
 
-本体スタックの HTTP API は `GET /api/me`、`GET /api/catalog`、`POST /api/catalog/search`、`GET /api/catalog/{recordId}` を JWT authorizer と `registry-portal/api.invoke` で保護します。route と呼び出し許可は 1 つの map（`local.management_routes` の `route_key` と `statement_id`）を `modules/management_routes` に渡して作り、呼び出し許可の path は `route_key` から導きます（パスパラメータは `*`）。management スタックも同じモジュールに自分の route 表を渡します。呼び出し許可の `source_arn` は `<execution ARN>/<stage>/<メソッド>/<path>` の形式で（[execute-api の ARN](https://docs.aws.amazon.com/apigateway/latest/developerguide/arn-format-reference.html#apigateway-execute-api-arns)）、`ArnLike` の `*` は ARN のリソース部分の中で `/` もまたいで一致します（[ARN の条件演算子](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition_operators.html#Conditions_ARN)）。そのため管理 Lambda の `GET/api/records/*` は、管理 Lambda の `GET /api/records/{recordId}/history` のほか、決裁 Lambda の `GET /api/records/publication`・`/api/records/{recordId}/publication`・`/api/records/{recordId}/recovery` の実行 ARN にも一致します。API Gateway が呼び出すのは route の統合先の Lambda だけなので、決裁の route から管理 Lambda が呼ばれることはありません。一致する route の集合は `infrastructure/tests/test_route_permissions.py` で固定し、増えたときに許可の形を見直します。CORS は SPA の origin だけに、`GET`・`POST`・`PATCH` と `Authorization`・`Content-Type`・`Idempotency-Key` ヘッダーを許可します。人間用 client は code flow のみを許可し、SPA が PKCE を使用します。人間用 client に secret はありません。Lambda permission は各 route のメソッド・path の API Gateway 実行 ARN とアカウントに限定します。Function URL と VPC は作りません。本体スタックが作る実行ロールは管理 Lambda のものだけです。下書き・申請・操作照会を含む管理 handler の追加 route と下書きの権限、決裁、イベント処理は、別 state の追加スタック（`infrastructure/management`・`decision`・`notification_events`）が作ります。追加スタックの route も同じ scope を検証します。追加スタックの `terraform.tfvars` に転記する値（`http_api_id`、`jwt_authorizer_id`、`portal_api_scope`、`management_integration_id`、`human_client_id`、`management_role_name`、`management_function_name`、`supplement_table_name`、`supplement_table_arn`）は、本体スタックの output から取得します。`cognito_issuer` の output は確認用で、decision のルートスタックでは `region` と `cognito_user_pool_id` から組み立てます。
+本体スタックの REST API は `GET /api/me`、`GET /api/catalog`、`POST /api/catalog/search`、`GET /api/catalog/{recordId}` を Cognito User Pools authorizer と `registry-portal/api.invoke` で保護します。本体、管理、決裁のメソッド・統合・Lambda の呼び出し許可は、共通の経路表 `infrastructure/modules/management_routes/routes.json` から作ります。呼び出し許可の `source_arn` は `<execution ARN>/<stage>/<メソッド>/<path>` の形式で（[execute-api の ARN](https://docs.aws.amazon.com/apigateway/latest/developerguide/arn-format-reference.html#apigateway-execute-api-arns)）、`ArnLike` の `*` は ARN のリソース部分の中で `/` もまたいで一致します（[ARN の条件演算子](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition_operators.html#Conditions_ARN)）。そのため管理 Lambda の `GET/api/records/*` は、管理 Lambda の `GET /api/records/{recordId}/history` のほか、決裁 Lambda の `GET /api/records/publication`・`/api/records/{recordId}/publication`・`/api/records/{recordId}/recovery` の実行 ARN にも一致します。API Gateway が呼び出すのは route の統合先の Lambda だけなので、決裁の route から管理 Lambda が呼ばれることはありません。一致する route の集合は `infrastructure/tests/test_route_permissions.py` で固定し、増えたときに許可の形を見直します。Lambda の CORS は CloudFront とローカル SPA の許可済み origin に、`GET`・`POST`・`PATCH` と `Authorization`・`Content-Type`・`Idempotency-Key` ヘッダーを許可します。人間用 client は code flow のみを許可し、SPA が PKCE を使用します。人間用 client に secret はありません。Lambda permission は各 route のメソッド・path の API Gateway 実行 ARN とアカウントに限定します。Function URL と VPC は作りません。本体スタックが作る実行ロールは管理 Lambda のものだけです。下書き・申請・操作照会を含む管理 handler の追加 route と下書きの権限、決裁、イベント処理は、別 state の追加スタック（`infrastructure/management`・`decision`・`notification_events`）が作ります。追加スタックの route も同じ scope を検証します。追加スタックの `terraform.tfvars` に転記する値（`rest_api_id`、`authorizer_id`、`portal_api_scope`、`cors_allowed_origins`、`human_client_id`、`management_role_name`、`management_function_name`、`supplement_table_name`、`supplement_table_arn`）は、本体スタックの output から取得します。`cognito_issuer` の output は確認用で、decision のルートスタックでは `region` と `cognito_user_pool_id` から組み立てます。
 
 補助 DynamoDB はオンデマンド、暗号化、PITR、削除保護を有効にし、TTL 属性は `expiresAt` です。本体スタックは管理 Lambda に、カタログ詳細のための補助テーブルへの `dynamodb:GetItem` だけを付けます。管理 Lambda の IAM は、このほかにログ、対象 Registry の読み取り、発見用 secret の取得（顧客管理キーの場合は条件付きの `kms:Decrypt`）です。発見用 M2M の環境変数と `kms:Decrypt` の文は、決裁 Lambda と共通の `modules/discovery_client` が作ります。`kms:Decrypt` は Secrets Manager 経由（`kms:ViaService`）と、暗号化コンテキストの `SecretARN` が対象 secret と完全一致（`StringEquals`）する場合に限ります。そのため `discovery_client_secret_arn` には、末尾の 6 文字を含みワイルドカードを含まない完全な ARN だけを受け付けます（[secret の ARN の形式](https://docs.aws.amazon.com/secretsmanager/latest/userguide/whats-in-a-secret.html)）。Lambda のロググループは、本体スタックと追加スタックで共通の `modules/lambda_log_group` が作ります。Registry の発見は IAM ではなく既存の M2M JWT で行います。CloudWatch Logs は API と Lambda とも既定で365日保存し（変数 `log_retention_in_days` で変えられます。dev は 14 日）、ログ書式にトークンや応答本文を含めません。
 
@@ -324,7 +327,7 @@ Allow の `NotAction` と全権限ワイルドカードも拒否し、Deny 文�
 この変更では AWS API の呼び出し、bootstrap、plan、apply、アップロード、CloudFront の無効化を実行していません。state バケットの `HeadBucket` とオブジェクト制限は Terraform mock のポリシー assertion だけで確認しており、AWS 上の refresh とアクセス制御は未検証です。Issue #2 の読み取り確認も未完了です。次の項目は AWS 権限を持つオペレーターが dev に反映してから Issue #5 に結果を記録します。
 
 - [ ] Cognito の managed login（Authorization Code と PKCE）でログインし、`/api/me` とカタログ一覧が表示される。M2M トークン取得から Registry の発見 API まで到達する。
-- [ ] 配信した `index.html` に、`connect-src` を自分の HTTP API と Cognito に限る meta の CSP がある。ブラウザの開発者ツールで、別の HTTP API への通信が CSP で拒否される。
+- [ ] 配信した `index.html` に、`connect-src` を自分の REST API と Cognito に限る meta の CSP がある。ブラウザの開発者ツールで、別の REST API への通信が CSP で拒否される。
 - [ ] User Pool で業務ロールと `team-*` の所属を割り当て、画面の主体と一致する。
 - [ ] S3 のオブジェクトを匿名で直接取得すると拒否される。CloudFront では取得できる。
 - [ ] SPA の深い URL を再読み込みでき、API の 401、403、404 が HTML の成功応答にならない。
@@ -464,29 +467,13 @@ cp terraform.tfvars.example terraform.tfvars
 cp backend.hcl.example backend.hcl
 ```
 
-`terraform.tfvars` を環境に合わせ、`backend.hcl` の bucket を本体と同じ実際の state バケット名に設定します。key は `registry-portal/dev/management.tfstate` にします。どちらのファイルもコミットしません。以下は、個人アカウントの Terraform 用プロファイルが `registry-deploy-tf` の例です。名前を変えた場合は置き換えてください。
+`terraform.tfvars` を環境に合わせ、`backend.hcl` の bucket を本体と同じ実際の state バケット名に設定します。key は `registry-portal/dev/management.tfstate` にします。どちらのファイルもコミットしません。Registry ポータルのディレクトリに移動してから、MFA 付きのプロファイルで配信します。
 
 ```bash
-(
-  set -e
-  export AWS_PROFILE=registry-deploy-tf
-  terraform init -backend-config=backend.hcl -backend-config=encrypt=true -backend-config=use_lockfile=true
-  terraform validate
-  terraform plan -out=tfplan
-  python3 ../../scripts/check_plan.py --saved-plan tfplan
-  terraform show tfplan
-  printf 'IAM と既存資源の変更を確認し、反映する場合は apply と入力してください: '
-  read -r confirmation
-  if [ "$confirmation" != apply ]; then
-    printf '反映を中止しました。\n' >&2
-    exit 1
-  fi
-  terraform apply tfplan
-  rm tfplan
-)
+AWS_PROFILE=registry-deploy scripts/deploy.sh --stack management infrastructure/management/backend.hcl infrastructure/management/terraform.tfvars
 ```
 
-API Gateway の CORS は本体スタックが `PATCH` と `Idempotency-Key` ヘッダーを許可します。
+管理 Lambda の CORS は許可済み origin に対して `PATCH` と `Idempotency-Key` ヘッダーを許可します。
 
 作成と更新の AWS payload は別々に変換します。更新では `displayName` / `description` / `customMetadata` / `descriptors` と、custom 内部の `data` に `optionalValue` を使い、`recordVersion` は直接渡します。実サービスモデルの Stubber と moto の handler テストで、payload、排他、冪等性、他チーム拒否、補助情報の変更を含む409、AWS後の補助ストア障害を検証しています。SPA は `fetch` 境界で検証します。
 
@@ -611,29 +598,13 @@ cp terraform.tfvars.example terraform.tfvars
 cp backend.hcl.example backend.hcl
 ```
 
-`terraform.tfvars` を環境に合わせ、`backend.hcl` の bucket を本体と同じ実際の state バケット名に設定します。key は `registry-portal/dev/decision.tfstate` にします。どちらのファイルもコミットしません。以下は、個人アカウントの Terraform 用プロファイルが `registry-deploy-tf` の例です。名前を変えた場合は置き換えてください。
+`terraform.tfvars` を環境に合わせ、`backend.hcl` の bucket を本体と同じ実際の state バケット名に設定します。key は `registry-portal/dev/decision.tfstate` にします。どちらのファイルもコミットしません。Registry ポータルのディレクトリに移動してから、MFA 付きのプロファイルで配信します。
 
 ```bash
-(
-  set -e
-  export AWS_PROFILE=registry-deploy-tf
-  terraform init -backend-config=backend.hcl -backend-config=encrypt=true -backend-config=use_lockfile=true
-  terraform validate
-  terraform plan -out=tfplan
-  python3 ../../scripts/check_plan.py --saved-plan tfplan
-  terraform show tfplan
-  printf 'IAM と既存資源の変更を確認し、反映する場合は apply と入力してください: '
-  read -r confirmation
-  if [ "$confirmation" != apply ]; then
-    printf '反映を中止しました。\n' >&2
-    exit 1
-  fi
-  terraform apply tfplan
-  rm tfplan
-)
+AWS_PROFILE=registry-deploy scripts/deploy.sh --stack decision infrastructure/decision/backend.hcl infrastructure/decision/terraform.tfvars
 ```
 
-モジュールは、借用する既存 HTTP API（`http_api_id`）に `GET /api/reviews`、`GET /api/reviews/{recordId}`、`POST /api/reviews/{recordId}/approve`、`POST /api/reviews/{recordId}/reject`、`POST /api/records/{recordId}/suspend`、`POST /api/records/{recordId}/deprecate`、`GET /api/records/{recordId}/publication`、`POST /api/records/{recordId}/deprecation-requests/decline`、`GET /api/records/{recordId}/recovery`、`POST /api/records/{recordId}/recovery` の route を作り、決裁 Lambda（payload format 2.0）に統合して既存の JWT authorizer（`jwt_authorizer_id`）を適用します。HTTP API の呼び出し許可（`aws_lambda_permission`）は `/api/reviews` 以下と `/api/records/*/suspend`・`/api/records/*/deprecate`・`/api/records/*/publication`・`/api/records/*/deprecation-requests/decline`・`/api/records/*/recovery` の path に限ります。HTTP API・authorizer・CORS の設定は本体スタックが持ち、`POST` と `Idempotency-Key` ヘッダーを許可します。
+決裁スタックは本体が作った REST API のパスと Cognito User Pools authorizer を借り、審査・決裁・公開管理・回復の 13 経路を決裁 Lambda に統合します。メソッドと呼び出し許可は共通の経路表から作ります。配信は上記の `deploy.sh --stack decision` で行うと、反映後にステージが更新されます。
 
 Seam 1 の Stubber と moto で、認可（Curator 以外の拒否）、AWS 正本の一覧と補助情報の結合、保存済みスナップショットから計算し直したハッシュ・Curator が見たハッシュ・内容ハッシュの照合による409、自己承認の拒否（Admin を含む）、却下済み・処理中の拒否、公開承認・却下の理由の必須化と255文字上限、申請・公開版スナップショットが読めない場合の `MISSING`、決裁操作の照会を決裁した Curator に限ること、`status` の不接受、AWS の拒否・混雑・結果不明、同じキーでの再送と操作照会による確定、AWS 成功後の補助ストア障害、公開版スナップショットと管理情報の保存を検証します。Seam 2 の Vitest で、Curator 以外の非表示、一覧と差分（定義と metadata を含む）の表示、「申請なし」と「取得できない」・「初回公開」と「未取得」の区別、書き換えられたスナップショットの決裁停止、承認・却下の本文とキー、「検索への反映待ち」、409 の再読み込み、結果不明の再試行を確認します。実 AWS への書き込みは行っていません。デプロイ後に実環境で、別ユーザーによる承認までの流れと IAM の境界を確認してください。
 
@@ -653,7 +624,7 @@ SPA では「操作と審査の履歴を表示」から開きます。Publisher 
 
 ### IAM
 
-履歴の読み取りには補助テーブルへの `dynamodb:Query` が必要なため、[下書き用モジュールのポリシー](infrastructure/modules/management_drafts/draft-policy.json.tftpl) に追加します。ルートモジュールは既存の [`infrastructure/management`](infrastructure/management/main.tf) をそのまま使います。route（`GET /api/records/{recordId}/history`）は、同じルートモジュールが [route 用モジュール](infrastructure/modules/management_routes/main.tf) で既存 HTTP API の管理 Lambda 統合に割り当てます（「公開停止・廃止・廃止依頼」の「IAM と route」）。
+履歴の読み取りには補助テーブルへの `dynamodb:Query` が必要なため、[下書き用モジュールのポリシー](infrastructure/modules/management_drafts/draft-policy.json.tftpl) に追加します。ルートモジュールは既存の [`infrastructure/management`](infrastructure/management/main.tf) をそのまま使います。route（`GET /api/records/{recordId}/history`）は、同じルートモジュールが [route 用モジュール](infrastructure/modules/management_routes/main.tf) で既存 REST API の管理 Lambda 統合に割り当てます（「公開停止・廃止・廃止依頼」の「IAM と route」）。
 
 Seam 1 の Stubber と moto で、認可（Viewer と所属チームのない Publisher の拒否、他チームの拒否、Curator と Admin の許可）、補助テーブル未設定時の503、未管理レコードの404、管理下で操作記録のないレコードの0件、作成・申請・公開承認の履歴項目（操作 ID・主体・対象ハッシュ・開始時刻・結果・AWS request ID・決裁理由。作成の対象ハッシュが作成した内容の内容ハッシュであること）、作成・申請・公開承認でアプリが送るすべての追記記録の書き込みに上書き禁止の条件式が付くこと（書き込み要求を記録して検査）と、確定済みの操作の結果を補助ストアから追記し直すと拒否され記録が変わらないこと、作成の INTENT の写しが正本から定義の全文を除いたものと一致すること、結果確認中の作成が履歴に現れること、決裁した主体が不明な項目とその後の公開承認で消えないこと、結果確認中の決裁の中身を決裁した Curator 以外に返さないこと、Query の複数ページの読み取り、形式の崩れた追記記録（ソートキー・主体・種別・開始時刻・INTENT の欠落）の 502 を検証します。Seam 2 の Vitest で、API の応答の検査（旧い値や必須の項目の欠落の拒否）、履歴項目の表示、「不明」と「結果確認中」の表示、0件と403・404・502 の区別、伏せた決裁の表示、開閉ボタンを押すまで API を呼ばないこと、カタログ詳細の導線が Curator・Admin だけに出ることとそこからの404の案内を確認します。実 AWS への書き込みは行っていません。デプロイ後に実環境で、`Query` の IAM 境界と route の追加を確認してください。
 
@@ -763,21 +734,20 @@ AWS の `ListRegistryRecords` の `name` フィルターは[公式文書](https:
 公開停止・廃止・公開管理の照会・見送りの route は、[決裁用 Terraform モジュール](infrastructure/modules/decision/main.tf) に追加しました。
 
 - route: `POST /api/records/{recordId}/suspend`、`POST /api/records/{recordId}/deprecate`、`GET /api/records/{recordId}/publication`、`POST /api/records/{recordId}/deprecation-requests/decline` に加えて、管理レコードの検索（#34）の `GET /api/records/publication`
-- Lambda の呼び出し許可: `/api/records/` 以下の path ごとに `local.decision_record_paths` で管理します。各項目は `/api/records/` に続く path（`{recordId}/suspend` のようにレコード ID を含むものと、`publication` のような静的なもの）とメソッド、呼び出し許可の ID です。route も同じ定義（メソッドと path）から作り、呼び出し許可の `source_arn` は `{recordId}` をワイルドカード（`*`）に置き換えて作ります。静的な path は置き換える部分がないため、そのまま完全一致の許可になります。操作を足すときは、レコード ID を含むかどうかにかかわらず、ここに1件加えます（回復操作だけは同じ path に2つのメソッドがあるため、許可を別に持ちます）。バックエンドでは、パラメーターを含む route をルート表のキー（`app.py`）そのものと照合するため、別の一覧は持ちません。HTTP API では完全一致する静的な route が parameterized route（`GET /api/records/{recordId}`）より優先されるため（[ルーティングの優先順位](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-routes.html)）、`publication` はレコード ID とは解釈されません。レコード ID は12文字の英数字に限られるため、衝突もありません。
+- Lambda の呼び出し許可は共通の経路表からメソッドとパスごとに作ります。パスの `{recordId}` は `source_arn` でワイルドカードになります。公開管理の固定パスとパラメーター付きパスは、dev の受入確認で両方を呼び出します。
 
 決裁 Lambda の実行ロールは、状態遷移（`UpdateRegistryRecordStatus`）に必要な権限をすでに持ちます。補助テーブルについては、決裁ロールに次の2つを追加しています。
 
 - `dynamodb:Query`: 審査待ちの一覧が未解決の廃止依頼を読むため
 - `dynamodb:ConditionCheckItem`: 見送りがロックを確かめるため
 
-廃止依頼の route（`POST /api/records/{recordId}/deprecation-requests`）は、履歴の route（`GET /api/records/{recordId}/history`）とあわせて、[管理 handler の route 用モジュール](infrastructure/modules/management_routes/main.tf) で既存 HTTP API の管理 Lambda 統合に割り当てます。route 表はルートモジュール [`infrastructure/management`](infrastructure/management/main.tf) が持ち、モジュールに渡します（本体スタックも同じモジュールに自分の route 表を渡します）。次の値を `terraform.tfvars` に追加してください。
+廃止依頼と履歴のメソッド・統合は、management スタックから既存の REST API パスに追加します。次の値を `terraform.tfvars` に転記します。
 
-- `http_api_id`・`jwt_authorizer_id`: 決裁モジュールと同じ既存 HTTP API と JWT authorizer
-- `portal_api_scope`: route の JWT authorizer が検証するカスタム scope（本体の output `portal_api_scope`。決裁にも同じ値を渡す）
-- `management_integration_id`: カタログや下書きの route が使っている、管理 Lambda への既存の統合（integration）の ID
+- `rest_api_id`・`authorizer_id`: 決裁モジュールと同じ既存 REST API と Cognito User Pools authorizer
+- `portal_api_scope`: route の Cognito User Pools authorizer が検証するカスタム scope（本体の output `portal_api_scope`。決裁にも同じ値を渡す）
 - `management_function_name`: 既存の管理 Lambda の関数名（この2つの path に限った呼び出し許可を追加する）
 
-HTTP API・authorizer・統合は本体スタックから借用し、本体の output を tfvars に転記します。管理 route は別 state の `management` から適用します。現在は state を移動しません。後続 Issue で統合する場合だけ、移行先の import と移行元の `terraform state rm` を行います（[ADR-0013](../../docs/adr/0013-separate-portal-addon-states.md)）。管理 Lambda のロールには、廃止依頼の保存でロックを確かめるための `dynamodb:ConditionCheckItem` を [下書き用モジュールのポリシー](infrastructure/modules/management_drafts/draft-policy.json.tftpl) に追加しています。
+REST API のパスと authorizer は本体スタックから借用し、本体の output を tfvars に転記します。管理 route のメソッドと統合は別 state の `management` から適用します。現在は state を移動しません。後続 Issue で統合する場合だけ、移行先の import と移行元の `terraform state rm` を行います（[ADR-0013](../../docs/adr/0013-separate-portal-addon-states.md)）。管理 Lambda のロールには、廃止依頼の保存でロックを確かめるための `dynamodb:ConditionCheckItem` を [下書き用モジュールのポリシー](infrastructure/modules/management_drafts/draft-policy.json.tftpl) に追加しています。
 
 Seam 1 の Stubber と moto で、次を検証します。
 
