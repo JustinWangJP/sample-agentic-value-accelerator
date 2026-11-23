@@ -6,7 +6,7 @@ export type PortalConfig = {
   clientId: string
   /** Cognito の client に登録したコールバック URL */
   redirectUri: string
-  /** HTTP API のベース URL */
+  /** REST API のベース URL（ステージ名 /v1 を含む） */
   apiBaseUrl: string
   /** 要求する scope（スペース区切り） */
   scopes: string
@@ -23,7 +23,7 @@ export class ConfigError extends Error {
 type Env = Record<string, string | undefined>
 
 /**
- * 必須の設定。VITE_COGNITO_SCOPES には openid と、HTTP API のすべての route が JWT authorizer で検証する
+ * 必須の設定。VITE_COGNITO_SCOPES には openid と、REST API のすべての経路が Cognito User Pools authorizer で検証する
  * カスタム scope を指定する。scope の値は Terraform の本体スタック（infrastructure/main.tf の
  * local.portal_api_scope）だけに定義し、配信時は output の frontend_config から渡す
  */

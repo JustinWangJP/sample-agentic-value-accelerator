@@ -87,8 +87,8 @@ describe('自分の主体の取得', () => {
     })
   })
 
-  it('JWT authorizer が拒否した 401（共通 DTO ではない）も、ログインし直すエラーにする', async () => {
-    // API Gateway の HTTP API は、トークンなし・期限切れを Lambda に届けずにこの形で返す
+  it('Cognito User Pools authorizer が拒否した 401（共通 DTO ではない）も、ログインし直すエラーにする', async () => {
+    // API Gateway の REST API は、トークンなし・期限切れを Lambda に届けずにこの形（gateway response の UNAUTHORIZED）で返す
     const { client } = clientWith([jsonResponse(401, { message: 'Unauthorized' })])
 
     await expect(client.getMe()).rejects.toMatchObject({

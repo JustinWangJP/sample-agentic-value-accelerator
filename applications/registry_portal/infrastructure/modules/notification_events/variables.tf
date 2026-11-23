@@ -35,7 +35,7 @@ variable "supplement_table_arn" {
 
 variable "log_retention_in_days" {
   type        = number
-  description = "イベント処理 Lambda のロググループの保持日数。許容値の検証はルートモジュールの変数で行う"
+  description = "イベント処理 Lambda のロググループの保持日数。許容値の検証は modules/lambda_log_group の retention_in_days で行う"
   default     = 365
 }
 

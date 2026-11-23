@@ -82,7 +82,7 @@ variable "discovery_kms_key_arn" {
 
 variable "log_retention_in_days" {
   type        = number
-  description = "決裁 Lambda のロググループの保持日数。許容値の検証はルートモジュールの変数で行う"
+  description = "決裁 Lambda のロググループの保持日数。許容値の検証は modules/lambda_log_group の retention_in_days で行う"
   default     = 365
 }
 

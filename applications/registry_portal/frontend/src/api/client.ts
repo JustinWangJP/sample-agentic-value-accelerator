@@ -19,7 +19,7 @@ import type { ApiRequest, HttpMethod } from './request'
 // - アクセストークン（ID トークンではない）を Bearer で送る
 // - エラーは共通エラー DTO の日本語メッセージを使い、ApiError として返す
 // - JSON でない応答（SPA の index.html など）を成功として扱わない
-// - 401 は、Lambda の共通エラー DTO でも、API Gateway の JWT authorizer の応答
+// - 401 は、Lambda の共通エラー DTO でも、API Gateway の Cognito User Pools authorizer の応答
 //   （{"message":"Unauthorized"}）でも、同じ「ログインし直す」エラーとして扱う
 
 export type Principal = {
@@ -256,7 +256,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         )
       }
       if (response.status === 401) {
-        // API Gateway の JWT authorizer が拒否した応答（Lambda まで届かず、共通 DTO ではない）
+        // API Gateway の Cognito User Pools authorizer が拒否した応答（Lambda まで届かず、共通 DTO ではない）
         throw new ApiError(401, 'UNAUTHENTICATED', UNAUTHENTICATED_MESSAGE)
       }
       throw new ApiError(
