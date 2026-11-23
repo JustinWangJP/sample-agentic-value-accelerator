@@ -1,8 +1,16 @@
-# 追加スタック（別 state）が本体スタックの HTTP API に割り当てる route も、本体と同じ
-# カスタム scope を JWT authorizer で検証することを確かめる。
+# 追加スタック（別 state）が本体スタックの REST API に割り当てる route も、本体と同じ
+# カスタム scope を Cognito User Pools authorizer で検証することを確かめる。
 mock_provider "aws" {
-  mock_data "aws_apigatewayv2_api" {
-    defaults = { execution_arn = "arn:aws:execute-api:us-east-1:123456789012:abcde12345" }
+  mock_data "aws_partition" {
+    defaults = { partition = "aws" }
+  }
+  mock_data "aws_region" {
+    defaults = { region = "us-east-1" }
+  }
+  mock_data "aws_lambda_function" {
+    defaults = {
+      invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:registry-portal-dev-management/invocations"
+    }
   }
   mock_data "aws_caller_identity" {
     defaults = { account_id = "123456789012" }
@@ -22,8 +30,9 @@ run "decision_routes_require_portal_scope" {
     registry_arn          = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
     supplement_table_name = "registry-portal-dev-auxiliary"
     supplement_table_arn  = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-portal-dev-auxiliary"
-    http_api_id           = "abcde12345"
-    jwt_authorizer_id     = "abc123"
+    rest_api_id           = "abcde12345"
+    authorizer_id         = "abc123"
+    cors_allowed_origins  = ["https://portal.example.cloudfront.net"]
     portal_api_scope      = "registry-portal/api.invoke"
     discovery_client = {
       token_url         = "https://example.auth.us-east-1.amazoncognito.com/oauth2/token"
@@ -33,31 +42,30 @@ run "decision_routes_require_portal_scope" {
     }
   }
   assert {
-    condition     = length(aws_apigatewayv2_route.decision) > 0 && alltrue([for route in aws_apigatewayv2_route.decision : route.authorization_type == "JWT" && route.authorization_scopes == toset(["registry-portal/api.invoke"])])
-    error_message = "決裁の route も、本体スタックと同じポータル用の scope を JWT authorizer で検証してください。"
+    condition     = length(module.decision_routes.routes) == 13 && alltrue([for route in values(module.decision_routes.routes) : route.authorization_type == "COGNITO_USER_POOLS" && route.authorization_scopes == toset(["registry-portal/api.invoke"])])
+    error_message = "決裁の route も、本体スタックと同じポータル用の scope を Cognito User Pools authorizer で検証してください。"
   }
 }
 
 run "management_routes_require_portal_scope" {
   command = plan
-  # route 表（#51 の下書きと操作照会の 6 経路を含む）は management スタックのルートモジュールが持つ
+  # route 表（#51 の下書きと操作照会の 6 経路を含む）は本体と共有する
   module {
     source = "./management"
   }
   variables {
-    region                    = "us-east-1"
-    management_role_name      = "registry-portal-dev-management"
-    registry_arn              = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
-    supplement_table_arn      = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-portal-dev-auxiliary"
-    http_api_id               = "abcde12345"
-    jwt_authorizer_id         = "abc123"
-    management_integration_id = "int1234"
-    management_function_name  = "registry-portal-dev-management"
-    portal_api_scope          = "registry-portal/api.invoke"
+    region                   = "us-east-1"
+    management_role_name     = "registry-portal-dev-management"
+    registry_arn             = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
+    supplement_table_arn     = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-portal-dev-auxiliary"
+    rest_api_id              = "abcde12345"
+    authorizer_id            = "abc123"
+    management_function_name = "registry-portal-dev-management"
+    portal_api_scope         = "registry-portal/api.invoke"
   }
   assert {
-    condition     = length(module.management_routes.routes) > 0 && alltrue([for route in values(module.management_routes.routes) : route.authorization_type == "JWT" && route.authorization_scopes == toset(["registry-portal/api.invoke"]) && route.authorizer_id == var.jwt_authorizer_id && route.target == "integrations/${var.management_integration_id}"])
-    error_message = "管理 handler の追加 route も、本体スタックと同じポータル用の scope を JWT authorizer で検証してください。"
+    condition     = length(module.management_routes.routes) == 12 && alltrue([for route in values(module.management_routes.routes) : route.authorization_type == "COGNITO_USER_POOLS" && route.authorization_scopes == toset(["registry-portal/api.invoke"]) && route.authorizer_id == var.authorizer_id && endswith(route.target, ":function:registry-portal-dev-management/invocations")])
+    error_message = "管理 handler の追加 route も、本体スタックと同じポータル用の scope を Cognito User Pools authorizer で検証してください。"
   }
   assert {
     condition = length(setsubtract(toset([

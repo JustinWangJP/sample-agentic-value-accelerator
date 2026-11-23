@@ -39,14 +39,14 @@ variable "supplement_table_arn" {
   description = "補助 DynamoDB テーブルの ARN"
 }
 
-variable "http_api_id" {
+variable "rest_api_id" {
   type        = string
-  description = "決裁の route を割り当てる既存 API Gateway HTTP API の ID"
+  description = "決裁の route を割り当てる既存 API Gateway REST API の ID"
 }
 
-variable "jwt_authorizer_id" {
+variable "authorizer_id" {
   type        = string
-  description = "決裁の route に適用する既存 JWT authorizer の ID"
+  description = "決裁の route に適用する既存 Cognito User Pools authorizer の ID"
 }
 
 variable "discovery_token_url" {
@@ -82,7 +82,7 @@ variable "discovery_scope" {
 
 variable "portal_api_scope" {
   type        = string
-  description = "route の JWT authorizer が検証するポータル用のカスタム scope。本体スタックの output portal_api_scope を転記する"
+  description = "route の Cognito User Pools authorizer が検証するポータル用のカスタム scope。本体スタックの output portal_api_scope を転記する"
 }
 
 variable "log_retention_in_days" {
@@ -100,4 +100,9 @@ variable "lambda_reserved_concurrency" {
   type        = number
   description = "決裁 Lambda の予約同時実行数（reserved_concurrent_executions）。暴走や大量リクエストによる課金を抑える上限。null なら予約しない。アカウントの同時実行数の上限（aws lambda get-account-settings）を確認してから指定する"
   default     = null
+}
+
+variable "cors_allowed_origins" {
+  type        = list(string)
+  description = "本体スタックの output cors_allowed_origins。決裁 Lambda の CORS 許可リスト。"
 }

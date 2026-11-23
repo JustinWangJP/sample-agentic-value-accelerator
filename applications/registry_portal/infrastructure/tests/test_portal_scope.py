@@ -45,7 +45,7 @@ class PortalScopeTests(unittest.TestCase):
             outputs, r'output "portal_api_scope" \{[^}]*value\s*=\s*local\.portal_api_scope\n'
         )
         self.assertIn('VITE_COGNITO_SCOPES    = "openid ${local.portal_api_scope}"', outputs)
-        main = (INFRA / "main.tf").read_text()
+        main = (INFRA / "rest_api.tf").read_text()
         self.assertRegex(
             main,
             r'module "management_routes" \{[^}]*authorization_scope\s*=\s*local\.portal_api_scope\n',
@@ -53,9 +53,9 @@ class PortalScopeTests(unittest.TestCase):
 
     def test_addon_stack_routes_require_the_transcribed_scope(self):
         modules = INFRA / "modules"
-        self.assertIn(
-            "authorization_scopes = [var.portal_api_scope]",
+        self.assertRegex(
             (modules / "decision/main.tf").read_text(),
+            r"authorization_scope\s*=\s*var\.portal_api_scope\n",
         )
         self.assertIn(
             "authorization_scopes = [var.authorization_scope]",

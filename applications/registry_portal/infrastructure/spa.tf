@@ -57,8 +57,8 @@ resource "aws_cloudfront_response_headers_policy" "spa" {
   name = var.name_prefix
   security_headers_config {
     content_security_policy {
-      # HTTP API の CORS が CloudFront の origin を参照するため、ここで API の URL を参照すると循環参照になる。
-      # ヘッダーの connect-src は execute-api をリージョン単位で許可し、自分の HTTP API への限定は
+      # REST API の CORS が CloudFront の origin を参照するため、ここで API の URL を参照すると循環参照になる。
+      # ヘッダーの connect-src は execute-api をリージョン単位で許可し、自分の REST API への限定は
       # SPA のビルドが index.html に埋め込む meta の CSP（frontend/src/connectCsp.ts）で行う。
       # ブラウザは両方の CSP を満たす通信だけを許可する
       content_security_policy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' ${var.cognito_domain} https://*.execute-api.${local.region}.amazonaws.com; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests"

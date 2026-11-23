@@ -48,23 +48,23 @@ variable "supplement_table_arn" {
   }
 }
 
-variable "http_api_id" {
+variable "rest_api_id" {
   type        = string
-  description = "決裁の route を割り当てる既存 API Gateway HTTP API の ID（#5 の IaC が作成し、ここでは借用する）"
+  description = "決裁の route を割り当てる既存 API Gateway REST API の ID（#5 の IaC が作成し、ここでは借用する）"
 
   validation {
-    condition     = can(regex("^[a-z0-9]{10}$", var.http_api_id))
-    error_message = "API Gateway HTTP API の ID（英小文字と数字の10文字）を指定してください。"
+    condition     = can(regex("^[a-z0-9]{10}$", var.rest_api_id))
+    error_message = "API Gateway REST API の ID（英小文字と数字の10文字）を指定してください。"
   }
 }
 
-variable "jwt_authorizer_id" {
+variable "authorizer_id" {
   type        = string
-  description = "決裁の route に適用する既存 JWT authorizer の ID。人間用 SPA client のトークンを検証する authorizer を指定する"
+  description = "決裁の route に適用する既存 Cognito User Pools authorizer の ID。人間用 SPA client のトークンを検証する authorizer を指定する"
 
   validation {
-    condition     = can(regex("^[a-z0-9]+$", var.jwt_authorizer_id))
-    error_message = "HTTP API の JWT authorizer の ID を指定してください。"
+    condition     = can(regex("^[a-z0-9]+$", var.authorizer_id))
+    error_message = "REST API の Cognito User Pools authorizer の ID を指定してください。"
   }
 }
 
@@ -91,7 +91,7 @@ variable "discovery_kms_key_arn" {
 
 variable "portal_api_scope" {
   type        = string
-  description = "route の JWT authorizer が検証するポータル用のカスタム scope。本体スタックの output portal_api_scope と同じ値"
+  description = "route の Cognito User Pools authorizer が検証するポータル用のカスタム scope。本体スタックの output portal_api_scope と同じ値"
 }
 
 variable "log_retention_in_days" {
@@ -104,4 +104,9 @@ variable "lambda_reserved_concurrency" {
   type        = number
   description = "決裁 Lambda の予約同時実行数（reserved_concurrent_executions）。null なら予約しない"
   default     = null
+}
+
+variable "cors_allowed_origins" {
+  type        = list(string)
+  description = "本体スタックの output cors_allowed_origins。決裁 Lambda の CORS 許可リスト。"
 }

@@ -8,6 +8,7 @@ modules/management_routes/main.tf のコメントと README を合わせて直�
 """
 
 from fnmatch import fnmatchcase
+import json
 from pathlib import Path
 import re
 import unittest
@@ -18,37 +19,14 @@ SAMPLE_PARAMETER = "rec0123456789"
 PATH_PARAMETER = re.compile(r"\{[^}]+\}")
 
 
-def management_routes() -> list[str]:
-    """管理 Lambda に向く route（本体スタックと management スタックの route 表）。"""
-    sources = (INFRA / "main.tf").read_text() + (INFRA / "management/main.tf").read_text()
-    routes = re.findall(r'route_key\s*=\s*"([A-Z]+ /api/[^"]+)"', sources)
-    assert routes, "管理 Lambda の route 表を読めません"
-    return routes
+def routes_for(*groups: str) -> list[str]:
+    """本体と追加スタックが共有する経路表から指定された経路を読む。"""
+    manifest = json.loads((INFRA / "modules/management_routes/routes.json").read_text())
+    return [route["route_key"] for group in groups for route in manifest[group].values()]
 
 
-def decision_routes_and_patterns() -> tuple[list[str], list[str]]:
-    """決裁 Lambda に向く route と、その呼び出し許可の source_arn（stage の後ろ）。"""
-    main = (INFRA / "modules/decision/main.tf").read_text()
-    (paths,) = re.findall(r"decision_record_paths = \{(.*?)\n  \}\n", main, re.DOTALL)
-    record_paths = re.findall(r'method\s*=\s*"([A-Z]+)"\s*\n\s*path\s*=\s*"([^"]+)"', paths)
-    (routes_block,) = re.findall(r"routes = concat\((.*?)\n  \)\n", main, re.DOTALL)
-    routes = re.findall(r'^\s*"([A-Z]+ /api/[^"]+)",$', routes_block, re.MULTILINE)
-    routes += [f"{method} /api/records/{path}" for method, path in record_paths]
-    patterns = []
-    for source_arn in re.findall(r'source_arn\s*=\s*"\$\{[^}]+\}/\*/(.+)"$', main, re.MULTILINE):
-        if "each.value.path" in source_arn:
-            patterns += [
-                source_arn.split("${")[0] + path.replace("{recordId}", "*")
-                for _, path in record_paths
-            ]
-        else:
-            patterns.append(source_arn)
-    assert routes and patterns, "決裁 Lambda の route と呼び出し許可を読めません"
-    return routes, patterns
-
-
-def management_patterns(routes: list[str]) -> list[str]:
-    """modules/management_routes の local.invoke_paths と同じ規則で source_arn を作る。"""
+def invoke_patterns(routes: list[str]) -> list[str]:
+    """REST API の統合ごとに作る Lambda 呼び出し許可のパターン。"""
     return [
         f"{method}/{PATH_PARAMETER.sub('*', path.removeprefix('/'))}"
         for method, path in (route.split(" ") for route in routes)
@@ -70,9 +48,16 @@ def matched(patterns: list[str], routes: list[str]) -> set[str]:
 
 
 class RoutePermissionTests(unittest.TestCase):
+    def test_all_route_keys_and_statement_ids_are_unique(self):
+        routes = routes_for("main", "management", "decision")
+        manifest = json.loads((INFRA / "modules/management_routes/routes.json").read_text())
+        statements = [route["statement_id"] for group in manifest.values() for route in group.values()]
+        self.assertEqual(len(set(routes)), 29)
+        self.assertEqual(len(set(statements)), 29)
+
     def test_management_permissions_match_only_the_known_decision_routes(self):
-        decision_routes, _ = decision_routes_and_patterns()
-        overlap = matched(management_patterns(management_routes()), decision_routes)
+        decision_routes = routes_for("decision")
+        overlap = matched(invoke_patterns(routes_for("main", "management")), decision_routes)
         self.assertEqual(
             overlap,
             {
@@ -83,14 +68,14 @@ class RoutePermissionTests(unittest.TestCase):
         )
 
     def test_decision_permissions_match_no_management_route(self):
-        _, patterns = decision_routes_and_patterns()
-        self.assertEqual(matched(patterns, management_routes()), set())
+        patterns = invoke_patterns(routes_for("decision"))
+        self.assertEqual(matched(patterns, routes_for("main", "management")), set())
 
     def test_each_lambda_permission_covers_its_own_routes(self):
-        decision_routes, decision_patterns = decision_routes_and_patterns()
-        routes = management_routes()
-        self.assertEqual(matched(management_patterns(routes), routes), set(routes))
-        self.assertEqual(matched(decision_patterns, decision_routes), set(decision_routes))
+        decision_routes = routes_for("decision")
+        routes = routes_for("main", "management")
+        self.assertEqual(matched(invoke_patterns(routes), routes), set(routes))
+        self.assertEqual(matched(invoke_patterns(decision_routes), decision_routes), set(decision_routes))
 
 
 if __name__ == "__main__":

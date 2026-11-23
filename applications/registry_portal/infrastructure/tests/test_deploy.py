@@ -44,6 +44,8 @@ elif name == "aws":
         if "caller_arn" not in settings:
             sys.exit(255)
         print(settings["caller_arn"])
+    if args[:2] == ["apigateway", "create-deployment"]:
+        print("deployment123")
 elif name == "terraform":
     if "plan" in args:
         plan_path = next(arg[5:] for arg in args if arg.startswith("-out="))
@@ -51,7 +53,13 @@ elif name == "terraform":
             plan.writestr("tfconfig/modules.json", json.dumps([{"Key": "", "Dir": "."}]))
             plan.writestr("tfconfig/m-/main.tf", "terraform {}")
     elif "show" in args and "-json" in args and args[-1].endswith(".tfplan"):
-        print(Path(os.environ["PLAN_FIXTURE"]).read_text())
+        plan = json.loads(Path(os.environ["PLAN_FIXTURE"]).read_text())
+        stack_dir = args[0].removeprefix("-chdir=") if args[0].startswith("-chdir=") else os.getcwd()
+        if Path(stack_dir).name in {"decision", "management"}:
+            plan.setdefault("variables", {}).update(
+                rest_api_id={"value": "abcde12345"}, region={"value": "us-east-1"}
+            )
+        print(json.dumps(plan))
     elif args[1:3] == ["state", "pull"]:
         # FAKE_STATES にないスタックは state のファイルがない（state pull は何も出力しない）
         stack = Path(args[0].split("=", 1)[1]).name
@@ -63,6 +71,7 @@ elif name == "terraform":
     elif "output" in args:
         outputs = {"spa_bucket_name": "portal-spa",
                    "cloudfront_distribution_id": "EDIST",
+                   "rest_api_id": "abcde12345", "api_region": "us-east-1",
                    "frontend_config": {"VITE_COGNITO_SCOPES": "openid registry-portal/api.invoke"}}
         value = outputs[args[-1]]
         print(json.dumps(value) if "-json" in args else value, end="" if "-raw" in args else "\\n")
@@ -196,7 +205,10 @@ class DeployTests(unittest.TestCase):
                     (
                         item
                         for item in command[1:]
-                        if item in {"plan", "apply", "sync", "cp", "create-invalidation"}
+                        if item in {
+                            "plan", "apply", "sync", "cp", "create-invalidation",
+                            "create-deployment", "update-stage",
+                        }
                     ),
                     "",
                 ),
@@ -209,6 +221,8 @@ class DeployTests(unittest.TestCase):
             [
                 ("terraform", "plan"),
                 ("terraform", "apply"),
+                ("aws", "create-deployment"),
+                ("aws", "update-stage"),
                 ("aws", "sync"),
                 ("aws", "cp"),
                 ("aws", "create-invalidation"),
@@ -373,6 +387,16 @@ class DeployTests(unittest.TestCase):
                     )
                 )
                 self.assertTrue(any("apply" in command for command in terraform))
+                api_commands = [command for command in commands if command[:2] == ["aws", "apigateway"]]
+                self.assertEqual(
+                    [command[2] for command in api_commands],
+                    [] if stack == "notification_events" else ["create-deployment", "update-stage"],
+                )
+                if api_commands:
+                    self.assertLess(
+                        commands.index(next(command for command in terraform if "apply" in command)),
+                        commands.index(api_commands[0]),
+                    )
                 plan = next(command for command in terraform if "plan" in command)
                 builds = [
                     command
@@ -678,6 +702,13 @@ class DeployTests(unittest.TestCase):
             stack_args=("--stack", "decision"),
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        apply = next(command for command in commands if "apply" in command)
+        deploy = next(command for command in commands if "create-deployment" in command)
+        update = next(command for command in commands if "update-stage" in command)
+        self.assertLess(commands.index(apply), commands.index(deploy))
+        self.assertLess(commands.index(deploy), commands.index(update))
+        self.assertIn("op=replace,path=/deploymentId,value=deployment123", update)
+        self.assertIn("v1", update)
         self.assertFalse(
             any(command[0] == "python3" and "check_teardown" in command[1] for command in commands)
         )

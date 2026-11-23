@@ -9,7 +9,7 @@ locals {
   spa_origin      = "https://${aws_cloudfront_distribution.spa.domain_name}"
   # 人間用 client のコールバック URL・ログアウト URL。CloudFront の SPA と、ローカルの開発サーバー（var.local_dev_origins）
   spa_redirect_urls = concat(["${local.spa_origin}/"], [for o in var.local_dev_origins : "${o}/"])
-  # HTTP API のすべての route（追加スタックを含む）が検証するカスタム scope。業務ロールの判定は handler が行う。
+  # REST API のすべての route（追加スタックを含む）が検証するカスタム scope。業務ロールの判定は handler が行う。
   # 追加スタックと SPA には output（portal_api_scope と frontend_config）で渡し、値はここだけに定義する
   portal_api_scope_name = "api.invoke"
   portal_api_scope      = "${aws_cognito_resource_server.portal.identifier}/${local.portal_api_scope_name}"
@@ -181,6 +181,7 @@ resource "aws_lambda_function" "management" {
   environment {
     # A2A_SEARCH_ENABLED は isA2A の補完と確認（#16）が終わるまで設定しない（未設定は無効）
     variables = merge(module.discovery_client.environment, {
+      CORS_ALLOWED_ORIGINS  = jsonencode(local.cors_allowed_origins)
       COGNITO_ISSUER        = local.issuer
       HUMAN_CLIENT_ID       = aws_cognito_user_pool_client.human.id
       REGISTRY_ARN          = var.registry_arn
@@ -188,97 +189,4 @@ resource "aws_lambda_function" "management" {
     })
   }
   depends_on = [aws_iam_role_policy.management, module.management_log_group]
-}
-
-resource "aws_apigatewayv2_api" "portal" {
-  name          = var.name_prefix
-  protocol_type = "HTTP"
-  cors_configuration {
-    allow_origins = concat([local.spa_origin], var.local_dev_origins)
-    # SPA は下書きの更新に PATCH、申請・決裁などに POST と Idempotency-Key を使う
-    allow_methods = ["GET", "POST", "PATCH", "OPTIONS"]
-    allow_headers = ["authorization", "content-type", "idempotency-key"]
-    max_age       = 300
-  }
-}
-
-resource "aws_apigatewayv2_authorizer" "human" {
-  api_id           = aws_apigatewayv2_api.portal.id
-  name             = "human-access-token"
-  authorizer_type  = "JWT"
-  identity_sources = ["$request.header.Authorization"]
-  jwt_configuration {
-    audience = [aws_cognito_user_pool_client.human.id]
-    issuer   = local.issuer
-  }
-}
-
-resource "aws_apigatewayv2_integration" "management" {
-  api_id                 = aws_apigatewayv2_api.portal.id
-  integration_type       = "AWS_PROXY"
-  integration_uri        = aws_lambda_function.management.invoke_arn
-  payload_format_version = "2.0"
-  timeout_milliseconds   = 30000
-}
-
-# 本体スタックが管理 Lambda に割り当てる route と、Lambda の呼び出し許可の ID。
-# 決裁と管理の追加 route は、それぞれの追加スタックが作る（管理の追加 route も modules/management_routes で作る）
-locals {
-  management_routes = {
-    me = {
-      route_key    = "GET /api/me"
-      statement_id = "AllowHttpApiInvokeMe"
-    }
-    catalog = {
-      route_key    = "GET /api/catalog"
-      statement_id = "AllowHttpApiInvokeCatalog"
-    }
-    catalog_search = {
-      route_key    = "POST /api/catalog/search"
-      statement_id = "AllowHttpApiInvokeCatalogSearch"
-    }
-    catalog_detail = {
-      route_key    = "GET /api/catalog/{recordId}"
-      statement_id = "AllowHttpApiInvokeCatalogDetail"
-    }
-  }
-}
-
-# route と、route ごとのメソッドと path に限った呼び出し許可は、management スタックと同じモジュールで作る
-module "management_routes" {
-  source                    = "./modules/management_routes"
-  routes                    = local.management_routes
-  authorization_scope       = local.portal_api_scope
-  http_api_id               = aws_apigatewayv2_api.portal.id
-  jwt_authorizer_id         = aws_apigatewayv2_authorizer.human.id
-  management_integration_id = aws_apigatewayv2_integration.management.id
-  management_function_name  = aws_lambda_function.management.function_name
-}
-
-# route と呼び出し許可を management スタックと共通のモジュールに移した。適用済みの state は moved で引き継ぐ
-moved {
-  from = aws_apigatewayv2_route.management
-  to   = module.management_routes.aws_apigatewayv2_route.management
-}
-
-moved {
-  from = aws_lambda_permission.api
-  to   = module.management_routes.aws_lambda_permission.management_api
-}
-
-resource "aws_apigatewayv2_stage" "default" {
-  api_id      = aws_apigatewayv2_api.portal.id
-  name        = "$default"
-  auto_deploy = true
-  access_log_settings {
-    destination_arn = aws_cloudwatch_log_group.api.arn
-    format = jsonencode({
-      requestId = "$context.requestId", routeKey = "$context.routeKey",
-      status    = "$context.status", responseLength = "$context.responseLength"
-    })
-  }
-  default_route_settings {
-    throttling_burst_limit = 20
-    throttling_rate_limit  = 10
-  }
 }

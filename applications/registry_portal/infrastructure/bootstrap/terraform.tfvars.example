@@ -17,3 +17,6 @@ deployer_principal_arn = "arn:aws:iam::123456789012:role/RegistryPortalDeployer"
 # deployer_principal_arn       = "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/*AWSReservedSSO_RegistryPortalDeployer_*"
 # identity_center_instance_arn = "arn:aws:sso:::instance/ssoins-0000000000000000"
 # deployer_group_id            = "00000000-0000-0000-0000-000000000000"
+
+# このリージョンの API Gateway に CloudWatch ロールの設定がない場合に、管理者が有効にする。
+# manage_api_gateway_account = true

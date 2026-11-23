@@ -18,19 +18,14 @@ variable "supplement_table_arn" {
   description = "管理 Lambda の環境変数 SUPPLEMENT_TABLE_NAME が指す補助 DynamoDB テーブルの ARN"
 }
 
-variable "http_api_id" {
+variable "rest_api_id" {
   type        = string
-  description = "管理 handler の route（履歴・廃止依頼）を割り当てる既存 API Gateway HTTP API の ID"
+  description = "管理 handler の route（履歴・廃止依頼）を割り当てる既存 API Gateway REST API の ID"
 }
 
-variable "jwt_authorizer_id" {
+variable "authorizer_id" {
   type        = string
-  description = "管理 handler の route に適用する既存 JWT authorizer の ID"
-}
-
-variable "management_integration_id" {
-  type        = string
-  description = "既存 HTTP API にある、管理 Lambda への統合（integration）の ID"
+  description = "管理 handler の route に適用する既存 Cognito User Pools authorizer の ID"
 }
 
 variable "management_function_name" {
@@ -40,5 +35,5 @@ variable "management_function_name" {
 
 variable "portal_api_scope" {
   type        = string
-  description = "route の JWT authorizer が検証するポータル用のカスタム scope。本体スタックの output portal_api_scope を転記する"
+  description = "route の Cognito User Pools authorizer が検証するポータル用のカスタム scope。本体スタックの output portal_api_scope を転記する"
 }

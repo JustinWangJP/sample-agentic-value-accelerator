@@ -1,4 +1,7 @@
 mock_provider "aws" {
+  mock_data "aws_partition" {
+    defaults = { partition = "aws" }
+  }
   # provider のリージョン（us-east-1 に固定）
   mock_data "aws_region" {
     defaults = { region = "us-east-1" }
@@ -10,6 +13,25 @@ mock_provider "aws" {
   }
   mock_resource "aws_ssoadmin_permission_set" {
     defaults = { arn = "arn:aws:sso:::permissionSet/ssoins-0000000000000000/ps-0000000000000000" }
+  }
+}
+
+run "api_gateway_account_is_optional" {
+  command = plan
+  assert {
+    condition     = length(aws_api_gateway_account.portal) == 0 && length(aws_iam_role.api_gateway_logs) == 0
+    error_message = "既定では共有の API Gateway アカウント設定とロールを管理しないでください。"
+  }
+}
+
+run "api_gateway_account_uses_cloudwatch_role" {
+  command = plan
+  variables {
+    manage_api_gateway_account = true
+  }
+  assert {
+    condition     = length(aws_api_gateway_account.portal) == 1 && aws_iam_role_policy_attachment.api_gateway_logs[0].policy_arn == "arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+    error_message = "明示的に指定された場合だけ、ログ用 IAM ロールと API Gateway の設定を作成してください。"
   }
 }
 # 既定は IAM Identity Center のない個人アカウント。state の主体は IAM ロールの RegistryPortalDeployer。

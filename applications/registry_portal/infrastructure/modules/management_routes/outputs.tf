@@ -1,10 +1,10 @@
 output "routes" {
-  description = "作成した route（キーは var.routes と同じ）。route_key・統合先・JWT authorizer と scope の確認に使う"
+  description = "作成した route（キーは var.routes と同じ）。route_key・統合先・Cognito User Pools authorizer と scope の確認に使う"
   value = {
-    for name, route in aws_apigatewayv2_route.management : name => {
-      route_key            = route.route_key
-      target               = route.target
-      authorization_type   = route.authorization_type
+    for name, route in aws_api_gateway_method.route : name => {
+      route_key            = var.routes[name].route_key
+      target               = aws_api_gateway_integration.route[name].uri
+      authorization_type   = route.authorization
       authorizer_id        = route.authorizer_id
       authorization_scopes = route.authorization_scopes
     }

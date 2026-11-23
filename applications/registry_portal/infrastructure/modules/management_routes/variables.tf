@@ -1,31 +1,32 @@
-variable "http_api_id" {
+variable "rest_api_id" {
   type        = string
-  description = "管理 handler の route を割り当てる既存 API Gateway HTTP API の ID（#5 の IaC が作成し、ここでは借用する）"
+  description = "管理 handler の route を割り当てる既存 API Gateway REST API の ID（#5 の IaC が作成し、ここでは借用する）"
 
   validation {
-    condition     = can(regex("^[a-z0-9]{10}$", var.http_api_id))
-    error_message = "API Gateway HTTP API の ID（英小文字と数字の10文字）を指定してください。"
+    condition     = can(regex("^[a-z0-9]{10}$", var.rest_api_id))
+    error_message = "API Gateway REST API の ID（英小文字と数字の10文字）を指定してください。"
   }
 }
 
-variable "jwt_authorizer_id" {
+variable "authorizer_id" {
   type        = string
-  description = "管理 handler の route に適用する既存 JWT authorizer の ID。人間用 SPA client のトークンを検証する authorizer を指定する"
+  description = "管理 handler の route に適用する既存 Cognito User Pools authorizer の ID。人間用 SPA client のトークンを検証する authorizer を指定する"
 
   validation {
-    condition     = can(regex("^[a-z0-9]+$", var.jwt_authorizer_id))
-    error_message = "HTTP API の JWT authorizer の ID を指定してください。"
+    condition     = can(regex("^[a-z0-9]+$", var.authorizer_id))
+    error_message = "REST API の Cognito User Pools authorizer の ID を指定してください。"
   }
 }
 
-variable "management_integration_id" {
+variable "lambda_invoke_arn" {
   type        = string
-  description = "既存 HTTP API にある、管理 Lambda への統合（integration）の ID。カタログや下書きの route と同じ統合を指定する"
+  description = "API Gateway の AWS_PROXY 統合先の Lambda invoke ARN。"
+}
 
-  validation {
-    condition     = can(regex("^[a-z0-9]+$", var.management_integration_id))
-    error_message = "HTTP API の統合（integration）の ID を指定してください。"
-  }
+variable "resource_ids" {
+  type        = map(string)
+  default     = null
+  description = "本体スタックが作る REST API パスと resource ID の対応。追加スタックは REST API から取得する。"
 }
 
 variable "management_function_name" {
@@ -53,7 +54,7 @@ variable "routes" {
 
 variable "authorization_scope" {
   type        = string
-  description = "route の JWT authorizer が検証するポータル用のカスタム scope（<リソースサーバー ID>/<scope 名>）。本体スタックの output portal_api_scope と同じ値"
+  description = "route の Cognito User Pools authorizer が検証するポータル用のカスタム scope（<リソースサーバー ID>/<scope 名>）。本体スタックの output portal_api_scope と同じ値"
 
   validation {
     condition     = can(regex("^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$", var.authorization_scope))

@@ -146,7 +146,7 @@ tf_init() {
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/registry-portal-deploy.XXXXXX")"
 trap 'rm -rf "$work_dir"' EXIT
 if [[ "$is_main_destroy" == true ]]; then
-  # 追加スタックは本体の HTTP API・Lambda・実行ロール・補助テーブルを借りて route や権限を足している。
+  # 追加スタックは本体の REST API・Lambda・実行ロール・補助テーブルを借りて route や権限を足している。
   # 本体を先に消すと追加スタックの state に孤立したリソースが残るため、撤去の順番は「追加スタック → 本体」とし、
   # 追加スタックの state にリソースが残っていれば、本体の plan を作る前に止める
   addon_subdirs=()
@@ -204,7 +204,30 @@ else
   read -r confirmation || fail "反映を中止しました。"
   [[ "$confirmation" == "apply" ]] || fail "反映を中止しました。"
 fi
+if [[ "$destroy" == true && ( "$stack" == management || "$stack" == decision ) ]]; then
+  # 撤去で output が消える前に、検査済み plan から再デプロイ先を取得する。
+  api_target="$(tf show -json "$work_dir/approved.tfplan" | python3 -c '
+import json
+import sys
+
+variables = json.load(sys.stdin)["variables"]
+print(variables["rest_api_id"]["value"], variables["region"]["value"])
+')"
+  read -r api_id api_region <<<"$api_target"
+fi
 tf apply -input=false "$work_dir/approved.tfplan"
+if [[ "$stack" != notification_events && "$is_main_destroy" != true ]]; then
+  if [[ "$destroy" != true ]]; then
+    api_id="$(tf output -raw rest_api_id)"
+    api_region="$(tf output -raw api_region)"
+  fi
+  deployment_id="$(aws apigateway create-deployment --rest-api-id "$api_id" \
+    --region "$api_region" --profile "$AWS_PROFILE" --query id --output text)"
+  [[ -n "$deployment_id" && "$deployment_id" != None ]] || fail "REST API のデプロイ ID を取得できませんでした。"
+  aws apigateway update-stage --rest-api-id "$api_id" --stage-name v1 \
+    --patch-operations "op=replace,path=/deploymentId,value=$deployment_id" \
+    --region "$api_region" --profile "$AWS_PROFILE" >/dev/null
+fi
 if [[ "$publishes_spa" != true ]]; then
   printf '\n%s\n' "$completion_message"
   exit 0

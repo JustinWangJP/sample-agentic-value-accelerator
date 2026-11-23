@@ -16,28 +16,36 @@ output "frontend_config" {
     VITE_COGNITO_DOMAIN    = var.cognito_domain
     VITE_COGNITO_CLIENT_ID = aws_cognito_user_pool_client.human.id
     VITE_REDIRECT_URI      = "${local.spa_origin}/"
-    VITE_API_BASE_URL      = aws_apigatewayv2_api.portal.api_endpoint
+    VITE_API_BASE_URL      = aws_api_gateway_stage.portal.invoke_url
     VITE_COGNITO_SCOPES    = "openid ${local.portal_api_scope}"
   }
 }
 
 # 以下は追加スタック（management・decision・notification_events）の terraform.tfvars に転記する値。
 # 追加スタックは別 state のまま運用し、本体スタックの資源を ID と名前で借用する。
-output "http_api_id" {
-  description = "追加スタックが route を割り当てる HTTP API の ID（management・decision の http_api_id）。"
-  value       = aws_apigatewayv2_api.portal.id
+output "rest_api_id" {
+  description = "追加スタックが route を割り当てる REST API の ID（management・decision の rest_api_id）。"
+  value       = aws_api_gateway_rest_api.portal.id
 }
 output "portal_api_scope" {
-  description = "HTTP API の route が JWT authorizer で検証するポータル用のカスタム scope（management・decision の portal_api_scope）。"
+  description = "REST API の route が Cognito User Pools authorizer で検証するポータル用のカスタム scope（management・decision の portal_api_scope）。"
   value       = local.portal_api_scope
 }
-output "jwt_authorizer_id" {
-  description = "人間用 SPA client のトークンを検証する JWT authorizer の ID（management・decision の jwt_authorizer_id）。"
-  value       = aws_apigatewayv2_authorizer.human.id
+output "authorizer_id" {
+  description = "人間用 SPA client のトークンを検証する Cognito User Pools authorizer の ID（management・decision の authorizer_id）。"
+  value       = aws_api_gateway_authorizer.human.id
 }
-output "management_integration_id" {
-  description = "管理 Lambda の HTTP API 統合の ID（management の management_integration_id）。"
-  value       = aws_apigatewayv2_integration.management.id
+output "api_region" {
+  description = "REST API のリージョン。deploy.sh で再デプロイするときに使用する。"
+  value       = local.region
+}
+output "stage_name" {
+  description = "REST API のステージ名。"
+  value       = aws_api_gateway_stage.portal.stage_name
+}
+output "cors_allowed_origins" {
+  description = "管理・決裁 Lambda の CORS 許可リスト（decision の cors_allowed_origins）。"
+  value       = local.cors_allowed_origins
 }
 output "human_client_id" {
   description = "人間用の公開 SPA client の ID（decision の human_client_id）。"

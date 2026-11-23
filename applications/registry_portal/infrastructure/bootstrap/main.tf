@@ -36,6 +36,39 @@ variable "name_prefix" {
   type        = string
   default     = "registry-portal-dev"
 }
+
+variable "manage_api_gateway_account" {
+  description = "このリージョンの API Gateway の CloudWatch ロール設定を bootstrap で管理する。既存の設定を使う場合は false にする。"
+  type        = bool
+  default     = false
+}
+
+data "aws_partition" "current" {}
+
+resource "aws_iam_role" "api_gateway_logs" {
+  count = var.manage_api_gateway_account ? 1 : 0
+  name  = "${var.name_prefix}-api-gateway-logs"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "apigateway.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "api_gateway_logs" {
+  count      = length(aws_iam_role.api_gateway_logs)
+  role       = aws_iam_role.api_gateway_logs[count.index].name
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+}
+
+resource "aws_api_gateway_account" "portal" {
+  count               = length(aws_iam_role.api_gateway_logs)
+  cloudwatch_role_arn = aws_iam_role.api_gateway_logs[count.index].arn
+  depends_on          = [aws_iam_role_policy_attachment.api_gateway_logs]
+}
 variable "cognito_user_pool_id" {
   description = "既存 Cognito User Pool ID。子 client とグループだけを管理する。"
   type        = string
@@ -285,10 +318,15 @@ resource "aws_ssoadmin_permission_set_inline_policy" "deployer" {
         Resource = "*"
       },
       {
-        Sid      = "HttpApi"
-        Effect   = "Allow"
-        Action   = ["apigateway:GET", "apigateway:POST", "apigateway:PATCH", "apigateway:PUT", "apigateway:DELETE"]
-        Resource = ["arn:aws:apigateway:${local.region}::/apis", "arn:aws:apigateway:${local.region}::/apis/*", "arn:aws:apigateway:${local.region}::/tags/*"]
+        Sid    = "PortalApis"
+        Effect = "Allow"
+        Action = ["apigateway:GET", "apigateway:POST", "apigateway:PATCH", "apigateway:PUT", "apigateway:DELETE"]
+        # 移行で既存 HTTP API を削除するため、/apis への権限も必要。
+        Resource = [
+          "arn:aws:apigateway:${local.region}::/apis", "arn:aws:apigateway:${local.region}::/apis/*",
+          "arn:aws:apigateway:${local.region}::/restapis", "arn:aws:apigateway:${local.region}::/restapis/*",
+          "arn:aws:apigateway:${local.region}::/tags/*",
+        ]
       },
       {
         Sid      = "SpaDistribution"
