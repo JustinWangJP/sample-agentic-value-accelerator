@@ -7,6 +7,8 @@ locals {
   # 管理 Lambda・実行ロール・ロググループの共通名。bootstrap の locals も同じ規則で組み立てる
   management_name = "${var.name_prefix}-management"
   spa_origin      = "https://${aws_cloudfront_distribution.spa.domain_name}"
+  # 人間用 client のコールバック URL・ログアウト URL。CloudFront の SPA と、ローカルの開発サーバー（var.local_dev_origins）
+  spa_redirect_urls = concat(["${local.spa_origin}/"], [for o in var.local_dev_origins : "${o}/"])
   # HTTP API のすべての route（追加スタックを含む）が検証するカスタム scope。業務ロールの判定は handler が行う。
   # 追加スタックと SPA には output（portal_api_scope と frontend_config）で渡し、値はここだけに定義する
   portal_api_scope_name = "api.invoke"
@@ -34,8 +36,8 @@ resource "aws_cognito_user_pool_client" "human" {
   allowed_oauth_flows                  = ["code"]
   allowed_oauth_scopes                 = ["openid", local.portal_api_scope]
   supported_identity_providers         = var.identity_providers
-  callback_urls                        = ["${local.spa_origin}/"]
-  logout_urls                          = ["${local.spa_origin}/"]
+  callback_urls                        = local.spa_redirect_urls
+  logout_urls                          = local.spa_redirect_urls
   prevent_user_existence_errors        = "ENABLED"
   enable_token_revocation              = true
   access_token_validity                = 15
@@ -188,7 +190,7 @@ resource "aws_apigatewayv2_api" "portal" {
   name          = var.name_prefix
   protocol_type = "HTTP"
   cors_configuration {
-    allow_origins = [local.spa_origin]
+    allow_origins = concat([local.spa_origin], var.local_dev_origins)
     # SPA は下書きの更新に PATCH、申請・決裁などに POST と Idempotency-Key を使う
     allow_methods = ["GET", "POST", "PATCH", "OPTIONS"]
     allow_headers = ["authorization", "content-type", "idempotency-key"]

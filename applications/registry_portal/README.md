@@ -187,6 +187,27 @@ npm run lint && npm test && npm run typecheck && npm run build
 
 GitHub Actions（`.github/workflows/registry-portal-ci.yml`）では上記に加え、Terraform と配信スクリプトのローカル検査を実行します。AWS の認証情報は持たせず、AWS への反映は行いません（ADR-0004）。
 
+### ローカルの開発サーバーから dev に接続する
+
+日々の機能確認は、手元の開発サーバー（`npm run dev`、`http://localhost:5173`）から dev の API と Cognito に接続して行えます。配信を待たずに確認でき、SPA の配信も不要です。CloudFront の SPA は配信後の確認に使います。
+
+1. 本体スタックの tfvars（`infrastructure/dev.tfvars`）に `local_dev_origins = ["http://localhost:5173"]` を設定し（`terraform.tfvars.example` に記載済み）、通常の配信（[dev に手動配信する](#dev-に手動配信する)）で反映します。人間用 client のコールバック URL・ログアウト URL に `http://localhost:5173/` が、HTTP API の CORS に `http://localhost:5173` が追加されます。既定値（`[]`）では追加しません。
+   - 指定できるのは `http://localhost:<port>` と `http://127.0.0.1:<port>`（末尾の `/` なし）だけです。Cognito の OAuth が HTTP のコールバック URL を許すのは localhost だけのため、ほかの origin は `validation` で拒否します。
+2. 本体スタックの output `frontend_config` を確認し、`frontend/.env.example` を `frontend/.env.local` にコピーして値を設定します。`VITE_REDIRECT_URI` だけは CloudFront の URL ではなく `http://localhost:5173/` にします。
+
+   ```bash
+   AWS_PROFILE=registry-deploy-tf terraform -chdir=infrastructure output frontend_config
+   ```
+
+3. `frontend/` で開発サーバーを起動し、`http://localhost:5173` を開いてログインします。
+
+   ```bash
+   cd applications/registry_portal/frontend
+   npm run dev
+   ```
+
+開発サーバーは `connect-src` の CSP を埋め込みません（`vite.config.ts` の CSP は本番ビルドだけが対象で、HMR の WebSocket を妨げないため）。CloudFront のレスポンスヘッダーの CSP も、開発サーバーが配る画面には付きません。そのため、CSP は開発サーバーからの接続を妨げません。
+
 ## dev に手動配信する
 
 個人 AWS アカウント向けの準備と、別 state の追加スタックまでの配信手順は [Terraform ガイド](../../docs/agents/registry-portal-terraform-guide-ja.md)を参照してください。dev 環境を撤去する手順（保護の解除、`scripts/deploy.sh --destroy` による「追加スタック → 本体」の撤去、保護の戻し方）は [Terraform ガイドの 5.4](../../docs/agents/registry-portal-terraform-guide-ja.md#54-dev-環境を撤去する) にあります（[ADR-0014](../../docs/adr/0014-dev-teardown-protection-and-scope.md)）。
