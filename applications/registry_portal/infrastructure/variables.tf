@@ -107,3 +107,13 @@ variable "spa_force_destroy" {
   type        = bool
   default     = false
 }
+variable "spa_noncurrent_version_expiration_days" {
+  description = "SPA バケットの古いバージョン（noncurrent）を消すまでの日数。null（既定）ではライフサイクル設定を作らず、古いバージョンを残す。dev の推奨値は 7。"
+  type        = number
+  default     = null
+  validation {
+    # S3 のライフサイクル規則は 1 以上の整数日だけを受け付ける。apply の前に plan で止める
+    condition     = var.spa_noncurrent_version_expiration_days == null || try(var.spa_noncurrent_version_expiration_days >= 1 && floor(var.spa_noncurrent_version_expiration_days) == var.spa_noncurrent_version_expiration_days, false)
+    error_message = "spa_noncurrent_version_expiration_days は null または 1 以上の整数にしてください。"
+  }
+}

@@ -134,6 +134,16 @@ run "identity_center_permission_set" {
     error_message = "deployer には新旧 Registry API の申請操作を明示的に拒否してください。"
   }
   assert {
+    # SPA バケットのライフサイクル設定（spa_noncurrent_version_expiration_days）の作成・削除に必要。
+    # IAM では PutBucketLifecycleConfiguration と DeleteBucketLifecycle の両方がこの action になり、s3:PutBucket* には含まれない
+    condition = anytrue([
+      for statement in jsondecode(aws_ssoadmin_permission_set_inline_policy.deployer[0].inline_policy).Statement :
+      contains(statement.Action, "s3:PutLifecycleConfiguration") && statement.Resource == "arn:aws:s3:::portal-spa-test-123456789012"
+      if statement.Sid == "SpaBucket"
+    ])
+    error_message = "deployer に SPA バケットのライフサイクル設定の変更（s3:PutLifecycleConfiguration）を許可してください。"
+  }
+  assert {
     condition     = length(replace(aws_ssoadmin_permission_set_inline_policy.deployer[0].inline_policy, "/\\s/", "")) <= 10240
     error_message = "permission set の inline policy は非空白10240文字以内にしてください。"
   }
