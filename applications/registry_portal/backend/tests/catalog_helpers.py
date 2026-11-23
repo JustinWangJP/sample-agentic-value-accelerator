@@ -36,6 +36,7 @@ ENV = {
     "DISCOVERY_CLIENT_ID": "discovery-m2m-client",
     "DISCOVERY_CLIENT_SECRET_ARN": SECRET_ARN,
     "DISCOVERY_SCOPE": "registry/discovery.read",
+    "CORS_ALLOWED_ORIGINS": json.dumps(["https://portal.example.cloudfront.net"]),
 }
 
 LIST_URL = (

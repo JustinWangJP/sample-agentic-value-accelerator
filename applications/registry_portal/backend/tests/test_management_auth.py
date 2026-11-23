@@ -29,10 +29,10 @@ DISCOVERY_ENV = {
     "DISCOVERY_CLIENT_ID": DISCOVERY_CLIENT_ID,
     "DISCOVERY_CLIENT_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:123456789012:secret:x",
 }
-ENV = {**AUTH_ENV, **DISCOVERY_ENV}
 LOCAL_ORIGIN = "http://localhost:5173"
 SPA_ORIGIN = "https://portal.example.cloudfront.net"
-CORS_ENV = {**ENV, "CORS_ALLOWED_ORIGINS": json.dumps([LOCAL_ORIGIN, SPA_ORIGIN])}
+CORS_ENV = {"CORS_ALLOWED_ORIGINS": json.dumps([LOCAL_ORIGIN, SPA_ORIGIN])}
+ENV = {**AUTH_ENV, **DISCOVERY_ENV, **CORS_ENV}
 
 
 def access_claims(**overrides: Any) -> dict[str, Any]:
@@ -274,7 +274,7 @@ def test_claims_are_read_only_from_the_location_of_the_event_format() -> None:
 
 @pytest.mark.parametrize("origin", [LOCAL_ORIGIN, SPA_ORIGIN, "https://other.example", None])
 def test_rest_api_preflight_and_success_match_allowed_origins(origin: str | None) -> None:
-    handler = create_management_handler(CORS_ENV)
+    handler = create_management_handler(ENV)
     headers = {"oRiGiN": origin} if origin is not None else {}
     preflight = handler(rest_api_event("OPTIONS", headers=headers), None)
     response = handler(rest_api_event(claims=access_claims(), headers=headers), None)
@@ -301,7 +301,7 @@ def test_rest_api_errors_include_cors_headers(monkeypatch: pytest.MonkeyPatch) -
         raise RuntimeError("テスト用の障害")
 
     monkeypatch.setitem(app_module.MANAGEMENT_ROUTES, "GET /api/me", broken_route)
-    handler = create_management_handler(CORS_ENV)
+    handler = create_management_handler(ENV)
     headers = {"Origin": LOCAL_ORIGIN}
     for status, request in (
         (401, rest_api_event(headers=headers)),
@@ -314,10 +314,27 @@ def test_rest_api_errors_include_cors_headers(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_http_api_responses_keep_gateway_managed_cors() -> None:
+    # HTTP API の CORS は API Gateway の設定が処理するため、許可リストにある origin でもヘッダーを付けない
     request = http_event(claims=access_claims(), headers={"Origin": LOCAL_ORIGIN})
-    assert create_management_handler(CORS_ENV)(request, None) == create_management_handler(ENV)(
-        request, None
-    )
+    response = create_management_handler(ENV)(request, None)
+
+    assert response["statusCode"] == 200
+    assert "Vary" not in response["headers"]
+    assert not any(name.startswith("Access-Control-") for name in response["headers"])
+
+
+@pytest.mark.parametrize(
+    "cors_origins",
+    [None, "", "[]", "not-json", '"http://localhost:5173"', '["localhost:5173"]'],
+    ids=["unset", "blank", "empty-array", "not-json", "not-array", "no-scheme"],
+)
+def test_missing_or_invalid_cors_origins_fail_at_startup(cors_origins: str | None) -> None:
+    # 許可リストが空のまま動くと、SPA からの呼び出しがすべて原因の分からない CORS エラーになる
+    environ = {**AUTH_ENV, **DISCOVERY_ENV}
+    if cors_origins is not None:
+        environ["CORS_ALLOWED_ORIGINS"] = cors_origins
+    with pytest.raises(ConfigurationError, match="CORS_ALLOWED_ORIGINS"):
+        create_management_handler(environ)
 
 
 def test_x_user_email_header_does_not_change_principal() -> None:
