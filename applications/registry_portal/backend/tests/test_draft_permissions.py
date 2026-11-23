@@ -98,23 +98,7 @@ def _variables(module: Path) -> set[str]:
     )
 
 
-def test_routes_module_assigns_only_portal_added_management_routes():
-    """管理スタックの経路を共通の経路表で固定する。"""
-    routes = json.loads((ROUTES_MODULE / "routes.json").read_text())["management"]
-    assert {f"{route['method']} {route['path']}" for route in routes.values()} == {
-        "GET /api/admin/records",
-        "GET /api/admin/connection",
-        "GET /api/records/{recordId}/history",
-        "POST /api/records/{recordId}/deprecation-requests",
-        "GET /api/notifications",
-        "POST /api/notifications/read",
-        "POST /api/records",
-        "GET /api/records",
-        "GET /api/records/{recordId}",
-        "PATCH /api/records/{recordId}",
-        "GET /api/operations/{operationId}",
-        "POST /api/records/{recordId}/submit",
-    }
+# 管理スタックの経路の中身は、管理 Lambda のルート表と照合する（tests/test_route_tables.py）
 
 
 def test_root_module_applies_the_routes_module():

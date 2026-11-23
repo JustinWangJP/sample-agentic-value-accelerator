@@ -107,25 +107,10 @@ def test_module_creates_the_decision_lambda_with_its_own_role_and_log_group():
 
 
 def test_module_routes_only_curator_and_recovery_apis_to_the_decision_lambda():
-    """審査・決裁・公開管理・回復の経路を、決裁 Lambda に割り当てる。"""
-    routes_module = MODULE.parent / "api_routes"
-    routes = json.loads((routes_module / "routes.json").read_text())["decision"]
-    assert {f"{route['method']} {route['path']}" for route in routes.values()} == {
-        "GET /api/reviews",
-        "GET /api/reviews/{recordId}",
-        "POST /api/reviews/{recordId}/approve",
-        "POST /api/reviews/{recordId}/reject",
-        "POST /api/records/{recordId}/adopt",
-        "POST /api/records/{recordId}/reassign-owner",
-        "POST /api/records/{recordId}/suspend",
-        "POST /api/records/{recordId}/deprecate",
-        "GET /api/records/{recordId}/publication",
-        "GET /api/records/publication",
-        "POST /api/records/{recordId}/deprecation-requests/decline",
-        "GET /api/records/{recordId}/recovery",
-        "POST /api/records/{recordId}/recovery",
-    }
+    """経路表の決裁の経路を、決裁 Lambda に割り当てる。
 
+    経路の中身は、決裁 Lambda のルート表と照合する（tests/test_route_tables.py）。
+    """
     main = (MODULE / "main.tf").read_text()
     (wiring,) = re.findall(r'module "decision_routes" \{(.*?)\n\}', main, re.DOTALL)
     assert re.search(r'route_group\s*=\s*"decision"', wiring)
