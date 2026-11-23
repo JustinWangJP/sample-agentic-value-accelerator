@@ -1,0 +1,153 @@
+{
+  "main": {
+    "me": {
+      "method": "GET",
+      "path": "/api/me",
+      "statement_id": "AllowRestApiInvokeMe"
+    },
+    "catalog": {
+      "method": "GET",
+      "path": "/api/catalog",
+      "statement_id": "AllowRestApiInvokeCatalog"
+    },
+    "catalog_search": {
+      "method": "POST",
+      "path": "/api/catalog/search",
+      "statement_id": "AllowRestApiInvokeCatalogSearch"
+    },
+    "catalog_detail": {
+      "method": "GET",
+      "path": "/api/catalog/{recordId}",
+      "statement_id": "AllowRestApiInvokeCatalogDetail"
+    }
+  },
+  "management": {
+    "admin_records": {
+      "method": "GET",
+      "path": "/api/admin/records",
+      "statement_id": "AllowRestApiInvokeAdminRecords"
+    },
+    "admin_connection": {
+      "method": "GET",
+      "path": "/api/admin/connection",
+      "statement_id": "AllowRestApiInvokeAdminConnection"
+    },
+    "history": {
+      "method": "GET",
+      "path": "/api/records/{recordId}/history",
+      "statement_id": "AllowRestApiInvokeRecordHistory"
+    },
+    "deprecation_request": {
+      "method": "POST",
+      "path": "/api/records/{recordId}/deprecation-requests",
+      "statement_id": "AllowRestApiInvokeDeprecationRequest"
+    },
+    "notifications": {
+      "method": "GET",
+      "path": "/api/notifications",
+      "statement_id": "AllowRestApiInvokeNotifications"
+    },
+    "notifications_read": {
+      "method": "POST",
+      "path": "/api/notifications/read",
+      "statement_id": "AllowRestApiInvokeNotificationsRead"
+    },
+    "create_record": {
+      "method": "POST",
+      "path": "/api/records",
+      "statement_id": "AllowRestApiInvokeCreateRecord"
+    },
+    "list_records": {
+      "method": "GET",
+      "path": "/api/records",
+      "statement_id": "AllowRestApiInvokeListRecords"
+    },
+    "get_record": {
+      "method": "GET",
+      "path": "/api/records/{recordId}",
+      "statement_id": "AllowRestApiInvokeGetRecord"
+    },
+    "update_record": {
+      "method": "PATCH",
+      "path": "/api/records/{recordId}",
+      "statement_id": "AllowRestApiInvokeUpdateRecord"
+    },
+    "get_operation": {
+      "method": "GET",
+      "path": "/api/operations/{operationId}",
+      "statement_id": "AllowRestApiInvokeGetOperation"
+    },
+    "submit_record": {
+      "method": "POST",
+      "path": "/api/records/{recordId}/submit",
+      "statement_id": "AllowRestApiInvokeSubmitRecord"
+    }
+  },
+  "decision": {
+    "adopt": {
+      "method": "POST",
+      "path": "/api/records/{recordId}/adopt",
+      "statement_id": "AllowRestApiInvokeAdopt"
+    },
+    "reassign_owner": {
+      "method": "POST",
+      "path": "/api/records/{recordId}/reassign-owner",
+      "statement_id": "AllowRestApiInvokeReassignOwner"
+    },
+    "suspend": {
+      "method": "POST",
+      "path": "/api/records/{recordId}/suspend",
+      "statement_id": "AllowRestApiInvokeSuspend"
+    },
+    "deprecate": {
+      "method": "POST",
+      "path": "/api/records/{recordId}/deprecate",
+      "statement_id": "AllowRestApiInvokeDeprecate"
+    },
+    "publication": {
+      "method": "GET",
+      "path": "/api/records/{recordId}/publication",
+      "statement_id": "AllowRestApiInvokePublication"
+    },
+    "publication_search": {
+      "method": "GET",
+      "path": "/api/records/publication",
+      "statement_id": "AllowRestApiInvokePublicationSearch"
+    },
+    "decline": {
+      "method": "POST",
+      "path": "/api/records/{recordId}/deprecation-requests/decline",
+      "statement_id": "AllowRestApiInvokeDeclineDeprecation"
+    },
+    "reviews": {
+      "method": "GET",
+      "path": "/api/reviews",
+      "statement_id": "AllowRestApiInvokeReviews"
+    },
+    "review": {
+      "method": "GET",
+      "path": "/api/reviews/{recordId}",
+      "statement_id": "AllowRestApiInvokeReview"
+    },
+    "approve": {
+      "method": "POST",
+      "path": "/api/reviews/{recordId}/approve",
+      "statement_id": "AllowRestApiInvokeApprove"
+    },
+    "reject": {
+      "method": "POST",
+      "path": "/api/reviews/{recordId}/reject",
+      "statement_id": "AllowRestApiInvokeReject"
+    },
+    "read_recovery": {
+      "method": "GET",
+      "path": "/api/records/{recordId}/recovery",
+      "statement_id": "AllowRestApiInvokeReadRecovery"
+    },
+    "perform_recovery": {
+      "method": "POST",
+      "path": "/api/records/{recordId}/recovery",
+      "statement_id": "AllowRestApiInvokePerformRecovery"
+    }
+  }
+}

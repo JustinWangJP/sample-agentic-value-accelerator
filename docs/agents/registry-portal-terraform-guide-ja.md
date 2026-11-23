@@ -57,7 +57,7 @@ flowchart TB
 
   subgraph base["基盤スタック"]
     STATE["bootstrap<br/>state 用 S3 バケット"]
-    MAIN["本体スタック<br/>SPA・HTTP API・管理 Lambda・補助テーブル・Cognito の子リソース"]
+    MAIN["本体スタック<br/>SPA・REST API・管理 Lambda・補助テーブル・Cognito の子リソース"]
   end
 
   subgraph addon["追加スタック（別 state）"]
@@ -86,7 +86,7 @@ AWS 上の構成図は [`docs/diagrams/agent-registry-mvp1-aws-architecture-ja.d
 | スタック | ディレクトリ | 主に作るもの | state の key | 状態 |
 | --- | --- | --- | --- | --- |
 | bootstrap | `infrastructure/bootstrap/` | state 用 S3 バケット。Identity Center の permission set と割り当ては任意 | ローカルの `terraform.tfstate` | 個人アカウント対応済み。state は暗号化した場所で別途保管する（3.5） |
-| 本体 | `infrastructure/`（直下） | SPA 用 S3 と CloudFront（OAC、CSP、viewer request function）、HTTP API・JWT authorizer・stage、管理 Lambda と実行ロール、補助 DynamoDB、ロググループ、Cognito のリソースサーバー・人間用 client・グループ | `registry-portal/dev/terraform.tfstate` | 統合実装済み。追加スタック向け output を提供する |
+| 本体 | `infrastructure/`（直下） | SPA 用 S3 と CloudFront（OAC、CSP、viewer request function）、REST API・Cognito User Pools authorizer・stage、管理 Lambda と実行ロール、補助 DynamoDB、ロググループ、Cognito のリソースサーバー・人間用 client・グループ | `registry-portal/dev/terraform.tfstate` | 統合実装済み。追加スタック向け output を提供する |
 | management | `infrastructure/management/` | 管理 Lambda のロールへの下書き用 inline policy、管理 handler の追加 route（下書き・申請・操作照会、管理レコード、接続情報、履歴、廃止依頼、通知）と呼び出し許可 | `registry-portal/dev/management.tfstate` | 別 state で運用。本体の output を転記する |
 | decision | `infrastructure/decision/` | 決裁 Lambda、専用の実行ロール、ロググループ、決裁 route（審査、承認・却下、公開停止、廃止、回復など）と呼び出し許可 | `registry-portal/dev/decision.tfstate` | 別 state で運用。顧客管理 KMS キーに対応済み（#49） |
 | notification_events | `infrastructure/notification_events/` | イベント処理 Lambda、専用の実行ロール、ロググループ、DLQ（SQS）、EventBridge ルールとターゲット、再試行の設定 | `registry-portal/dev/notification-events.tfstate` | 別 state で運用。CI の検証対象に追加済み |
@@ -98,7 +98,7 @@ AWS 上の構成図は [`docs/diagrams/agent-registry-mvp1-aws-architecture-ja.d
 | モジュール | 呼び出し元 | 内容 |
 | --- | --- | --- |
 | `modules/management_drafts` | `management` | 既存の管理ロールに、Registry レコードの作成・更新・取得・一覧・申請と、補助テーブルの GetItem / PutItem / DeleteItem / Query / ConditionCheckItem を追加する（`draft-policy.json.tftpl`） |
-| `modules/management_routes` | `management` | 既存の HTTP API に管理 handler の route を追加し、その path に限った `lambda:InvokeFunction` を許可する |
+| `modules/api_routes` | 本体・管理・決裁 | 共通の経路表（`routes.json`）の 1 グループ（`main`・`management`・`decision`）について、メソッドと Lambda 統合を作り、そのメソッドと path に限った `lambda:InvokeFunction` を許可する |
 | `modules/decision` | `decision` | 決裁 Lambda（`registry_portal.handlers.curation.handler`）。権限は `UpdateRegistryRecordStatus` と読み取り、発見用 secret の取得、補助テーブルの操作（`decision-policy.json.tftpl`） |
 | `modules/notification_events` | `notification_events` | イベント処理 Lambda（`registry_portal.handlers.events.handler`）。Registry の読み取りと、通知用のパーティションキーに限った PutItem（`events-policy.json.tftpl`） |
 
@@ -282,6 +282,7 @@ cp infrastructure/terraform.tfvars.example infrastructure/dev.tfvars
 | `log_retention_in_days` | `14`（既定は 365 日） | 本体・決裁・イベント処理 |
 | `spa_noncurrent_version_expiration_days` | `7`（既定は `null`、旧バージョンを保持） | 本体 |
 | `local_dev_origins` | `["http://localhost:5173"]`（既定は `[]`） | 本体 |
+| `allowed_source_cidrs` | 許可する IPv4 CIDR を 1 件以上、JSON 配列で指定 | 本体の環境変数 `TF_VAR_allowed_source_cidrs` |
 | `lambda_reserved_concurrency` | 本体と決裁は `5`、イベント処理は `2`〜`5`（既定は `null`、予約なし） | 本体・決裁・イベント処理 |
 
 予約同時実行数を設定する前に、対象リージョンで `aws lambda get-account-settings` を実行して `AccountLimit.ConcurrentExecutions` と既存の予約を確認します。予約後も未予約の枠を 100 残せる場合に設定してください。イベント処理では、上限に達した場合の再試行とデッドレターキューへの転送を考慮してください。
@@ -364,7 +365,7 @@ aws cognito-idp admin-get-user --profile registry-deploy --region "$COGNITO_REGI
 | 7 | Cognito でユーザーを作り、グループに割り当てる。ユーザーごとの MFA を確認する（3.7） | コンソール（`registry-deploy`） |
 | 8 | dev で受入確認を行う（Issue #5 の README のチェックリスト） | — |
 
-4〜6の順序に依存関係はありませんが、本体スタックの資源を借りるため、3の後に実行します。本体の output を各スタックの tfvars に転記してください。
+4〜6 は順に実行します。REST API を更新する管理・決裁の配信は同時に実行しないでください。本体スタックより後に実行します。各追加スタックは本体スタックの資源を借ります。本体の output を各スタックの tfvars に転記してください。
 
 ### 4.2 本体スタックを配信する
 
@@ -374,6 +375,8 @@ aws cognito-idp admin-get-user --profile registry-deploy --region "$COGNITO_REGI
 cd applications/registry_portal
 unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
 aws sts get-caller-identity --profile registry-deploy
+# 文書用の例。実際に許可する IPv4 CIDR に置き換える。
+export TF_VAR_allowed_source_cidrs='["203.0.113.10/32"]'
 AWS_PROFILE=registry-deploy scripts/deploy.sh infrastructure/backend.hcl infrastructure/dev.tfvars
 ```
 
@@ -383,9 +386,26 @@ AWS_PROFILE=registry-deploy scripts/deploy.sh infrastructure/backend.hcl infrast
 
 apply 後は `frontend_config` で SPA をビルドし、アセット、非キャッシュの `index.html` の順に S3 に配置して CloudFront のキャッシュを無効化します。一時 ZIP と plan は終了時に削除します。CI 内からの実行と環境変数のアクセスキーは拒否します。
 
-`frontend_config` には、`VITE_COGNITO_DOMAIN`、`VITE_COGNITO_CLIENT_ID`、`VITE_REDIRECT_URI`、`VITE_API_BASE_URL`、`VITE_COGNITO_SCOPES` が入ります。secret は含みません。
+`frontend_config` には、`VITE_COGNITO_DOMAIN`、`VITE_COGNITO_CLIENT_ID`、`VITE_REDIRECT_URI`、`VITE_API_BASE_URL`、`VITE_COGNITO_SCOPES` が入ります。`VITE_API_BASE_URL` は末尾にステージの `/v1` を含みます。secret は含みません。
 
 Identity Center を使う場合も、本体スタックには同じスクリプトを使います。SSO プロファイルでログインし、`AWSReservedSSO_RegistryPortalDeployer_*` の主体で実行してください（[README](../../applications/registry_portal/README.md#dev-に手動配信する)）。bootstrap の permission set は本体の state key と管理 Lambda 向けの権限に限ります。追加 3 スタックの state key や決裁・イベント処理の資源には対応していないため、`deploy.sh` は SSO プロファイルと `--stack` の組み合わせを Terraform の実行前に拒否します。追加スタックは、個人アカウントの MFA 付き IAM ロール経路でだけ配信します（dev は個人アカウントだけで運用するため、permission set は追加スタック向けに広げません）。
+
+#### 接続元 IP を更新する
+
+Cognito のログイン画面と CloudFront の SPA は表示できても、REST API は接続元 IPv4 が許可 CIDR の外にあると呼び出せません。ローカル SPA の接続元は `localhost` ではなく、ブラウザが AWS に接続するときの外向き IPv4 アドレスです。
+
+1. 許可するアドレスを確認し、必要な CIDR を JSON 配列で `TF_VAR_allowed_source_cidrs` に設定します。IP は tfvars に記録せず、Git にコミットしません。
+2. 4.2 の本体スタックの配信を実行します。表示された plan でリソースポリシーの変更を確認し、反映します。
+3. 配信後、許可したネットワークから SPA にログインし、カタログを取得します。既存の許可元を入れ替える場合は、両方を一度許可し、新しい接続元で確認してから古い CIDR を外します。
+
+締め出された場合は、配信権限のある AWS CLI プロファイルを使い、正しい CIDR を環境変数に設定して同じ本体スタックを配信し直します。REST API の接続元制限はポータルへの呼び出しに適用されます。Terraform や API Gateway の更新権限は、従来どおり IAM で管理します。
+
+#### HTTP API から切り替える
+
+1. 管理者が対象リージョンで `aws apigateway get-account --region us-east-1 --query cloudwatchRoleArn` を実行します。すでに有効なロールが設定されていれば、そのロールを使います。ロール設定がなければ bootstrap で `manage_api_gateway_account = true` を設定し、再適用します。この設定はリージョン内の API Gateway REST API で共有されます。既存ロールを使う場合も、Identity Center の deployer を使う環境では REST API の更新権限を反映するため、bootstrap を再適用します。
+2. 本体を配信します。既存 HTTP API が REST API に置き換わるため、追加スタックを反映するまで、その経路は利用できません。
+3. 本体の新しい output `rest_api` を 4.3 に沿って転記し、管理・決裁を順に配信します。ローカル SPA の設定も、新しい URL に `/v1` を含めて更新します。追加スタックは撤去せず、既存 state をそのまま使います。HTTP API と一緒に削除された route は、追加スタックの plan の refresh で state から外れます。旧 HTTP API 向けの Lambda 呼び出し許可は、REST API 向けの許可への置き換えとして plan に表示されます（[ADR-0015](../adr/0015-rest-api-with-source-ip-policy-and-script-deployment.md)）。
+4. `local_dev_origins` を後から変更した場合も、本体の output `rest_api` を決裁スタックへ転記し直して反映します（`cors_allowed_origins` が変わるため）。
 
 ### 4.3 追加スタックに渡す値を集める
 
@@ -404,15 +424,14 @@ AWS_PROFILE=registry-deploy-tf terraform -chdir=infrastructure output
 | `supplement_table_arn` | 同名の本体 output | すべて |
 | `management_role_name` | 同名の本体 output | management |
 | `management_function_name` | 同名の本体 output | management |
-| `http_api_id` | 同名の本体 output | management、decision |
-| `jwt_authorizer_id` | 同名の本体 output | management、decision |
-| `portal_api_scope` | 同名の本体 output（route の JWT authorizer が検証するカスタム scope） | management、decision |
-| `management_integration_id` | 同名の本体 output | management |
+| `rest_api` | 同名の本体 output をそのまま転記する（REST API の ID、ステージ名、Cognito User Pools authorizer の ID、route の authorizer が検証するカスタム scope `portal_api_scope`、CloudFront とローカル SPA の origin `cors_allowed_origins`） | management、decision |
 | `cognito_user_pool_id` | 本体の `dev.tfvars` と同じ値 | decision |
 | `human_client_id` | 同名の本体 output | decision |
 | `discovery_token_url`、`discovery_client_id`、`discovery_client_secret_arn`、`discovery_scope` | 本体の `dev.tfvars` と同じ値。secret の ARN は末尾の 6 文字を含む完全な ARN にする（ワイルドカード不可） | decision |
 | `discovery_kms_key_arn` | 本体の `dev.tfvars` と同じ値。顧客管理キーの場合だけ ARN を指定し、AWS 管理キーなら省略または `null` | decision |
 | `lambda_zip_path` | 4.4 で作った共通 ZIP のパス | decision、notification_events |
+
+`rest_api` は `terraform -chdir=infrastructure output rest_api` が表示するオブジェクトを、そのまま `rest_api = { ... }` として貼り付けます。management は `cors_allowed_origins` を使いませんが、両スタックで同じ値を転記します。`scripts/deploy.sh` は追加スタックの再デプロイ先（REST API の ID とステージ名）を、この値から読みます。
 
 `cognito_issuer` の output は確認用です。decision のルートスタックは `region` と `cognito_user_pool_id` から issuer を組み立てるため、tfvars に `cognito_issuer` を追加しません。
 
@@ -513,7 +532,7 @@ bash -n scripts/deploy.sh
 dev 環境を作り直すときの撤去の手順です。方針と理由は [ADR-0014](../adr/0014-dev-teardown-protection-and-scope.md) にあります。
 
 - 撤去の対象は、追加スタック（`management`・`decision`・`notification_events`）と本体スタックです。bootstrap と state バケットは対象外です。
-- 撤去の順番は「追加スタック → 本体」です。追加スタックは本体の HTTP API・管理 Lambda・実行ロール・補助テーブルを借りて、route・Lambda permission・inline policy を足しています。本体を先に消すと、追加スタックの state に孤立したリソースが残ります。
+- 撤去の順番は「追加スタック → 本体」です。追加スタックは本体の REST API・管理 Lambda・実行ロール・補助テーブルを借りて、route・Lambda permission・inline policy を足しています。本体を先に消すと、追加スタックの state に孤立したリソースが残ります。
 - 撤去は `scripts/deploy.sh --destroy` で行います。配信と同じ主体の検査と `check_plan.py` を通し、`terraform plan -destroy` で保存した plan を表示します。撤去するスタック名を入力したときだけ、その plan を apply します（`y` や `apply` では進みません）。SPA の配信は行いません。
 - `deploy.sh` は SSO プロファイルと `--stack` の組み合わせを拒否するため、個人アカウントの MFA 付き IAM ロール（`registry-deploy`）で実行します。
 - この手順で dev の撤去と再作成を通す確認は、まだ行っていません（Issue #57）。
@@ -647,17 +666,17 @@ plan で、補助テーブルの `deletion_protection_enabled` が `true` に、
 | --- | --- | --- |
 | 1 | 解消済み | 本体の補助テーブルの TTL 属性はアプリと同じ `expiresAt`。AWS による期限切れ項目の削除は配信後に確認する |
 | 2 | 解消済み | 管理 Lambda に `SUPPLEMENT_TABLE_NAME`、`REGISTRY_ARN`、`DISCOVERY_*` を設定する。`A2A_SEARCH_ENABLED` は未設定なら無効（`config.py` の `load_catalog_settings`）。`isA2A` の補完と確認（#16）が終わるまで設定せず、無効のまま配信する |
-| 3 | 解消済み | CORS は SPA の origin だけを許可し、`GET`・`POST`・`PATCH`・`OPTIONS` と `Authorization`・`Content-Type`・`Idempotency-Key` を許可する。各 route は `registry-portal/api.invoke` の scope を検証する（scope の値は本体の `local.portal_api_scope` だけに定義し、追加スタックは output `portal_api_scope` を tfvars に転記して、SPA は `frontend_config` から受け取る。`test_portal_scope.py` で検査する）。管理 Lambda の呼び出し許可 `GET/api/records/*` は決裁 Lambda の GET の route 3 本の実行 ARN にも一致するが、API Gateway は route の統合先だけを呼び出すため影響はない。一致する route の集合は `test_route_permissions.py` で固定する |
+| 3 | 解消済み | CORS は SPA の origin だけを許可し、`GET`・`POST`・`PATCH`・`OPTIONS` と `Authorization`・`Content-Type`・`Idempotency-Key` を許可する。各 route は `registry-portal/api.invoke` の scope を検証する（scope の値は本体の `local.portal_api_scope` だけに定義し、追加スタックは output `rest_api`（`portal_api_scope` を含む）を tfvars に転記して、SPA は `frontend_config` から受け取る。`test_portal_scope.py` で検査する）。管理 Lambda の呼び出し許可 `GET/api/records/*` は決裁 Lambda の GET の route 3 本の実行 ARN にも一致するが、API Gateway は route の統合先だけを呼び出すため影響はない。一致する route の集合は `test_route_permissions.py` で固定する |
 | 4 | 解消済み。対象ロールは目視確認 | ガードは `module.management_drafts.aws_iam_role_policy.management_drafts` に作成・更新・申請を、`module.decision.aws_iam_role_policy.decision` に決裁だけを許可する。アドレスは `check_plan.py` の `ScopedPolicy`（module 呼び出し名と resource 名）で持ち、追加スタックの定義に実在することを `test_plan_guard.py` で検査する。policy の資源アドレスで役割を判定するため、`management_role_name` の取り違えは検出できない。本体の output と plan を照合する。決裁・イベント処理のロググループと DLQ の ARN は初回 plan でも確定する |
 | 5 | 解消済み | bootstrap の Identity Center 資源は任意。個人アカウントでは `identity_center_instance_arn` と `deployer_group_id` を省略し、state バケットだけを作る |
 | 6 | 個人アカウント対応済み | state バケットは `deployer_principal_arn` を照合する。`deploy.sh` は MFA 付きのロールプロファイルと `credential_process` の Terraform 用プロファイルに対応する。SSO permission set は本体向けで、`deploy.sh` は SSO プロファイルでの `--stack` を拒否する。dev は個人アカウントだけで運用するため、追加スタック向けの permission set の拡張は行わない（4.2） |
 | 7 | 解消済み | 本体・bootstrap・追加 3 スタックの AWS provider を `= 6.71.0` に固定した。共通 ZIP の出力先 `backend/build/`、各 `backend.hcl`、手順書の plan ファイル（`*.tfplan`）と `plan.json` は ignore 対象 |
 | 8 | 解消済み | CI は `notification_events` を含む全ルートスタックの init と validate を行う。AWS の認証情報は持たず、apply は行わない |
-| 9 | 別 state を維持する決定 | 本体は HTTP API と管理 Lambda の統合を持ち、下書き・申請・操作照会を含む管理の追加 route と決裁 route は追加スタックが持つ。本体の output を各 tfvars に手動転記する。現在は state を移動しない。後続 Issue で統合する場合だけ import と `state rm` を行う（[ADR-0013](../adr/0013-separate-portal-addon-states.md)） |
+| 9 | 別 state を維持する決定 | 本体は REST API のパスとステージを持つ。管理と決裁の追加スタックはそれぞれのメソッドと統合を持つ。本体の output を各 tfvars に手動転記する。現在は state を移動しない。後続 Issue で統合する場合だけ import と `state rm` を行う（[ADR-0013](../adr/0013-separate-portal-addon-states.md)） |
 | 10 | 運用上の制約として継続 | 個人アカウントの `RegistryPortalDeployer` は `AdministratorAccess` を持ち、新しいロール経由の Registry 書き込みまで IAM では防げない。全スタックを `scripts/deploy.sh`（追加スタックは `--stack`）で反映し、plan をガードに通して IAM の対象ロール・ARN・action を目視確認する。権限の絞り込みや permissions boundary は後続の検討対象 |
 | 11 | #49 で解消済み | decision の `discovery_kms_key_arn` は任意で既定は `null`。顧客管理キーの場合だけ本体と同じ ARN を渡すと、別の inline policy が Secrets Manager 経由・対象 secret の暗号化コンテキストとの完全一致（`StringEquals`）に限った `kms:Decrypt` を付ける（文は本体と共通の `modules/discovery_client` が作り、secret ARN はワイルドカードを含まない完全な ARN だけを受け付ける）。AWS 管理キーの場合は両方で省略または `null` にする。顧客管理キーでの Admin の取り込みと、`null` の場合に復号権限を追加しないことを配信後に確認する |
 | 12 | 設計判断として記録 | Issue #5 のコメントは「管理 Lambda 以外のロールが secret を取得できないこと」の確認を求めているが、#49 の本文のとおり、決裁ロールも Admin の取り込み（#16）のために発見用 secret の `GetSecretValue`（と項目 11 の `kms:Decrypt`）を持つ。secret を取得できるのは管理ロールと決裁ロールだけとし、イベント処理ロールなどには付けない（1.6）。設計書の「最小インフラとセキュリティ」の Secrets Manager の行もこの範囲に更新した。配信後の手動受入（README「dev の手動受入を記録する」）で確認する |
-| 13 | 解消済み | CloudFront のレスポンスヘッダーの CSP は、HTTP API の CORS との循環参照を避けるため `connect-src` を execute-api のリージョン単位で許可する。SPA の本番ビルドが `index.html` に埋め込む meta の CSP（`frontend/src/connectCsp.ts`）で、接続先を自分の HTTP API と Cognito に限る。ブラウザは両方を満たす通信だけを許可する。配信後に meta の存在を確認する |
+| 13 | 解消済み | CloudFront のレスポンスヘッダーの CSP は、REST API の CORS との循環参照を避けるため `connect-src` を execute-api のリージョン単位で許可する。SPA の本番ビルドが `index.html` に埋め込む meta の CSP（`frontend/src/connectCsp.ts`）で、接続先を自分の REST API と Cognito に限る。ブラウザは両方を満たす通信だけを許可する。配信後に meta の存在を確認する |
 
 ## 関連文書
 

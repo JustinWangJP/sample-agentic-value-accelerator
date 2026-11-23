@@ -48,24 +48,15 @@ variable "supplement_table_arn" {
   }
 }
 
-variable "http_api_id" {
-  type        = string
-  description = "決裁の route を割り当てる既存 API Gateway HTTP API の ID（#5 の IaC が作成し、ここでは借用する）"
-
-  validation {
-    condition     = can(regex("^[a-z0-9]{10}$", var.http_api_id))
-    error_message = "API Gateway HTTP API の ID（英小文字と数字の10文字）を指定してください。"
-  }
-}
-
-variable "jwt_authorizer_id" {
-  type        = string
-  description = "決裁の route に適用する既存 JWT authorizer の ID。人間用 SPA client のトークンを検証する authorizer を指定する"
-
-  validation {
-    condition     = can(regex("^[a-z0-9]+$", var.jwt_authorizer_id))
-    error_message = "HTTP API の JWT authorizer の ID を指定してください。"
-  }
+variable "rest_api" {
+  type = object({
+    id                   = string
+    stage_name           = string
+    authorizer_id        = string
+    portal_api_scope     = string
+    cors_allowed_origins = list(string)
+  })
+  description = "決裁の route を割り当てる既存 REST API（本体スタックの output rest_api と同じ形）。ID・authorizer の ID・scope の形式は modules/api_routes で検証する。cors_allowed_origins は決裁 Lambda の CORS 許可リスト"
 }
 
 variable "discovery_client" {
@@ -87,11 +78,6 @@ variable "discovery_kms_key_arn" {
     condition     = var.discovery_kms_key_arn == null ? true : can(regex("^arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[A-Za-z0-9-]+$", var.discovery_kms_key_arn))
     error_message = "KMS キーの完全な ARN を指定してください（エイリアスは使えません）。"
   }
-}
-
-variable "portal_api_scope" {
-  type        = string
-  description = "route の JWT authorizer が検証するポータル用のカスタム scope。本体スタックの output portal_api_scope と同じ値"
 }
 
 variable "log_retention_in_days" {

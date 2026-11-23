@@ -1,6 +1,6 @@
 """ポータル用のカスタム scope を本体スタックの 1 か所だけに定義し、ほかは受け取って使うことを確かめる。
 
-追加スタックは別 state（ADR-0013）のため、本体の output portal_api_scope を tfvars に転記して受け取る。
+追加スタックは別 state（ADR-0013）のため、本体の output rest_api（portal_api_scope を含む）を tfvars に転記して受け取る。
 SPA は配信時に本体の output frontend_config（VITE_COGNITO_SCOPES）から受け取り、既定値を持たない。
 """
 
@@ -42,33 +42,34 @@ class PortalScopeTests(unittest.TestCase):
     def test_main_stack_outputs_the_scope_for_addon_stacks_and_the_spa(self):
         outputs = (INFRA / "outputs.tf").read_text()
         self.assertRegex(
-            outputs, r'output "portal_api_scope" \{[^}]*value\s*=\s*local\.portal_api_scope\n'
+            outputs, r'output "rest_api" \{[^}]*portal_api_scope\s*=\s*local\.portal_api_scope\n'
         )
         self.assertIn('VITE_COGNITO_SCOPES    = "openid ${local.portal_api_scope}"', outputs)
-        main = (INFRA / "main.tf").read_text()
+        main = (INFRA / "rest_api.tf").read_text()
         self.assertRegex(
             main,
-            r'module "management_routes" \{[^}]*authorization_scope\s*=\s*local\.portal_api_scope\n',
+            r'module "main_routes" \{[^}]*authorization_scope\s*=\s*local\.portal_api_scope\n',
         )
 
     def test_addon_stack_routes_require_the_transcribed_scope(self):
         modules = INFRA / "modules"
-        self.assertIn(
-            "authorization_scopes = [var.portal_api_scope]",
+        self.assertRegex(
             (modules / "decision/main.tf").read_text(),
+            r"authorization_scope\s*=\s*var\.rest_api\.portal_api_scope\n",
         )
         self.assertIn(
             "authorization_scopes = [var.authorization_scope]",
-            (modules / "management_routes/main.tf").read_text(),
+            (modules / "api_routes/main.tf").read_text(),
         )
         for stack, pattern in [
-            ("decision", r"portal_api_scope\s*=\s*var\.portal_api_scope\n"),
-            ("management", r"authorization_scope\s*=\s*var\.portal_api_scope\n"),
+            ("decision", r"rest_api\s*=\s*var\.rest_api\n"),
+            ("management", r"authorization_scope\s*=\s*var\.rest_api\.portal_api_scope\n"),
         ]:
             with self.subTest(stack=stack):
                 self.assertRegex((INFRA / stack / "main.tf").read_text(), pattern)
                 self.assertRegex(
-                    (INFRA / stack / "variables.tf").read_text(), r'variable "portal_api_scope" \{'
+                    (INFRA / stack / "variables.tf").read_text(),
+                    r'variable "rest_api" \{\n\s*type = object\(\{[^}]*portal_api_scope\s*=\s*string',
                 )
 
     def test_examples_use_the_scope_defined_by_the_main_stack(self):

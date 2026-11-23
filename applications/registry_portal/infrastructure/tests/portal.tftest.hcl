@@ -3,12 +3,14 @@ mock_provider "aws" {
   mock_data "aws_region" {
     defaults = { region = "us-east-1" }
   }
+  mock_data "aws_partition" {
+    defaults = { partition = "aws" }
+  }
+  mock_resource "aws_api_gateway_stage" {
+    defaults = { invoke_url = "https://abcde12345.execute-api.us-east-1.amazonaws.com/v1" }
+  }
   mock_data "aws_caller_identity" {
     defaults = { account_id = "123456789012" }
-  }
-  # route と呼び出し許可のモジュール（modules/management_routes）が、HTTP API の ID から実行 ARN を読む
-  mock_data "aws_apigatewayv2_api" {
-    defaults = { execution_arn = "arn:aws:execute-api:us-east-1:123456789012:abcde12345" }
   }
   mock_resource "aws_cloudfront_distribution" {
     defaults = { domain_name = "portal.example.cloudfront.net", arn = "arn:aws:cloudfront::123456789012:distribution/EXAMPLE" }
@@ -32,16 +34,16 @@ mock_provider "aws" {
       invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:registry-portal-dev-management/invocations"
     }
   }
-  mock_resource "aws_apigatewayv2_api" {
+  mock_resource "aws_api_gateway_rest_api" {
     defaults = {
       id            = "abcde12345"
-      api_endpoint  = "https://abcde12345.execute-api.us-east-1.amazonaws.com"
       execution_arn = "arn:aws:execute-api:us-east-1:123456789012:abcde12345"
     }
   }
 }
 
 variables {
+  allowed_source_cidrs        = ["203.0.113.10/32"]
   aws_account_id              = "123456789012"
   spa_bucket_name             = "portal-test-123456789012"
   registry_arn                = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
@@ -76,12 +78,12 @@ run "security_boundaries" {
     error_message = "人間用 client は secret のない code flow とカスタム scope が必要です。"
   }
   assert {
-    condition     = toset([for route in values(module.management_routes.routes) : route.route_key]) == toset(["GET /api/me", "GET /api/catalog", "POST /api/catalog/search", "GET /api/catalog/{recordId}"])
+    condition     = toset([for route in values(module.main_routes.routes) : route.route_key]) == toset(["GET /api/me", "GET /api/catalog", "POST /api/catalog/search", "GET /api/catalog/{recordId}"])
     error_message = "本体スタックの route は主体とカタログ（一覧・検索・詳細）だけにしてください。決裁と管理の追加 route は追加スタックが作ります。"
   }
   assert {
-    condition     = alltrue([for route in values(module.management_routes.routes) : route.authorization_type == "JWT" && route.authorization_scopes == toset(["registry-portal/api.invoke"])])
-    error_message = "すべての route に人間用 JWT と scope の検証が必要です。"
+    condition     = alltrue([for route in values(module.main_routes.routes) : route.authorization_type == "COGNITO_USER_POOLS" && route.authorization_scopes == toset(["registry-portal/api.invoke"])])
+    error_message = "すべての route で、Cognito User Pools authorizer によるアクセストークンと scope の検証が必要です。"
   }
   assert {
     condition     = aws_dynamodb_table.auxiliary.billing_mode == "PAY_PER_REQUEST" && aws_dynamodb_table.auxiliary.deletion_protection_enabled && aws_dynamodb_table.auxiliary.point_in_time_recovery[0].enabled && aws_dynamodb_table.auxiliary.server_side_encryption[0].enabled
@@ -89,11 +91,23 @@ run "security_boundaries" {
   }
   assert {
     condition = (
-      aws_apigatewayv2_api.portal.cors_configuration[0].allow_methods == toset(["GET", "POST", "PATCH", "OPTIONS"])
-      && aws_apigatewayv2_api.portal.cors_configuration[0].allow_headers == toset(["authorization", "content-type", "idempotency-key"])
-      && aws_apigatewayv2_api.portal.cors_configuration[0].allow_credentials != true
+      toset(aws_api_gateway_rest_api.portal.endpoint_configuration[0].types) == toset(["REGIONAL"])
+      && aws_api_gateway_authorizer.human.type == "COGNITO_USER_POOLS"
+      && toset(jsondecode(aws_api_gateway_rest_api_policy.portal.policy).Statement[1].Condition.NotIpAddress["aws:SourceIp"]) == toset(var.allowed_source_cidrs)
+      && jsondecode(aws_api_gateway_rest_api_policy.portal.policy).Statement[1].Effect == "Deny"
     )
-    error_message = "CORS は SPA が使う GET・POST・PATCH と、Authorization・Content-Type・Idempotency-Key ヘッダーだけを許可してください。"
+    error_message = "REST API は REGIONAL と Cognito authorizer を使用し、許可リスト外の接続元を明示的に拒否してください。"
+  }
+  assert {
+    condition = (
+      keys(aws_api_gateway_method.preflight) == keys(aws_api_gateway_integration.preflight)
+      # 経路表（routes.json）の全グループのパスごとに 1 つ。追加スタックの経路のパスも本体が作る
+      && toset(keys(aws_api_gateway_method.preflight)) == toset(flatten([for group in values(jsondecode(file("modules/api_routes/routes.json"))) : [for route in values(group) : route.path]]))
+      && alltrue([for method in aws_api_gateway_method.preflight : method.http_method == "OPTIONS" && method.authorization == "NONE"])
+      && alltrue([for integration in aws_api_gateway_integration.preflight : integration.type == "AWS_PROXY"])
+      && alltrue([for response in aws_api_gateway_gateway_response.cors : response.response_parameters["gatewayresponse.header.Access-Control-Allow-Origin"] == "method.request.header.Origin"])
+    )
+    error_message = "各パスに認証不要の OPTIONS を作成し、API Gateway のエラーに CORS ヘッダーを付けてください。"
   }
   assert {
     condition     = aws_dynamodb_table.auxiliary.ttl[0].enabled && aws_dynamodb_table.auxiliary.ttl[0].attribute_name == "expiresAt"
@@ -131,7 +145,7 @@ run "security_boundaries" {
   }
   assert {
     condition     = strcontains(aws_cloudfront_response_headers_policy.spa.security_headers_config[0].content_security_policy[0].content_security_policy, var.cognito_domain) && strcontains(aws_cloudfront_response_headers_policy.spa.security_headers_config[0].content_security_policy[0].content_security_policy, "https://*.execute-api.us-east-1.amazonaws.com")
-    error_message = "CSP は Cognito token と HTTP API への通信を許可してください。"
+    error_message = "CSP は Cognito token と REST API への通信を許可してください。"
   }
   assert {
     condition     = !strcontains(aws_iam_role_policy.management.policy, "kms:Decrypt") && strcontains(aws_iam_role_policy.management.policy, var.discovery_client_secret_arn)
@@ -156,21 +170,21 @@ run "security_boundaries" {
 run "lambda_invoke_permissions" {
   command = apply
   assert {
-    condition = toset([for permission in values(module.management_routes.invoke_permissions) : trimprefix(permission.source_arn, "${aws_apigatewayv2_api.portal.execution_arn}/*/")]) == toset([
+    condition = toset([for permission in values(module.main_routes.invoke_permissions) : trimprefix(permission.source_arn, "${aws_api_gateway_rest_api.portal.execution_arn}/*/")]) == toset([
       "GET/api/me", "GET/api/catalog", "POST/api/catalog/search", "GET/api/catalog/*",
     ])
     error_message = "管理 Lambda の呼び出し許可は、本体スタックの route のメソッドと path に限ってください。"
   }
   assert {
     # route と呼び出し許可を同じ map（{route_key, statement_id}）から作り、キーとメソッドを対応させる
-    condition = keys(module.management_routes.routes) == keys(module.management_routes.invoke_permissions) && alltrue([
-      for name, route in module.management_routes.routes :
-      startswith(module.management_routes.invoke_permissions[name].source_arn, "${aws_apigatewayv2_api.portal.execution_arn}/*/${split(" ", route.route_key)[0]}/")
+    condition = keys(module.main_routes.routes) == keys(module.main_routes.invoke_permissions) && alltrue([
+      for name, route in module.main_routes.routes :
+      startswith(module.main_routes.invoke_permissions[name].source_arn, "${aws_api_gateway_rest_api.portal.execution_arn}/*/${split(" ", route.route_key)[0]}/")
     ])
     error_message = "本体スタックの route と呼び出し許可は、同じキーの 1 つの map から作り、メソッドを一致させてください。"
   }
   assert {
-    condition     = alltrue([for permission in values(module.management_routes.invoke_permissions) : permission.principal == "apigateway.amazonaws.com" && permission.source_account == var.aws_account_id && permission.function_name == aws_lambda_function.management.function_name])
+    condition     = alltrue([for permission in values(module.main_routes.invoke_permissions) : permission.principal == "apigateway.amazonaws.com" && permission.source_account == var.aws_account_id && permission.function_name == aws_lambda_function.management.function_name])
     error_message = "管理 Lambda は同じアカウントの API Gateway からだけ呼び出せるようにしてください。"
   }
 }
@@ -179,13 +193,15 @@ run "outputs_for_additional_stacks" {
   command = apply
   assert {
     condition = (
-      output.http_api_id == "abcde12345"
-      && output.jwt_authorizer_id == aws_apigatewayv2_authorizer.human.id
-      && output.management_integration_id == aws_apigatewayv2_integration.management.id
+      output.rest_api.id == "abcde12345"
+      && output.rest_api.authorizer_id == aws_api_gateway_authorizer.human.id
+      && output.rest_api.stage_name == "v1"
+      && output.rest_api.cors_allowed_origins == tolist(["https://portal.example.cloudfront.net"])
+      && output.frontend_config.VITE_API_BASE_URL == "https://abcde12345.execute-api.us-east-1.amazonaws.com/v1"
       && output.human_client_id == aws_cognito_user_pool_client.human.id
       && output.cognito_issuer == "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_Example"
     )
-    error_message = "追加スタックが HTTP API・JWT authorizer・管理 integration・人間用 client を参照できるよう、ID を出力してください。"
+    error_message = "追加スタックが REST API・Cognito User Pools authorizer・人間用 client を参照できるよう、ID を出力してください。"
   }
   assert {
     condition = (
@@ -197,8 +213,13 @@ run "outputs_for_additional_stacks" {
     error_message = "追加スタックの tfvars に転記する管理ロール名・関数名と補助テーブルの名前・ARN を出力してください。"
   }
   assert {
-    condition     = output.frontend_config.VITE_COGNITO_SCOPES == "openid ${output.portal_api_scope}" && output.portal_api_scope == "registry-portal/api.invoke"
+    condition     = output.frontend_config.VITE_COGNITO_SCOPES == "openid ${output.rest_api.portal_api_scope}" && output.rest_api.portal_api_scope == "registry-portal/api.invoke"
     error_message = "SPA は route が検証するカスタム scope を含めてトークンを要求し、追加スタックに渡す scope を出力してください。"
+  }
+  assert {
+    # management・decision の variable "rest_api" と同じ属性にし、output をそのまま転記できるようにする
+    condition     = toset(keys(output.rest_api)) == toset(["id", "stage_name", "authorizer_id", "portal_api_scope", "cors_allowed_origins"])
+    error_message = "output rest_api は、追加スタックの変数 rest_api と同じ属性で出力してください。"
   }
 }
 
@@ -336,7 +357,7 @@ run "local_dev_origins_default" {
     condition = (
       aws_cognito_user_pool_client.human.callback_urls == toset(["https://portal.example.cloudfront.net/"])
       && aws_cognito_user_pool_client.human.logout_urls == toset(["https://portal.example.cloudfront.net/"])
-      && aws_apigatewayv2_api.portal.cors_configuration[0].allow_origins == toset(["https://portal.example.cloudfront.net"])
+      && toset(jsondecode(aws_lambda_function.management.environment[0].variables.CORS_ALLOWED_ORIGINS)) == toset(["https://portal.example.cloudfront.net"])
     )
     error_message = "既定値（local_dev_origins = []）では、コールバック URL・ログアウト URL・CORS に CloudFront の SPA の origin だけを許可してください。"
   }
@@ -355,8 +376,8 @@ run "local_dev_origins_added" {
     error_message = "local_dev_origins の origin を、末尾に / を付けて人間用 client のコールバック URL とログアウト URL に追加してください。"
   }
   assert {
-    condition     = aws_apigatewayv2_api.portal.cors_configuration[0].allow_origins == toset(["https://portal.example.cloudfront.net", "http://localhost:5173"])
-    error_message = "local_dev_origins の origin を、HTTP API の CORS で許可する origin に追加してください。"
+    condition     = toset(jsondecode(aws_lambda_function.management.environment[0].variables.CORS_ALLOWED_ORIGINS)) == toset(["https://portal.example.cloudfront.net", "http://localhost:5173"])
+    error_message = "local_dev_origins の origin を、REST API の CORS で許可する origin に追加してください。"
   }
 }
 
@@ -366,7 +387,7 @@ run "local_dev_origins_accepts_loopback_address" {
     local_dev_origins = ["http://127.0.0.1:4173"]
   }
   assert {
-    condition     = contains(aws_cognito_user_pool_client.human.callback_urls, "http://127.0.0.1:4173/") && contains(aws_apigatewayv2_api.portal.cors_configuration[0].allow_origins, "http://127.0.0.1:4173")
+    condition     = contains(aws_cognito_user_pool_client.human.callback_urls, "http://127.0.0.1:4173/") && contains(toset(jsondecode(aws_lambda_function.management.environment[0].variables.CORS_ALLOWED_ORIGINS)), "http://127.0.0.1:4173")
     error_message = "http://127.0.0.1:<port> の形の origin も受け付けてください。"
   }
 }
@@ -393,4 +414,20 @@ run "local_dev_origins_rejects_lookalike_host" {
     local_dev_origins = ["http://localhost.example.com:5173"]
   }
   expect_failures = [var.local_dev_origins]
+}
+
+run "allowed_source_cidrs_rejects_empty" {
+  command = plan
+  variables {
+    allowed_source_cidrs = []
+  }
+  expect_failures = [var.allowed_source_cidrs]
+}
+
+run "allowed_source_cidrs_rejects_invalid" {
+  command = plan
+  variables {
+    allowed_source_cidrs = ["203.0.113.10/32", "not-a-cidr"]
+  }
+  expect_failures = [var.allowed_source_cidrs]
 }

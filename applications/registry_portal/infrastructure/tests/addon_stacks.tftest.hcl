@@ -3,15 +3,25 @@
 # 作成前の資源の属性ではなく、名前と plan 時に確定する呼び出し元のアカウント ID・リージョンから組み立てる。
 # Registry や補助テーブルの ARN とは異なるアカウント ID・リージョンを返し、どちらから組み立てたかを区別する
 mock_provider "aws" {
+  mock_data "aws_partition" {
+    defaults = { partition = "aws" }
+  }
   mock_data "aws_caller_identity" {
     defaults = { account_id = "111122223333" }
   }
   mock_data "aws_region" {
     defaults = { region = "us-west-2" }
   }
-  # 借用する HTTP API。Lambda の呼び出し許可の source_arn に使う
-  mock_data "aws_apigatewayv2_api" {
-    defaults = { execution_arn = "arn:aws:execute-api:us-east-1:123456789012:a1b2c3d4e5" }
+}
+
+# 追加スタックが本体の output rest_api から転記する値。各 run で共通に使う
+variables {
+  rest_api = {
+    id                   = "a1b2c3d4e5"
+    stage_name           = "v1"
+    authorizer_id        = "abc123"
+    portal_api_scope     = "registry-portal/api.invoke"
+    cors_allowed_origins = ["https://portal.example.cloudfront.net"]
   }
 }
 
@@ -28,9 +38,6 @@ run "decision_policy_is_known_on_first_plan" {
     registry_arn          = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
     supplement_table_name = "registry-auxiliary"
     supplement_table_arn  = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-auxiliary"
-    http_api_id           = "a1b2c3d4e5"
-    jwt_authorizer_id     = "abc123"
-    portal_api_scope      = "registry-portal/api.invoke"
     discovery_client = {
       token_url         = "https://example.auth.us-east-1.amazoncognito.com/oauth2/token"
       client_id         = "discovery-client"
@@ -93,9 +100,6 @@ run "decision_log_retention_dev_value" {
     registry_arn          = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
     supplement_table_name = "registry-auxiliary"
     supplement_table_arn  = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-auxiliary"
-    http_api_id           = "a1b2c3d4e5"
-    jwt_authorizer_id     = "abc123"
-    portal_api_scope      = "registry-portal/api.invoke"
     discovery_client = {
       token_url         = "https://example.auth.us-east-1.amazoncognito.com/oauth2/token"
       client_id         = "discovery-client"
@@ -143,9 +147,6 @@ run "decision_stack_rejects_unsupported_log_retention" {
     registry_arn                = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
     supplement_table_name       = "registry-auxiliary"
     supplement_table_arn        = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-auxiliary"
-    http_api_id                 = "a1b2c3d4e5"
-    jwt_authorizer_id           = "abc123"
-    portal_api_scope            = "registry-portal/api.invoke"
     discovery_token_url         = "https://example.auth.us-east-1.amazoncognito.com/oauth2/token"
     discovery_client_id         = "discovery-client"
     discovery_client_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:discovery-AbCdEf"
@@ -185,9 +186,6 @@ run "decision_reserved_concurrency" {
     registry_arn          = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
     supplement_table_name = "registry-auxiliary"
     supplement_table_arn  = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-auxiliary"
-    http_api_id           = "a1b2c3d4e5"
-    jwt_authorizer_id     = "abc123"
-    portal_api_scope      = "registry-portal/api.invoke"
     discovery_client = {
       token_url         = "https://example.auth.us-east-1.amazoncognito.com/oauth2/token"
       client_id         = "discovery-client"
@@ -215,9 +213,6 @@ run "decision_reserved_concurrency_default" {
     registry_arn          = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
     supplement_table_name = "registry-auxiliary"
     supplement_table_arn  = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-auxiliary"
-    http_api_id           = "a1b2c3d4e5"
-    jwt_authorizer_id     = "abc123"
-    portal_api_scope      = "registry-portal/api.invoke"
     discovery_client = {
       token_url         = "https://example.auth.us-east-1.amazoncognito.com/oauth2/token"
       client_id         = "discovery-client"

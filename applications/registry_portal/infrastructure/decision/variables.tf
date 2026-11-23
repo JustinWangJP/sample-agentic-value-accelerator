@@ -39,14 +39,15 @@ variable "supplement_table_arn" {
   description = "補助 DynamoDB テーブルの ARN"
 }
 
-variable "http_api_id" {
-  type        = string
-  description = "決裁の route を割り当てる既存 API Gateway HTTP API の ID"
-}
-
-variable "jwt_authorizer_id" {
-  type        = string
-  description = "決裁の route に適用する既存 JWT authorizer の ID"
+variable "rest_api" {
+  type = object({
+    id                   = string
+    stage_name           = string
+    authorizer_id        = string
+    portal_api_scope     = string
+    cors_allowed_origins = list(string)
+  })
+  description = "決裁の route を割り当てる既存 REST API。本体スタックの output rest_api をそのまま転記する。stage_name は deploy.sh の再デプロイ先に、cors_allowed_origins は決裁 Lambda の CORS 許可リストに使う"
 }
 
 variable "discovery_token_url" {
@@ -78,11 +79,6 @@ variable "discovery_kms_key_arn" {
 variable "discovery_scope" {
   type        = string
   description = "発見用 M2M に要求する scope。空文字なら client の既定値"
-}
-
-variable "portal_api_scope" {
-  type        = string
-  description = "route の JWT authorizer が検証するポータル用のカスタム scope。本体スタックの output portal_api_scope を転記する"
 }
 
 variable "log_retention_in_days" {

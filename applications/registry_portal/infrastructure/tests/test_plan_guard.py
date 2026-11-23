@@ -80,6 +80,27 @@ def run_guard_saved(
 
 
 class PlanGuardTests(unittest.TestCase):
+    def test_rest_api_migration_passes_the_existing_guard(self):
+        plan = json.loads((FIXTURES / "safe.json").read_text())
+        plan["resource_changes"] = [
+            {
+                "address": "aws_apigatewayv2_api.portal",
+                "type": "aws_apigatewayv2_api",
+                "mode": "managed",
+                "change": {"actions": ["delete"], "before": {"id": "oldapi1234"}, "after": None},
+            },
+            {
+                "address": "aws_api_gateway_rest_api_policy.portal",
+                "type": "aws_api_gateway_rest_api_policy",
+                "mode": "managed",
+                "change": {"actions": ["create"], "before": None, "after_unknown": {"policy": True}},
+            },
+        ]
+
+        result = run_guard_saved(plan)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_registry_update_is_rejected(self):
         result = run_guard(FIXTURES / "registry-update.json")
         self.assertEqual(result.returncode, 1, result.stderr)
