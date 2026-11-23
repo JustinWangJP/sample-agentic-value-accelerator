@@ -277,20 +277,79 @@ cp infrastructure/terraform.tfvars.example infrastructure/dev.tfvars
 
 `dev.tfvars` と `backend.hcl` は `.gitignore` の対象です。コミット前に `git status` でも確認してください。
 
+### 3.7 Cognito User Pool の設定を確認する
+
+既存の Cognito User Pool は Terraform の管理対象外です（2.1）。本体スタックは子リソースを追加するだけで、自己サインアップ、MFA、料金プラン（feature plan）は変更しません。そのため、配信の前に次の 3 点を手で確認します。満たさない項目は差分として記録し、User Pool の設定を変える場合はポータルの配信とは別に行います。
+
+| 確認項目 | 期待する値（`describe-user-pool` の項目） | 理由 |
+| --- | --- | --- |
+| 自己サインアップが無効 | `AdminCreateUserConfig.AllowAdminCreateUserOnly` が `true` | `false` のときは、誰でも `SignUp` でユーザーを作れます。設計では、ユーザーは Admin が作ります（4.1 の 7） |
+| ポータルを使うユーザーに MFA が設定されている | `MfaConfiguration` が `ON`、または `OPTIONAL` で、ポータルを使う全ユーザーに MFA が設定されている | `OFF` では MFA を使えません。`OPTIONAL` では、MFA を設定していないユーザーがパスワードだけでログインできます |
+| 料金プランが Lite か Essentials | `UserPoolTier` が `LITE` または `ESSENTIALS`（`PLUS` でない） | Plus は Essentials に脅威保護（`UserPoolAddOns.AdvancedSecurityMode`）などを加えたプランで、dev には不要です |
+
+自己サインアップ、MFA、料金プランは、`registry-read` で確認できます（`RegistryPortalReadOnly` は `cognito-idp:Describe*` と `List*` を持ちます）。
+
+```bash
+COGNITO_REGION=us-east-1
+USER_POOL_ID='dev.tfvars の cognito_user_pool_id'
+
+aws cognito-idp describe-user-pool --profile registry-read --region "$COGNITO_REGION" \
+  --user-pool-id "$USER_POOL_ID" \
+  --query 'UserPool.{adminCreateOnly:AdminCreateUserConfig.AllowAdminCreateUserOnly,mfa:MfaConfiguration,tier:UserPoolTier,threatProtection:UserPoolAddOns.AdvancedSecurityMode,domain:Domain,customDomain:CustomDomain}' \
+  --output json
+```
+
+- `adminCreateOnly` が `true` であることを確認します。
+- `mfa` が `ON` なら、全ユーザーが MFA を使います。`OPTIONAL` なら、下の手順でユーザーごとに確認します。AWS の API リファレンスでは、`ON` は User Pool の作成時にだけ指定できるとされています。
+- `tier` が `LITE` か `ESSENTIALS` であることを確認します。`PLUS` の場合は、`threatProtection`（脅威保護）が `OFF` 以外で使われていないかもあわせて記録します。プランを下げるには、上位のプランにしかない機能を先に止める必要があります（[Turning off features to change feature plans](https://docs.aws.amazon.com/cognito/latest/developerguide/feature-plans-deactivate.html)）。
+
+Lite と Essentials のどちらで足りるかは、ログイン画面の種類で決まります。managed login は Essentials 以上が必要で、Lite で使えるのは classic hosted UI だけです。ドメインのブランディングは次のコマンドで確認します（`domain` の値。`customDomain` があればそちら）。
+
+```bash
+COGNITO_DOMAIN_NAME='上の domain または customDomain の値'
+aws cognito-idp describe-user-pool-domain --profile registry-read --region "$COGNITO_REGION" \
+  --domain "$COGNITO_DOMAIN_NAME" \
+  --query 'DomainDescription.{managedLoginVersion:ManagedLoginVersion,status:Status}' --output json
+```
+
+`managedLoginVersion` が `2` なら managed login で、Essentials 以上が必要です。`1` なら classic hosted UI で、Lite でも使えます。ただし、ポータルが classic hosted UI でログインできるかは未確認です（README の受入確認は managed login を前提にしています）。料金は [Amazon Cognito の料金](https://aws.amazon.com/cognito/pricing/)で確認してください。
+
+ユーザーごとの MFA は、Cognito でユーザーを作った後（4.1 の 7）に確認します。`AdminGetUser` は `RegistryPortalReadOnly` の権限（`Describe*`、`List*`）に含まれないため、`registry-deploy` を使います。`identity_providers` に外部の IdP を指定した場合、その IdP のユーザーの MFA は IdP 側の設定で確認します。
+
+```bash
+for USERNAME in $(aws cognito-idp list-users --profile registry-read --region "$COGNITO_REGION" --user-pool-id "$USER_POOL_ID" --query 'Users[].Username' --output text); do
+  aws cognito-idp admin-get-user --profile registry-deploy --region "$COGNITO_REGION" \
+    --user-pool-id "$USER_POOL_ID" --username "$USERNAME" \
+    --query '{user:Username,mfa:UserMFASettingList,preferred:PreferredMfaSetting}' --output json
+done
+```
+
+`mfa` が空（`null`）のユーザーは MFA を設定していません。ポータルを使うユーザーなら、MFA を設定してもらってから使い始めます。
+
+出典（AWS の公式文書）：
+
+- [DescribeUserPool](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_DescribeUserPool.html)（出力は `UserPool` の下に入る）
+- [AdminCreateUserConfigType](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_AdminCreateUserConfigType.html)（`AllowAdminCreateUserOnly`）
+- [UserPoolType](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_UserPoolType.html)（`MfaConfiguration` の `OFF | ON | OPTIONAL`、`UserPoolTier` の `LITE | ESSENTIALS | PLUS`）
+- [UserPoolAddOnsType](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_UserPoolAddOnsType.html)（`AdvancedSecurityMode`）
+- [DomainDescriptionType](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_DomainDescriptionType.html)（`ManagedLoginVersion`。managed login は Lite 以外のプランが必要）
+- [AdminGetUser](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_AdminGetUser.html)（`UserMFASettingList`、`PreferredMfaSetting`）
+- [User pool feature plans](https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-sign-in-feature-plans.html)、[Essentials plan features](https://docs.aws.amazon.com/cognito/latest/developerguide/feature-plans-features-essentials.html)
+
 ## 4. 配信の手順
 
 ### 4.1 適用の順序
 
 | 順序 | 作業 | プロファイル |
 | --- | --- | --- |
-| 0 | Issue #2 の読み取り確認で、既存資源の値を確定する | `registry-read` |
+| 0 | Issue #2 の読み取り確認で、既存資源の値を確定する。Cognito User Pool の設定を確認する（3.7） | `registry-read` |
 | 1 | IAM ユーザーとロールを作る（3.3） | ルートユーザーまたは管理者 |
 | 2 | bootstrap で state 用バケットを作る（3.5） | `registry-deploy-tf` |
 | 3 | 本体スタックを配信する（4.2） | `registry-deploy-tf` と `registry-deploy` |
 | 4 | `management`（下書き権限と管理 route） | `registry-deploy-tf` |
 | 5 | `decision`（決裁 Lambda と route） | `registry-deploy-tf` |
 | 6 | `notification_events`（通知） | `registry-deploy-tf` |
-| 7 | Cognito でユーザーを作り、グループに割り当てる | コンソール（`registry-deploy`） |
+| 7 | Cognito でユーザーを作り、グループに割り当てる。ユーザーごとの MFA を確認する（3.7） | コンソール（`registry-deploy`） |
 | 8 | dev で受入確認を行う（Issue #5 の README のチェックリスト） | — |
 
 4〜6の順序に依存関係はありませんが、本体スタックの資源を借りるため、3の後に実行します。本体の output を各スタックの tfvars に転記してください。
