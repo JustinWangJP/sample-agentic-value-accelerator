@@ -20,6 +20,10 @@ log_retention_in_days = 14
 # 指定しない（null）と古いバージョンを残し続ける。
 spa_noncurrent_version_expiration_days = 7
 
+# ローカルの開発サーバー（npm run dev）から dev の API と Cognito に接続する（README「ローカルの開発サーバーから dev に接続する」）。
+# http://localhost:<port> か http://127.0.0.1:<port> だけを末尾の / なしで指定できる。不要なら行を消す（既定値は []）。
+local_dev_origins = ["http://localhost:5173"]
+
 # 撤去（destroy）するときだけ切り替える。通常は既定値（保護を有効）のまま指定しない。
 # 切り替えて apply してから destroy する。補助テーブルの lifecycle.prevent_destroy は
 # 変数にできないため、撤去時は main.tf の行を手元で外し、その変更はコミットしない。

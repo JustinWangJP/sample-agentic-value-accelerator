@@ -329,3 +329,68 @@ run "lambda_reserved_concurrency_set" {
     error_message = "lambda_reserved_concurrency を指定したら、管理 Lambda の reserved_concurrent_executions に渡してください。"
   }
 }
+
+run "local_dev_origins_default" {
+  command = plan
+  assert {
+    condition = (
+      aws_cognito_user_pool_client.human.callback_urls == toset(["https://portal.example.cloudfront.net/"])
+      && aws_cognito_user_pool_client.human.logout_urls == toset(["https://portal.example.cloudfront.net/"])
+      && aws_apigatewayv2_api.portal.cors_configuration[0].allow_origins == toset(["https://portal.example.cloudfront.net"])
+    )
+    error_message = "既定値（local_dev_origins = []）では、コールバック URL・ログアウト URL・CORS に CloudFront の SPA の origin だけを許可してください。"
+  }
+}
+
+run "local_dev_origins_added" {
+  command = plan
+  variables {
+    local_dev_origins = ["http://localhost:5173"]
+  }
+  assert {
+    condition = (
+      aws_cognito_user_pool_client.human.callback_urls == toset(["https://portal.example.cloudfront.net/", "http://localhost:5173/"])
+      && aws_cognito_user_pool_client.human.logout_urls == toset(["https://portal.example.cloudfront.net/", "http://localhost:5173/"])
+    )
+    error_message = "local_dev_origins の origin を、末尾に / を付けて人間用 client のコールバック URL とログアウト URL に追加してください。"
+  }
+  assert {
+    condition     = aws_apigatewayv2_api.portal.cors_configuration[0].allow_origins == toset(["https://portal.example.cloudfront.net", "http://localhost:5173"])
+    error_message = "local_dev_origins の origin を、HTTP API の CORS で許可する origin に追加してください。"
+  }
+}
+
+run "local_dev_origins_accepts_loopback_address" {
+  command = plan
+  variables {
+    local_dev_origins = ["http://127.0.0.1:4173"]
+  }
+  assert {
+    condition     = contains(aws_cognito_user_pool_client.human.callback_urls, "http://127.0.0.1:4173/") && contains(aws_apigatewayv2_api.portal.cors_configuration[0].allow_origins, "http://127.0.0.1:4173")
+    error_message = "http://127.0.0.1:<port> の形の origin も受け付けてください。"
+  }
+}
+
+run "local_dev_origins_rejects_non_localhost" {
+  command = plan
+  variables {
+    local_dev_origins = ["https://example.com"]
+  }
+  expect_failures = [var.local_dev_origins]
+}
+
+run "local_dev_origins_rejects_trailing_slash" {
+  command = plan
+  variables {
+    local_dev_origins = ["http://localhost:5173/"]
+  }
+  expect_failures = [var.local_dev_origins]
+}
+
+run "local_dev_origins_rejects_lookalike_host" {
+  command = plan
+  variables {
+    local_dev_origins = ["http://localhost.example.com:5173"]
+  }
+  expect_failures = [var.local_dev_origins]
+}

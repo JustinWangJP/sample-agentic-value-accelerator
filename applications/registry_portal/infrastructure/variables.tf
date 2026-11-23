@@ -123,3 +123,14 @@ variable "lambda_reserved_concurrency" {
   type        = number
   default     = null
 }
+
+variable "local_dev_origins" {
+  description = "ローカルの開発サーバー（npm run dev）から dev に接続するための origin。人間用 client のコールバック URL・ログアウト URL（末尾に / を付ける）と HTTP API の CORS に追加する。既定値の [] では追加しない。"
+  type        = list(string)
+  default     = []
+  validation {
+    # Cognito の OAuth が HTTP のコールバック URL を許すのは localhost だけのため、ほかの origin は受け付けない
+    condition     = alltrue([for o in var.local_dev_origins : can(regex("^http://(localhost|127\\.0\\.0\\.1):[0-9]{1,5}$", o))])
+    error_message = "local_dev_origins には http://localhost:<port> または http://127.0.0.1:<port> を、末尾の / なしで指定してください。"
+  }
+}
