@@ -41,7 +41,7 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 
 ## 認可
 
-管理 handler は、HTTP API の JWT authorizer が検証した claims（`requestContext.authorizer.jwt.claims`）を、Lambda でも次のとおり検査します。
+管理 handler は、API Gateway の authorizer が検証した claims を、Lambda でも次のとおり検査します。claims は、HTTP API の JWT authorizer なら `requestContext.authorizer.jwt.claims`、REST API の Cognito User Pools authorizer なら `requestContext.authorizer.claims` から読みます（REST API への移行中は両方を受け付けます）。
 
 - `token_use` が `access` であること（ID トークンは拒否する）
 - `iss` が設定した Cognito User Pool であること
