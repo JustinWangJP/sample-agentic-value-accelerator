@@ -30,10 +30,13 @@ run "decision_routes_require_portal_scope" {
     registry_arn          = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
     supplement_table_name = "registry-portal-dev-auxiliary"
     supplement_table_arn  = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-portal-dev-auxiliary"
-    rest_api_id           = "abcde12345"
-    authorizer_id         = "abc123"
-    cors_allowed_origins  = ["https://portal.example.cloudfront.net"]
-    portal_api_scope      = "registry-portal/api.invoke"
+    rest_api = {
+      id                   = "abcde12345"
+      stage_name           = "v1"
+      authorizer_id        = "abc123"
+      portal_api_scope     = "registry-portal/api.invoke"
+      cors_allowed_origins = ["https://portal.example.cloudfront.net"]
+    }
     discovery_client = {
       token_url         = "https://example.auth.us-east-1.amazoncognito.com/oauth2/token"
       client_id         = "discovery-client"
@@ -58,13 +61,17 @@ run "management_routes_require_portal_scope" {
     management_role_name     = "registry-portal-dev-management"
     registry_arn             = "arn:aws:agent-registry:us-east-1:123456789012:registry/AbCdEf123456"
     supplement_table_arn     = "arn:aws:dynamodb:us-east-1:123456789012:table/registry-portal-dev-auxiliary"
-    rest_api_id              = "abcde12345"
-    authorizer_id            = "abc123"
     management_function_name = "registry-portal-dev-management"
-    portal_api_scope         = "registry-portal/api.invoke"
+    rest_api = {
+      id                   = "abcde12345"
+      stage_name           = "v1"
+      authorizer_id        = "abc123"
+      portal_api_scope     = "registry-portal/api.invoke"
+      cors_allowed_origins = ["https://portal.example.cloudfront.net"]
+    }
   }
   assert {
-    condition     = length(module.management_routes.routes) == 12 && alltrue([for route in values(module.management_routes.routes) : route.authorization_type == "COGNITO_USER_POOLS" && route.authorization_scopes == toset(["registry-portal/api.invoke"]) && route.authorizer_id == var.authorizer_id && endswith(route.target, ":function:registry-portal-dev-management/invocations")])
+    condition     = length(module.management_routes.routes) == 12 && alltrue([for route in values(module.management_routes.routes) : route.authorization_type == "COGNITO_USER_POOLS" && route.authorization_scopes == toset(["registry-portal/api.invoke"]) && route.authorizer_id == var.rest_api.authorizer_id && endswith(route.target, ":function:registry-portal-dev-management/invocations")])
     error_message = "管理 handler の追加 route も、本体スタックと同じポータル用の scope を Cognito User Pools authorizer で検証してください。"
   }
   assert {

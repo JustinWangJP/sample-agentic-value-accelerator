@@ -18,22 +18,18 @@ variable "supplement_table_arn" {
   description = "管理 Lambda の環境変数 SUPPLEMENT_TABLE_NAME が指す補助 DynamoDB テーブルの ARN"
 }
 
-variable "rest_api_id" {
-  type        = string
-  description = "管理 handler の route（履歴・廃止依頼）を割り当てる既存 API Gateway REST API の ID"
-}
-
-variable "authorizer_id" {
-  type        = string
-  description = "管理 handler の route に適用する既存 Cognito User Pools authorizer の ID"
+variable "rest_api" {
+  type = object({
+    id                   = string
+    stage_name           = string
+    authorizer_id        = string
+    portal_api_scope     = string
+    cors_allowed_origins = list(string)
+  })
+  description = "管理 handler の route を割り当てる既存 REST API。本体スタックの output rest_api をそのまま転記する。stage_name は deploy.sh の再デプロイ先に使い、cors_allowed_origins はこのスタックでは使わない"
 }
 
 variable "management_function_name" {
   type        = string
   description = "呼び出し許可を追加する、既存の管理 Lambda の関数名"
-}
-
-variable "portal_api_scope" {
-  type        = string
-  description = "route の Cognito User Pools authorizer が検証するポータル用のカスタム scope。本体スタックの output portal_api_scope を転記する"
 }

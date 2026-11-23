@@ -1,123 +1,152 @@
 {
   "main": {
     "me": {
-      "route_key": "GET /api/me",
+      "method": "GET",
+      "path": "/api/me",
       "statement_id": "AllowRestApiInvokeMe"
     },
     "catalog": {
-      "route_key": "GET /api/catalog",
+      "method": "GET",
+      "path": "/api/catalog",
       "statement_id": "AllowRestApiInvokeCatalog"
     },
     "catalog_search": {
-      "route_key": "POST /api/catalog/search",
+      "method": "POST",
+      "path": "/api/catalog/search",
       "statement_id": "AllowRestApiInvokeCatalogSearch"
     },
     "catalog_detail": {
-      "route_key": "GET /api/catalog/{recordId}",
+      "method": "GET",
+      "path": "/api/catalog/{recordId}",
       "statement_id": "AllowRestApiInvokeCatalogDetail"
     }
   },
   "management": {
     "admin_records": {
-      "route_key": "GET /api/admin/records",
+      "method": "GET",
+      "path": "/api/admin/records",
       "statement_id": "AllowRestApiInvokeAdminRecords"
     },
     "admin_connection": {
-      "route_key": "GET /api/admin/connection",
+      "method": "GET",
+      "path": "/api/admin/connection",
       "statement_id": "AllowRestApiInvokeAdminConnection"
     },
     "history": {
-      "route_key": "GET /api/records/{recordId}/history",
+      "method": "GET",
+      "path": "/api/records/{recordId}/history",
       "statement_id": "AllowRestApiInvokeRecordHistory"
     },
     "deprecation_request": {
-      "route_key": "POST /api/records/{recordId}/deprecation-requests",
+      "method": "POST",
+      "path": "/api/records/{recordId}/deprecation-requests",
       "statement_id": "AllowRestApiInvokeDeprecationRequest"
     },
     "notifications": {
-      "route_key": "GET /api/notifications",
+      "method": "GET",
+      "path": "/api/notifications",
       "statement_id": "AllowRestApiInvokeNotifications"
     },
     "notifications_read": {
-      "route_key": "POST /api/notifications/read",
+      "method": "POST",
+      "path": "/api/notifications/read",
       "statement_id": "AllowRestApiInvokeNotificationsRead"
     },
     "create_record": {
-      "route_key": "POST /api/records",
+      "method": "POST",
+      "path": "/api/records",
       "statement_id": "AllowRestApiInvokeCreateRecord"
     },
     "list_records": {
-      "route_key": "GET /api/records",
+      "method": "GET",
+      "path": "/api/records",
       "statement_id": "AllowRestApiInvokeListRecords"
     },
     "get_record": {
-      "route_key": "GET /api/records/{recordId}",
+      "method": "GET",
+      "path": "/api/records/{recordId}",
       "statement_id": "AllowRestApiInvokeGetRecord"
     },
     "update_record": {
-      "route_key": "PATCH /api/records/{recordId}",
+      "method": "PATCH",
+      "path": "/api/records/{recordId}",
       "statement_id": "AllowRestApiInvokeUpdateRecord"
     },
     "get_operation": {
-      "route_key": "GET /api/operations/{operationId}",
+      "method": "GET",
+      "path": "/api/operations/{operationId}",
       "statement_id": "AllowRestApiInvokeGetOperation"
     },
     "submit_record": {
-      "route_key": "POST /api/records/{recordId}/submit",
+      "method": "POST",
+      "path": "/api/records/{recordId}/submit",
       "statement_id": "AllowRestApiInvokeSubmitRecord"
     }
   },
   "decision": {
     "adopt": {
-      "route_key": "POST /api/records/{recordId}/adopt",
+      "method": "POST",
+      "path": "/api/records/{recordId}/adopt",
       "statement_id": "AllowRestApiInvokeAdopt"
     },
     "reassign_owner": {
-      "route_key": "POST /api/records/{recordId}/reassign-owner",
+      "method": "POST",
+      "path": "/api/records/{recordId}/reassign-owner",
       "statement_id": "AllowRestApiInvokeReassignOwner"
     },
     "suspend": {
-      "route_key": "POST /api/records/{recordId}/suspend",
+      "method": "POST",
+      "path": "/api/records/{recordId}/suspend",
       "statement_id": "AllowRestApiInvokeSuspend"
     },
     "deprecate": {
-      "route_key": "POST /api/records/{recordId}/deprecate",
+      "method": "POST",
+      "path": "/api/records/{recordId}/deprecate",
       "statement_id": "AllowRestApiInvokeDeprecate"
     },
     "publication": {
-      "route_key": "GET /api/records/{recordId}/publication",
+      "method": "GET",
+      "path": "/api/records/{recordId}/publication",
       "statement_id": "AllowRestApiInvokePublication"
     },
     "publication_search": {
-      "route_key": "GET /api/records/publication",
+      "method": "GET",
+      "path": "/api/records/publication",
       "statement_id": "AllowRestApiInvokePublicationSearch"
     },
     "decline": {
-      "route_key": "POST /api/records/{recordId}/deprecation-requests/decline",
+      "method": "POST",
+      "path": "/api/records/{recordId}/deprecation-requests/decline",
       "statement_id": "AllowRestApiInvokeDeclineDeprecation"
     },
     "reviews": {
-      "route_key": "GET /api/reviews",
+      "method": "GET",
+      "path": "/api/reviews",
       "statement_id": "AllowRestApiInvokeReviews"
     },
     "review": {
-      "route_key": "GET /api/reviews/{recordId}",
+      "method": "GET",
+      "path": "/api/reviews/{recordId}",
       "statement_id": "AllowRestApiInvokeReview"
     },
     "approve": {
-      "route_key": "POST /api/reviews/{recordId}/approve",
+      "method": "POST",
+      "path": "/api/reviews/{recordId}/approve",
       "statement_id": "AllowRestApiInvokeApprove"
     },
     "reject": {
-      "route_key": "POST /api/reviews/{recordId}/reject",
+      "method": "POST",
+      "path": "/api/reviews/{recordId}/reject",
       "statement_id": "AllowRestApiInvokeReject"
     },
     "read_recovery": {
-      "route_key": "GET /api/records/{recordId}/recovery",
+      "method": "GET",
+      "path": "/api/records/{recordId}/recovery",
       "statement_id": "AllowRestApiInvokeReadRecovery"
     },
     "perform_recovery": {
-      "route_key": "POST /api/records/{recordId}/recovery",
+      "method": "POST",
+      "path": "/api/records/{recordId}/recovery",
       "statement_id": "AllowRestApiInvokePerformRecovery"
     }
   }

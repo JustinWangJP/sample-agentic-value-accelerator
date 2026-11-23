@@ -37,38 +37,6 @@ variable "name_prefix" {
   default     = "registry-portal-dev"
 }
 
-variable "manage_api_gateway_account" {
-  description = "このリージョンの API Gateway の CloudWatch ロール設定を bootstrap で管理する。既存の設定を使う場合は false にする。"
-  type        = bool
-  default     = false
-}
-
-data "aws_partition" "current" {}
-
-resource "aws_iam_role" "api_gateway_logs" {
-  count = var.manage_api_gateway_account ? 1 : 0
-  name  = "${var.name_prefix}-api-gateway-logs"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "apigateway.amazonaws.com" }
-      Action    = "sts:AssumeRole"
-    }]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "api_gateway_logs" {
-  count      = length(aws_iam_role.api_gateway_logs)
-  role       = aws_iam_role.api_gateway_logs[count.index].name
-  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
-}
-
-resource "aws_api_gateway_account" "portal" {
-  count               = length(aws_iam_role.api_gateway_logs)
-  cloudwatch_role_arn = aws_iam_role.api_gateway_logs[count.index].arn
-  depends_on          = [aws_iam_role_policy_attachment.api_gateway_logs]
-}
 variable "cognito_user_pool_id" {
   description = "既存 Cognito User Pool ID。子 client とグループだけを管理する。"
   type        = string
@@ -104,6 +72,11 @@ variable "budget_notification_emails" {
   description = "予算アラートの通知先メールアドレス。空（既定）なら予算を作らない。個人情報なので tfvars にはコミットせず、環境変数 TF_VAR_budget_notification_emails で渡す。"
   type        = list(string)
   default     = []
+}
+variable "manage_api_gateway_account" {
+  description = "このリージョンの API Gateway の CloudWatch ロール設定を bootstrap で管理する。既存の設定を使う場合は false にする。"
+  type        = bool
+  default     = false
 }
 
 data "aws_region" "current" {}
@@ -373,6 +346,34 @@ resource "aws_budgets_budget" "monthly" {
     subscriber_email_addresses = var.budget_notification_emails
   }
 }
+# API Gateway の CloudWatch ロール設定（REST API のアクセスログに必要。リージョン内で共有）
+data "aws_partition" "current" {}
+
+resource "aws_iam_role" "api_gateway_logs" {
+  count = var.manage_api_gateway_account ? 1 : 0
+  name  = "${var.name_prefix}-api-gateway-logs"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "apigateway.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "api_gateway_logs" {
+  count      = length(aws_iam_role.api_gateway_logs)
+  role       = aws_iam_role.api_gateway_logs[count.index].name
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+}
+
+resource "aws_api_gateway_account" "portal" {
+  count               = length(aws_iam_role.api_gateway_logs)
+  cloudwatch_role_arn = aws_iam_role.api_gateway_logs[count.index].arn
+  depends_on          = [aws_iam_role_policy_attachment.api_gateway_logs]
+}
+
 output "state_bucket_name" {
   description = "本体の backend.hcl に設定するバケット名。"
   value       = aws_s3_bucket.state.id

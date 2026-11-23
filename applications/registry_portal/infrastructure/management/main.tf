@@ -18,11 +18,11 @@ data "aws_lambda_function" "management" {
 }
 
 module "management_routes" {
-  source                   = "../modules/management_routes"
-  routes                   = jsondecode(file("${path.module}/../modules/management_routes/routes.json")).management
-  authorization_scope      = var.portal_api_scope
-  rest_api_id              = var.rest_api_id
-  authorizer_id            = var.authorizer_id
-  lambda_invoke_arn        = data.aws_lambda_function.management.invoke_arn
-  management_function_name = var.management_function_name
+  source              = "../modules/api_routes"
+  route_group         = "management"
+  authorization_scope = var.rest_api.portal_api_scope
+  rest_api_id         = var.rest_api.id
+  authorizer_id       = var.rest_api.authorizer_id
+  lambda_invoke_arn   = data.aws_lambda_function.management.invoke_arn
+  function_name       = var.management_function_name
 }

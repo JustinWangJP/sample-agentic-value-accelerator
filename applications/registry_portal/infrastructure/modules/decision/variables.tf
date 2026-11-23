@@ -48,24 +48,15 @@ variable "supplement_table_arn" {
   }
 }
 
-variable "rest_api_id" {
-  type        = string
-  description = "決裁の route を割り当てる既存 API Gateway REST API の ID（#5 の IaC が作成し、ここでは借用する）"
-
-  validation {
-    condition     = can(regex("^[a-z0-9]{10}$", var.rest_api_id))
-    error_message = "API Gateway REST API の ID（英小文字と数字の10文字）を指定してください。"
-  }
-}
-
-variable "authorizer_id" {
-  type        = string
-  description = "決裁の route に適用する既存 Cognito User Pools authorizer の ID。人間用 SPA client のトークンを検証する authorizer を指定する"
-
-  validation {
-    condition     = can(regex("^[a-z0-9]+$", var.authorizer_id))
-    error_message = "REST API の Cognito User Pools authorizer の ID を指定してください。"
-  }
+variable "rest_api" {
+  type = object({
+    id                   = string
+    stage_name           = string
+    authorizer_id        = string
+    portal_api_scope     = string
+    cors_allowed_origins = list(string)
+  })
+  description = "決裁の route を割り当てる既存 REST API（本体スタックの output rest_api と同じ形）。ID・authorizer の ID・scope の形式は modules/api_routes で検証する。cors_allowed_origins は決裁 Lambda の CORS 許可リスト"
 }
 
 variable "discovery_client" {
@@ -89,11 +80,6 @@ variable "discovery_kms_key_arn" {
   }
 }
 
-variable "portal_api_scope" {
-  type        = string
-  description = "route の Cognito User Pools authorizer が検証するポータル用のカスタム scope。本体スタックの output portal_api_scope と同じ値"
-}
-
 variable "log_retention_in_days" {
   type        = number
   description = "決裁 Lambda のロググループの保持日数。許容値の検証はルートモジュールの変数で行う"
@@ -104,9 +90,4 @@ variable "lambda_reserved_concurrency" {
   type        = number
   description = "決裁 Lambda の予約同時実行数（reserved_concurrent_executions）。null なら予約しない"
   default     = null
-}
-
-variable "cors_allowed_origins" {
-  type        = list(string)
-  description = "本体スタックの output cors_allowed_origins。決裁 Lambda の CORS 許可リスト。"
 }

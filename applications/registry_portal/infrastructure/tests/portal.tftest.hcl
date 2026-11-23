@@ -192,9 +192,10 @@ run "outputs_for_additional_stacks" {
   command = apply
   assert {
     condition = (
-      output.rest_api_id == "abcde12345"
-      && output.authorizer_id == aws_api_gateway_authorizer.human.id
-      && output.stage_name == "v1"
+      output.rest_api.id == "abcde12345"
+      && output.rest_api.authorizer_id == aws_api_gateway_authorizer.human.id
+      && output.rest_api.stage_name == "v1"
+      && output.rest_api.cors_allowed_origins == tolist(["https://portal.example.cloudfront.net"])
       && output.frontend_config.VITE_API_BASE_URL == "https://abcde12345.execute-api.us-east-1.amazonaws.com/v1"
       && output.human_client_id == aws_cognito_user_pool_client.human.id
       && output.cognito_issuer == "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_Example"
@@ -211,8 +212,13 @@ run "outputs_for_additional_stacks" {
     error_message = "追加スタックの tfvars に転記する管理ロール名・関数名と補助テーブルの名前・ARN を出力してください。"
   }
   assert {
-    condition     = output.frontend_config.VITE_COGNITO_SCOPES == "openid ${output.portal_api_scope}" && output.portal_api_scope == "registry-portal/api.invoke"
+    condition     = output.frontend_config.VITE_COGNITO_SCOPES == "openid ${output.rest_api.portal_api_scope}" && output.rest_api.portal_api_scope == "registry-portal/api.invoke"
     error_message = "SPA は route が検証するカスタム scope を含めてトークンを要求し、追加スタックに渡す scope を出力してください。"
+  }
+  assert {
+    # management・decision の variable "rest_api" と同じ属性にし、output をそのまま転記できるようにする
+    condition     = toset(keys(output.rest_api)) == toset(["id", "stage_name", "authorizer_id", "portal_api_scope", "cors_allowed_origins"])
+    error_message = "output rest_api は、追加スタックの変数 rest_api と同じ属性で出力してください。"
   }
 }
 

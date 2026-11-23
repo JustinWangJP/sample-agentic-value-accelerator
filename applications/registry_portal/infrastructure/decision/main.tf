@@ -15,10 +15,7 @@ module "decision" {
   registry_arn          = var.registry_arn
   supplement_table_name = var.supplement_table_name
   supplement_table_arn  = var.supplement_table_arn
-  rest_api_id           = var.rest_api_id
-  authorizer_id         = var.authorizer_id
-  cors_allowed_origins  = var.cors_allowed_origins
-  portal_api_scope      = var.portal_api_scope
+  rest_api              = var.rest_api
   # 取り込みで公開承認済みの版を読む発見用 M2M（管理 Lambda と同じ client）
   discovery_client = {
     token_url         = var.discovery_token_url

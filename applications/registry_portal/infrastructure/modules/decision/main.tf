@@ -76,7 +76,7 @@ resource "aws_lambda_function" "decision" {
   reserved_concurrent_executions = var.lambda_reserved_concurrency
   environment {
     variables = merge(module.discovery_client.environment, {
-      CORS_ALLOWED_ORIGINS  = jsonencode(var.cors_allowed_origins)
+      CORS_ALLOWED_ORIGINS  = jsonencode(var.rest_api.cors_allowed_origins)
       COGNITO_ISSUER        = var.cognito_issuer
       HUMAN_CLIENT_ID       = var.human_client_id
       REGISTRY_ARN          = var.registry_arn
@@ -88,11 +88,11 @@ resource "aws_lambda_function" "decision" {
 
 # パスと authorizer は本体スタックから借用する。
 module "decision_routes" {
-  source                   = "../management_routes"
-  routes                   = jsondecode(file("${path.module}/../management_routes/routes.json")).decision
-  authorization_scope      = var.portal_api_scope
-  rest_api_id              = var.rest_api_id
-  authorizer_id            = var.authorizer_id
-  lambda_invoke_arn        = aws_lambda_function.decision.invoke_arn
-  management_function_name = aws_lambda_function.decision.function_name
+  source              = "../api_routes"
+  route_group         = "decision"
+  authorization_scope = var.rest_api.portal_api_scope
+  rest_api_id         = var.rest_api.id
+  authorizer_id       = var.rest_api.authorizer_id
+  lambda_invoke_arn   = aws_lambda_function.decision.invoke_arn
+  function_name       = aws_lambda_function.decision.function_name
 }

@@ -1,21 +1,24 @@
 data "aws_region" "current" {}
+data "aws_partition" "current" {}
 
 locals {
   # provider のリージョン（us-east-1 に固定。追加スタックのモジュールと同じく data source から読む）
   region = data.aws_region.current.region
-  issuer = "https://cognito-idp.${local.region}.amazonaws.com/${var.cognito_user_pool_id}"
+  # ARN のパーティション。経路モジュール（modules/api_routes）と同じく data source から読む
+  partition = data.aws_partition.current.partition
+  issuer    = "https://cognito-idp.${local.region}.amazonaws.com/${var.cognito_user_pool_id}"
   # 管理 Lambda・実行ロール・ロググループの共通名。bootstrap の locals も同じ規則で組み立てる
   management_name = "${var.name_prefix}-management"
   spa_origin      = "https://${aws_cloudfront_distribution.spa.domain_name}"
   # 人間用 client のコールバック URL・ログアウト URL。CloudFront の SPA と、ローカルの開発サーバー（var.local_dev_origins）
   spa_redirect_urls = concat(["${local.spa_origin}/"], [for o in var.local_dev_origins : "${o}/"])
   # REST API のすべての route（追加スタックを含む）が検証するカスタム scope。業務ロールの判定は handler が行う。
-  # 追加スタックと SPA には output（portal_api_scope と frontend_config）で渡し、値はここだけに定義する
+  # 追加スタックと SPA には output（rest_api と frontend_config）で渡し、値はここだけに定義する
   portal_api_scope_name = "api.invoke"
   portal_api_scope      = "${aws_cognito_resource_server.portal.identifier}/${local.portal_api_scope_name}"
   registry_record       = "${var.registry_arn}/record/*"
   # plan の段階で値が確定するよう、名前から組み立てる（追加スタックの supplement_table_arn にも使う）
-  supplement_table_arn = "arn:aws:dynamodb:${local.region}:${var.aws_account_id}:table/${aws_dynamodb_table.auxiliary.name}"
+  supplement_table_arn = "arn:${local.partition}:dynamodb:${local.region}:${var.aws_account_id}:table/${aws_dynamodb_table.auxiliary.name}"
 }
 
 resource "aws_cognito_resource_server" "portal" {

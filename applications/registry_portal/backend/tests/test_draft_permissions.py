@@ -82,17 +82,14 @@ def test_root_module_applies_the_draft_policy_to_the_management_role():
     root_variables = set(
         re.findall(r'^variable "([^"]+)"', (ROOT / "variables.tf").read_text(), re.MULTILINE)
     )
-    # REST API の scope は本体の出力から、パスと統合先は既存リソースから取得する
-    routes_inputs = (
-        _variables(ROUTES_MODULE)
-        - {"routes", "authorization_scope", "resource_ids", "lambda_invoke_arn"}
-    ) | {"portal_api_scope"}
+    # REST API の ID・authorizer・scope は本体の output rest_api の転記から、統合先は関数名から取得する
+    routes_inputs = {"rest_api", "management_function_name"}
     assert root_variables == module_variables | routes_inputs | {"region"}
     # CI では検証だけを行うため、state の保存先は部分設定にして環境ごとに渡す
     assert 'backend "s3" {}' in (ROOT / "versions.tf").read_text()
 
 
-ROUTES_MODULE = MODULE.parent / "management_routes"
+ROUTES_MODULE = MODULE.parent / "api_routes"
 
 
 def _variables(module: Path) -> set[str]:
@@ -104,7 +101,7 @@ def _variables(module: Path) -> set[str]:
 def test_routes_module_assigns_only_portal_added_management_routes():
     """管理スタックの経路を共通の経路表で固定する。"""
     routes = json.loads((ROUTES_MODULE / "routes.json").read_text())["management"]
-    assert {route["route_key"] for route in routes.values()} == {
+    assert {f"{route['method']} {route['path']}" for route in routes.values()} == {
         "GET /api/admin/records",
         "GET /api/admin/connection",
         "GET /api/records/{recordId}/history",
@@ -126,14 +123,15 @@ def test_root_module_applies_the_routes_module():
     source = re.search(r'source\s*=\s*"([^"]+)"', block)
     assert source is not None
     assert (ROOT / source.group(1)).resolve() == ROUTES_MODULE
+    # パスは本体スタックが作ったものを REST API から引くため、resource_ids は渡さない
     passed_through = {
-        "routes": (
-            'jsondecode(file("${path.module}/../modules/management_routes/routes.json"))'
-            ".management"
-        ),
+        "route_group": '"management"',
+        "rest_api_id": "var.rest_api.id",
+        "authorizer_id": "var.rest_api.authorizer_id",
+        "authorization_scope": "var.rest_api.portal_api_scope",
         "lambda_invoke_arn": "data.aws_lambda_function.management.invoke_arn",
-        "authorization_scope": "var.portal_api_scope",
+        "function_name": "var.management_function_name",
     }
-    for name in _variables(ROUTES_MODULE) - {"resource_ids"}:
-        value = re.escape(passed_through.get(name, f"var.{name}"))
-        assert re.search(rf"^\s*{name}\s*=\s*{value}$", block, re.MULTILINE), name
+    assert _variables(ROUTES_MODULE) - {"resource_ids"} == set(passed_through)
+    for name, value in passed_through.items():
+        assert re.search(rf"^\s*{name}\s*=\s*{re.escape(value)}$", block, re.MULTILINE), name

@@ -23,29 +23,19 @@ output "frontend_config" {
 
 # 以下は追加スタック（management・decision・notification_events）の terraform.tfvars に転記する値。
 # 追加スタックは別 state のまま運用し、本体スタックの資源を ID と名前で借用する。
-output "rest_api_id" {
-  description = "追加スタックが route を割り当てる REST API の ID（management・decision の rest_api_id）。"
-  value       = aws_api_gateway_rest_api.portal.id
-}
-output "portal_api_scope" {
-  description = "REST API の route が Cognito User Pools authorizer で検証するポータル用のカスタム scope（management・decision の portal_api_scope）。"
-  value       = local.portal_api_scope
-}
-output "authorizer_id" {
-  description = "人間用 SPA client のトークンを検証する Cognito User Pools authorizer の ID（management・decision の authorizer_id）。"
-  value       = aws_api_gateway_authorizer.human.id
+output "rest_api" {
+  description = "追加スタックが経路を割り当てる REST API（management・decision の rest_api にそのまま転記する）。ID・ステージ名（deploy.sh の再デプロイ先）・Cognito User Pools authorizer の ID・経路が検証するポータル用のカスタム scope・管理・決裁 Lambda の CORS 許可リスト。"
+  value = {
+    id                   = aws_api_gateway_rest_api.portal.id
+    stage_name           = aws_api_gateway_stage.portal.stage_name
+    authorizer_id        = aws_api_gateway_authorizer.human.id
+    portal_api_scope     = local.portal_api_scope
+    cors_allowed_origins = local.cors_allowed_origins
+  }
 }
 output "api_region" {
-  description = "REST API のリージョン。deploy.sh で再デプロイするときに使用する。"
+  description = "REST API のリージョン。deploy.sh で本体スタックを再デプロイするときに使用する（追加スタックは自身の region を使う）。"
   value       = local.region
-}
-output "stage_name" {
-  description = "REST API のステージ名。"
-  value       = aws_api_gateway_stage.portal.stage_name
-}
-output "cors_allowed_origins" {
-  description = "管理・決裁 Lambda の CORS 許可リスト（decision の cors_allowed_origins）。"
-  value       = local.cors_allowed_origins
 }
 output "human_client_id" {
   description = "人間用の公開 SPA client の ID（decision の human_client_id）。"

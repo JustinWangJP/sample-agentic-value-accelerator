@@ -1,18 +1,18 @@
 locals {
   api_stage            = "v1"
   cors_allowed_origins = distinct(concat([local.spa_origin], var.local_dev_origins))
-  api_routes           = jsondecode(file("${path.module}/modules/management_routes/routes.json"))
+  # 追加スタックの経路を含む、REST API のすべてのパス。経路の割り当ては modules/api_routes が同じ表から読む
   route_paths = toset(flatten([
-    for routes in values(local.api_routes) : [for route in values(routes) : split(" ", route.route_key)[1]]
+    for routes in values(jsondecode(file("${path.module}/modules/api_routes/routes.json"))) :
+    [for route in values(routes) : route.path]
   ]))
-  # 中間パスを含め、親が先に作られるよう階層ごとに resource を作る。
   path_segments = [for path in local.route_paths : split("/", trimprefix(path, "/"))]
   api_resources = merge(
     { "/api" = aws_api_gateway_resource.api.id },
-    { for path, resource in aws_api_gateway_resource.collection : path => resource.id },
-    { for path, resource in aws_api_gateway_resource.item : path => resource.id },
-    { for path, resource in aws_api_gateway_resource.action : path => resource.id },
-    { for path, resource in aws_api_gateway_resource.subaction : path => resource.id },
+    { for path, resource in aws_api_gateway_resource.depth2 : path => resource.id },
+    { for path, resource in aws_api_gateway_resource.depth3 : path => resource.id },
+    { for path, resource in aws_api_gateway_resource.depth4 : path => resource.id },
+    { for path, resource in aws_api_gateway_resource.depth5 : path => resource.id },
   )
 }
 
@@ -44,7 +44,7 @@ resource "aws_api_gateway_authorizer" "human" {
   name            = "human-access-token"
   type            = "COGNITO_USER_POOLS"
   identity_source = "method.request.header.Authorization"
-  provider_arns   = ["arn:aws:cognito-idp:${local.region}:${var.aws_account_id}:userpool/${var.cognito_user_pool_id}"]
+  provider_arns   = ["arn:${local.partition}:cognito-idp:${local.region}:${var.aws_account_id}:userpool/${var.cognito_user_pool_id}"]
 }
 
 resource "aws_api_gateway_resource" "api" {
@@ -53,45 +53,51 @@ resource "aws_api_gateway_resource" "api" {
   path_part   = "api"
 }
 
-resource "aws_api_gateway_resource" "collection" {
+# 中間パスを含め、親が先に作られるよう、パスのセグメント数（深さ）ごとに resource を作る。
+# 例: /api は深さ 1、/api/catalog は 2、/api/catalog/search は 3。
+# resource は自分自身を親として参照できないため、深さごとに別のブロックにする。
+resource "aws_api_gateway_resource" "depth2" {
   for_each    = toset([for parts in local.path_segments : "/${join("/", slice(parts, 0, 2))}"])
   rest_api_id = aws_api_gateway_rest_api.portal.id
   parent_id   = aws_api_gateway_resource.api.id
   path_part   = basename(each.key)
 }
 
-resource "aws_api_gateway_resource" "item" {
+resource "aws_api_gateway_resource" "depth3" {
   for_each    = toset([for parts in local.path_segments : "/${join("/", slice(parts, 0, 3))}" if length(parts) >= 3])
   rest_api_id = aws_api_gateway_rest_api.portal.id
-  parent_id   = aws_api_gateway_resource.collection[dirname(each.key)].id
+  parent_id   = aws_api_gateway_resource.depth2[dirname(each.key)].id
   path_part   = basename(each.key)
 }
 
-resource "aws_api_gateway_resource" "action" {
+resource "aws_api_gateway_resource" "depth4" {
   for_each    = toset([for parts in local.path_segments : "/${join("/", slice(parts, 0, 4))}" if length(parts) >= 4])
   rest_api_id = aws_api_gateway_rest_api.portal.id
-  parent_id   = aws_api_gateway_resource.item[dirname(each.key)].id
+  parent_id   = aws_api_gateway_resource.depth3[dirname(each.key)].id
   path_part   = basename(each.key)
 }
 
-resource "aws_api_gateway_resource" "subaction" {
+resource "aws_api_gateway_resource" "depth5" {
   for_each    = toset([for parts in local.path_segments : "/${join("/", parts)}" if length(parts) == 5])
   rest_api_id = aws_api_gateway_rest_api.portal.id
-  parent_id   = aws_api_gateway_resource.action[dirname(each.key)].id
+  parent_id   = aws_api_gateway_resource.depth4[dirname(each.key)].id
   path_part   = basename(each.key)
 }
 
+# 本体の経路（routes.json の main）も管理 Lambda に割り当てる
 module "management_routes" {
-  source                   = "./modules/management_routes"
-  routes                   = local.api_routes.main
-  authorization_scope      = local.portal_api_scope
-  rest_api_id              = aws_api_gateway_rest_api.portal.id
-  authorizer_id            = aws_api_gateway_authorizer.human.id
-  resource_ids             = local.api_resources
-  lambda_invoke_arn        = aws_lambda_function.management.invoke_arn
-  management_function_name = aws_lambda_function.management.function_name
+  source              = "./modules/api_routes"
+  route_group         = "main"
+  authorization_scope = local.portal_api_scope
+  rest_api_id         = aws_api_gateway_rest_api.portal.id
+  authorizer_id       = aws_api_gateway_authorizer.human.id
+  resource_ids        = local.api_resources
+  lambda_invoke_arn   = aws_lambda_function.management.invoke_arn
+  function_name       = aws_lambda_function.management.function_name
 }
 
+# 移動先は旧名のまま残し、modules/api_routes の moved で aws_lambda_permission.route へつなぐ
+# （同じ移動先を持つ moved が 2 つあると Terraform が拒否するため）
 moved {
   from = aws_lambda_permission.api
   to   = module.management_routes.aws_lambda_permission.management_api

@@ -91,7 +91,7 @@ def test_module_creates_the_decision_lambda_with_its_own_role_and_log_group():
     assert re.findall(r'^module "([^"]+)" \{\n\s*source\s*=\s*"([^"]+)"', main, re.MULTILINE) == [
         ("log_group", "../lambda_log_group"),
         ("discovery_client", "../discovery_client"),
-        ("decision_routes", "../management_routes"),
+        ("decision_routes", "../api_routes"),
     ]
     # 実行ロールは決裁 Lambda 専用に新しく作る（管理 Lambda のロールを流用しない）
     assert 'Principal = { Service = "lambda.amazonaws.com" }' in main
@@ -108,9 +108,9 @@ def test_module_creates_the_decision_lambda_with_its_own_role_and_log_group():
 
 def test_module_routes_only_curator_and_recovery_apis_to_the_decision_lambda():
     """審査・決裁・公開管理・回復の経路を、決裁 Lambda に割り当てる。"""
-    routes_module = MODULE.parent / "management_routes"
+    routes_module = MODULE.parent / "api_routes"
     routes = json.loads((routes_module / "routes.json").read_text())["decision"]
-    assert {route["route_key"] for route in routes.values()} == {
+    assert {f"{route['method']} {route['path']}" for route in routes.values()} == {
         "GET /api/reviews",
         "GET /api/reviews/{recordId}",
         "POST /api/reviews/{recordId}/approve",
@@ -128,12 +128,10 @@ def test_module_routes_only_curator_and_recovery_apis_to_the_decision_lambda():
 
     main = (MODULE / "main.tf").read_text()
     (wiring,) = re.findall(r'module "decision_routes" \{(.*?)\n\}', main, re.DOTALL)
-    assert 'routes.json")).decision' in wiring
+    assert re.search(r'route_group\s*=\s*"decision"', wiring)
     assert re.search(r"lambda_invoke_arn\s*=\s*aws_lambda_function\.decision\.invoke_arn", wiring)
-    assert re.search(
-        r"management_function_name\s*=\s*aws_lambda_function\.decision\.function_name", wiring
-    )
-    assert re.search(r"authorization_scope\s*=\s*var\.portal_api_scope", wiring)
+    assert re.search(r"function_name\s*=\s*aws_lambda_function\.decision\.function_name", wiring)
+    assert re.search(r"authorization_scope\s*=\s*var\.rest_api\.portal_api_scope", wiring)
 
 
 def test_arn_validation_does_not_pin_a_region():

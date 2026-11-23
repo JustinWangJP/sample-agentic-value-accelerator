@@ -204,27 +204,36 @@ else
   read -r confirmation || fail "反映を中止しました。"
   [[ "$confirmation" == "apply" ]] || fail "反映を中止しました。"
 fi
-if [[ "$destroy" == true && ( "$stack" == management || "$stack" == decision ) ]]; then
-  # 撤去で output が消える前に、検査済み plan から再デプロイ先を取得する。
+if [[ "$stack" == management || "$stack" == decision ]]; then
+  # 追加スタックの再デプロイ先は、検査済み plan の変数 rest_api（本体の output rest_api の転記）から取得する。
+  # 撤去でも反映でも同じ値を使い、追加スタックには再デプロイ先のための output を持たせない
   api_target="$(tf show -json "$work_dir/approved.tfplan" | python3 -c '
 import json
 import sys
 
 variables = json.load(sys.stdin)["variables"]
-print(variables["rest_api_id"]["value"], variables["region"]["value"])
+rest_api = variables["rest_api"]["value"]
+print(rest_api["id"], rest_api["stage_name"], variables["region"]["value"])
 ')"
-  read -r api_id api_region <<<"$api_target"
+  read -r api_id api_stage api_region <<<"$api_target"
 fi
 tf apply -input=false "$work_dir/approved.tfplan"
 if [[ "$stack" != notification_events && "$is_main_destroy" != true ]]; then
-  if [[ "$destroy" != true ]]; then
-    api_id="$(tf output -raw rest_api_id)"
+  if [[ "$stack" == main ]]; then
+    api_target="$(tf output -json rest_api | python3 -c '
+import json
+import sys
+
+rest_api = json.load(sys.stdin)
+print(rest_api["id"], rest_api["stage_name"])
+')"
+    read -r api_id api_stage <<<"$api_target"
     api_region="$(tf output -raw api_region)"
   fi
   deployment_id="$(aws apigateway create-deployment --rest-api-id "$api_id" \
     --region "$api_region" --profile "$AWS_PROFILE" --query id --output text)"
   [[ -n "$deployment_id" && "$deployment_id" != None ]] || fail "REST API のデプロイ ID を取得できませんでした。"
-  aws apigateway update-stage --rest-api-id "$api_id" --stage-name v1 \
+  aws apigateway update-stage --rest-api-id "$api_id" --stage-name "$api_stage" \
     --patch-operations "op=replace,path=/deploymentId,value=$deployment_id" \
     --region "$api_region" --profile "$AWS_PROFILE" >/dev/null
 fi
