@@ -15,9 +15,6 @@ info:
     （`infrastructure/modules/api_routes/routes.json`）から作り、この文書の operation と一致させます。
     各 operation の `x-handler` が担当する handler を示します。
 
-    HTTP API からの移行中（#77 まで）は、handler が HTTP API（payload format 2.0）のイベントも受け付けます。
-    配信する API は REST API だけです。
-
     | `x-handler` | Lambda エントリーポイント | 担当 |
     | --- | --- | --- |
     | `management` | `handlers/management.py` | 自分の情報、カタログ、下書き・申請、操作照会、履歴、廃止依頼、通知、Admin の一覧・接続診断 |

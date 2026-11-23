@@ -626,7 +626,7 @@ def test_service_client_cannot_edit_or_submit_unmanaged_record():
     with Stubber(registry):
         for method, suffix in [("PATCH", ""), ("POST", "/submit")]:
             request = event(method, f"/api/records/{RECORD_ID}{suffix}", {"draft": CUSTOM_DRAFT})
-            claims = request["requestContext"]["authorizer"]["jwt"]["claims"]
+            claims = request["requestContext"]["authorizer"]["claims"]
             claims["client_id"] = "ci-m2m-client"
             assert call(handler, request)[0] == 403
     assert stored(db, "MANAGEMENT") is None

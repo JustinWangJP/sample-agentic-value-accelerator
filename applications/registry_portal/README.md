@@ -11,7 +11,7 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 | `backend/src/registry_portal/handlers/management.py` | 管理 handler の Lambda エントリーポイント。認証設定がなければ初期化に失敗する |
 | `backend/src/registry_portal/handlers/curation.py` | 決裁 handler の Lambda エントリーポイント。認証設定または補助テーブルがなければ初期化に失敗する |
 | `backend/src/registry_portal/handlers/events.py` | イベント処理 handler の Lambda エントリーポイント（#15）。Registry の ARN または補助テーブルがなければ初期化に失敗する |
-| `backend/src/registry_portal/app.py` | API Gateway REST API と HTTP API のイベントを受け取り、route を振り分ける。HTTP API 形式は dev での確認（#76）の後に #77 で外す |
+| `backend/src/registry_portal/app.py` | API Gateway REST API の Lambda プロキシイベントを受け取り、route を振り分ける |
 | `backend/openapi.yaml` | 管理 handler と決裁 handler の全 API の OpenAPI 3.1.0 仕様。route を足す・変えるときは、`app.py` のルート表と共通の経路表（`infrastructure/modules/api_routes/routes.json`）と一緒に更新する（`infrastructure/tests/test_route_permissions.py` が経路表との一致を、`backend/tests/test_route_tables.py` が `app.py` のルート表との一致を検査する）。Lint の設定は `backend/redocly.yaml` |
 | `backend/src/registry_portal/auth.py` | 認可。検証済みの claims から主体・業務ロール・所属チームを導出する |
 | `backend/src/registry_portal/errors.py` | 共通エラー DTO と日本語メッセージ |
@@ -41,7 +41,7 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 
 ## 認可
 
-管理 handler は、API Gateway の authorizer が検証した claims を、Lambda でも次のとおり検査します。claims は、HTTP API の JWT authorizer なら `requestContext.authorizer.jwt.claims`、REST API の Cognito User Pools authorizer なら `requestContext.authorizer.claims` から読みます（REST API への移行中は両方を受け付けます）。
+管理 handler は、REST API の Cognito User Pools authorizer が検証した claims を `requestContext.authorizer.claims` から読み、Lambda 側でも次の項目を検査します。
 
 - `token_use` が `access` であること（ID トークンは拒否する）
 - `iss` が設定した Cognito User Pool であること
@@ -50,7 +50,7 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 
 主体は `iss` + `sub` で識別します。業務ロールは Cognito グループ（claim `cognito:groups`）から導出します。
 
-`cognito:groups` がどの形で Lambda に届くかは、authorizer の種類で異なります。HTTP API の JWT authorizer は、配列の claim を `[a b]` の形の文字列で渡します。REST API の JWT authorizer は、配列を JSON の型のまま渡します（[REST API の JWT authorizer の claims](https://docs.aws.amazon.com/apigateway/latest/developerguide/rest-api-jwt-authorizer-claims.html)）。一方、このポータルが使う REST API の Cognito User Pools authorizer がどの形で渡すかは、公式文書に記載がありません（[Cognito User Pools authorizer](https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-integrate-with-cognito.html)）。そのため、Lambda は配列、`[a b]` の形、カンマ区切り（`a,b`）のいずれも受け付けます（`backend/src/registry_portal/auth.py` の `_parse_groups`）。実際のイベントでの形は、dev の受入確認（#76）で確かめます。テストのイベントはこの 3 つの形を想定して作ったもので、実際のイベントから取ったものではありません。
+`cognito:groups` を REST API の Cognito User Pools authorizer がどの形式で渡すかは、公式文書に記載がありません（[Cognito User Pools authorizer](https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-integrate-with-cognito.html)）。そのため、Lambda は配列、`[a b]` の形、カンマ区切り（`a,b`）のいずれも受け付けます（`backend/src/registry_portal/auth.py` の `_parse_groups`）。実際のイベントでの形は、dev の受入確認（#76）で確かめます。テストのイベントはこの 3 つの形を想定して作ったもので、実際のイベントから取ったものではありません。
 
 | Cognito グループ | 業務ロール |
 |---|---|

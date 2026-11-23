@@ -1,4 +1,4 @@
-"""検索と詳細を API Gateway HTTP API v2 のイベントとフェイク HTTP で検証する（Seam 1）。"""
+"""検索と詳細を API Gateway REST API のイベントとフェイク HTTP で検証する（Seam 1）。"""
 
 import json
 from typing import Any
@@ -442,8 +442,7 @@ def test_rest_api_event_routes_the_detail_by_path_without_stage() -> None:
 )
 def test_unknown_catalog_paths_are_not_routed_to_the_detail(path: str) -> None:
     transport = FakeTransport()
-    event = detail_event(AGENT_ID)
-    event["requestContext"]["http"]["path"] = path
+    event = rest_api_event(path=path, claims=access_claims())
 
     status, body = call(make_handler(transport), event)
 

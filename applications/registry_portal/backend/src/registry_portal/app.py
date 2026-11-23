@@ -1,16 +1,4 @@
-"""Lambda handler の組み立て。
-
-handler は API Gateway の次の 2 つのイベント形式を受け取る（REST API への移行中。仕様 #61 実装案 8）。
-
-- HTTP API（payload format 2.0、JWT authorizer）: claims は `requestContext.authorizer.jwt.claims`、
-  メソッドとパスは `requestContext.http`
-- REST API（Lambda プロキシ統合、Cognito User Pools authorizer）: claims は
-  `requestContext.authorizer.claims`、メソッドとパスは最上位の `httpMethod` と `path`
-
-Terraform はすでに REST API だけを作るが、HTTP API 形式の分岐は #77 まで残す。仕様 #61 の
-進め方では、dev での確認（#76）が済むまで、バックエンドは両方の形式で動く状態を保つ。
-#76 で REST API の経路・認可・CORS を確かめた後、#77 でこの分岐と HTTP API 形式のテストを外す。
-"""
+"""API Gateway REST API の Lambda プロキシ統合用 handler を組み立てる。"""
 
 from __future__ import annotations
 
@@ -106,9 +94,8 @@ def _request_context(event: LambdaEvent) -> Mapping[str, Any]:
 
 
 class _ApiRequest(NamedTuple):
-    """2 つのイベント形式の差を吸収した要求。形式の判定は _api_request だけで行う。"""
+    """REST API の経路照合と認可に使う要求。"""
 
-    rest_api: bool
     method: str
     # ルート表と照合するキー（例: GET /api/me）
     route_key: str
@@ -117,25 +104,12 @@ class _ApiRequest(NamedTuple):
 
 
 def _api_request(event: LambdaEvent) -> _ApiRequest:
-    """イベントの形式を判定し、メソッド・ルート表のキー・claims を取り出す。
-
-    REST API は最上位の `httpMethod` と `path`（ステージ名を含まない）と `authorizer.claims`、
-    HTTP API は `requestContext.http` の method と path と `authorizer.jwt.claims` を使う。
-    HTTP API のイベントは最上位に `httpMethod` を持たない。
-    """
-    context = _request_context(event)
-    authorizer = _mapping_or_empty(context.get("authorizer"))
-    rest_method = event.get("httpMethod")
-    if isinstance(rest_method, str):
-        rest_api, method, path = True, rest_method, event.get("path", "")
-        claims = authorizer.get("claims")
-    else:
-        http = _mapping_or_empty(context.get("http"))
-        rest_api, method, path = False, str(http.get("method", "")), http.get("path", "")
-        claims = _mapping_or_empty(authorizer.get("jwt")).get("claims")
-    return _ApiRequest(
-        rest_api, method, f"{method} {path}", claims if isinstance(claims, Mapping) else None
-    )
+    """ステージ名を含まないパスと Cognito authorizer の検証済み claims を取り出す。"""
+    method = event.get("httpMethod", "")
+    path = event.get("path", "")
+    authorizer = _mapping_or_empty(_request_context(event).get("authorizer"))
+    claims = authorizer.get("claims")
+    return _ApiRequest(method, f"{method} {path}", claims if isinstance(claims, Mapping) else None)
 
 
 # ルート表のキーに含まれる path パラメーター（例: {recordId}）。1つのルートに1つまで
@@ -168,7 +142,7 @@ def _path_parameter(event: LambdaEvent) -> str:
 
 
 def _query_of(event: LambdaEvent) -> Mapping[str, str]:
-    """クエリ文字列。HTTP API は同じ名前の値をカンマで連結した1つの文字列にして渡す。"""
+    """単一値のクエリパラメーターを取り出す。"""
     query = _mapping_or_empty(event.get("queryStringParameters"))
     return {str(key): str(value) for key, value in query.items()}
 
@@ -278,7 +252,6 @@ class ApiHandler:
     """ルート表で要求を処理する Lambda handler。認可・エラー応答はすべての API で共通。
 
     REST API 形式の応答には CorsPolicy が決めた CORS ヘッダーを付ける。
-    HTTP API の CORS は API Gateway の設定が処理するため、HTTP API 形式の応答には付けない。
     """
 
     def __init__(
@@ -298,8 +271,6 @@ class ApiHandler:
 
     def __call__(self, event: LambdaEvent, context: Any) -> LambdaResponse:
         request = _api_request(event)
-        if not request.rest_api:
-            return self._dispatch(event, request)
         if self._cors.answers_preflight and request.method == "OPTIONS":
             return self._cors.preflight_response(event)
         response = self._dispatch(event, request)

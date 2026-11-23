@@ -14,6 +14,7 @@ from typing import Any
 import boto3
 
 from catalog_helpers import ENV, HUMAN_CLIENT_ID, ISSUER, REGISTRY_ARN, SUPPLEMENT_TABLE
+from event_helpers import rest_api_event
 from registry_portal.app import create_management_handler
 
 RECORD_ID = "agentABC1234"
@@ -28,24 +29,20 @@ def event(
     key: str = "draft-1",
     sub: str = "alice",
 ) -> dict[str, Any]:
-    return {
-        "requestContext": {
-            "http": {"method": method, "path": path},
-            "authorizer": {
-                "jwt": {
-                    "claims": {
-                        "iss": ISSUER,
-                        "sub": sub,
-                        "client_id": HUMAN_CLIENT_ID,
-                        "token_use": "access",
-                        "cognito:groups": groups,
-                    }
-                }
-            },
+    request = rest_api_event(
+        method,
+        path,
+        claims={
+            "iss": ISSUER,
+            "sub": sub,
+            "client_id": HUMAN_CLIENT_ID,
+            "token_use": "access",
+            "cognito:groups": groups,
         },
-        "headers": {"idempotency-key": key} if key else {},
-        "body": json.dumps(body or {}),
-    }
+        headers={"idempotency-key": key} if key else {},
+    )
+    request["body"] = json.dumps(body or {})
+    return request
 
 
 def call(handler: Any, request: dict[str, Any]) -> tuple[int, Any]:

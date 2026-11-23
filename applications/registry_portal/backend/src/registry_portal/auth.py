@@ -49,9 +49,7 @@ _ROLE_GROUPS: tuple[tuple[Role, str], ...] = (
 def _parse_groups(value: Any) -> set[str]:
     """`cognito:groups` を集合にする。
 
-    HTTP API の JWT authorizer は配列の claim を "[a b]" 形式の文字列で渡す。
-    REST API の Cognito User Pools authorizer が渡す形は公式文書に記載がないため、
-    カンマ区切り（"a,b"）も受け付ける。直接配列で渡される場合も受け付ける。
+    文字列（空白区切り、カンマ区切り、角括弧付き）と配列を受け付ける。
     """
     if value is None:
         return set()
@@ -66,7 +64,7 @@ def _parse_groups(value: Any) -> set[str]:
 def authorize(claims: Mapping[str, Any] | None, settings: AuthSettings) -> Caller:
     """検証済みの claims を検査し、呼び出し元を返す。
 
-    API Gateway の authorizer（HTTP API の JWT authorizer、REST API の Cognito User Pools authorizer）が
+    REST API の Cognito User Pools authorizerが
     署名・有効期限などを検証した後でも、設定の誤りに備えて Lambda 側で次を再確認する（多層防御）。
     有効期限（`exp`）は authorizer が必ず検証し、設定で外せないため再確認しない（設計書「401 と 403 の使い分け」）。
 
