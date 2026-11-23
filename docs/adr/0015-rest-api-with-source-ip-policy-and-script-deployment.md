@@ -38,7 +38,8 @@ REST API は、経路を足しても、デプロイを作り直すまで利用�
 - 許可していない IP から呼ぶと、トークンがない場合は 401（Cognito の認証が先に失敗する）、有効なトークンがある場合は 403 になる。どちらの場合も Lambda は起動しない。`OPTIONS` は authorizer がないため、許可していない IP からは 403 になる。dev での確認（#76）では、この 2 通りを分けて確かめる。
 - バックエンドには、`OPTIONS` への応答と、すべての応答への CORS ヘッダーの付与（許可リストとの照合）が必要になる。仕様の「バックエンド」の項（#72）にはない作業である。HTTP API の間は、バックエンドが返す CORS ヘッダーが無視されるため、移行の前に入れても動作は変わらない。`OPTIONS` も管理 Lambda を起動するため、予約同時実行数（実装案 5）を決めるときは、プリフライトの分も見込む。
 - 本体の output に、REST API の ID、ステージ名、authorizer の ID、scope、CORS の許可リストをまとめた `rest_api` を加える。追加スタックは同名の変数 `rest_api` で受け取り、値を個別に転記しない。`VITE_API_BASE_URL` には `/v1` を含める。追加スタックの tfvars と Terraform ガイド 4.3 を、新しい転記項目に合わせて直す。
-- 本体を反映する permission set（bootstrap の `HttpApi` の文）の対象を、`/apis` から `/restapis` と `/restapis/*` に変える。再デプロイ（`POST /restapis/{id}/deployments`、`PATCH /restapis/{id}/stages/v1`）も、この範囲に含まれる。
+- 本体を反映する permission set（bootstrap の `PortalApis` の文）の対象に、`/restapis` と `/restapis/*` を加える。再デプロイ（`POST /restapis/{id}/deployments`、`PATCH /restapis/{id}/stages/v1`）も、この範囲に含まれる。移行の apply で既存の HTTP API を削除するため、`/apis` と `/apis/*` も残す。HTTP API 形式への対応を削除するとき（#77）に、`/apis` を外すかを見直す。
+- リソースポリシーの作成・更新には、`apigateway:PATCH` に加えて `apigateway:UpdateRestApiPolicy` が要る（[リソースポリシーを付ける前提条件](https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-resource-policies-create-attach.html#apigateway-resource-policies-prerequisites)）。HTTP 動詞の権限だけでは、`allowed_source_cidrs` の反映が失敗する。permission set の `PortalApis` に加え、bootstrap のテストで確かめる。Identity Center の deployer を使う環境では、本体を反映する前に bootstrap を再適用する。
 - dev の HTTP API にすでに追加スタックの route がある場合も、追加スタックは撤去しない。本体を反映した後、追加スタックの tfvars を書き換えて反映する。HTTP API と一緒に削除された route は、追加スタックの plan の refresh で state から外れる（AWS provider は、見つからない資源を state から外す）。旧 HTTP API 向けの Lambda 呼び出し許可は、REST API 向けの許可に置き換わる。本体の反映から追加スタックの反映までの間は、追加スタックの経路を利用できない。手順は Terraform ガイドの「HTTP API から切り替える」に従う。
 - REST API のリクエスト単価は、HTTP API より高い（100 万件あたり $3.50 と $1.00）。この利用量では、月に数セントにとどまる。
 - 反映前ガード（`scripts/check_plan.py`）、`tests/*.tftest.hcl`、経路の権限テストを、REST API の資源に合わせて直す（#73・#74）。
@@ -48,5 +49,6 @@ REST API は、経路を足しても、デプロイを作り直すまで利用�
 - gateway response のヘッダーで `method.request.header.Origin` を参照したとき、リクエストに `Origin` がない場合と、メソッドリクエストでそのヘッダーを宣言していない場合の動作。公式文書では、メソッドリクエストのパラメータを参照できることまでしか確かめられていない。dev で確かめる（#76）。
 - MOCK 統合の統合レスポンスのテンプレートで、`$input.params('Origin')` がメソッドリクエストのヘッダーを返すかどうか。採用しない案の判断材料であり、決定には影響しない。
 - 同じ親の下に、固定のパス（`/api/records/publication`）とパスパラメータ（`/api/records/{recordId}`）があるとき、REST API が固定のパスを優先するかどうか。HTTP API では優先されることを確認済みだが、REST API については公式文書で確かめられていない。dev で確かめる（#76）。
+- REST API の Cognito User Pools authorizer が、`cognito:groups`（配列の claim）を Lambda にどの形で渡すか。公式文書に記載がない。REST API の JWT authorizer は JSON の型のまま渡すと書かれているが、別の種類の authorizer である（[JWT authorizer の claims](https://docs.aws.amazon.com/apigateway/latest/developerguide/rest-api-jwt-authorizer-claims.html)）。Lambda は配列、`[a b]` の形、カンマ区切りのいずれも受け付ける。テストのイベントはこの 3 つの形を想定して作ったもので、実際のイベントから取ったものではない。#72 の「実際のイベント形式に沿ったテストで固める」は、この PR では満たしていない。dev で実際のイベントを確かめ（#76）、その形でテストを固める。仕様の文面と異なる点である。
 - `cloudWatchRoleArn` を設定していないアカウントで、`access_log_settings` を持つステージを作ると失敗するかどうか。
 - 再デプロイのたびに古いデプロイが残る。1 つの API に残せるデプロイの数の上限は確かめていない。

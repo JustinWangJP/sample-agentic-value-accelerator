@@ -48,7 +48,9 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 - `client_id` が人間用 SPA client であること（発見用 M2M client などは拒否する）
 - `sub` があること
 
-主体は `iss` + `sub` で識別します。業務ロールは Cognito グループから導出します。
+主体は `iss` + `sub` で識別します。業務ロールは Cognito グループ（claim `cognito:groups`）から導出します。
+
+`cognito:groups` がどの形で Lambda に届くかは、authorizer の種類で異なります。HTTP API の JWT authorizer は、配列の claim を `[a b]` の形の文字列で渡します。REST API の JWT authorizer は、配列を JSON の型のまま渡します（[REST API の JWT authorizer の claims](https://docs.aws.amazon.com/apigateway/latest/developerguide/rest-api-jwt-authorizer-claims.html)）。一方、このポータルが使う REST API の Cognito User Pools authorizer がどの形で渡すかは、公式文書に記載がありません（[Cognito User Pools authorizer](https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-integrate-with-cognito.html)）。そのため、Lambda は配列、`[a b]` の形、カンマ区切り（`a,b`）のいずれも受け付けます（`backend/src/registry_portal/auth.py` の `_parse_groups`）。実際のイベントでの形は、dev の受入確認（#76）で確かめます。テストのイベントはこの 3 つの形を想定して作ったもので、実際のイベントから取ったものではありません。
 
 | Cognito グループ | 業務ロール |
 |---|---|
@@ -128,7 +130,7 @@ A2A の判定と検索用の写しの設計理由は [ADR-0006](../../docs/adr/0
 
 スナップショットがない場合（補助テーブルが未設定、または未管理レコードなど）、API はこれらの値を `null` で返し、SPA は「未取得」と表示します。スナップショットはあるが属性がない場合は空文字で返し、「未登録」と表示します。関連参照は、空のリストなら「関連参照はありません」と表示します。Agent 以外の関連参照は常に空です。属性の型が契約と異なる場合は 502 `DISCOVERY_UNAVAILABLE` を返します。
 
-デプロイ先の REST API で `POST /api/catalog/search` と `GET /api/catalog/{recordId}` を管理 Lambda に割り当て、既存の Cognito User Pools authorizer を適用してください。SPA と API のオリジンが異なる場合は、CORS で `POST`、`Authorization`、`Content-Type` を許可してください。
+`POST /api/catalog/search` と `GET /api/catalog/{recordId}` は、本体スタックが共通の経路表（`infrastructure/modules/api_routes/routes.json`）から管理 Lambda に割り当て、Cognito User Pools authorizer を適用します。REST API の CORS は API Gateway では設定せず、Lambda が処理します。`Origin` を許可リスト（環境変数 `CORS_ALLOWED_ORIGINS`）と照合し、応答に CORS ヘッダーを付けます。プリフライト（`OPTIONS`）では `POST`、`Authorization`、`Content-Type` などを許可します。許可リストには、本体スタックの SPA の origin と `local_dev_origins` が入ります。
 
 エラーは共通 DTO で返します。
 
@@ -296,6 +298,12 @@ Cognito リソースサーバーの表示名には、Cognito API の文字制約
    値の対応表とスタックごとの実行例は [Terraform ガイドの配信手順](../../docs/agents/registry-portal-terraform-guide-ja.md#43-追加スタックに渡す値を集める)を参照してください。
 
 CloudFront の接続先は非公開 S3 の REST endpoint だけです。深い SPA URL は viewer request function で `index.html` に解決します。API は独立した REST API origin で提供し、CloudFront のエラー差し替えは使いません。CloudFront 側に誤って `/api/*` を送った場合も JSON の 404 を返します。Lambda の CORS は CloudFront と `local_dev_origins` の origin を許可します。CloudFront のレスポンスヘッダーの CSP で REST API の URL を参照すると、この CORS との依存が循環するため、ヘッダーの `connect-src` は Cognito の指定ドメインと us-east-1 の REST API ドメイン（`https://*.execute-api.us-east-1.amazonaws.com`）を許可します。自分の REST API への限定は、SPA のビルドが `index.html` に埋め込む meta の CSP で行います。ブラウザは両方の CSP を満たす通信だけを許可するため（[CSP Level 3「複数のポリシーの効果」](https://www.w3.org/TR/CSP3/#multiple-policies)。meta 要素による配信は[同「meta 要素」](https://www.w3.org/TR/CSP3/#meta-element)）、実際の接続先は自分の REST API と Cognito に限られます。
+
+この README と Terraform ガイドでは、次の 3 つの語を区別して使います。
+
+- **経路**: HTTP メソッドとパスの組（例: `GET /api/records/{recordId}`）。Lambda への割り当てと呼び出し許可の単位です。英語の識別子やコード中では route と書きます（HTTP API の route と同じ単位）。
+- **パス**: URL のうち `/api/...` の部分。REST API では 1 つのパスが 1 つのリソースになり、複数のメソッド（経路）を持てます。
+- **経路表**: すべての経路を定義した `infrastructure/modules/api_routes/routes.json`。
 
 本体スタックの REST API は `GET /api/me`、`GET /api/catalog`、`POST /api/catalog/search`、`GET /api/catalog/{recordId}` を Cognito User Pools authorizer と `registry-portal/api.invoke` で保護します。本体、管理、決裁のメソッド・統合・Lambda の呼び出し許可は、共通の経路表 `infrastructure/modules/api_routes/routes.json` から、経路用モジュール `modules/api_routes` で作ります。呼び出し許可の `source_arn` は `<execution ARN>/<stage>/<メソッド>/<path>` の形式で（[execute-api の ARN](https://docs.aws.amazon.com/apigateway/latest/developerguide/arn-format-reference.html#apigateway-execute-api-arns)）、`ArnLike` の `*` は ARN のリソース部分の中で `/` もまたいで一致します（[ARN の条件演算子](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition_operators.html#Conditions_ARN)）。そのため管理 Lambda の `GET/api/records/*` は、管理 Lambda の `GET /api/records/{recordId}/history` のほか、決裁 Lambda の `GET /api/records/publication`・`/api/records/{recordId}/publication`・`/api/records/{recordId}/recovery` の実行 ARN にも一致します。API Gateway が呼び出すのは route の統合先の Lambda だけなので、決裁の route から管理 Lambda が呼ばれることはありません。一致する route の集合は `infrastructure/tests/test_route_permissions.py` で固定し、増えたときに許可の形を見直します。Lambda の CORS は CloudFront とローカル SPA の許可済み origin に、`GET`・`POST`・`PATCH` と `Authorization`・`Content-Type`・`Idempotency-Key` ヘッダーを許可します。API Gateway が Lambda の手前で返すエラー（authorizer の 401、リソースポリシーの 403、スロットリングの 429 など）では、`DEFAULT_4XX`・`DEFAULT_5XX` の gateway response が、リクエストの `Origin` を許可リストと照合せずに `Access-Control-Allow-Origin` へ返します。gateway response は許可リストとの照合ができず、固定値にするとローカル SPA で 401 を判別できなくなるためです。`Access-Control-Allow-Credentials` は付けず、本文は定型のエラーだけなので、ほかの origin から読めるのはエラーのメッセージに限られます（[ADR-0015](../../docs/adr/0015-rest-api-with-source-ip-policy-and-script-deployment.md)）。人間用 client は code flow のみを許可し、SPA が PKCE を使用します。人間用 client に secret はありません。Lambda permission は各 route のメソッド・path の API Gateway 実行 ARN とアカウントに限定します。Function URL と VPC は作りません。本体スタックが作る実行ロールは管理 Lambda のものだけです。下書き・申請・操作照会を含む管理 handler の追加 route と下書きの権限、決裁、イベント処理は、別 state の追加スタック（`infrastructure/management`・`decision`・`notification_events`）が作ります。追加スタックの route も同じ scope を検証します。追加スタックの `terraform.tfvars` に転記する値（`rest_api`（REST API の ID・ステージ名・authorizer の ID・`portal_api_scope`・`cors_allowed_origins` をまとめたもの）、`human_client_id`、`management_role_name`、`management_function_name`、`supplement_table_name`、`supplement_table_arn`）は、本体スタックの output から取得します。`cognito_issuer` の output は確認用で、decision のルートスタックでは `region` と `cognito_user_pool_id` から組み立てます。
 
@@ -605,7 +613,7 @@ cp backend.hcl.example backend.hcl
 AWS_PROFILE=registry-deploy scripts/deploy.sh --stack decision infrastructure/decision/backend.hcl infrastructure/decision/terraform.tfvars
 ```
 
-決裁スタックは本体が作った REST API のパスと Cognito User Pools authorizer を借り、審査・決裁・公開管理・回復の 13 経路を決裁 Lambda に統合します。メソッドと呼び出し許可は共通の経路表から作ります。配信は上記の `deploy.sh --stack decision` で行うと、反映後にステージが更新されます。
+決裁スタックは本体が作った REST API のパスと Cognito User Pools authorizer を借り、審査・決裁・公開管理・回復の経路（経路表 `routes.json` の `decision`）を決裁 Lambda に統合します。メソッドと呼び出し許可は共通の経路表から作ります。配信は上記の `deploy.sh --stack decision` で行うと、反映後にステージが更新されます。
 
 Seam 1 の Stubber と moto で、認可（Curator 以外の拒否）、AWS 正本の一覧と補助情報の結合、保存済みスナップショットから計算し直したハッシュ・Curator が見たハッシュ・内容ハッシュの照合による409、自己承認の拒否（Admin を含む）、却下済み・処理中の拒否、公開承認・却下の理由の必須化と255文字上限、申請・公開版スナップショットが読めない場合の `MISSING`、決裁操作の照会を決裁した Curator に限ること、`status` の不接受、AWS の拒否・混雑・結果不明、同じキーでの再送と操作照会による確定、AWS 成功後の補助ストア障害、公開版スナップショットと管理情報の保存を検証します。Seam 2 の Vitest で、Curator 以外の非表示、一覧と差分（定義と metadata を含む）の表示、「申請なし」と「取得できない」・「初回公開」と「未取得」の区別、書き換えられたスナップショットの決裁停止、承認・却下の本文とキー、「検索への反映待ち」、409 の再読み込み、結果不明の再試行を確認します。実 AWS への書き込みは行っていません。デプロイ後に実環境で、別ユーザーによる承認までの流れと IAM の境界を確認してください。
 
@@ -735,7 +743,8 @@ AWS の `ListRegistryRecords` の `name` フィルターは[公式文書](https:
 公開停止・廃止・公開管理の照会・見送りの route は、[決裁用 Terraform モジュール](infrastructure/modules/decision/main.tf) に追加しました。
 
 - route: `POST /api/records/{recordId}/suspend`、`POST /api/records/{recordId}/deprecate`、`GET /api/records/{recordId}/publication`、`POST /api/records/{recordId}/deprecation-requests/decline` に加えて、管理レコードの検索（#34）の `GET /api/records/publication`
-- Lambda の呼び出し許可は共通の経路表からメソッドとパスごとに作ります。パスの `{recordId}` は `source_arn` でワイルドカードになります。公開管理の固定パスとパラメーター付きパスは、dev の受入確認で両方を呼び出します。
+- Lambda の呼び出し許可は共通の経路表からメソッドとパスごとに作ります。パスの `{recordId}` は `source_arn` でワイルドカードになります。
+- 同じ親の下に、固定パス（`/api/records/publication`）とパスパラメーター付きのパス（`/api/records/{recordId}`）があります。HTTP API では固定パスが優先されることを、公式文書で確かめていました（[HTTP API のルーティングの優先順位](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-routes.html)）。REST API で固定パスが優先されるかどうかは、公式文書では確かめられていません（[REST API のリソースとメソッドの設定](https://docs.aws.amazon.com/apigateway/latest/developerguide/how-to-method-settings.html)）。dev の受入確認（#76）で両方を呼び出して確かめるまで、未確認として扱います（ADR-0015）。
 決裁 Lambda の実行ロールは、状態遷移（`UpdateRegistryRecordStatus`）に必要な権限をすでに持ちます。補助テーブルについては、決裁ロールに次の2つを追加しています。
 
 - `dynamodb:Query`: 審査待ちの一覧が未解決の廃止依頼を読むため
