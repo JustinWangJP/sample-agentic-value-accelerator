@@ -13,23 +13,32 @@ addon_stacks=(decision management notification_events)
 #   state_key: backend.hcl の key。別のスタックの state を指定して誤って反映するのを防ぐ
 #   publishes_spa: 反映後に SPA をビルドして配信するか
 #   allows_sso: IAM Identity Center の permission set で反映できるか（permission set は本体向けの権限だけを持つ）
+#   redeploy_from: apply の後に REST API を再デプロイする先（ID・ステージ名・リージョン）の取得元。
+#     output: 本体。apply 後の output rest_api から取る
+#     plan: 経路を持つ追加スタック。検査済み plan の変数 rest_api（本体の output の転記）から取る。
+#           撤去でも反映でも同じ値を使い、追加スタックには再デプロイ先のための output を持たせない
+#     none: 通知スタック。REST API の経路を変えない（本体の撤去も none にする。REST API ごと消える）
 stack_config() {
   publishes_spa=false
   allows_sso=false
+  redeploy_from=none
   case "$1" in
     main)
       stack_subdir=""
       state_key="registry-portal/dev/terraform.tfstate"
       publishes_spa=true
       allows_sso=true
+      redeploy_from=output
       ;;
     decision)
       stack_subdir="decision"
       state_key="registry-portal/dev/decision.tfstate"
+      redeploy_from=plan
       ;;
     management)
       stack_subdir="management"
       state_key="registry-portal/dev/management.tfstate"
+      redeploy_from=plan
       ;;
     notification_events)
       stack_subdir="notification_events"
@@ -68,11 +77,7 @@ stack_config "$stack"
 #   is_main_destroy: 本体の撤去か。追加スタックの state と本体の保護を、apply の前に検査する
 #   plan_args: terraform plan の引数。撤去では destroy の plan を保存する
 #   completion_message: apply が成功し、SPA を配信しないときに表示する
-#   redeploy_from: apply の後に REST API を再デプロイする先（ID・ステージ名・リージョン）の取得元。
-#     output: 本体。apply 後の output rest_api から取る
-#     plan: 追加スタック。検査済み plan の変数 rest_api（本体の output の転記）から取る。
-#           撤去でも反映でも同じ値を使い、追加スタックには再デプロイ先のための output を持たせない
-#     none: 通知スタックと本体の撤去。REST API の経路を変えないか、REST API ごと消える
+#   redeploy_from: 本体の撤去では再デプロイしない（REST API ごと消える）
 is_main_destroy=false
 plan_args=(-input=false)
 completion_message="${stack} スタックの反映が完了しました。README の dev 手動受入を実施してください。"
@@ -80,14 +85,11 @@ if [[ "$destroy" == true ]]; then
   publishes_spa=false
   plan_args+=(-destroy)
   completion_message="${stack} スタックの撤去が完了しました。"
-  if [[ "$stack" == main ]]; then is_main_destroy=true; fi
+  if [[ "$stack" == main ]]; then
+    is_main_destroy=true
+    redeploy_from=none
+  fi
 fi
-case "$stack" in
-  main) redeploy_from=output ;;
-  management | decision) redeploy_from=plan ;;
-  *) redeploy_from=none ;;
-esac
-if [[ "$is_main_destroy" == true ]]; then redeploy_from=none; fi
 [[ $# -eq 2 ]] || fail "$usage"
 [[ -z "${CI:-}" && -z "${GITHUB_ACTIONS:-}" ]] || fail "CI からの反映は禁止されています。ローカル端末で実行してください。"
 stack_dir="$infra_dir${stack_subdir:+/$stack_subdir}"
