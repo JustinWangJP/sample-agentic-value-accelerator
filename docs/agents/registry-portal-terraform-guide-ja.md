@@ -260,7 +260,9 @@ terraform -chdir=infrastructure/bootstrap apply bootstrap.tfplan
 rm infrastructure/bootstrap/bootstrap.tfplan
 ```
 
-bootstrap はバージョニング、AES256 暗号化、公開アクセス禁止、TLS 必須のバケットポリシーを設定します。バケットには `prevent_destroy` を付けています。bootstrap 自身の state はローカルに作るため、初回管理者が暗号化した場所で保管してください。本体や追加スタックの state と混ぜません。
+bootstrap はバージョニング、AES256 暗号化、公開アクセス禁止、TLS 必須のバケットポリシーを設定します。バケットには `prevent_destroy` を付けています。ライフサイクル規則は直近 10 本の旧バージョンを保持し、それより古い旧バージョンを 90 日で期限切れにします。未完了のマルチパートアップロードは 1 日で中止します。bootstrap 自身の state はローカルに作るため、初回管理者が暗号化した場所で保管してください。本体や追加スタックの state と混ぜません。
+
+月額予算を作る場合は、bootstrap の設定で `budget_limit_usd = 5` を目安にし、`TF_VAR_budget_notification_emails` に通知先の JSON 配列を設定して plan と apply を実行します。メールアドレスは tfvars に書かず、コミットしません。上限と通知先を両方指定したときだけ予算を作り、実績が上限の 80%、予測が 100% を超えたときに通知します。
 
 Identity Center を使う環境では、`identity_center_instance_arn` と `deployer_group_id` を両方指定すると permission set と割り当ても作ります。`deployer_principal_arn` には既存の SSO ロール ARN パターンを指定します。既存 permission set の import を含む手順は [README の手動配信](../../applications/registry_portal/README.md#dev-に手動配信する)を参照してください。
 
@@ -274,6 +276,17 @@ cp infrastructure/terraform.tfvars.example infrastructure/dev.tfvars
 
 - `backend.hcl` の `bucket` には、3.5 で作ったバケット名を設定します。key は `registry-portal/dev/terraform.tfstate` のままにします。
 - `dev.tfvars` には、アカウント ID、SPA バケット名、`name_prefix`（既定は `registry-portal-dev`）などを設定します。secret の値は書きません。
+
+| 変数 | dev の推奨値 | 設定先 |
+| --- | --- | --- |
+| `log_retention_in_days` | `14`（既定は 365 日） | 本体・決裁・イベント処理 |
+| `spa_noncurrent_version_expiration_days` | `7`（既定は `null`、旧バージョンを保持） | 本体 |
+| `local_dev_origins` | `["http://localhost:5173"]`（既定は `[]`） | 本体 |
+| `lambda_reserved_concurrency` | 本体と決裁は `5`、イベント処理は `2`〜`5`（既定は `null`、予約なし） | 本体・決裁・イベント処理 |
+
+予約同時実行数を設定する前に、対象リージョンで `aws lambda get-account-settings` を実行して `AccountLimit.ConcurrentExecutions` と既存の予約を確認します。予約後も未予約の枠を 100 残せる場合に設定してください。イベント処理では、上限に達した場合の再試行とデッドレターキューへの転送を考慮してください。
+
+Identity Center の deployer で SPA のライフサイクル設定を初めて反映する前に、管理者が bootstrap を再適用して deployer に `s3:PutLifecycleConfiguration` を付与します。
 
 `dev.tfvars` と `backend.hcl` は `.gitignore` の対象です。コミット前に `git status` でも確認してください。
 

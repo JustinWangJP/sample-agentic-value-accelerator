@@ -138,6 +138,21 @@ A2A の判定と検索用の写しの設計理由は [ADR-0006](../../docs/adr/0
 
 ## 設定
 
+### Terraform の dev 設定
+
+本体と追加スタックは、それぞれの `dev.tfvars` に値を設定します。
+
+| 変数 | 対象と既定値 | dev の推奨値 |
+|---|---|---|
+| `log_retention_in_days` | 本体の API と管理 Lambda、決裁 Lambda、イベント処理 Lambda。既定は 365 日 | 各スタックで 14 日 |
+| `spa_noncurrent_version_expiration_days` | 本体の SPA バケット。既定は `null`（古いバージョンを保持） | 7 日 |
+| `local_dev_origins` | 本体の Cognito コールバック・ログアウト URL と API の CORS。既定は `[]` | ローカルから接続する場合は `["http://localhost:5173"]` |
+| `lambda_reserved_concurrency` | 本体、決裁、イベント処理。既定は `null`（予約なし） | アカウント上限に余裕がある場合、本体と決裁は 5、イベント処理は 2〜5 |
+
+予約する前に、対象リージョンで `aws lambda get-account-settings` を実行して `AccountLimit.ConcurrentExecutions` と既存の予約を確認します。予約後もアカウントに未予約の同時実行枠を 100 残す必要があります。イベント処理は、上限に達したときの再試行やデッドレターキューへの転送も考慮して値を決めます。
+
+bootstrap で月額予算を作る場合は、`budget_limit_usd` に dev の目安である `5` を指定し、通知先を JSON 配列として環境変数 `TF_VAR_budget_notification_emails` で渡します。両方を指定すると、実績が 80%、予測が 100% を超えたときに通知します。state バケットは直近 10 本の旧バージョンを保持し、それより古い旧バージョンを 90 日で期限切れにします。
+
 ### バックエンド（Lambda の環境変数）
 
 | 変数 | 内容 |
