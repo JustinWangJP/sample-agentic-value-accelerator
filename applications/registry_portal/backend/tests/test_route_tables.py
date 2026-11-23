@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from registry_portal.app import (
+    CORS_ALLOWED_HEADERS,
     CORS_ALLOWED_METHODS,
     create_curation_handler,
     create_management_handler,
@@ -20,6 +21,7 @@ from registry_portal.app import (
 from catalog_helpers import ENV
 
 ROUTES_JSON = Path(__file__).resolve().parents[2] / "infrastructure/modules/api_routes/routes.json"
+OPENAPI = Path(__file__).resolve().parents[1] / "openapi.yaml"
 ROUTE_GROUPS: dict[str, dict[str, dict[str, str]]] = json.loads(ROUTES_JSON.read_text())
 
 
@@ -55,3 +57,11 @@ def test_preflight_allows_exactly_the_methods_in_the_route_table() -> None:
     used = {route["method"] for group in ROUTE_GROUPS.values() for route in group.values()}
 
     assert allowed == used | {"OPTIONS"}
+
+
+def test_openapi_documents_the_preflight_headers_the_handler_returns() -> None:
+    # OpenAPI 仕様の CORS の説明は、プリフライトの応答と同じ値を書く
+    spec = OPENAPI.read_text()
+
+    assert f"`Access-Control-Allow-Methods: {CORS_ALLOWED_METHODS}`" in spec
+    assert f"`Access-Control-Allow-Headers: {CORS_ALLOWED_HEADERS}`" in spec

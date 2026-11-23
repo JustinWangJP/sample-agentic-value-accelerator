@@ -162,7 +162,7 @@ def _route_template(key: str, templates: Iterable[str]) -> tuple[str, dict[str, 
 
 
 def _path_parameter(event: LambdaEvent) -> str:
-    """ルート表との照合で得た path パラメーターの値（_route_dispatcher が pathParameters に設定する）。"""
+    """ルート表との照合で得た path パラメーターの値（ApiHandler._dispatch が pathParameters に設定する）。"""
     parameters = _mapping_or_empty(event.get("pathParameters"))
     return str(next(iter(parameters.values()), ""))
 
@@ -225,28 +225,71 @@ MANAGEMENT_ROUTES: Mapping[str, Route] = {
 # 決裁 Lambda の経路のメソッドも含める。経路表（routes.json）のメソッドがすべて含まれることは
 # tests/test_route_tables.py で確かめる
 CORS_ALLOWED_METHODS = "GET, POST, PATCH, OPTIONS"
+# プリフライトで許可するリクエストヘッダー。SPA が送るヘッダーだけを許可する。
+# OpenAPI 仕様（openapi.yaml の CORS）と同じ値であることは tests/test_route_tables.py で確かめる
+CORS_ALLOWED_HEADERS = "Authorization, Content-Type, Idempotency-Key"
+# プリフライトの結果をブラウザが再利用してよい秒数
+CORS_MAX_AGE_SECONDS = "300"
+
+
+class CorsPolicy:
+    """REST API 形式の応答に付ける CORS ヘッダーを決める。
+
+    REST API の Lambda プロキシ統合では統合応答を設定できないため、CORS ヘッダーは Lambda が返す
+    （根拠の公式文書は README「カタログの一覧・検索・詳細」の CORS の説明にある）。Origin を許可リストと照合し、一致したときだけ
+    Access-Control-Allow-Origin を付ける。answers_preflight が真なら、OPTIONS をルート表に渡さず
+    204 で応答する（管理 Lambda だけが真）。
+    """
+
+    def __init__(self, origins: frozenset[str], *, answers_preflight: bool) -> None:
+        self._origins = origins
+        self.answers_preflight = answers_preflight
+
+    def headers(self, event: LambdaEvent) -> dict[str, str]:
+        """通常の応答に付けるヘッダー。許可していない Origin には Vary だけを返す。"""
+        headers = {"Vary": "Origin"}
+        origin = next(
+            (
+                value
+                for name, value in _mapping_or_empty(event.get("headers")).items()
+                if name.lower() == "origin"
+            ),
+            None,
+        )
+        if isinstance(origin, str) and origin in self._origins:
+            headers["Access-Control-Allow-Origin"] = origin
+        return headers
+
+    def preflight_response(self, event: LambdaEvent) -> LambdaResponse:
+        """プリフライトへの 204 応答。許可した Origin にだけメソッド・ヘッダー・有効期間を返す。"""
+        headers = self.headers(event)
+        if "Access-Control-Allow-Origin" in headers:
+            headers.update(
+                {
+                    "Access-Control-Allow-Methods": CORS_ALLOWED_METHODS,
+                    "Access-Control-Allow-Headers": CORS_ALLOWED_HEADERS,
+                    "Access-Control-Max-Age": CORS_MAX_AGE_SECONDS,
+                }
+            )
+        return {"statusCode": 204, "headers": headers, "body": ""}
 
 
 class ApiHandler:
-    """ルート表で要求を処理する Lambda handler。認可・エラー応答・CORS はすべての API で共通。
+    """ルート表で要求を処理する Lambda handler。認可・エラー応答はすべての API で共通。
 
-    REST API 形式の応答には、Origin を許可リストと照合した CORS ヘッダーを付ける。
+    REST API 形式の応答には CorsPolicy が決めた CORS ヘッダーを付ける。
     HTTP API の CORS は API Gateway の設定が処理するため、HTTP API 形式の応答には付けない。
-    preflight が真なら、OPTIONS をルート表に渡さず 204 で応答する。
     """
 
     def __init__(
         self,
         routes: Mapping[str, Route],
         settings: AuthSettings,
-        cors_origins: frozenset[str],
-        *,
-        preflight: bool,
+        cors: CorsPolicy,
     ) -> None:
         self._routes = dict(routes)
         self._settings = settings
-        self._cors_origins = cors_origins
-        self._preflight = preflight
+        self._cors = cors
 
     @property
     def route_keys(self) -> frozenset[str]:
@@ -257,38 +300,11 @@ class ApiHandler:
         request = _api_request(event)
         if not request.rest_api:
             return self._dispatch(event, request)
-
-        cors_headers = self._cors_headers(event)
-        if self._preflight and request.method == "OPTIONS":
-            if "Access-Control-Allow-Origin" in cors_headers:
-                cors_headers.update(
-                    {
-                        "Access-Control-Allow-Methods": CORS_ALLOWED_METHODS,
-                        "Access-Control-Allow-Headers": (
-                            "Authorization, Content-Type, Idempotency-Key"
-                        ),
-                        "Access-Control-Max-Age": "300",
-                    }
-                )
-            return {"statusCode": 204, "headers": cors_headers, "body": ""}
-
+        if self._cors.answers_preflight and request.method == "OPTIONS":
+            return self._cors.preflight_response(event)
         response = self._dispatch(event, request)
-        response["headers"].update(cors_headers)
+        response["headers"].update(self._cors.headers(event))
         return response
-
-    def _cors_headers(self, event: LambdaEvent) -> dict[str, str]:
-        cors_headers = {"Vary": "Origin"}
-        origin = next(
-            (
-                value
-                for name, value in _mapping_or_empty(event.get("headers")).items()
-                if name.lower() == "origin"
-            ),
-            None,
-        )
-        if isinstance(origin, str) and origin in self._cors_origins:
-            cors_headers["Access-Control-Allow-Origin"] = origin
-        return cors_headers
 
     def _dispatch(self, event: LambdaEvent, request: _ApiRequest) -> LambdaResponse:
         request_id = _request_context(event).get("requestId")
@@ -515,7 +531,9 @@ def create_management_handler(
         "POST /api/notifications/read": read_notifications,
     }
 
-    return ApiHandler(routes, settings, load_cors_origins(environ), preflight=True)
+    return ApiHandler(
+        routes, settings, CorsPolicy(load_cors_origins(environ), answers_preflight=True)
+    )
 
 
 def create_curation_handler(
@@ -650,7 +668,9 @@ def create_curation_handler(
         "POST /api/records/{recordId}/recovery": recover_operation,
     }
 
-    return ApiHandler(routes, settings, load_cors_origins(environ), preflight=False)
+    return ApiHandler(
+        routes, settings, CorsPolicy(load_cors_origins(environ), answers_preflight=False)
+    )
 
 
 def create_event_handler(
