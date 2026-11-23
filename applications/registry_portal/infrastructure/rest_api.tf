@@ -1,6 +1,5 @@
 locals {
-  api_stage            = "v1"
-  cors_allowed_origins = distinct(concat([local.spa_origin], var.local_dev_origins))
+  api_stage = "v1"
   # 追加スタックの経路を含む、REST API のすべてのパス。経路の割り当ては modules/api_routes が同じ表から読む
   route_paths = toset(flatten([
     for routes in values(jsondecode(file("${path.module}/modules/api_routes/routes.json"))) :

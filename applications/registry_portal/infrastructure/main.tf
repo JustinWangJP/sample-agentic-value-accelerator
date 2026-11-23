@@ -10,8 +10,10 @@ locals {
   # 管理 Lambda・実行ロール・ロググループの共通名。bootstrap の locals も同じ規則で組み立てる
   management_name = "${var.name_prefix}-management"
   spa_origin      = "https://${aws_cloudfront_distribution.spa.domain_name}"
-  # 人間用 client のコールバック URL・ログアウト URL。CloudFront の SPA と、ローカルの開発サーバー（var.local_dev_origins）
-  spa_redirect_urls = concat(["${local.spa_origin}/"], [for o in var.local_dev_origins : "${o}/"])
+  # SPA を開く origin。CloudFront の SPA と、ローカルの開発サーバー（var.local_dev_origins）。
+  # 人間用 client のコールバック URL・ログアウト URL と、Lambda の CORS の許可リストの両方に使う
+  spa_origins       = distinct(concat([local.spa_origin], var.local_dev_origins))
+  spa_redirect_urls = [for origin in local.spa_origins : "${origin}/"]
   # REST API のすべての route（追加スタックを含む）が検証するカスタム scope。業務ロールの判定は handler が行う。
   # 追加スタックと SPA には output（rest_api と frontend_config）で渡し、値はここだけに定義する
   portal_api_scope_name = "api.invoke"
@@ -184,7 +186,7 @@ resource "aws_lambda_function" "management" {
   environment {
     # A2A_SEARCH_ENABLED は isA2A の補完と確認（#16）が終わるまで設定しない（未設定は無効）
     variables = merge(module.discovery_client.environment, {
-      CORS_ALLOWED_ORIGINS  = jsonencode(local.cors_allowed_origins)
+      CORS_ALLOWED_ORIGINS  = jsonencode(local.spa_origins)
       COGNITO_ISSUER        = local.issuer
       HUMAN_CLIENT_ID       = aws_cognito_user_pool_client.human.id
       REGISTRY_ARN          = var.registry_arn

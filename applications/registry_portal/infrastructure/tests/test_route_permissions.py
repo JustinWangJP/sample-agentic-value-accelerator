@@ -57,9 +57,21 @@ def matched(permitted: list[dict[str, str]], routes: list[dict[str, str]]) -> se
     }
 
 
+# modules/api_routes を呼び出し、経路のグループを指定する Terraform ファイル
+ROUTE_GROUP_CALLERS = ("rest_api.tf", "management/main.tf", "modules/decision/main.tf")
+ROUTE_GROUP_ARGUMENT = re.compile(r'^\s*route_group\s*=\s*"([^"]+)"', re.MULTILINE)
+
+
 class RouteManifestTests(unittest.TestCase):
-    def test_groups_are_the_three_stacks(self):
-        self.assertEqual(set(load_manifest()), {"main", "management", "decision"})
+    def test_each_group_is_assigned_by_exactly_one_stack(self):
+        # グループ名は routes.json だけに書く。各スタックが 1 つずつ指定し、使わないグループを残さない
+        assigned = [
+            group
+            for caller in ROUTE_GROUP_CALLERS
+            for group in ROUTE_GROUP_ARGUMENT.findall((INFRA / caller).read_text())
+        ]
+        self.assertEqual(len(assigned), len(ROUTE_GROUP_CALLERS))
+        self.assertEqual(sorted(assigned), sorted(load_manifest()))
 
     def test_each_route_has_a_method_path_and_statement_id(self):
         for group, routes in load_manifest().items():

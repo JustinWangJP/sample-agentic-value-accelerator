@@ -41,11 +41,11 @@ variable "function_name" {
 
 variable "route_group" {
   type        = string
-  description = "routes.json から割り当てる経路のグループ。本体スタックは main、追加スタックはそれぞれ management と decision を指定する"
+  description = "routes.json から割り当てる経路のグループ。本体スタックは main、追加スタックはそれぞれ management と decision を指定する。指定できる値は routes.json のグループ名で、ここには書き写さない"
 
   validation {
-    condition     = contains(["main", "management", "decision"], var.route_group)
-    error_message = "route_group には main・management・decision のいずれかを指定してください。"
+    condition     = contains(keys(jsondecode(file("${path.module}/routes.json"))), var.route_group)
+    error_message = "route_group には routes.json のグループ名（${join("・", sort(keys(jsondecode(file("${path.module}/routes.json")))))}）のいずれかを指定してください。"
   }
 }
 

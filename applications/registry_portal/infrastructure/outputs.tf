@@ -30,7 +30,7 @@ output "rest_api" {
     stage_name           = aws_api_gateway_stage.portal.stage_name
     authorizer_id        = aws_api_gateway_authorizer.human.id
     portal_api_scope     = local.portal_api_scope
-    cors_allowed_origins = local.cors_allowed_origins
+    cors_allowed_origins = local.spa_origins
   }
 }
 output "api_region" {
