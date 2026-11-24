@@ -11,8 +11,8 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 | `backend/src/registry_portal/handlers/management.py` | 管理 handler の Lambda エントリーポイント。認証設定がなければ初期化に失敗する |
 | `backend/src/registry_portal/handlers/curation.py` | 決裁 handler の Lambda エントリーポイント。認証設定または補助テーブルがなければ初期化に失敗する |
 | `backend/src/registry_portal/handlers/events.py` | イベント処理 handler の Lambda エントリーポイント（#15）。Registry の ARN または補助テーブルがなければ初期化に失敗する |
-| `backend/src/registry_portal/app.py` | API Gateway REST API の Lambda プロキシイベントを受け取り、route を振り分ける |
-| `backend/openapi.yaml` | 管理 handler と決裁 handler の全 API の OpenAPI 3.1.0 仕様。route を足す・変えるときは、`app.py` のルート表と共通の経路表（`infrastructure/modules/api_routes/routes.json`）と一緒に更新する（`infrastructure/tests/test_route_permissions.py` が経路表との一致を、`backend/tests/test_route_tables.py` が `app.py` のルート表との一致を検査する）。Lint の設定は `backend/redocly.yaml` |
+| `backend/src/registry_portal/app.py` | API Gateway REST API の Lambda プロキシイベントを受け取り、経路を振り分ける |
+| `backend/openapi.yaml` | 管理 handler と決裁 handler の全 API の OpenAPI 3.1.0 仕様。経路を足す・変えるときは、`app.py` のルート表と共通の経路表（`infrastructure/modules/api_routes/routes.json`）と一緒に更新する（`infrastructure/tests/test_route_permissions.py` が経路表との一致を、`backend/tests/test_route_tables.py` が `app.py` のルート表との一致を検査する）。Lint の設定は `backend/redocly.yaml` |
 | `backend/src/registry_portal/auth.py` | 認可。検証済みの claims から主体・業務ロール・所属チームを導出する |
 | `backend/src/registry_portal/errors.py` | 共通エラー DTO と日本語メッセージ |
 | `backend/src/registry_portal/catalog.py` | カタログの一覧・検索・詳細 API。入力の検証、DTO への変換、サービス層の失敗の API エラーへの変換 |
@@ -36,7 +36,7 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 | `backend/src/registry_portal/domain/notifications.py` | 通知のモデル（種別・宛先グループ・本文・既読位置の形式・保持期間）と、Registry の状態変化を操作記録と照合する規則。SPA の `frontend/src/notifications/api.ts` と値を揃える |
 | `backend/src/registry_portal/services/notification_store.py` | 補助テーブルの通知・重複除去の印・処理済みのイベント・既読位置の読み書き |
 | `backend/src/registry_portal/services/supplement_store.py` | 補助テーブルの項目（管理情報・ロック・操作・操作記録・申請スナップショット `SUBMISSION#`・無効化記録・公開版スナップショット・廃止依頼）の読み書き |
-| `infrastructure/` | 下書きの IAM モジュール（`modules/management_drafts`）、決裁 Lambda・実行ロール・審査と決裁の route のモジュール（`modules/decision`）、既存ロールへ適用するルートモジュール（`management`）と決裁 Lambda 用のルートモジュール（`decision`） |
+| `infrastructure/` | 下書きの IAM モジュール（`modules/management_drafts`）、決裁 Lambda・実行ロール・審査と決裁の経路のモジュール（`modules/decision`）、既存ロールへ適用するルートモジュール（`management`）と決裁 Lambda 用のルートモジュール（`decision`） |
 | `frontend/` | React SPA。Authorization Code + PKCE でログインし、アクセストークンはメモリー上だけで保持する |
 
 ## 認可
@@ -158,7 +158,7 @@ A2A の判定と検索用の写しの設計理由は [ADR-0006](../../docs/adr/0
 
 予約する前に、対象リージョンで `aws lambda get-account-settings` を実行します。`AccountLimit.ConcurrentExecutions` で上限を、`AccountLimit.UnreservedConcurrentExecutions` で未予約の枠を確認します。予約後も未予約の枠を 100 残す必要があります。イベント処理は、上限に達したときの再試行やデッドレターキューへの転送も考慮して値を決めます。本体の管理 Lambda は、すべての経路のプリフライト（`OPTIONS`）も処理します。決裁 Lambda の経路へのプリフライトも管理 Lambda が答えるため、本体の予約数にはプリフライトの分も見込みます。ブラウザはプリフライトの結果を `Access-Control-Max-Age`（300 秒）の間は再利用するため、プリフライトが重なるのは主に画面の初回表示です。dev の推奨値 5 はこの分を含めた目安です。画面の表示中に 429 や 5xx が出る場合は、本体の値を上げてください（[ADR-0015](../../docs/adr/0015-rest-api-with-source-ip-policy-and-script-deployment.md)）。 [Lambda のアカウント上限](https://docs.aws.amazon.com/lambda/latest/api/API_AccountLimit.html) · [予約同時実行数の設定](https://docs.aws.amazon.com/lambda/latest/dg/configuration-concurrency.html)
 
-bootstrap で月額予算を作る場合は、`budget_limit_usd` に dev の目安である `5` を指定し、通知先を JSON 配列として環境変数 `TF_VAR_budget_notification_emails` で渡します。両方を指定すると、実績が 80%、予測が 100% を超えたときに通知します。state バケットは直近 10 本の旧バージョンを保持し、それより古い旧バージョンを 90 日で期限切れにします。
+bootstrap で月額予算を作る場合は、`budget_limit_usd` に dev の目安である `5` を指定し、通知先を JSON 配列として環境変数 `TF_VAR_budget_notification_emails` で渡します。両方を指定すると、実績が 80%、予測が 100% を超えたときに通知します。通知先は 1 通知あたり最大 10 件までで、`budget_limit_usd` は 0 より大きい値にします（[通知先の上限](https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-email-recipients.html)、[Spend の Amount](https://docs.aws.amazon.com/aws-cost-management/latest/APIReference/API_budgets_Spend.html)）。予測の通知は約 5 週間の利用実績が溜まるまで出ないため、最初の数週間は実績の通知だけが頼りです（[根拠](https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-best-practices.html)）。state バケットは直近 10 本の旧バージョンを保持し、それより古い旧バージョンを 90 日で期限切れにします。
 
 ### バックエンド（Lambda の環境変数）
 
@@ -187,7 +187,7 @@ bootstrap で月額予算を作る場合は、`budget_limit_usd` に dev の目�
 
 `frontend/.env.example` を `frontend/.env.local` にコピーして値を設定します。必須項目が未設定なら、SPA はエラーを表示し、ログイン処理を行いません。
 
-`VITE_COGNITO_SCOPES` には、`openid` とポータル用のカスタム scope `registry-portal/api.invoke` をスペース区切りで指定します（必須）。REST API の route は、本体スタックの route も追加スタック（management・decision）の route も、Cognito User Pools authorizer でこの scope を検証します。route に scope を設定すると、トークンがそのいずれかを含まない要求を API Gateway は拒否します（[Cognito User Pools authorizer による REST API のアクセス制御](https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-enable-cognito-user-pool.html)）。scope の値は Terraform の本体スタック（`local.portal_api_scope`）だけに定義します。配信時は本体スタックの `frontend_config` 出力がこの値を含み、追加スタックには output `rest_api` の `portal_api_scope` を、`rest_api` ごと `terraform.tfvars` に転記して渡します。SPA は既定値を持ちません。`infrastructure/tests/test_portal_scope.py` が、ほかの定義に値を書いていないことと、設定例（`.env.example`・`terraform.tfvars.example`）が本体の値と一致することを検査します。
+`VITE_COGNITO_SCOPES` には、`openid` とポータル用のカスタム scope `registry-portal/api.invoke` をスペース区切りで指定します（必須）。REST API の経路は、本体スタックの経路も追加スタック（management・decision）の経路も、Cognito User Pools authorizer でこの scope を検証します。経路に scope を設定すると、トークンがそのいずれかを含まない要求を API Gateway は拒否します（[Cognito User Pools authorizer による REST API のアクセス制御](https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-enable-cognito-user-pool.html)）。scope の値は Terraform の本体スタック（`local.portal_api_scope`）だけに定義します。配信時は本体スタックの `frontend_config` 出力がこの値を含み、追加スタックには output `rest_api` の `portal_api_scope` を、`rest_api` ごと `terraform.tfvars` に転記して渡します。SPA は既定値を持ちません。`infrastructure/tests/test_portal_scope.py` が、ほかの定義に値を書いていないことと、設定例（`.env.example`・`terraform.tfvars.example`）が本体の値と一致することを検査します。
 
 本番ビルド（`npm run build`）は、`VITE_API_BASE_URL` と `VITE_COGNITO_DOMAIN` の origin だけを `connect-src` に許可する CSP を `index.html` に meta で埋め込みます（`src/connectCsp.ts`）。両方とも未設定のビルドでは埋め込まず、片方だけ設定したビルドは失敗します。
 
@@ -305,7 +305,7 @@ CloudFront の接続先は非公開 S3 の REST endpoint だけです。深い S
 
 この README と Terraform ガイドでは、次の 4 つの語を区別して使います。
 
-- **経路**: HTTP メソッドとパスの組（例: `GET /api/records/{recordId}`）。Lambda への割り当てと呼び出し許可の単位です。英語の識別子やコード中では route と書きます（HTTP API の route と同じ単位）。
+- **経路**: HTTP メソッドとパスの組（例: `GET /api/records/{recordId}`）。Lambda への割り当てと呼び出し許可の単位です。英語の識別子やコード中では route と書きます。
 - **パス**: URL のうち `/api/...` の部分。REST API では 1 つのパスが 1 つのリソースになり、複数のメソッド（経路）を持てます。
 - **経路表**: すべての経路を定義した `infrastructure/modules/api_routes/routes.json`。API Gateway 側（メソッド・統合・呼び出し許可）の定義元です。
 - **ルート表**: Lambda handler ごとに、経路のキー（例: `GET /api/records/{recordId}`）を処理する関数へ割り当てた `backend/src/registry_portal/app.py` の辞書（`create_management_handler`・`create_curation_handler` の `routes`）。Lambda 側の定義元です。各 Lambda のルート表のキーが、経路表でその Lambda に割り当てたグループの経路と一致することは `backend/tests/test_route_tables.py` で確かめます。
@@ -357,6 +357,7 @@ Allow の `NotAction` と全権限ワイルドカードも拒否し、Deny 文�
 - [ ] 接続元 IP の制限（#76）。許可した IP からは API を使える。許可していない IP から**有効なアクセストークンを付けて**呼ぶと 403 になり、管理 Lambda のロググループに該当時刻の呼び出しが記録されない。トークンなしで呼ぶと、リソースポリシーより先に authorizer が評価されるため 401 になる（設定の節を参照）。
 - [ ] `allowed_source_cidrs` を変えて `scripts/deploy.sh` で反映すると、REST API が再デプロイされ、新しいリソースポリシーが効く（前の CIDR からの呼び出しが 403、新しい CIDR からの呼び出しが成功する）。
 - [ ] CloudFront の SPA とローカルの SPA（`local_dev_origins`）の両方から、ブラウザの CORS エラーなくログインと API 呼び出しができる。トークンの期限切れなどの 401 を SPA が判別し、ログインし直す表示になる。決裁の画面（決裁 Lambda の経路）でも CORS エラーにならない。
+- [ ] `Origin` ヘッダーを付けずに呼んだとき（curl など）、成功応答にもエラー応答（401・403・404・500）にも不要な `Access-Control-Allow-Origin` が付かず、応答が壊れない。エラー応答の CORS は、リクエストの `Origin` をそのまま返す設定のため（ADR-0015）。
 - [ ] 固定パスとパスパラメーター付きのパスの両方（`GET /api/records/publication` と `GET /api/records/{recordId}/publication`）を呼び出し、それぞれ意図した Lambda の応答が返る（ADR-0015 の未確認事項）。
 
 ## custom Agent の下書き（#7）

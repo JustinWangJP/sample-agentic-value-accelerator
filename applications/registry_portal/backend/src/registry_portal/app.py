@@ -142,7 +142,15 @@ def _path_parameter(event: LambdaEvent) -> str:
 
 
 def _query_of(event: LambdaEvent) -> Mapping[str, str]:
-    """単一値のクエリパラメーターを取り出す。"""
+    """単一値のクエリパラメーターを取り出す。
+
+    REST API の Lambda プロキシ統合では、同じ名前が複数あると queryStringParameters には最後の値だけが入り、
+    すべての値は multiValueQueryStringParameters に入る（公式文書の入力例で、同じ名前の parameter2 が
+    queryStringParameters では "value2"、multiValueQueryStringParameters では ["value1", "value2"] になる）。
+    値の中のカンマは区切りにならない（parameter3 は "value1,value2" のまま）。ここでは前者だけを使うので、
+    同じ名前を複数送ると最後の値が採用される。SPA は同じ名前のキーを送らない。
+    https://docs.aws.amazon.com/apigateway/latest/developerguide/set-up-lambda-proxy-integrations.html
+    """
     query = _mapping_or_empty(event.get("queryStringParameters"))
     return {str(key): str(value) for key, value in query.items()}
 
