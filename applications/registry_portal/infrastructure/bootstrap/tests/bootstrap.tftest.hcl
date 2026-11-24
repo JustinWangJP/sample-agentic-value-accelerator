@@ -277,3 +277,22 @@ run "budget_not_created_without_limit" {
     error_message = "上限を指定しない場合は予算を作らないでください。"
   }
 }
+
+# 通知先は 1 通知あたり最大 10 件（AWS Budgets の上限）
+run "budget_rejects_too_many_emails" {
+  command = plan
+  variables {
+    budget_limit_usd           = 5
+    budget_notification_emails = ["a1@example.com", "a2@example.com", "a3@example.com", "a4@example.com", "a5@example.com", "a6@example.com", "a7@example.com", "a8@example.com", "a9@example.com", "a10@example.com", "a11@example.com"]
+  }
+  expect_failures = [var.budget_notification_emails]
+}
+
+run "budget_rejects_non_positive_limit" {
+  command = plan
+  variables {
+    budget_limit_usd           = 0
+    budget_notification_emails = ["portal-owner@example.com"]
+  }
+  expect_failures = [var.budget_limit_usd]
+}

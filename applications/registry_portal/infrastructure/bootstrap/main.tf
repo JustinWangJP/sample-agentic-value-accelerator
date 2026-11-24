@@ -67,11 +67,23 @@ variable "budget_limit_usd" {
   description = "月額の予算アラートの上限（USD）。null（既定）なら予算を作らない。dev の推奨値は 5。budget_notification_emails と両方を指定したときだけ予算を作る。"
   type        = number
   default     = null
+  # Spend の Amount は 0 以上の小数の文字列（https://docs.aws.amazon.com/aws-cost-management/latest/APIReference/API_budgets_Spend.html）。
+  # 0 では予算の意味がないため、このモジュールでは 0 より大きい値に限る
+  validation {
+    condition     = var.budget_limit_usd == null ? true : var.budget_limit_usd > 0
+    error_message = "budget_limit_usd は 0 より大きい値にしてください（null なら予算を作りません）。"
+  }
 }
 variable "budget_notification_emails" {
   description = "予算アラートの通知先メールアドレス。空（既定）なら予算を作らない。個人情報なので tfvars にはコミットせず、環境変数 TF_VAR_budget_notification_emails で渡す。"
   type        = list(string)
   default     = []
+  # 1 つの通知に付けられるメールアドレスは最大 10 件（https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-email-recipients.html）。
+  # 同じ一覧を 2 つの通知に渡すので、この一覧の件数がそのまま上限に当たる
+  validation {
+    condition     = length(var.budget_notification_emails) <= 10
+    error_message = "budget_notification_emails は 1 つの通知あたり最大 10 件までです。"
+  }
 }
 variable "manage_api_gateway_account" {
   description = "このリージョンの API Gateway の CloudWatch ロール設定を bootstrap で管理する。既存の設定を使う場合は false にする。"
@@ -323,7 +335,9 @@ resource "aws_ssoadmin_account_assignment" "deployer" {
   depends_on         = [aws_ssoadmin_permission_set_inline_policy.deployer]
 }
 # 想定外の課金に早く気づくための月額の予算アラート。ポータルを撤去しても残るよう、撤去の対象外である
-# bootstrap に置く（ADR-0014）。上限と通知先の両方を指定したときだけ作る
+# bootstrap に置く（ADR-0014）。上限と通知先の両方を指定したときだけ作る。
+# 根拠: 通知先は 1 通知あたり最大 10 件 https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-email-recipients.html
+#       予測（FORECASTED）の通知は約 5 週間の利用実績が溜まるまで出ない https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-best-practices.html
 resource "aws_budgets_budget" "monthly" {
   count        = var.budget_limit_usd != null && length(var.budget_notification_emails) > 0 ? 1 : 0
   name         = "${var.name_prefix}-monthly"

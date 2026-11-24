@@ -262,7 +262,7 @@ rm infrastructure/bootstrap/bootstrap.tfplan
 
 bootstrap はバージョニング、AES256 暗号化、公開アクセス禁止、TLS 必須のバケットポリシーを設定します。バケットには `prevent_destroy` を付けています。ライフサイクル規則は直近 10 本の旧バージョンを保持し、それより古い旧バージョンを 90 日で期限切れにします。未完了のマルチパートアップロードは 1 日で中止します。bootstrap 自身の state はローカルに作るため、初回管理者が暗号化した場所で保管してください。本体や追加スタックの state と混ぜません。
 
-月額予算を作る場合は、bootstrap の設定で `budget_limit_usd = 5` を目安にし、`TF_VAR_budget_notification_emails` に通知先の JSON 配列を設定して plan と apply を実行します。メールアドレスは tfvars に書かず、コミットしません。上限と通知先を両方指定したときだけ予算を作り、実績が上限の 80%、予測が 100% を超えたときに通知します。
+月額予算を作る場合は、bootstrap の設定で `budget_limit_usd = 5` を目安にし、`TF_VAR_budget_notification_emails` に通知先の JSON 配列を設定して plan と apply を実行します。メールアドレスは tfvars に書かず、コミットしません。上限と通知先を両方指定したときだけ予算を作り、実績が上限の 80%、予測が 100% を超えたときに通知します。通知先は 1 通知あたり最大 10 件、上限は 0 より大きい値です（[通知先の上限](https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-email-recipients.html)）。予測の通知は約 5 週間の利用実績が溜まるまで出ません（[根拠](https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-best-practices.html)）。
 
 Identity Center を使う環境では、`identity_center_instance_arn` と `deployer_group_id` を両方指定すると permission set と割り当ても作ります。`deployer_principal_arn` には既存の SSO ロール ARN パターンを指定します。既存 permission set の import を含む手順は [README の手動配信](../../applications/registry_portal/README.md#dev-に手動配信する)を参照してください。
 
