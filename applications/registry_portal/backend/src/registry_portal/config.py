@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -10,6 +11,32 @@ from urllib.parse import quote
 
 class ConfigurationError(RuntimeError):
     """必須の設定が不足している。Lambda の初期化時に送出し、起動を止める。"""
+
+
+def load_cors_origins(environ: Mapping[str, str]) -> frozenset[str]:
+    """REST API の応答で許可する origin を JSON 配列から読み込む。
+
+    未設定・空の配列は設定の不足として起動を止める。空の許可リストのまま動くと、
+    SPA からの呼び出しがすべて CORS エラーになり、原因が設定の不足だと分からないため。
+    """
+    error_message = "CORS_ALLOWED_ORIGINS には origin の JSON 配列（1 件以上）を指定してください。"
+    raw = environ.get("CORS_ALLOWED_ORIGINS")
+    if not raw:
+        raise ConfigurationError(error_message)
+    try:
+        origins = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ConfigurationError(error_message) from error
+    if (
+        not isinstance(origins, list)
+        or not origins
+        or not all(
+            isinstance(origin, str) and re.fullmatch(r"https?://[^/\s?#,]+", origin)
+            for origin in origins
+        )
+    ):
+        raise ConfigurationError(error_message)
+    return frozenset(origins)
 
 
 @dataclass(frozen=True)

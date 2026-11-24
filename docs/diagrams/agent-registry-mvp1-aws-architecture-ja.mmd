@@ -20,7 +20,7 @@ flowchart LR
 
         subgraph REGION["us-east-1（VPC なし・AWS マネージドの公開 HTTPS エンドポイント）"]
             subgraph PUB["公開エンドポイント（JWT で保護）"]
-                APIGW["API Gateway HTTP API<br/>JWT authorizer（issuer・client_id・scope）<br/>CORS は SPA の origin のみ"]
+                APIGW["API Gateway REST API（REGIONAL）<br/>リソースポリシーで接続元 IP を制限<br/>Cognito User Pools authorizer（scope）<br/>CORS は Lambda が SPA の origin と照合"]
                 COGNITO["Amazon Cognito（既存 User Pool）<br/>人間用 PKCE client・CI 用 M2M client（追加）<br/>発見用 M2M client（既存）"]
             end
 
@@ -45,7 +45,7 @@ flowchart LR
             end
 
             subgraph OPS["監査・運用"]
-                CW["CloudWatch Logs<br/>365日保存"]
+                CW["CloudWatch Logs<br/>保持日数は変数（既定 365 日、dev は 14 日）"]
                 CT["CloudTrail<br/>既存の組織 trail"]
                 IDC["IAM Identity Center<br/>RegistryPortalDeployer<br/>Registry 書き込みは Deny"]
                 TFS[("S3（Terraform state）<br/>use_lockfile")]

@@ -667,7 +667,7 @@ def test_same_team_member_can_read_draft_but_unmanaged_record_is_forbidden():
         handler = handler_for(registry, db)
         call(handler, event(body=DRAFT))
         request = event("GET", f"/api/records/{RECORD_ID}")
-        request["requestContext"]["authorizer"]["jwt"]["claims"]["sub"] = "bob"
+        request["requestContext"]["authorizer"]["claims"]["sub"] = "bob"
         stub.add_response("get_registry_record", record())
         status, detail = call(handler, request)
         assert status == 200
@@ -1096,7 +1096,7 @@ def test_management_keeps_the_last_editor_and_audit_keeps_the_aws_request_id():
         )
         stub.add_response("get_registry_record", record(description=changed["description"]))
         request = patch(created, changed)
-        request["requestContext"]["authorizer"]["jwt"]["claims"]["sub"] = "bob"
+        request["requestContext"]["authorizer"]["claims"]["sub"] = "bob"
         assert call(handler, request)[0] == 200
         stub.assert_no_pending_responses()
     saved = management_item(db)

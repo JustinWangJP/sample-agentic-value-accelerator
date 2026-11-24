@@ -11,6 +11,19 @@ discovery_client_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:sec
 # discovery_kms_key_arn = "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000000"
 # discovery_scope = "existing-registry/discover"
 
+# dev の利用料金を抑えるため、API と Lambda のログの保持日数を短くする（既定は 365 日）。
+# CloudWatch Logs が受け付ける値（1, 3, 5, 7, 14, 30, ...）だけを指定できる。追加スタックの tfvars にも同じ値を書く
+log_retention_in_days = 14
+
+# dev の費用を抑える設定。SPA バケットの古いバージョン（配信で置き換わったビルド）を 7 日で消す。
+# 配信は手元のビルドを上書きするだけで、古いバージョンには頼らない（戻すときは前のコミットから配信し直す）。
+# 指定しない（null）と古いバージョンを残し続ける。
+spa_noncurrent_version_expiration_days = 7
+
+# ローカルの開発サーバー（npm run dev）から dev の API と Cognito に接続する（README「ローカルの開発サーバーから dev に接続する」）。
+# http://localhost:<port> か http://127.0.0.1:<port> だけを末尾の / なしで指定できる。不要なら行を消す（既定値は []）。
+local_dev_origins = ["http://localhost:5173"]
+
 # 撤去（destroy）するときだけ切り替える。通常は既定値（保護を有効）のまま指定しない。
 # 切り替えて apply してから destroy する。補助テーブルの lifecycle.prevent_destroy は
 # 変数にできないため、撤去時は main.tf の行を手元で外し、その変更はコミットしない。

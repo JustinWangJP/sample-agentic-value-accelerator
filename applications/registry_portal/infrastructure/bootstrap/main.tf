@@ -36,6 +36,7 @@ variable "name_prefix" {
   type        = string
   default     = "registry-portal-dev"
 }
+
 variable "cognito_user_pool_id" {
   description = "既存 Cognito User Pool ID。子 client とグループだけを管理する。"
   type        = string
@@ -61,6 +62,33 @@ variable "deployer_group_id" {
     condition     = (var.identity_center_instance_arn == null) == (var.deployer_group_id == null)
     error_message = "identity_center_instance_arn と deployer_group_id は両方指定するか、両方とも省略してください。"
   }
+}
+variable "budget_limit_usd" {
+  description = "月額の予算アラートの上限（USD）。null（既定）なら予算を作らない。dev の推奨値は 5。budget_notification_emails と両方を指定したときだけ予算を作る。"
+  type        = number
+  default     = null
+  # Spend の Amount は 0 以上の小数の文字列（https://docs.aws.amazon.com/aws-cost-management/latest/APIReference/API_budgets_Spend.html）。
+  # 0 では予算の意味がないため、このモジュールでは 0 より大きい値に限る
+  validation {
+    condition     = var.budget_limit_usd == null ? true : var.budget_limit_usd > 0
+    error_message = "budget_limit_usd は 0 より大きい値にしてください（null なら予算を作りません）。"
+  }
+}
+variable "budget_notification_emails" {
+  description = "予算アラートの通知先メールアドレス。空（既定）なら予算を作らない。個人情報なので tfvars にはコミットせず、環境変数 TF_VAR_budget_notification_emails で渡す。"
+  type        = list(string)
+  default     = []
+  # 1 つの通知に付けられるメールアドレスは最大 10 件（https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-email-recipients.html）。
+  # 同じ一覧を 2 つの通知に渡すので、この一覧の件数がそのまま上限に当たる
+  validation {
+    condition     = length(var.budget_notification_emails) <= 10
+    error_message = "budget_notification_emails は 1 つの通知あたり最大 10 件までです。"
+  }
+}
+variable "manage_api_gateway_account" {
+  description = "このリージョンの API Gateway の CloudWatch ロール設定を bootstrap で管理する。既存の設定を使う場合は false にする。"
+  type        = bool
+  default     = false
 }
 
 data "aws_region" "current" {}
@@ -114,6 +142,23 @@ resource "aws_s3_bucket_ownership_controls" "state" {
 resource "aws_s3_bucket_versioning" "state" {
   bucket = aws_s3_bucket.state.id
   versioning_configuration { status = "Enabled" }
+}
+# state の更新のたびに残る古いバージョンを期限で消す。古い state に戻す場合に備えて日数は長めにし、
+# 直近のバージョンは日数にかかわらず残す。現行の state は失効させない。
+resource "aws_s3_bucket_lifecycle_configuration" "state" {
+  bucket = aws_s3_bucket.state.id
+  rule {
+    id     = "expire-noncurrent-state-versions"
+    status = "Enabled"
+    filter {}
+    noncurrent_version_expiration {
+      noncurrent_days           = 90
+      newer_noncurrent_versions = 10
+    }
+    abort_incomplete_multipart_upload { days_after_initiation = 1 }
+  }
+  # バージョニングが有効になってからライフサイクル設定を適用する
+  depends_on = [aws_s3_bucket_versioning.state]
 }
 resource "aws_s3_bucket_server_side_encryption_configuration" "state" {
   bucket = aws_s3_bucket.state.id
@@ -205,7 +250,7 @@ resource "aws_ssoadmin_permission_set_inline_policy" "deployer" {
       {
         Sid      = "SpaBucket"
         Effect   = "Allow"
-        Action   = ["s3:CreateBucket", "s3:GetBucket*", "s3:ListBucket", "s3:GetEncryptionConfiguration", "s3:GetLifecycleConfiguration", "s3:GetAccelerateConfiguration", "s3:GetReplicationConfiguration", "s3:PutBucket*", "s3:PutEncryptionConfiguration", "s3:DeleteBucketPolicy"]
+        Action   = ["s3:CreateBucket", "s3:GetBucket*", "s3:ListBucket", "s3:GetEncryptionConfiguration", "s3:GetLifecycleConfiguration", "s3:GetAccelerateConfiguration", "s3:GetReplicationConfiguration", "s3:PutBucket*", "s3:PutEncryptionConfiguration", "s3:PutLifecycleConfiguration", "s3:DeleteBucketPolicy"]
         Resource = local.spa_arn
       },
       {
@@ -230,7 +275,7 @@ resource "aws_ssoadmin_permission_set_inline_policy" "deployer" {
       {
         Sid      = "ManagementFunction"
         Effect   = "Allow"
-        Action   = ["lambda:CreateFunction", "lambda:GetFunction", "lambda:GetFunctionConfiguration", "lambda:GetPolicy", "lambda:ListVersionsByFunction", "lambda:UpdateFunctionCode", "lambda:UpdateFunctionConfiguration", "lambda:AddPermission", "lambda:RemovePermission", "lambda:DeleteFunction", "lambda:ListTags", "lambda:TagResource", "lambda:UntagResource", "lambda:GetFunctionCodeSigningConfig", "lambda:GetRuntimeManagementConfig"]
+        Action   = ["lambda:CreateFunction", "lambda:GetFunction", "lambda:GetFunctionConfiguration", "lambda:GetPolicy", "lambda:ListVersionsByFunction", "lambda:UpdateFunctionCode", "lambda:UpdateFunctionConfiguration", "lambda:AddPermission", "lambda:RemovePermission", "lambda:DeleteFunction", "lambda:ListTags", "lambda:TagResource", "lambda:UntagResource", "lambda:GetFunctionCodeSigningConfig", "lambda:GetRuntimeManagementConfig", "lambda:PutFunctionConcurrency", "lambda:DeleteFunctionConcurrency"]
         Resource = local.management_function_arn
       },
       {
@@ -258,10 +303,17 @@ resource "aws_ssoadmin_permission_set_inline_policy" "deployer" {
         Resource = "*"
       },
       {
-        Sid      = "HttpApi"
-        Effect   = "Allow"
-        Action   = ["apigateway:GET", "apigateway:POST", "apigateway:PATCH", "apigateway:PUT", "apigateway:DELETE"]
-        Resource = ["arn:aws:apigateway:${local.region}::/apis", "arn:aws:apigateway:${local.region}::/apis/*", "arn:aws:apigateway:${local.region}::/tags/*"]
+        Sid    = "PortalApis"
+        Effect = "Allow"
+        # REST API のリソースポリシー（接続元 IP の制限）の更新には、apigateway:PATCH に加えて
+        # apigateway:UpdateRestApiPolicy が必要（API Gateway 開発者ガイド「リソースポリシーの作成とアタッチ」の Prerequisites:
+        # https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-resource-policies-create-attach.html）。
+        Action = ["apigateway:GET", "apigateway:POST", "apigateway:PATCH", "apigateway:PUT", "apigateway:DELETE", "apigateway:UpdateRestApiPolicy"]
+        # HTTP API（/apis）は REST API への移行で削除済みのため、権限を与えない（ADR-0015、#77）。
+        Resource = [
+          "arn:aws:apigateway:${local.region}::/restapis", "arn:aws:apigateway:${local.region}::/restapis/*",
+          "arn:aws:apigateway:${local.region}::/tags/*",
+        ]
       },
       {
         Sid      = "SpaDistribution"
@@ -282,6 +334,60 @@ resource "aws_ssoadmin_account_assignment" "deployer" {
   target_type        = "AWS_ACCOUNT"
   depends_on         = [aws_ssoadmin_permission_set_inline_policy.deployer]
 }
+# 想定外の課金に早く気づくための月額の予算アラート。ポータルを撤去しても残るよう、撤去の対象外である
+# bootstrap に置く（ADR-0014）。上限と通知先の両方を指定したときだけ作る。
+# 根拠: 通知先は 1 通知あたり最大 10 件 https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-email-recipients.html
+#       予測（FORECASTED）の通知は約 5 週間の利用実績が溜まるまで出ない https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-best-practices.html
+resource "aws_budgets_budget" "monthly" {
+  count        = var.budget_limit_usd != null && length(var.budget_notification_emails) > 0 ? 1 : 0
+  name         = "${var.name_prefix}-monthly"
+  budget_type  = "COST"
+  time_unit    = "MONTHLY"
+  limit_amount = tostring(var.budget_limit_usd)
+  limit_unit   = "USD"
+  # 実績が上限の 80% を超えたとき
+  notification {
+    notification_type          = "ACTUAL"
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 80
+    threshold_type             = "PERCENTAGE"
+    subscriber_email_addresses = var.budget_notification_emails
+  }
+  # 月末の予測が上限を超えたとき
+  notification {
+    notification_type          = "FORECASTED"
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 100
+    threshold_type             = "PERCENTAGE"
+    subscriber_email_addresses = var.budget_notification_emails
+  }
+}
+# API Gateway の CloudWatch ロール設定（REST API のアクセスログに必要。リージョン内で共有）
+resource "aws_iam_role" "api_gateway_logs" {
+  count = var.manage_api_gateway_account ? 1 : 0
+  name  = "${var.name_prefix}-api-gateway-logs"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "apigateway.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "api_gateway_logs" {
+  count      = length(aws_iam_role.api_gateway_logs)
+  role       = aws_iam_role.api_gateway_logs[count.index].name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+}
+
+resource "aws_api_gateway_account" "portal" {
+  count               = length(aws_iam_role.api_gateway_logs)
+  cloudwatch_role_arn = aws_iam_role.api_gateway_logs[count.index].arn
+  depends_on          = [aws_iam_role_policy_attachment.api_gateway_logs]
+}
+
 output "state_bucket_name" {
   description = "本体の backend.hcl に設定するバケット名。"
   value       = aws_s3_bucket.state.id

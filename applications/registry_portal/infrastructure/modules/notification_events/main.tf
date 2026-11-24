@@ -27,8 +27,9 @@ locals {
 
 # ロググループと、plan 時に確定するその ARN（本体スタック・decision と共通のモジュール）
 module "log_group" {
-  source        = "../lambda_log_group"
-  function_name = local.name
+  source            = "../lambda_log_group"
+  function_name     = local.name
+  retention_in_days = var.log_retention_in_days
 }
 
 # ロググループを共通のモジュールに移した。適用済みの state は moved で引き継ぐ
@@ -78,6 +79,8 @@ resource "aws_lambda_function" "events" {
   handler          = "registry_portal.handlers.events.handler"
   timeout          = 30
   memory_size      = 256
+  # null なら属性を設定せず、予約しない（既定の動作のまま）。上限に達した呼び出しは再試行と DLQ に回る
+  reserved_concurrent_executions = var.lambda_reserved_concurrency
   dead_letter_config {
     target_arn = aws_sqs_queue.events_dead_letter.arn
   }

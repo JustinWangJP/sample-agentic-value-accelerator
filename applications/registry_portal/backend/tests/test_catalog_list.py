@@ -195,7 +195,7 @@ def test_repeated_registry_401_stops_after_one_refresh_and_reports_failure() -> 
     assert body["error"] == {
         "code": "DISCOVERY_UNAVAILABLE",
         "message": "カタログを取得できませんでした。時間をおいて再度お試しください。",
-        "requestId": "req-cat",
+        "requestId": "req-rest",
     }
     # 再取得は1回に限る（Registry へ2回、トークン取得も2回）
     assert len(transport.to(LIST_URL)) == 2
@@ -250,7 +250,7 @@ def test_type_must_be_one_of_agent_mcp_skill(query: dict[str, str] | None) -> No
     assert body["error"] == {
         "code": "VALIDATION_ERROR",
         "message": "種別（type）には AGENT、MCP、SKILL のいずれかを指定してください。",
-        "requestId": "req-cat",
+        "requestId": "req-rest",
     }
     assert transport.requests == []
 

@@ -15,6 +15,7 @@ from catalog_helpers import (
     SUPPLEMENT_TABLE,
     FakeSecrets,
     FakeTransport,
+    access_claims,
     json_response,
     summary,
 )
@@ -33,6 +34,7 @@ from decision_helpers import (
     stub_submit,
 )
 from draft_helpers import RECORD_ID, aws_record, call, clients, event
+from event_helpers import rest_api_event
 from record_fixtures import CUSTOM_DESCRIPTORS, CUSTOM_DRAFT, stub_create
 from registry_portal.app import create_curation_handler, create_management_handler
 from registry_portal.services.discovery import DiscoveryDependencies
@@ -87,6 +89,52 @@ def test_reviews_require_the_curator_role_before_any_aws_call():
             )
             assert call(state["decision"], request)[0] == 404
         stub.assert_no_pending_responses()
+
+
+def _rest_review_list(groups, headers=None):
+    """REST API（Cognito User Pools authorizer）の審査一覧のイベント。groups はカンマ区切り。"""
+    claims = {
+        **access_claims(),
+        "scope": "openid registry-portal/api.invoke",
+        "cognito:groups": groups,
+    }
+    return rest_api_event("GET", "/api/reviews", claims, headers=headers)
+
+
+@mock_aws
+def test_decision_handler_reads_the_curator_role_from_rest_api_events():
+    registry, db = clients()
+    with Stubber(registry) as stub:
+        state = setup_pending(stub, registry, db)
+        status, _ = call(state["decision"], _rest_review_list("registry-publisher,team-payments"))
+        assert status == 403
+        stub.add_response("list_registry_records", list_response(aws_summary()), LIST_PARAMS)
+        status, body = call(state["decision"], _rest_review_list("team-payments,registry-curator"))
+        assert status == 200
+        assert [item["recordId"] for item in body["items"]] == [RECORD_ID]
+        stub.assert_no_pending_responses()
+
+
+@mock_aws
+def test_decision_handler_adds_cors_to_rest_api_forbidden_response():
+    registry, db = clients()
+    origin = "http://localhost:5173"
+    handler = create_curation_handler(
+        {
+            **ENV,
+            "SUPPLEMENT_TABLE_NAME": SUPPLEMENT_TABLE,
+            "CORS_ALLOWED_ORIGINS": json.dumps([origin]),
+        },
+        registry_client=registry,
+        store_client=db,
+    )
+    request = _rest_review_list("registry-publisher,team-payments", headers={"Origin": origin})
+
+    response = handler(request, None)
+
+    assert response["statusCode"] == 403
+    assert response["headers"]["Access-Control-Allow-Origin"] == origin
+    assert response["headers"]["Vary"] == "Origin"
 
 
 @mock_aws

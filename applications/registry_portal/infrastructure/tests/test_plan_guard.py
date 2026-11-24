@@ -80,6 +80,70 @@ def run_guard_saved(
 
 
 class PlanGuardTests(unittest.TestCase):
+    def test_rest_api_migration_passes_the_existing_guard(self):
+        plan = json.loads((FIXTURES / "safe.json").read_text())
+        plan["resource_changes"] = [
+            {
+                "address": "aws_apigatewayv2_api.portal",
+                "type": "aws_apigatewayv2_api",
+                "mode": "managed",
+                "change": {"actions": ["delete"], "before": {"id": "oldapi1234"}, "after": None},
+            },
+            {
+                "address": "aws_api_gateway_rest_api_policy.portal",
+                "type": "aws_api_gateway_rest_api_policy",
+                "mode": "managed",
+                "change": {"actions": ["create"], "before": None, "after_unknown": {"policy": True}},
+            },
+        ]
+
+        result = run_guard_saved(plan)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_full_rest_api_migration_plan_passes_the_existing_guard(self):
+        # HTTP API から REST API へ移行する実際の plan に出る変更（HTTP API の経路・統合・stage の削除、
+        # REST API の作成、呼び出し許可の置き換え、Lambda の環境変数 CORS_ALLOWED_ORIGINS の追加）をまとめて通す
+        plan = json.loads((FIXTURES / "safe.json").read_text())
+
+        def change(address, resource_type, actions, before=None, after=None):
+            return {
+                "address": address,
+                "type": resource_type,
+                "mode": "managed",
+                "change": {"actions": actions, "before": before, "after": after, "after_unknown": {}},
+            }
+
+        plan["resource_changes"] = [
+            change("aws_apigatewayv2_api.portal", "aws_apigatewayv2_api", ["delete"], {"id": "oldapi1234"}),
+            change("aws_apigatewayv2_stage.default", "aws_apigatewayv2_stage", ["delete"], {"id": "$default"}),
+            change("aws_apigatewayv2_route.me", "aws_apigatewayv2_route", ["delete"], {"id": "route1"}),
+            change("aws_apigatewayv2_integration.me", "aws_apigatewayv2_integration", ["delete"], {"id": "int1"}),
+            change("aws_apigatewayv2_authorizer.cognito", "aws_apigatewayv2_authorizer", ["delete"], {"id": "auth1"}),
+            change("aws_api_gateway_rest_api.portal", "aws_api_gateway_rest_api", ["create"], None, {"name": "portal"}),
+            change("aws_api_gateway_authorizer.cognito", "aws_api_gateway_authorizer", ["create"], None, {"type": "COGNITO_USER_POOLS"}),
+            change("aws_api_gateway_deployment.portal", "aws_api_gateway_deployment", ["create"], None, {}),
+            change("aws_api_gateway_stage.default", "aws_api_gateway_stage", ["create"], None, {"stage_name": "default"}),
+            change(
+                "aws_lambda_permission.invoke_me",
+                "aws_lambda_permission",
+                ["delete", "create"],
+                {"action": "lambda:InvokeFunction", "source_arn": "arn:aws:execute-api:us-east-1:123456789012:oldapi1234/*/GET/api/me"},
+                {"action": "lambda:InvokeFunction", "source_arn": "arn:aws:execute-api:us-east-1:123456789012:newapi5678/*/GET/api/me"},
+            ),
+            change(
+                "module.management.aws_lambda_function.management",
+                "aws_lambda_function",
+                ["update"],
+                {"environment": [{"variables": {}}]},
+                {"environment": [{"variables": {"CORS_ALLOWED_ORIGINS": "https://portal.example.com"}}]},
+            ),
+        ]
+
+        result = run_guard_saved(plan)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_registry_update_is_rejected(self):
         result = run_guard(FIXTURES / "registry-update.json")
         self.assertEqual(result.returncode, 1, result.stderr)

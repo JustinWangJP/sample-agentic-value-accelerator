@@ -1,4 +1,4 @@
-"""検索と詳細を API Gateway HTTP API v2 のイベントとフェイク HTTP で検証する（Seam 1）。"""
+"""検索と詳細を API Gateway REST API のイベントとフェイク HTTP で検証する（Seam 1）。"""
 
 import json
 from typing import Any
@@ -16,6 +16,7 @@ from catalog_helpers import (
     SEARCH_URL,
     SUPPLEMENT_TABLE,
     FakeTransport,
+    access_claims,
     botocore_discovery_request,
     call,
     detail_event,
@@ -28,6 +29,7 @@ from catalog_helpers import (
     summary,
     supplement_key,
 )
+from event_helpers import rest_api_event
 
 SKILL_ID = "skillAbc1234"
 AGENT_ID = "agentAbc1234"
@@ -414,13 +416,33 @@ def test_unconfigured_supplement_reports_snapshot_values_as_unknown() -> None:
     assert body["dataClassification"] is None
 
 
+def test_rest_api_event_routes_the_detail_by_path_without_stage() -> None:
+    # REST API のイベント。requestContext.path（/v1/api/catalog/...）ではなく、
+    # ステージ名を含まない最上位の path をルート表と照合し、path パラメーターを取り出す
+    transport = FakeTransport()
+    transport.registry.append(found(hit(AGENT_ID)))
+    event = rest_api_event(
+        "GET",
+        f"/api/catalog/{AGENT_ID}",
+        access_claims(),
+        resource="/api/catalog/{recordId}",
+        path_parameters={"recordId": AGENT_ID},
+    )
+
+    status, body = call(make_handler(transport, env=ENV), event)
+
+    assert status == 200
+    assert body["recordId"] == AGENT_ID
+    (request,) = transport.to(BATCH_URL)
+    assert request.json()["entries"] == [{"registryId": REGISTRY_ARN, "recordIds": [AGENT_ID]}]
+
+
 @pytest.mark.parametrize(
     "path", ["/api/catalog/agentAbc1234/versions", "/api/catalog/", "/api/catalogs/agentAbc1234"]
 )
 def test_unknown_catalog_paths_are_not_routed_to_the_detail(path: str) -> None:
     transport = FakeTransport()
-    event = detail_event(AGENT_ID)
-    event["requestContext"]["http"]["path"] = path
+    event = rest_api_event(path=path, claims=access_claims())
 
     status, body = call(make_handler(transport), event)
 

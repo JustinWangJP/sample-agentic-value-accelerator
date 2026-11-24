@@ -17,6 +17,13 @@ STATE_KEYS = {
     "notification_events": "registry-portal/dev/notification-events.tfstate",
 }
 ADDON_STACKS = tuple(stack for stack in STATE_KEYS if stack != "main")
+# 経路を持つ追加スタックの tfvars に転記した本体の output rest_api。ステージ名は既定値（v1）と区別できる値にする
+TRANSCRIBED_REST_API = {
+    "id": "abcde12345",
+    "stage_name": "stage-from-plan",
+    "cors_allowed_origins": ["https://d111111abcdef8.cloudfront.net"],
+}
+ROUTED_ADDON_STACKS = ("decision", "management")
 FAKE = """#!PYTHON
 import json, os
 from pathlib import Path
@@ -24,6 +31,7 @@ import subprocess, sys
 from zipfile import ZipFile
 name = Path(sys.argv[0]).name
 args = sys.argv[1:]
+TRANSCRIBED_REST_API = json.loads(os.environ["TRANSCRIBED_REST_API"])
 with open(os.environ["COMMAND_LOG"], "a") as log:
     log.write(json.dumps({"argv": [name, *args], "profile": os.environ.get("AWS_PROFILE"),
                           "cwd": os.getcwd()}) + "\\n")
@@ -44,6 +52,8 @@ elif name == "aws":
         if "caller_arn" not in settings:
             sys.exit(255)
         print(settings["caller_arn"])
+    if args[:2] == ["apigateway", "create-deployment"]:
+        print("deployment123")
 elif name == "terraform":
     if "plan" in args:
         plan_path = next(arg[5:] for arg in args if arg.startswith("-out="))
@@ -51,7 +61,15 @@ elif name == "terraform":
             plan.writestr("tfconfig/modules.json", json.dumps([{"Key": "", "Dir": "."}]))
             plan.writestr("tfconfig/m-/main.tf", "terraform {}")
     elif "show" in args and "-json" in args and args[-1].endswith(".tfplan"):
-        print(Path(os.environ["PLAN_FIXTURE"]).read_text())
+        plan = json.loads(Path(os.environ["PLAN_FIXTURE"]).read_text())
+        stack_dir = args[0].removeprefix("-chdir=") if args[0].startswith("-chdir=") else os.getcwd()
+        if Path(stack_dir).name in {"decision", "management"}:
+            # 本体の output rest_api の転記（TRANSCRIBED_REST_API）
+            plan.setdefault("variables", {}).update(
+                rest_api={"value": TRANSCRIBED_REST_API},
+                region={"value": "us-east-1"},
+            )
+        print(json.dumps(plan))
     elif args[1:3] == ["state", "pull"]:
         # FAKE_STATES にないスタックは state のファイルがない（state pull は何も出力しない）
         stack = Path(args[0].split("=", 1)[1]).name
@@ -61,8 +79,13 @@ elif name == "terraform":
         if stack in states:
             print(json.dumps(states[stack]))
     elif "output" in args:
+        # FAKE_MAIN_REST_API は、追加スタックの反映で読む本体の output rest_api（転記値との照合に使う）
+        rest_api = json.loads(os.environ.get("FAKE_MAIN_REST_API")
+                              or '{"id": "abcde12345", "stage_name": "stage-from-output"}')
         outputs = {"spa_bucket_name": "portal-spa",
                    "cloudfront_distribution_id": "EDIST",
+                   "rest_api": rest_api,
+                   "api_region": "us-east-1",
                    "frontend_config": {"VITE_COGNITO_SCOPES": "openid registry-portal/api.invoke"}}
         value = outputs[args[-1]]
         print(json.dumps(value) if "-json" in args else value, end="" if "-raw" in args else "\\n")
@@ -157,6 +180,9 @@ class DeployTests(unittest.TestCase):
                 COMMAND_LOG=str(commands),
                 PLAN_FIXTURE=str(Path(__file__).parent / f"fixtures/{fixture}.json"),
                 FAKE_STATES=json.dumps(states or {}),
+                TRANSCRIBED_REST_API=json.dumps(TRANSCRIBED_REST_API),
+                # 既定では、本体の output は追加スタックに転記した値と一致する（転記し直した状態）
+                FAKE_MAIN_REST_API=json.dumps(TRANSCRIBED_REST_API) if stack in ROUTED_ADDON_STACKS else "",
             )
             env.update(extra_env or {})
             result = subprocess.run(
@@ -196,7 +222,10 @@ class DeployTests(unittest.TestCase):
                     (
                         item
                         for item in command[1:]
-                        if item in {"plan", "apply", "sync", "cp", "create-invalidation"}
+                        if item in {
+                            "plan", "apply", "sync", "cp", "create-invalidation",
+                            "create-deployment", "update-stage",
+                        }
                     ),
                     "",
                 ),
@@ -209,6 +238,8 @@ class DeployTests(unittest.TestCase):
             [
                 ("terraform", "plan"),
                 ("terraform", "apply"),
+                ("aws", "create-deployment"),
+                ("aws", "update-stage"),
                 ("aws", "sync"),
                 ("aws", "cp"),
                 ("aws", "create-invalidation"),
@@ -228,6 +259,11 @@ class DeployTests(unittest.TestCase):
         init = next(command for command in commands if "init" in command)
         self.assertIn("-backend-config=encrypt=true", init)
         self.assertIn("-backend-config=use_lockfile=true", init)
+        # 本体スタックは output rest_api の ID とステージ名で再デプロイする（ステージ名を直書きしない）
+        deploy = next(command for command in commands if "create-deployment" in command)
+        update = next(command for command in commands if "update-stage" in command)
+        self.assertEqual(deploy[deploy.index("--rest-api-id") + 1], "abcde12345")
+        self.assertEqual(update[update.index("--stage-name") + 1], "stage-from-output")
 
     def test_lambda_zip_is_named_as_the_shared_package(self):
         # 管理・決裁・イベント処理の Lambda が共通で使う ZIP であることがわかる名前で作り、plan に渡す
@@ -356,11 +392,22 @@ class DeployTests(unittest.TestCase):
                 terraform = [record for record in self.records if record["argv"][0] == "terraform"]
                 stack_dir = ROOT / "infrastructure" / stack
                 self.assertTrue(terraform)
+                # 本体のディレクトリでは、転記値と照合する output rest_api を読むことだけを行う
+                main_reads = [
+                    record["argv"][2:]
+                    for record in terraform
+                    if record["argv"][1] == f"-chdir={ROOT / 'infrastructure'}"
+                ]
+                self.assertEqual(
+                    [argv[0] for argv in main_reads],
+                    ["init", "output"] if stack in ROUTED_ADDON_STACKS else [],
+                )
                 self.assertTrue(
                     all(
                         record["argv"][1] == f"-chdir={stack_dir}"
                         or Path(record["cwd"]).resolve() == stack_dir
                         for record in terraform
+                        if record["argv"][2:] not in main_reads
                     )
                 )
                 terraform = [record["argv"] for record in terraform]
@@ -373,6 +420,16 @@ class DeployTests(unittest.TestCase):
                     )
                 )
                 self.assertTrue(any("apply" in command for command in terraform))
+                api_commands = [command for command in commands if command[:2] == ["aws", "apigateway"]]
+                self.assertEqual(
+                    [command[2] for command in api_commands],
+                    [] if stack == "notification_events" else ["create-deployment", "update-stage"],
+                )
+                if api_commands:
+                    self.assertLess(
+                        commands.index(next(command for command in terraform if "apply" in command)),
+                        commands.index(api_commands[0]),
+                    )
                 plan = next(command for command in terraform if "plan" in command)
                 builds = [
                     command
@@ -389,6 +446,56 @@ class DeployTests(unittest.TestCase):
                 self.assertFalse(
                     any("s3" in command or "cloudfront" in command for command in commands)
                 )
+
+    def test_addon_stack_stops_before_apply_when_the_transcribed_rest_api_is_stale(self):
+        # 本体で local_dev_origins を変えた後、決裁スタックの tfvars に転記し直していない状態
+        current = {**TRANSCRIBED_REST_API, "cors_allowed_origins": [
+            *TRANSCRIBED_REST_API["cors_allowed_origins"], "http://localhost:5173",
+        ]}
+        for stack in ROUTED_ADDON_STACKS:
+            with self.subTest(stack=stack):
+                result, commands = self.run_deploy(
+                    profile="registry-deploy",
+                    profiles=ROLE_PROFILES,
+                    stack_args=("--stack", stack),
+                    extra_env={"FAKE_MAIN_REST_API": json.dumps(current)},
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("cors_allowed_origins", result.stderr)
+                self.assertIn("ガイド 4.3", result.stderr)
+                self.assertFalse(any("apply" in command for command in commands))
+                self.assertFalse(any(command[:2] == ["aws", "apigateway"] for command in commands))
+
+    def test_addon_stack_reads_the_main_output_with_only_the_state_key_replaced(self):
+        result, _ = self.run_deploy(
+            profile="registry-deploy", profiles=ROLE_PROFILES, stack_args=("--stack", "decision")
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        main_dir = f"-chdir={ROOT / 'infrastructure'}"
+        init = next(
+            record["argv"]
+            for record in self.records
+            if record["argv"][:3] == ["terraform", main_dir, "init"]
+        )
+        backend_configs = [item for item in init if item.startswith("-backend-config=")]
+        # 追加スタックの backend.hcl の後に本体の key を置き、backend.hcl の key より優先させる
+        self.assertTrue(backend_configs[0].endswith("backend.hcl"))
+        self.assertEqual(backend_configs[1], f"-backend-config=key={STATE_KEYS['main']}")
+
+    def test_addon_destroy_does_not_compare_the_transcribed_rest_api(self):
+        # 撤去では転記値を比べない（本体の output が変わっていても、借りている経路を外せるようにする）
+        result, _ = self.run_deploy(
+            confirmation="decision\n",
+            profile="registry-deploy",
+            profiles=ROLE_PROFILES,
+            stack_args=("--stack", "decision"),
+            destroy=True,
+            extra_env={"FAKE_MAIN_REST_API": json.dumps({**TRANSCRIBED_REST_API, "id": "zzzzz99999"})},
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(
+            any(record["argv"][1] == f"-chdir={ROOT / 'infrastructure'}" for record in self.records)
+        )
 
     def test_addon_stack_rejects_unsafe_principal_and_guard_failure(self):
         other_session = "arn:aws:sts::123456789012:assumed-role/Administrator/operator"
@@ -678,6 +785,14 @@ class DeployTests(unittest.TestCase):
             stack_args=("--stack", "decision"),
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        apply = next(command for command in commands if "apply" in command)
+        deploy = next(command for command in commands if "create-deployment" in command)
+        update = next(command for command in commands if "update-stage" in command)
+        self.assertLess(commands.index(apply), commands.index(deploy))
+        self.assertLess(commands.index(deploy), commands.index(update))
+        self.assertIn("op=replace,path=/deploymentId,value=deployment123", update)
+        # 撤去で state が消えても、plan の変数 rest_api からステージを決める
+        self.assertEqual(update[update.index("--stage-name") + 1], "stage-from-plan")
         self.assertFalse(
             any(command[0] == "python3" and "check_teardown" in command[1] for command in commands)
         )

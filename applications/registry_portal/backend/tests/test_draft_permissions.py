@@ -82,16 +82,14 @@ def test_root_module_applies_the_draft_policy_to_the_management_role():
     root_variables = set(
         re.findall(r'^variable "([^"]+)"', (ROOT / "variables.tf").read_text(), re.MULTILINE)
     )
-    # 管理の route 表（routes）はルートモジュールが持ち、scope は本体スタックの output を転記した変数で受け取る
-    routes_inputs = (_variables(ROUTES_MODULE) - {"routes", "authorization_scope"}) | {
-        "portal_api_scope"
-    }
+    # REST API の ID・authorizer・scope は本体の output rest_api の転記から、統合先は関数名から取得する
+    routes_inputs = {"rest_api", "management_function_name"}
     assert root_variables == module_variables | routes_inputs | {"region"}
     # CI では検証だけを行うため、state の保存先は部分設定にして環境ごとに渡す
     assert 'backend "s3" {}' in (ROOT / "versions.tf").read_text()
 
 
-ROUTES_MODULE = MODULE.parent / "management_routes"
+ROUTES_MODULE = MODULE.parent / "api_routes"
 
 
 def _variables(module: Path) -> set[str]:
@@ -100,69 +98,7 @@ def _variables(module: Path) -> set[str]:
     )
 
 
-def test_routes_module_assigns_only_portal_added_management_routes():
-    """Registry 管理・履歴・廃止依頼・通知・下書きの route を、既存の管理 Lambda の統合に割り当てる。
-
-    HTTP API・authorizer・統合は借用し、作らない。呼び出し許可は割り当てた path だけに限る。
-    route 表は management のルートモジュールが持ち、route と呼び出し許可は modules/management_routes が作る。
-    """
-    route_table = (ROOT / "main.tf").read_text()
-    main = (ROUTES_MODULE / "main.tf").read_text()
-    assert re.findall(r'route_key\s*=\s*"([^"]+)"', route_table) == [
-        "GET /api/admin/records",
-        "GET /api/admin/connection",
-        "GET /api/records/{recordId}/history",
-        "POST /api/records/{recordId}/deprecation-requests",
-        "GET /api/notifications",
-        "POST /api/notifications/read",
-        "POST /api/records",
-        "GET /api/records",
-        "GET /api/records/{recordId}",
-        "PATCH /api/records/{recordId}",
-        "GET /api/operations/{operationId}",
-        "POST /api/records/{recordId}/submit",
-    ]
-    assert re.findall(r'^resource "([^"]+)"', main, re.MULTILINE) == [
-        "aws_apigatewayv2_route",
-        "aws_lambda_permission",
-    ]
-    assert re.search(r'target\s+= "integrations/\$\{var\.management_integration_id\}"', main)
-    assert re.search(r'authorization_type\s+= "JWT"', main)
-    assert re.search(r"authorizer_id\s+= var\.jwt_authorizer_id", main)
-    # 本体スタックの route と同じポータル用のカスタム scope（呼び出し元が渡す）を JWT authorizer で検証する
-    assert re.search(r"authorization_scopes = \[var\.authorization_scope\]", main)
-    assert re.search(r"for_each\s+= var\.routes", main)
-    # 呼び出し許可の path は route_key から導き、map に別の値として持たない。
-    # 先頭の / を除き、パスパラメータを * にする（Terraform の式と同じ規則で期待値を確かめる）
-    assert re.findall(r'path\s*=\s*"([^"]+)"', main) == []
-    assert (
-        'name => "${split(" ", route.route_key)[0]}/'
-        '${replace(trimprefix(split(" ", route.route_key)[1], "/"), "/\\\\{[^}]+\\\\}/", "*")}"'
-    ) in main
-    route_keys = re.findall(r'route_key\s*=\s*"([^"]+)"', route_table)
-    paths = [
-        re.sub(r"\{[^}]+\}", "*", route_key.split(" ")[1].removeprefix("/"))
-        for route_key in route_keys
-    ]
-    assert paths == [
-        "api/admin/records",
-        "api/admin/connection",
-        "api/records/*/history",
-        "api/records/*/deprecation-requests",
-        "api/notifications",
-        "api/notifications/read",
-        "api/records",
-        "api/records",
-        "api/records/*",
-        "api/records/*",
-        "api/operations/*",
-        "api/records/*/submit",
-    ]
-    # stage だけを * にし、メソッドと path は route ごとの値（local.invoke_paths）に限る
-    (source_arn,) = re.findall(r"^\s*source_arn\s*=\s*(.+)$", main, re.MULTILINE)
-    assert source_arn == (
-        '"${data.aws_apigatewayv2_api.portal.execution_arn}/*/${local.invoke_paths[each.key]}"'
-    )
+# 管理スタックの経路の中身は、管理 Lambda のルート表と照合する（tests/test_route_tables.py）
 
 
 def test_root_module_applies_the_routes_module():
@@ -171,10 +107,13 @@ def test_root_module_applies_the_routes_module():
     source = re.search(r'source\s*=\s*"([^"]+)"', block)
     assert source is not None
     assert (ROOT / source.group(1)).resolve() == ROUTES_MODULE
+    # パスは本体スタックが作ったものを REST API から引くため、resource_ids は渡さない
     passed_through = {
-        "routes": "local.management_routes",
-        "authorization_scope": "var.portal_api_scope",
+        "route_group": '"management"',
+        "rest_api": "var.rest_api",
+        "lambda_invoke_arn": "data.aws_lambda_function.management.invoke_arn",
+        "function_name": "var.management_function_name",
     }
-    for name in _variables(ROUTES_MODULE):
-        value = re.escape(passed_through.get(name, f"var.{name}"))
-        assert re.search(rf"^\s*{name}\s*=\s*{value}$", block, re.MULTILINE), name
+    assert _variables(ROUTES_MODULE) - {"resource_ids"} == set(passed_through)
+    for name, value in passed_through.items():
+        assert re.search(rf"^\s*{name}\s*=\s*{re.escape(value)}$", block, re.MULTILINE), name

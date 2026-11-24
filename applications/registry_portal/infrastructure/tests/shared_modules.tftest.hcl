@@ -116,3 +116,16 @@ run "lambda_log_group_arn_is_known_on_first_plan" {
     error_message = "ロググループの ARN は、名前と plan 時に確定するアカウント ID・リージョンから組み立ててください。"
   }
 }
+
+# 本体・decision・notification_events の log_retention_in_days も、同じ一覧（retention_days.json）で各スタックの変数が検証する
+run "lambda_log_group_rejects_unsupported_retention" {
+  command = plan
+  module {
+    source = "./modules/lambda_log_group"
+  }
+  variables {
+    function_name     = "registry-portal-dev-management"
+    retention_in_days = 10
+  }
+  expect_failures = [var.retention_in_days]
+}

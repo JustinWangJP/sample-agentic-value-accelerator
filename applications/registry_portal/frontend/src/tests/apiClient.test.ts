@@ -24,6 +24,19 @@ function clientWith(responses: (Response | Error)[], token: string | null = 'tok
 }
 
 describe('自分の主体の取得', () => {
+  it('REST API のステージを含むベース URL に経路を追加する', async () => {
+    const { fetchImpl, calls } = fakeFetch([jsonResponse(200, me)])
+    const client = createApiClient({
+      baseUrl: 'https://api.example.com/v1',
+      fetch: fetchImpl,
+      getAccessToken: () => 'token',
+    })
+
+    await client.getMe()
+
+    expect(calls[0].url).toBe('https://api.example.com/v1/api/me')
+  })
+
   it('メモリー上のアクセストークンを Bearer で送り、主体・業務ロール・所属チームを返す', async () => {
     const { client, calls } = clientWith([jsonResponse(200, me)], 'access-token-value')
 
@@ -74,8 +87,8 @@ describe('自分の主体の取得', () => {
     })
   })
 
-  it('JWT authorizer が拒否した 401（共通 DTO ではない）も、ログインし直すエラーにする', async () => {
-    // API Gateway の HTTP API は、トークンなし・期限切れを Lambda に届けずにこの形で返す
+  it('Cognito User Pools authorizer が拒否した 401（共通 DTO ではない）も、ログインし直すエラーにする', async () => {
+    // API Gateway の REST API は、トークンなし・期限切れを Lambda に届けずにこの形（gateway response の UNAUTHORIZED）で返す
     const { client } = clientWith([jsonResponse(401, { message: 'Unauthorized' })])
 
     await expect(client.getMe()).rejects.toMatchObject({

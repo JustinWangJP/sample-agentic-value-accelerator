@@ -1,14 +1,21 @@
 data "aws_region" "current" {}
+data "aws_partition" "current" {}
 
 locals {
   # provider のリージョン（us-east-1 に固定。追加スタックのモジュールと同じく data source から読む）
   region = data.aws_region.current.region
-  issuer = "https://cognito-idp.${local.region}.amazonaws.com/${var.cognito_user_pool_id}"
+  # ARN のパーティション。REST API の Cognito authorizer（rest_api.tf）が使う。経路モジュール（modules/api_routes）と同じく data source から読む
+  partition = data.aws_partition.current.partition
+  issuer    = "https://cognito-idp.${local.region}.amazonaws.com/${var.cognito_user_pool_id}"
   # 管理 Lambda・実行ロール・ロググループの共通名。bootstrap の locals も同じ規則で組み立てる
   management_name = "${var.name_prefix}-management"
   spa_origin      = "https://${aws_cloudfront_distribution.spa.domain_name}"
-  # HTTP API のすべての route（追加スタックを含む）が検証するカスタム scope。業務ロールの判定は handler が行う。
-  # 追加スタックと SPA には output（portal_api_scope と frontend_config）で渡し、値はここだけに定義する
+  # SPA を開く origin。CloudFront の SPA と、ローカルの開発サーバー（var.local_dev_origins）。
+  # 人間用 client のコールバック URL・ログアウト URL と、Lambda の CORS の許可リストの両方に使う
+  spa_origins       = distinct(concat([local.spa_origin], var.local_dev_origins))
+  spa_redirect_urls = [for origin in local.spa_origins : "${origin}/"]
+  # REST API のすべての route（追加スタックを含む）が検証するカスタム scope。業務ロールの判定は handler が行う。
+  # 追加スタックと SPA には output（rest_api と frontend_config）で渡し、値はここだけに定義する
   portal_api_scope_name = "api.invoke"
   portal_api_scope      = "${aws_cognito_resource_server.portal.identifier}/${local.portal_api_scope_name}"
   registry_record       = "${var.registry_arn}/record/*"
@@ -34,8 +41,8 @@ resource "aws_cognito_user_pool_client" "human" {
   allowed_oauth_flows                  = ["code"]
   allowed_oauth_scopes                 = ["openid", local.portal_api_scope]
   supported_identity_providers         = var.identity_providers
-  callback_urls                        = ["${local.spa_origin}/"]
-  logout_urls                          = ["${local.spa_origin}/"]
+  callback_urls                        = local.spa_redirect_urls
+  logout_urls                          = local.spa_redirect_urls
   prevent_user_existence_errors        = "ENABLED"
   enable_token_revocation              = true
   access_token_validity                = 15
@@ -83,11 +90,13 @@ resource "aws_dynamodb_table" "auxiliary" {
     attribute_name = "expiresAt"
     enabled        = true
   }
+  lifecycle { prevent_destroy = true }
 }
 
 module "management_log_group" {
-  source        = "./modules/lambda_log_group"
-  function_name = local.management_name
+  source            = "./modules/lambda_log_group"
+  function_name     = local.management_name
+  retention_in_days = var.log_retention_in_days
 }
 
 # ロググループを追加スタックと共通のモジュールに移した。適用済みの state は moved で引き継ぐ
@@ -110,7 +119,7 @@ module "discovery_client" {
 
 resource "aws_cloudwatch_log_group" "api" {
   name              = "/aws/apigateway/${var.name_prefix}"
-  retention_in_days = 365
+  retention_in_days = var.log_retention_in_days
 }
 
 resource "aws_iam_role" "management" {
@@ -172,9 +181,12 @@ resource "aws_lambda_function" "management" {
   handler          = "registry_portal.handlers.management.handler"
   timeout          = 30
   memory_size      = 256
+  # null なら属性を設定せず、予約しない（既定の動作のまま）
+  reserved_concurrent_executions = var.lambda_reserved_concurrency
   environment {
     # A2A_SEARCH_ENABLED は isA2A の補完と確認（#16）が終わるまで設定しない（未設定は無効）
     variables = merge(module.discovery_client.environment, {
+      CORS_ALLOWED_ORIGINS  = jsonencode(local.spa_origins)
       COGNITO_ISSUER        = local.issuer
       HUMAN_CLIENT_ID       = aws_cognito_user_pool_client.human.id
       REGISTRY_ARN          = var.registry_arn
@@ -182,97 +194,4 @@ resource "aws_lambda_function" "management" {
     })
   }
   depends_on = [aws_iam_role_policy.management, module.management_log_group]
-}
-
-resource "aws_apigatewayv2_api" "portal" {
-  name          = var.name_prefix
-  protocol_type = "HTTP"
-  cors_configuration {
-    allow_origins = [local.spa_origin]
-    # SPA は下書きの更新に PATCH、申請・決裁などに POST と Idempotency-Key を使う
-    allow_methods = ["GET", "POST", "PATCH", "OPTIONS"]
-    allow_headers = ["authorization", "content-type", "idempotency-key"]
-    max_age       = 300
-  }
-}
-
-resource "aws_apigatewayv2_authorizer" "human" {
-  api_id           = aws_apigatewayv2_api.portal.id
-  name             = "human-access-token"
-  authorizer_type  = "JWT"
-  identity_sources = ["$request.header.Authorization"]
-  jwt_configuration {
-    audience = [aws_cognito_user_pool_client.human.id]
-    issuer   = local.issuer
-  }
-}
-
-resource "aws_apigatewayv2_integration" "management" {
-  api_id                 = aws_apigatewayv2_api.portal.id
-  integration_type       = "AWS_PROXY"
-  integration_uri        = aws_lambda_function.management.invoke_arn
-  payload_format_version = "2.0"
-  timeout_milliseconds   = 30000
-}
-
-# 本体スタックが管理 Lambda に割り当てる route と、Lambda の呼び出し許可の ID。
-# 決裁と管理の追加 route は、それぞれの追加スタックが作る（管理の追加 route も modules/management_routes で作る）
-locals {
-  management_routes = {
-    me = {
-      route_key    = "GET /api/me"
-      statement_id = "AllowHttpApiInvokeMe"
-    }
-    catalog = {
-      route_key    = "GET /api/catalog"
-      statement_id = "AllowHttpApiInvokeCatalog"
-    }
-    catalog_search = {
-      route_key    = "POST /api/catalog/search"
-      statement_id = "AllowHttpApiInvokeCatalogSearch"
-    }
-    catalog_detail = {
-      route_key    = "GET /api/catalog/{recordId}"
-      statement_id = "AllowHttpApiInvokeCatalogDetail"
-    }
-  }
-}
-
-# route と、route ごとのメソッドと path に限った呼び出し許可は、management スタックと同じモジュールで作る
-module "management_routes" {
-  source                    = "./modules/management_routes"
-  routes                    = local.management_routes
-  authorization_scope       = local.portal_api_scope
-  http_api_id               = aws_apigatewayv2_api.portal.id
-  jwt_authorizer_id         = aws_apigatewayv2_authorizer.human.id
-  management_integration_id = aws_apigatewayv2_integration.management.id
-  management_function_name  = aws_lambda_function.management.function_name
-}
-
-# route と呼び出し許可を management スタックと共通のモジュールに移した。適用済みの state は moved で引き継ぐ
-moved {
-  from = aws_apigatewayv2_route.management
-  to   = module.management_routes.aws_apigatewayv2_route.management
-}
-
-moved {
-  from = aws_lambda_permission.api
-  to   = module.management_routes.aws_lambda_permission.management_api
-}
-
-resource "aws_apigatewayv2_stage" "default" {
-  api_id      = aws_apigatewayv2_api.portal.id
-  name        = "$default"
-  auto_deploy = true
-  access_log_settings {
-    destination_arn = aws_cloudwatch_log_group.api.arn
-    format = jsonencode({
-      requestId = "$context.requestId", routeKey = "$context.routeKey",
-      status    = "$context.status", responseLength = "$context.responseLength"
-    })
-  }
-  default_route_settings {
-    throttling_burst_limit = 20
-    throttling_rate_limit  = 10
-  }
 }

@@ -1,4 +1,4 @@
-"""管理 handler の認可を、API Gateway HTTP API v2 のイベントで検証する（Seam 1）。"""
+"""管理 handler の認可を、API Gateway REST API のイベントで検証する（Seam 1）。"""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ import pytest
 from registry_portal import app as app_module
 from registry_portal.app import create_management_handler
 from registry_portal.config import ConfigurationError
+
+from event_helpers import rest_api_event
 
 ISSUER = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_EXAMPLE"
 HUMAN_CLIENT_ID = "human-spa-client"
@@ -27,7 +29,10 @@ DISCOVERY_ENV = {
     "DISCOVERY_CLIENT_ID": DISCOVERY_CLIENT_ID,
     "DISCOVERY_CLIENT_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:123456789012:secret:x",
 }
-ENV = {**AUTH_ENV, **DISCOVERY_ENV}
+LOCAL_ORIGIN = "http://localhost:5173"
+SPA_ORIGIN = "https://portal.example.cloudfront.net"
+CORS_ENV = {"CORS_ALLOWED_ORIGINS": json.dumps([LOCAL_ORIGIN, SPA_ORIGIN])}
+ENV = {**AUTH_ENV, **DISCOVERY_ENV, **CORS_ENV}
 
 
 def access_claims(**overrides: Any) -> dict[str, Any]:
@@ -44,29 +49,6 @@ def access_claims(**overrides: Any) -> dict[str, Any]:
     return {k: v for k, v in claims.items() if v is not None}
 
 
-def http_event(
-    method: str = "GET",
-    path: str = "/api/me",
-    claims: dict[str, Any] | None = None,
-    headers: dict[str, str] | None = None,
-) -> dict[str, Any]:
-    """API Gateway HTTP API（payload format 2.0）のイベントを組み立てる。"""
-    request_context: dict[str, Any] = {
-        "requestId": "req-123",
-        "http": {"method": method, "path": path},
-    }
-    if claims is not None:
-        request_context["authorizer"] = {"jwt": {"claims": claims, "scopes": None}}
-    return {
-        "version": "2.0",
-        "routeKey": f"{method} {path}",
-        "rawPath": path,
-        "headers": headers or {},
-        "requestContext": request_context,
-        "isBase64Encoded": False,
-    }
-
-
 def call(event: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     handler = create_management_handler(ENV)
     response = handler(event, None)
@@ -74,7 +56,7 @@ def call(event: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
 
 def test_human_access_token_returns_principal_from_iss_and_sub() -> None:
-    status, body = call(http_event(claims=access_claims()))
+    status, body = call(rest_api_event(claims=access_claims()))
 
     assert status == 200
     assert body["principal"] == {
@@ -89,22 +71,33 @@ def test_human_access_token_returns_principal_from_iss_and_sub() -> None:
 @pytest.mark.parametrize(
     "groups",
     [
-        # HTTP API の JWT authorizer は配列の claim を "[a b]" 形式の文字列に変換して渡す
+        # REST API の Cognito User Pools authorizer が渡す文字列の形は公式文書に記載がない（未確認）。
+        # カンマ区切りと角括弧付きの文字列を検証する
+        "team-payments,registry-curator,registry-publisher,registry-admin,team-cards",
         "[team-payments registry-curator registry-publisher registry-admin team-cards]",
+        # REST API の JWT authorizer は claim を JSON の型のまま渡す（rest-api-jwt-authorizer-claims.html）
         ["team-payments", "registry-curator", "registry-publisher", "registry-admin", "team-cards"],
     ],
+    ids=["comma-separated", "bracketed", "json-array"],
 )
-def test_roles_and_teams_are_derived_from_cognito_groups(groups: Any) -> None:
-    status, body = call(http_event(claims=access_claims(**{"cognito:groups": groups})))
+def test_rest_api_cognito_authorizer_claims_derive_roles_and_teams(groups: Any) -> None:
+    claims = access_claims(
+        **{"cognito:groups": groups, "scope": "openid registry-portal/api.invoke"}
+    )
+
+    status, body = call(rest_api_event(claims=claims))
 
     assert status == 200
+    assert body["principal"]["subject"] == "11111111-2222-3333-4444-555555555555"
     assert body["roles"] == ["Viewer", "Publisher", "Curator", "Admin"]
     assert body["teams"] == ["team-cards", "team-payments"]
 
 
 def test_unknown_groups_are_ignored_and_caller_is_viewer() -> None:
     status, body = call(
-        http_event(claims=access_claims(**{"cognito:groups": "[us-east-1_EXAMPLE_Google other]"}))
+        rest_api_event(
+            claims=access_claims(**{"cognito:groups": "[us-east-1_EXAMPLE_Google other]"})
+        )
     )
 
     assert status == 200
@@ -113,14 +106,14 @@ def test_unknown_groups_are_ignored_and_caller_is_viewer() -> None:
 
 
 def test_request_without_token_is_rejected_with_common_error_dto() -> None:
-    status, body = call(http_event(claims=None))
+    status, body = call(rest_api_event(claims=None))
 
     assert status == 401
     assert body == {
         "error": {
             "code": "UNAUTHENTICATED",
             "message": "認証が必要です。ログインし直してください。",
-            "requestId": "req-123",
+            "requestId": "req-rest",
         }
     }
 
@@ -140,11 +133,11 @@ def test_request_without_token_is_rejected_with_common_error_dto() -> None:
 def test_tokens_that_cannot_authenticate_a_human_are_rejected_with_401(
     claims: dict[str, Any],
 ) -> None:
-    status, body = call(http_event(claims=claims))
+    status, body = call(rest_api_event(claims=claims))
 
     assert status == 401
     assert body["error"]["code"] == "UNAUTHENTICATED"
-    assert body["error"]["requestId"] == "req-123"
+    assert body["error"]["requestId"] == "req-rest"
     assert "principal" not in body
 
 
@@ -165,14 +158,14 @@ def test_tokens_that_cannot_authenticate_a_human_are_rejected_with_401(
 )
 def test_valid_tokens_of_other_clients_are_forbidden_with_403(claims: dict[str, Any]) -> None:
     # 正規に発行されたトークンなので、ログインし直しても解決しない。401 ではなく 403 で拒否する
-    status, body = call(http_event(claims=claims))
+    status, body = call(rest_api_event(claims=claims))
 
     assert status == 403
     assert body == {
         "error": {
             "code": "FORBIDDEN",
             "message": "このクライアントのトークンはポータル API では受け付けません。",
-            "requestId": "req-123",
+            "requestId": "req-rest",
         }
     }
 
@@ -185,39 +178,101 @@ def test_unexpected_exception_returns_internal_error_dto_without_details(
 
     monkeypatch.setitem(app_module.MANAGEMENT_ROUTES, "GET /api/me", broken_route)
 
-    status, body = call(http_event(claims=access_claims()))
+    status, body = call(rest_api_event(claims=access_claims()))
 
     assert status == 500
     assert body == {
         "error": {
             "code": "INTERNAL_ERROR",
             "message": "内部エラーが発生しました。時間をおいて再度お試しください。",
-            "requestId": "req-123",
+            "requestId": "req-rest",
         }
     }
 
 
 @pytest.mark.parametrize(
     "authorizer",
-    ["not-a-mapping", ["jwt"], {"jwt": "not-a-mapping"}, {"jwt": {"claims": "[a b]"}}],
-    ids=["string", "list", "jwt-string", "claims-string"],
+    [
+        None,
+        "unexpected",
+        [],
+        {"claims": None},
+        {"claims": "[a b]"},
+        {"jwt": {"claims": access_claims()}},
+    ],
+    ids=["absent", "string", "list", "claims-null", "claims-string", "nested-claims"],
 )
-def test_malformed_authorizer_context_is_rejected_with_401(authorizer: Any) -> None:
-    # 想定外の型でも 500 にせず、トークンなしと同じく 401 にする
-    event = http_event(claims=None)
+def test_rest_api_event_without_valid_claims_is_rejected_with_401(authorizer: Any) -> None:
+    event = rest_api_event()
     event["requestContext"]["authorizer"] = authorizer
 
     status, body = call(event)
 
     assert status == 401
     assert body["error"]["code"] == "UNAUTHENTICATED"
+    assert body["error"]["requestId"] == "req-rest"
+
+
+@pytest.mark.parametrize("origin", [LOCAL_ORIGIN, SPA_ORIGIN, "https://other.example", None])
+def test_rest_api_preflight_and_success_match_allowed_origins(origin: str | None) -> None:
+    handler = create_management_handler(ENV)
+    headers = {"oRiGiN": origin} if origin is not None else {}
+    preflight = handler(rest_api_event("OPTIONS", headers=headers), None)
+    response = handler(rest_api_event(claims=access_claims(), headers=headers), None)
+
+    assert preflight["statusCode"] == 204
+    assert preflight["body"] == ""
+    assert response["statusCode"] == 200
+    for result in (preflight, response):
+        assert result["headers"]["Vary"] == "Origin"
+        assert result["headers"].get("Access-Control-Allow-Origin") == (
+            origin if origin in (LOCAL_ORIGIN, SPA_ORIGIN) else None
+        )
+    if origin in (LOCAL_ORIGIN, SPA_ORIGIN):
+        assert preflight["headers"]["Access-Control-Allow-Methods"] == "GET, POST, PATCH, OPTIONS"
+        assert preflight["headers"]["Access-Control-Allow-Headers"] == (
+            "Authorization, Content-Type, Idempotency-Key"
+        )
+    else:
+        assert not any(name.startswith("Access-Control-") for name in preflight["headers"])
+
+
+def test_rest_api_errors_include_cors_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken_route(*_args: Any) -> Any:
+        raise RuntimeError("テスト用の障害")
+
+    monkeypatch.setitem(app_module.MANAGEMENT_ROUTES, "GET /api/me", broken_route)
+    handler = create_management_handler(ENV)
+    headers = {"Origin": LOCAL_ORIGIN}
+    for status, request in (
+        (401, rest_api_event(headers=headers)),
+        (404, rest_api_event(path="/api/unknown", claims=access_claims(), headers=headers)),
+        (500, rest_api_event(claims=access_claims(), headers=headers)),
+    ):
+        response = handler(request, None)
+        assert response["statusCode"] == status
+        assert response["headers"]["Access-Control-Allow-Origin"] == LOCAL_ORIGIN
+
+
+@pytest.mark.parametrize(
+    "cors_origins",
+    [None, "", "[]", "not-json", '"http://localhost:5173"', '["localhost:5173"]'],
+    ids=["unset", "blank", "empty-array", "not-json", "not-array", "no-scheme"],
+)
+def test_missing_or_invalid_cors_origins_fail_at_startup(cors_origins: str | None) -> None:
+    # 許可リストが空のまま動くと、SPA からの呼び出しがすべて原因の分からない CORS エラーになる
+    environ = {**AUTH_ENV, **DISCOVERY_ENV}
+    if cors_origins is not None:
+        environ["CORS_ALLOWED_ORIGINS"] = cors_origins
+    with pytest.raises(ConfigurationError, match="CORS_ALLOWED_ORIGINS"):
+        create_management_handler(environ)
 
 
 def test_x_user_email_header_does_not_change_principal() -> None:
     claims = access_claims(**{"cognito:groups": "[registry-publisher team-payments]"})
-    _, without_header = call(http_event(claims=claims))
+    _, without_header = call(rest_api_event(claims=claims))
     status, with_header = call(
-        http_event(
+        rest_api_event(
             claims=claims,
             headers={"x-user-email": "admin@example.com", "x-user-groups": "registry-admin"},
         )
@@ -228,7 +283,7 @@ def test_x_user_email_header_does_not_change_principal() -> None:
 
 
 def test_unknown_route_returns_not_found_with_common_error_dto() -> None:
-    status, body = call(http_event(path="/api/unknown", claims=access_claims()))
+    status, body = call(rest_api_event(path="/api/unknown", claims=access_claims()))
 
     assert status == 404
     assert body["error"]["code"] == "NOT_FOUND"
@@ -329,6 +384,6 @@ def test_lambda_entrypoint_serves_requests_when_configured(
     sys.modules.pop("registry_portal.handlers.management", None)
 
     module = importlib.import_module("registry_portal.handlers.management")
-    response = module.handler(http_event(claims=access_claims()), None)
+    response = module.handler(rest_api_event(claims=access_claims()), None)
 
     assert response["statusCode"] == 200

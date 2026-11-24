@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { connectSrcPolicy } from '../connectCsp'
 
 describe('ビルド時に埋め込む connect-src の CSP', () => {
-  it('接続先を自分の HTTP API と Cognito の origin だけに絞る', () => {
+  it('接続先を自分の REST API と Cognito の origin だけに絞る', () => {
     expect(
       connectSrcPolicy({
         VITE_API_BASE_URL: 'https://abcde12345.execute-api.us-east-1.amazonaws.com/',

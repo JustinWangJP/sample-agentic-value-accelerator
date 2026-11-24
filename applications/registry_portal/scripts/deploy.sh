@@ -13,23 +13,32 @@ addon_stacks=(decision management notification_events)
 #   state_key: backend.hcl の key。別のスタックの state を指定して誤って反映するのを防ぐ
 #   publishes_spa: 反映後に SPA をビルドして配信するか
 #   allows_sso: IAM Identity Center の permission set で反映できるか（permission set は本体向けの権限だけを持つ）
+#   redeploy_from: apply の後に REST API を再デプロイする先（ID・ステージ名・リージョン）の取得元。
+#     output: 本体。apply 後の output rest_api から取る
+#     plan: 経路を持つ追加スタック。検査済み plan の変数 rest_api（本体の output の転記）から取る。
+#           撤去でも反映でも同じ値を使い、追加スタックには再デプロイ先のための output を持たせない
+#     none: 通知スタック。REST API の経路を変えない（本体の撤去も none にする。REST API ごと消える）
 stack_config() {
   publishes_spa=false
   allows_sso=false
+  redeploy_from=none
   case "$1" in
     main)
       stack_subdir=""
       state_key="registry-portal/dev/terraform.tfstate"
       publishes_spa=true
       allows_sso=true
+      redeploy_from=output
       ;;
     decision)
       stack_subdir="decision"
       state_key="registry-portal/dev/decision.tfstate"
+      redeploy_from=plan
       ;;
     management)
       stack_subdir="management"
       state_key="registry-portal/dev/management.tfstate"
+      redeploy_from=plan
       ;;
     notification_events)
       stack_subdir="notification_events"
@@ -68,6 +77,7 @@ stack_config "$stack"
 #   is_main_destroy: 本体の撤去か。追加スタックの state と本体の保護を、apply の前に検査する
 #   plan_args: terraform plan の引数。撤去では destroy の plan を保存する
 #   completion_message: apply が成功し、SPA を配信しないときに表示する
+#   redeploy_from: 本体の撤去では再デプロイしない（REST API ごと消える）
 is_main_destroy=false
 plan_args=(-input=false)
 completion_message="${stack} スタックの反映が完了しました。README の dev 手動受入を実施してください。"
@@ -75,7 +85,10 @@ if [[ "$destroy" == true ]]; then
   publishes_spa=false
   plan_args+=(-destroy)
   completion_message="${stack} スタックの撤去が完了しました。"
-  if [[ "$stack" == main ]]; then is_main_destroy=true; fi
+  if [[ "$stack" == main ]]; then
+    is_main_destroy=true
+    redeploy_from=none
+  fi
 fi
 [[ $# -eq 2 ]] || fail "$usage"
 [[ -z "${CI:-}" && -z "${GITHUB_ACTIONS:-}" ]] || fail "CI からの反映は禁止されています。ローカル端末で実行してください。"
@@ -94,6 +107,22 @@ required_commands=(aws terraform python3)
 for command in "${required_commands[@]}"; do command -v "$command" >/dev/null || fail "必要なコマンドがありません: $command"; done
 profile_setting() { aws configure get "$1" --profile "$2" 2>/dev/null || true; }
 caller_of() { aws sts get-caller-identity --query Arn --output text --profile "$1"; }
+# 標準入力の JSON から、引数で指定したドット区切りの場所の値を空白区切りで 1 行に出す
+json_values() {
+  python3 -c '
+import json
+import sys
+
+data = json.load(sys.stdin)
+values = []
+for path in sys.argv[1:]:
+    value = data
+    for key in path.split("."):
+        value = value[key]
+    values.append(str(value))
+print(*values)
+' "$@"
+}
 
 sso_session="$(profile_setting sso_session "$AWS_PROFILE")"
 sso_start_url="$(profile_setting sso_start_url "$AWS_PROFILE")"
@@ -146,7 +175,7 @@ tf_init() {
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/registry-portal-deploy.XXXXXX")"
 trap 'rm -rf "$work_dir"' EXIT
 if [[ "$is_main_destroy" == true ]]; then
-  # 追加スタックは本体の HTTP API・Lambda・実行ロール・補助テーブルを借りて route や権限を足している。
+  # 追加スタックは本体の REST API・Lambda・実行ロール・補助テーブルを借りて route や権限を足している。
   # 本体を先に消すと追加スタックの state に孤立したリソースが残るため、撤去の順番は「追加スタック → 本体」とし、
   # 追加スタックの state にリソースが残っていれば、本体の plan を作る前に止める
   addon_subdirs=()
@@ -187,10 +216,39 @@ tf plan "${plan_args[@]}"
   cd "$stack_dir"
   AWS_PROFILE="$terraform_profile" python3 "$portal_dir/scripts/check_plan.py" --saved-plan "$work_dir/approved.tfplan"
 )
+# plan の JSON は一度だけ作り、転記値の照合・撤去前の確認・再デプロイ先の読み取りで使い回す
+if [[ "$redeploy_from" == plan || "$is_main_destroy" == true ]]; then
+  tf show -json "$work_dir/approved.tfplan" > "$work_dir/plan.json"
+fi
+# 経路を持つ追加スタックの反映では、tfvars に転記した rest_api が本体の今の output rest_api と一致することを
+# apply の前に確かめる。本体で local_dev_origins などを変えた後に転記し直さないと、決裁 Lambda の CORS 許可リストや
+# 再デプロイ先が古いまま反映されるため（ガイド 4.3）。本体の state は、本体の backend.hcl と同じバケットにある前提で
+# 追加スタックの backend.hcl の key だけを差し替えて読む（ガイド 4.5）
+if [[ "$redeploy_from" == plan && "$destroy" == false ]]; then
+  main_state_key="$(stack_config main && printf '%s' "$state_key")"
+  tf_init "$infra_dir" -backend-config="key=$main_state_key"
+  tf_at "$infra_dir" output -json rest_api > "$work_dir/main-rest-api.json"
+  python3 - "$work_dir/plan.json" "$work_dir/main-rest-api.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+transcribed = json.loads(Path(sys.argv[1]).read_text())["variables"]["rest_api"]["value"]
+current = json.loads(Path(sys.argv[2]).read_text())
+# plan に残った転記値の属性だけを比べる（management の型にない cors_allowed_origins は plan に残らない場合がある）
+stale = sorted(name for name in transcribed if name in current and transcribed[name] != current[name])
+if stale:
+    print(
+        "tfvars の rest_api が本体の output rest_api と一致しません（" + "、".join(stale) + "）。"
+        "terraform -chdir=infrastructure output rest_api の値を転記し直してください（ガイド 4.3）。",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+PY
+fi
 # 本体の撤去では、保護を外す apply（ガイド 5.4 の手順 3）が state に入っていることを apply の前に確かめる。
 # 飛ばすと、保護のないリソースだけを消してから途中で失敗する
 if [[ "$is_main_destroy" == true ]]; then
-  tf show -json "$work_dir/approved.tfplan" > "$work_dir/plan.json"
   python3 "$portal_dir/scripts/check_teardown.py" main-protection "$work_dir/plan.json"
 fi
 tf show -no-color "$work_dir/approved.tfplan"
@@ -204,7 +262,23 @@ else
   read -r confirmation || fail "反映を中止しました。"
   [[ "$confirmation" == "apply" ]] || fail "反映を中止しました。"
 fi
+if [[ "$redeploy_from" == plan ]]; then
+  # 撤去の apply の後は state から値を読めないため、apply の前に plan から読む
+  read -r api_id api_stage api_region <<<"$(json_values variables.rest_api.value.id variables.rest_api.value.stage_name variables.region.value < "$work_dir/plan.json")"
+fi
 tf apply -input=false "$work_dir/approved.tfplan"
+if [[ "$redeploy_from" == output ]]; then
+  read -r api_id api_stage <<<"$(tf output -json rest_api | json_values id stage_name)"
+  api_region="$(tf output -raw api_region)"
+fi
+if [[ "$redeploy_from" != none ]]; then
+  deployment_id="$(aws apigateway create-deployment --rest-api-id "$api_id" \
+    --region "$api_region" --profile "$AWS_PROFILE" --query id --output text)"
+  [[ -n "$deployment_id" && "$deployment_id" != None ]] || fail "REST API のデプロイ ID を取得できませんでした。"
+  aws apigateway update-stage --rest-api-id "$api_id" --stage-name "$api_stage" \
+    --patch-operations "op=replace,path=/deploymentId,value=$deployment_id" \
+    --region "$api_region" --profile "$AWS_PROFILE" >/dev/null
+fi
 if [[ "$publishes_spa" != true ]]; then
   printf '\n%s\n' "$completion_message"
   exit 0

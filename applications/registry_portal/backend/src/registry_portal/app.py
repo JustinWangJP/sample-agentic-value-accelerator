@@ -1,8 +1,4 @@
-"""Lambda handler の組み立て。
-
-handler は API Gateway HTTP API（payload format 2.0）のイベントを受け取る。
-検証済みの claims は `requestContext.authorizer.jwt.claims` から読む。
-"""
+"""API Gateway REST API の Lambda プロキシ統合用 handler を組み立てる。"""
 
 from __future__ import annotations
 
@@ -27,6 +23,7 @@ from registry_portal.config import (
     ConfigurationError,
     load_auth_settings,
     load_catalog_settings,
+    load_cors_origins,
     load_discovery_settings,
     load_registry_settings,
 )
@@ -73,7 +70,6 @@ logger = logging.getLogger(__name__)
 
 LambdaEvent = Mapping[str, Any]
 LambdaResponse = dict[str, Any]
-Handler = Callable[[LambdaEvent, Any], LambdaResponse]
 Route = Callable[[Caller, LambdaEvent], tuple[int, Mapping[str, Any]]]
 
 
@@ -97,15 +93,23 @@ def _request_context(event: LambdaEvent) -> Mapping[str, Any]:
     return _mapping_or_empty(event.get("requestContext"))
 
 
-def _claims_of(event: LambdaEvent) -> Mapping[str, Any] | None:
+class _ApiRequest(NamedTuple):
+    """REST API の経路照合と認可に使う要求。"""
+
+    method: str
+    # ルート表と照合するキー（例: GET /api/me）
+    route_key: str
+    # 検証済みの claims。トークンがない、または想定外の型なら None
+    claims: Mapping[str, Any] | None
+
+
+def _api_request(event: LambdaEvent) -> _ApiRequest:
+    """ステージ名を含まないパスと Cognito authorizer の検証済み claims を取り出す。"""
+    method = event.get("httpMethod", "")
+    path = event.get("path", "")
     authorizer = _mapping_or_empty(_request_context(event).get("authorizer"))
-    claims = _mapping_or_empty(authorizer.get("jwt")).get("claims")
-    return claims if isinstance(claims, Mapping) else None
-
-
-def _route_key(event: LambdaEvent) -> str:
-    http = _mapping_or_empty(_request_context(event).get("http"))
-    return f"{http.get('method', '')} {http.get('path', '')}"
+    claims = authorizer.get("claims")
+    return _ApiRequest(method, f"{method} {path}", claims if isinstance(claims, Mapping) else None)
 
 
 # ルート表のキーに含まれる path パラメーター（例: {recordId}）。1つのルートに1つまで
@@ -132,13 +136,21 @@ def _route_template(key: str, templates: Iterable[str]) -> tuple[str, dict[str, 
 
 
 def _path_parameter(event: LambdaEvent) -> str:
-    """ルート表との照合で得た path パラメーターの値（_serve が pathParameters に設定する）。"""
+    """ルート表との照合で得た path パラメーターの値（ApiHandler._dispatch が pathParameters に設定する）。"""
     parameters = _mapping_or_empty(event.get("pathParameters"))
     return str(next(iter(parameters.values()), ""))
 
 
 def _query_of(event: LambdaEvent) -> Mapping[str, str]:
-    """クエリ文字列。HTTP API は同じ名前の値をカンマで連結した1つの文字列にして渡す。"""
+    """単一値のクエリパラメーターを取り出す。
+
+    REST API の Lambda プロキシ統合では、同じ名前が複数あると queryStringParameters には最後の値だけが入り、
+    すべての値は multiValueQueryStringParameters に入る（公式文書の入力例で、同じ名前の parameter2 が
+    queryStringParameters では "value2"、multiValueQueryStringParameters では ["value1", "value2"] になる）。
+    値の中のカンマは区切りにならない（parameter3 は "value1,value2" のまま）。ここでは前者だけを使うので、
+    同じ名前を複数送ると最後の値が採用される。SPA は同じ名前のキーを送らない。
+    https://docs.aws.amazon.com/apigateway/latest/developerguide/set-up-lambda-proxy-integrations.html
+    """
     query = _mapping_or_empty(event.get("queryStringParameters"))
     return {str(key): str(value) for key, value in query.items()}
 
@@ -165,12 +177,17 @@ def _json_body(event: LambdaEvent, max_length: int = 8192) -> Mapping[str, Any]:
     return body
 
 
-def _idempotency_key(event: LambdaEvent) -> str:
-    """Idempotency-Key ヘッダーの値。ヘッダー名の大文字・小文字は区別しない。なければ空文字。"""
+def _header(event: LambdaEvent, name: str) -> Any:
+    """リクエストヘッダーの値。ヘッダー名の大文字・小文字は区別しない。なければ None。"""
     headers = _mapping_or_empty(event.get("headers"))
-    return next(
-        (str(value) for name, value in headers.items() if name.lower() == "idempotency-key"), ""
-    )
+    wanted = name.lower()
+    return next((value for key, value in headers.items() if key.lower() == wanted), None)
+
+
+def _idempotency_key(event: LambdaEvent) -> str:
+    """Idempotency-Key ヘッダーの値。なければ空文字。"""
+    value = _header(event, "Idempotency-Key")
+    return "" if value is None else str(value)
 
 
 def get_me(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
@@ -191,15 +208,101 @@ MANAGEMENT_ROUTES: Mapping[str, Route] = {
 }
 
 
-def _serve(routes: Mapping[str, Route], settings: AuthSettings) -> Handler:
-    """ルート表を Lambda handler にする。認可・エラー応答はすべての handler で共通。"""
+# プリフライトで許可するメソッド。プリフライトは管理 Lambda がすべてのリソースについて答えるため、
+# 決裁 Lambda の経路のメソッドも含める。経路表（routes.json）のメソッドがすべて含まれることは
+# tests/test_route_tables.py で確かめる
+CORS_ALLOWED_METHODS = "GET, POST, PATCH, OPTIONS"
+# プリフライトで許可するリクエストヘッダー。SPA が送るヘッダーだけを許可する。
+# OpenAPI 仕様（openapi.yaml の CORS）と同じ値であることは tests/test_route_tables.py で確かめる
+CORS_ALLOWED_HEADERS = "Authorization, Content-Type, Idempotency-Key"
+# プリフライトの結果をブラウザが再利用してよい秒数
+CORS_MAX_AGE_SECONDS = "300"
 
-    def handler(event: LambdaEvent, context: Any) -> LambdaResponse:
+
+class CorsPolicy:
+    """REST API 形式の応答に付ける CORS ヘッダーを決める。
+
+    REST API の Lambda プロキシ統合では統合応答を設定できないため、CORS ヘッダーは Lambda が返す
+    （根拠の公式文書は README「カタログの一覧・検索・詳細」の CORS の説明にある）。Origin を許可リストと照合し、一致したときだけ
+    Access-Control-Allow-Origin を付ける。answers_preflight が真なら、OPTIONS をルート表に渡さず
+    204 で応答する（管理 Lambda だけが真）。
+    """
+
+    def __init__(self, origins: frozenset[str], *, answers_preflight: bool) -> None:
+        self._origins = origins
+        self._answers_preflight = answers_preflight
+
+    def headers(self, event: LambdaEvent) -> dict[str, str]:
+        """通常の応答に付けるヘッダー。許可していない Origin には Vary だけを返す。"""
+        headers = {"Vary": "Origin"}
+        origin = _header(event, "Origin")
+        if isinstance(origin, str) and origin in self._origins:
+            headers["Access-Control-Allow-Origin"] = origin
+        return headers
+
+    def preflight(self, event: LambdaEvent, method: str) -> LambdaResponse | None:
+        """この policy が答えるプリフライトなら 204 応答を返す。それ以外は None（ルート表で処理する）。"""
+        if not self._answers_preflight or method != "OPTIONS":
+            return None
+        return self._preflight_response(event)
+
+    def _preflight_response(self, event: LambdaEvent) -> LambdaResponse:
+        """プリフライトへの 204 応答。許可した Origin にだけメソッド・ヘッダー・有効期間を返す。"""
+        headers = self.headers(event)
+        if "Access-Control-Allow-Origin" in headers:
+            headers.update(
+                {
+                    "Access-Control-Allow-Methods": CORS_ALLOWED_METHODS,
+                    "Access-Control-Allow-Headers": CORS_ALLOWED_HEADERS,
+                    "Access-Control-Max-Age": CORS_MAX_AGE_SECONDS,
+                }
+            )
+        return {"statusCode": 204, "headers": headers, "body": ""}
+
+
+class ApiHandler:
+    """ルート表で要求を処理する Lambda handler。認可・エラー応答はすべての API で共通。
+
+    ルート表は経路のキー（例: GET /api/me）から処理する関数への辞書で、Lambda 側の定義元。
+    API Gateway 側の定義元である経路表（routes.json）とは別物で、両者の一致は
+    tests/test_route_tables.py で確かめる（用語は README の「経路」「経路表」「ルート表」）。
+    REST API 形式の応答には CorsPolicy が決めた CORS ヘッダーを付ける。
+    """
+
+    def __init__(
+        self,
+        routes: Mapping[str, Route],
+        settings: AuthSettings,
+        cors: CorsPolicy,
+    ) -> None:
+        self._routes = dict(routes)
+        self._settings = settings
+        self._cors = cors
+
+    @property
+    def route_keys(self) -> frozenset[str]:
+        """ルート表のキー（例: GET /api/records/{recordId}）。
+
+        ルート表は create_*_handler の中で依存を閉じ込めて組み立てるため、経路表との一致を
+        確かめる（tests/test_route_tables.py）には handler からキーを取り出すしかない。
+        """
+        return frozenset(self._routes)
+
+    def __call__(self, event: LambdaEvent, context: Any) -> LambdaResponse:
+        request = _api_request(event)
+        preflight = self._cors.preflight(event, request.method)
+        if preflight is not None:
+            return preflight
+        response = self._dispatch(event, request)
+        response["headers"].update(self._cors.headers(event))
+        return response
+
+    def _dispatch(self, event: LambdaEvent, request: _ApiRequest) -> LambdaResponse:
         request_id = _request_context(event).get("requestId")
         try:
-            caller = authorize(_claims_of(event), settings)
-            template, parameters = _route_template(_route_key(event), routes)
-            route = routes.get(template)
+            caller = authorize(request.claims, self._settings)
+            template, parameters = _route_template(request.route_key, self._routes)
+            route = self._routes.get(template)
             if route is None:
                 raise RouteNotFoundError()
             # path パラメーターは実際の path とルート表の照合で決め、受け取った値には頼らない
@@ -212,8 +315,6 @@ def _serve(routes: Mapping[str, Route], settings: AuthSettings) -> Handler:
         except Exception:
             logger.exception("想定外のエラー: request_id=%s", request_id)
             return _json_response(500, ApiError().to_dto(request_id))
-
-    return handler
 
 
 class _SupplementStores(NamedTuple):
@@ -245,7 +346,7 @@ def create_management_handler(
     supplement_client: SupplementClient | None = None,
     registry_client: RegistryControlClient | None = None,
     supplement_store_client: SupplementStoreClient | None = None,
-) -> Handler:
+) -> ApiHandler:
     """管理 handler を作る。認証・発見の設定が不足していれば、ここで起動エラーにする。
 
     discovery（発見アダプターの外部部品）と AWS クライアントはテストで差し替える。
@@ -421,7 +522,9 @@ def create_management_handler(
         "POST /api/notifications/read": read_notifications,
     }
 
-    return _serve(routes, settings)
+    return ApiHandler(
+        routes, settings, CorsPolicy(load_cors_origins(environ), answers_preflight=True)
+    )
 
 
 def create_curation_handler(
@@ -430,7 +533,7 @@ def create_curation_handler(
     registry_client: RegistryStatusClient | None = None,
     store_client: SupplementStoreClient | None = None,
     discovery: DiscoveryDependencies | None = None,
-) -> Handler:
+) -> ApiHandler:
     """決裁 handler を作る。認証設定と補助テーブルが不足していれば、ここで起動エラーにする。
 
     決裁 handler は審査待ちの一覧・詳細、公開承認・却下・公開停止・廃止、公開管理の照会、
@@ -556,7 +659,9 @@ def create_curation_handler(
         "POST /api/records/{recordId}/recovery": recover_operation,
     }
 
-    return _serve(routes, settings)
+    return ApiHandler(
+        routes, settings, CorsPolicy(load_cors_origins(environ), answers_preflight=False)
+    )
 
 
 def create_event_handler(

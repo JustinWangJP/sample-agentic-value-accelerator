@@ -1,16 +1,18 @@
 openapi: 3.1.0
 info:
   title: Registry ポータル API
-  version: 0.1.0
+  version: 0.2.0
   summary: AWS Agent Registry 管理ポータル（Registry ポータル）のバックエンド API
   description: |
     AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skill の登録、公開承認、発見を扱う
-    管理ポータルの HTTP API です。この文書は `backend/src/registry_portal/` の実装から書き起こした
+    管理ポータルの API です。この文書は `backend/src/registry_portal/` の実装から書き起こした
     リバース仕様で、実装（`app.py` のルート表）と README の契約に従います。
 
     ## 構成
 
-    API Gateway HTTP API（payload format 2.0）の route を、2つの Lambda handler に割り当てます。
+    API Gateway REST API（REGIONAL、ステージ `v1`）のメソッドを、Lambda プロキシ統合（`AWS_PROXY`）で
+    2つの Lambda handler に割り当てます（ADR-0015）。メソッドは共通の経路表
+    （`infrastructure/modules/api_routes/routes.json`）から作り、この文書の operation と一致させます。
     各 operation の `x-handler` が担当する handler を示します。
 
     | `x-handler` | Lambda エントリーポイント | 担当 |
@@ -18,12 +20,13 @@ info:
     | `management` | `handlers/management.py` | 自分の情報、カタログ、下書き・申請、操作照会、履歴、廃止依頼、通知、Admin の一覧・接続診断 |
     | `curation` | `handlers/curation.py` | 審査・決裁、公開停止・廃止、公開管理、廃止依頼の見送り、回復操作、取り込み・所有変更 |
 
-    イベント処理 handler（`handlers/events.py`）は EventBridge から呼ばれ、HTTP API を持たないため対象外です。
+    イベント処理 handler（`handlers/events.py`）は EventBridge から呼ばれ、API Gateway の経路を持たないため対象外です。
 
     ## 認証と認可
 
     すべての API に、Cognito User Pool が人間用 SPA client へ発行したアクセストークンが必要です。
-    HTTP API の JWT authorizer が署名を検証し、Lambda が claims（`token_use=access`、`iss`、`client_id`、`sub`）を
+    REST API の Cognito User Pools authorizer がトークンを検証し、各メソッドの authorization scope
+    `registry-portal/api.invoke` を要求します。Lambda は claims（`token_use=access`、`iss`、`client_id`、`sub`）を
     再検査します。業務ロールは Cognito グループから導出します。
 
     | Cognito グループ | 業務ロール |
@@ -36,7 +39,26 @@ info:
 
     - 認証できないトークン（なし、ID トークン、別 issuer、`sub` なし）は 401 `UNAUTHENTICATED`。
     - 署名は正しいが人間用 SPA client 以外に発行されたトークン（別 client、発見用 M2M client）は 403 `FORBIDDEN`。
-    - API Gateway の JWT authorizer 自身が返す 401 は、共通エラー DTO ではありません。
+    ## API Gateway が返す応答
+
+    次の応答は Lambda に届く前に API Gateway が返します。本文は共通エラー DTO ではありません（`GatewayErrorResponse`）。
+
+    - 401: Cognito User Pools authorizer がトークンを拒否した（トークンがない、無効、期限切れなど）。
+    - 403: 接続元 IP が許可範囲（本体スタックの変数 `allowed_source_cidrs`）の外にあり、REST API のリソースポリシーが拒否した。
+      トークンがない場合は authorizer の 401 が先に返ります。
+    - 429: ステージのスロットリング（10 rps、バースト 20）を超えた。
+
+    ## CORS
+
+    REST API の応答は、リクエストの `Origin` が許可リスト（CloudFront の SPA の origin と、本体スタックの変数
+    `local_dev_origins`）に含まれるときだけ `Access-Control-Allow-Origin` にその値を返し、`Vary: Origin` を付けます。
+
+    - 各パスの `OPTIONS`（プリフライト）は authorizer を通さずに管理 Lambda が 204 で応答します。許可した origin には
+      `Access-Control-Allow-Methods: GET, POST, PATCH, OPTIONS`、`Access-Control-Allow-Headers: Authorization, Content-Type, Idempotency-Key`、
+      `Access-Control-Max-Age: 300` を返します。`OPTIONS` は operation としては記載しません。
+    - API Gateway が返す 4XX・5XX は、`Origin` を許可リストと照合せずに `Access-Control-Allow-Origin` へそのまま返します。
+      gateway response では照合できないためです。`Access-Control-Allow-Credentials` は付けません（ADR-0015）。
+    - 接続元 IP の制限は `OPTIONS` にも適用されます。
 
     ## 共通の約束
 
@@ -57,15 +79,15 @@ info:
     name: MIT-0
     identifier: MIT-0
 servers:
-  - url: https://{apiId}.execute-api.{region}.amazonaws.com
-    description: 既存の API Gateway HTTP API（借用）。カスタムドメインを使う場合はそのホスト名に置き換えてください。
+  - url: https://{apiId}.execute-api.{region}.amazonaws.com/v1
+    description: 本体スタックが作る API Gateway REST API のステージ `v1`（本体の output `frontend_config` の `VITE_API_BASE_URL`）。
     variables:
       apiId:
         default: example
-        description: HTTP API の ID
+        description: REST API の ID（本体の output `rest_api` の `id`）
       region:
         default: us-east-1
-        description: HTTP API のリージョン
+        description: REST API のリージョン
 security:
   - bearerAuth: []
 tags:
@@ -910,7 +932,9 @@ paths:
         AWS の `ListRegistryRecords`（20件）の `nextToken` をそのまま中継し、名前と管理下の絞り込みはポータル側で行うため、
         `items` が0件でも `nextToken` があり得ます。`Curator` のみ。所有チームでは絞り込みません。
 
-        HTTP API では静的な route が `GET /api/records/{recordId}` より優先され、`publication` はレコード ID と解釈されません。
+        固定パスの `/api/records/publication` と、パスパラメーターの `/api/records/{recordId}` は同じ親の下にあります。
+        REST API が固定パスを優先し、`publication` をレコード ID と解釈しないことは、公式文書では確かめておらず、
+        dev で確認します（ADR-0015 の未確認事項、#76）。
       x-handler: curation
       parameters:
         - name: name
@@ -1248,6 +1272,7 @@ components:
       bearerFormat: JWT
       description: |
         Cognito User Pool が人間用 SPA client に発行したアクセストークン（Authorization Code + PKCE で取得）。
+        REST API の Cognito User Pools authorizer が検証し、scope `registry-portal/api.invoke` を要求します。
         ID トークンと、発見用 M2M client などほかの client に発行されたトークンは受け付けません。
 
   parameters:
@@ -1323,7 +1348,7 @@ components:
     Unauthorized:
       description: |
         `UNAUTHENTICATED`: トークンがない、ID トークン、別 issuer、`sub` がない。ログインし直すと解決し得る。
-        API Gateway の JWT authorizer が返す 401 は共通エラー DTO ではない（`{"message": "Unauthorized"}`）
+        API Gateway の Cognito User Pools authorizer がトークンを拒否した 401 は共通エラー DTO ではない（`{"message": "Unauthorized"}`）
       content:
         application/json:
           schema:
@@ -1338,11 +1363,14 @@ components:
     Forbidden:
       description: |
         `FORBIDDEN`: 人間用 SPA client 以外に発行されたトークン、業務ロールまたは所属チームが足りない、
-        対象のレコードの所有チームに属さない、自己承認など。ログインし直しても解決しない
+        対象のレコードの所有チームに属さない、自己承認など。ログインし直しても解決しない。
+        接続元 IP が許可範囲の外にあり REST API のリソースポリシーが拒否した 403 は、API Gateway が返し、共通エラー DTO ではない
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/ErrorResponse"
+            oneOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - $ref: "#/components/schemas/GatewayErrorResponse"
           example:
             error:
               code: FORBIDDEN
@@ -1485,7 +1513,10 @@ components:
           requestId: 8f14e45f-ceea-467a-9575-2b0a1e7c8d33
     GatewayErrorResponse:
       type: object
-      description: API Gateway の JWT authorizer が返すエラー（共通エラー DTO ではない）
+      description: |
+        API Gateway が Lambda の手前で返すエラー（共通エラー DTO ではない）。authorizer の 401、
+        リソースポリシーの 403、スロットリングの 429 など。本文は API Gateway の既定の gateway response の形で、
+        `error` を持たないことで共通エラー DTO と区別できる。リソースポリシーの 403 の本文の形は dev で確認する（#76）
       required: [message]
       properties:
         message:

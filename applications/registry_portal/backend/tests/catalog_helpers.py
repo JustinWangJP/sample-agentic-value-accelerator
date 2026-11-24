@@ -17,6 +17,7 @@ import boto3
 import pytest
 from botocore.stub import Stubber
 
+from event_helpers import rest_api_event
 from registry_portal.app import create_management_handler
 from registry_portal.services.discovery import DiscoveryDependencies
 from registry_portal.services.http import TransportError, TransportResponse
@@ -36,6 +37,7 @@ ENV = {
     "DISCOVERY_CLIENT_ID": "discovery-m2m-client",
     "DISCOVERY_CLIENT_SECRET_ARN": SECRET_ARN,
     "DISCOVERY_SCOPE": "registry/discovery.read",
+    "CORS_ALLOWED_ORIGINS": json.dumps(["https://portal.example.cloudfront.net"]),
 }
 
 LIST_URL = (
@@ -187,19 +189,9 @@ def access_claims() -> dict[str, Any]:
 def catalog_event(
     query: dict[str, str] | None = None, claims: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    return {
-        "version": "2.0",
-        "routeKey": "GET /api/catalog",
-        "rawPath": "/api/catalog",
-        "headers": {},
-        "queryStringParameters": query,
-        "requestContext": {
-            "requestId": "req-cat",
-            "http": {"method": "GET", "path": "/api/catalog"},
-            "authorizer": {"jwt": {"claims": claims or access_claims(), "scopes": None}},
-        },
-        "isBase64Encoded": False,
-    }
+    event = rest_api_event(path="/api/catalog", claims=claims or access_claims())
+    event["queryStringParameters"] = query
+    return event
 
 
 def basic_credentials(request: SentRequest) -> str:
@@ -263,9 +255,7 @@ def botocore_discovery_request(operation: str, **params: Any) -> dict[str, Any]:
 
 
 def search_event(payload: Any, *, encode: bool = False) -> dict[str, Any]:
-    event = catalog_event()
-    event["routeKey"] = "POST /api/catalog/search"
-    event["requestContext"]["http"] = {"method": "POST", "path": "/api/catalog/search"}
+    event = rest_api_event("POST", "/api/catalog/search", access_claims())
     body = json.dumps(payload).encode()
     event["body"] = base64.b64encode(body).decode() if encode else body.decode()
     event["isBase64Encoded"] = encode
@@ -273,11 +263,13 @@ def search_event(payload: Any, *, encode: bool = False) -> dict[str, Any]:
 
 
 def detail_event(record_id: str) -> dict[str, Any]:
-    event = catalog_event()
-    event["routeKey"] = "GET /api/catalog/{recordId}"
-    event["requestContext"]["http"]["path"] = f"/api/catalog/{record_id}"
-    event["pathParameters"] = {"recordId": record_id}
-    return event
+    return rest_api_event(
+        "GET",
+        f"/api/catalog/{record_id}",
+        access_claims(),
+        resource="/api/catalog/{recordId}",
+        path_parameters={"recordId": record_id},
+    )
 
 
 def hit(record_id: str, descriptor: str = "a2aAgentCard", **overrides: Any) -> dict[str, Any]:

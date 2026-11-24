@@ -12,4 +12,7 @@ module "notification_events" {
   registry_arn          = var.registry_arn
   supplement_table_name = var.supplement_table_name
   supplement_table_arn  = var.supplement_table_arn
+  log_retention_in_days = var.log_retention_in_days
+  # 予約同時実行数。null なら予約しない（dev の推奨値は Terraform ガイド 3.6）
+  lambda_reserved_concurrency = var.lambda_reserved_concurrency
 }
