@@ -172,6 +172,14 @@ run "identity_center_permission_set" {
     error_message = "deployer に REST API のリソースポリシーの更新（apigateway:UpdateRestApiPolicy）を許可してください。"
   }
   assert {
+    # HTTP API は REST API への移行で削除済み。HTTP API（/apis）の作成・変更・削除は deployer に許可しない（ADR-0015、#77）
+    condition = alltrue([
+      for statement in jsondecode(aws_ssoadmin_permission_set_inline_policy.deployer[0].inline_policy).Statement :
+      alltrue([for resource in flatten([statement.Resource]) : !can(regex("::/apis(/|$)", resource))])
+    ])
+    error_message = "deployer に HTTP API（/apis）への権限を与えないでください。"
+  }
+  assert {
     # 本体の lambda_reserved_concurrency の設定と解除に必要。
     # 設定は PutFunctionConcurrency、null に戻すときは DeleteFunctionConcurrency を呼ぶ
     condition = anytrue([

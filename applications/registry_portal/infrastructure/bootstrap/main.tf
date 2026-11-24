@@ -297,9 +297,8 @@ resource "aws_ssoadmin_permission_set_inline_policy" "deployer" {
         # apigateway:UpdateRestApiPolicy が必要（API Gateway 開発者ガイド「リソースポリシーの作成とアタッチ」の Prerequisites:
         # https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-resource-policies-create-attach.html）。
         Action = ["apigateway:GET", "apigateway:POST", "apigateway:PATCH", "apigateway:PUT", "apigateway:DELETE", "apigateway:UpdateRestApiPolicy"]
-        # 移行で既存 HTTP API を削除するため、/apis への権限も必要。
+        # HTTP API（/apis）は REST API への移行で削除済みのため、権限を与えない（ADR-0015、#77）。
         Resource = [
-          "arn:aws:apigateway:${local.region}::/apis", "arn:aws:apigateway:${local.region}::/apis/*",
           "arn:aws:apigateway:${local.region}::/restapis", "arn:aws:apigateway:${local.region}::/restapis/*",
           "arn:aws:apigateway:${local.region}::/tags/*",
         ]
