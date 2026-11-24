@@ -243,9 +243,8 @@ run "customer_managed_secret_key" {
 }
 
 # ログの保持期間（#62）。dev では dev.tfvars で短くし、API と管理 Lambda のロググループの両方に効かせる
-# スタックの log_retention_in_days は検証せず、そのまま modules/lambda_log_group に渡す。不正な値（例: 10）は
-# そのモジュールの検証で plan が止まる（shared_modules.tftest.hcl の lambda_log_group_rejects_unsupported_retention）。
-# expect_failures は子モジュールの変数を指定できないため、ここでは値がモジュールに届くことだけを確かめる
+# 許容値の一覧は modules/lambda_log_group/retention_days.json の 1 か所に置き、スタックの変数とモジュールの
+# 変数が同じ一覧で検証する
 run "log_retention_dev_value" {
   command = plan
   variables {
@@ -255,6 +254,15 @@ run "log_retention_dev_value" {
     condition     = aws_cloudwatch_log_group.api.retention_in_days == 14 && module.management_log_group.retention_in_days == 14
     error_message = "log_retention_in_days の値を、API と管理 Lambda のロググループの保持期間に使ってください。"
   }
+}
+
+# API のアクセスログ（aws_cloudwatch_log_group.api）はモジュールを通らないため、スタックの変数で不正な値を止める
+run "log_retention_rejects_unsupported_value" {
+  command = plan
+  variables {
+    log_retention_in_days = 10
+  }
+  expect_failures = [var.log_retention_in_days]
 }
 
 run "teardown_protection_defaults" {
@@ -326,7 +334,7 @@ run "spa_noncurrent_version_expiration_days_must_be_positive_integer" {
   expect_failures = [var.spa_noncurrent_version_expiration_days]
 }
 
-# 予約同時実行数（#61 実装案 5）。既定値では属性を設定せず（予約なし）、今の動作と差分を出さない
+# 予約同時実行数（変数 lambda_reserved_concurrency）。既定値では属性を設定せず（予約なし）、今の動作と差分を出さない
 run "lambda_reserved_concurrency_default" {
   command = plan
   assert {

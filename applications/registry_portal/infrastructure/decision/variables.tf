@@ -83,8 +83,13 @@ variable "discovery_scope" {
 
 variable "log_retention_in_days" {
   type        = number
-  description = "決裁 Lambda のロググループの保持日数。既定は 365 日。dev では本体スタックと同じ値（14）にする。CloudWatch Logs が受け付ける値だけを指定できる"
+  description = "決裁 Lambda のロググループの保持日数。既定は 365 日。dev では本体スタックと同じ値（14）にする。CloudWatch Logs が受け付ける値（modules/lambda_log_group/retention_days.json）だけを指定できる"
   default     = 365
+
+  validation {
+    condition     = contains(jsondecode(file("${path.module}/../modules/lambda_log_group/retention_days.json")), var.log_retention_in_days)
+    error_message = "log_retention_in_days には、CloudWatch Logs が受け付ける保持日数（${join(", ", jsondecode(file("${path.module}/../modules/lambda_log_group/retention_days.json")))}）を指定してください。"
+  }
 }
 
 variable "lambda_reserved_concurrency" {

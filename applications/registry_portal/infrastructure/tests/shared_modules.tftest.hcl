@@ -117,7 +117,7 @@ run "lambda_log_group_arn_is_known_on_first_plan" {
   }
 }
 
-# 本体・decision・notification_events の log_retention_in_days は、すべてこのモジュールの変数で検証する
+# 本体・decision・notification_events の log_retention_in_days も、同じ一覧（retention_days.json）で各スタックの変数が検証する
 run "lambda_log_group_rejects_unsupported_retention" {
   command = plan
   module {

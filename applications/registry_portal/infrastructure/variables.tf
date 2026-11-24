@@ -84,9 +84,14 @@ variable "discovery_scope" {
   default     = ""
 }
 variable "log_retention_in_days" {
-  description = "API のアクセスログと管理 Lambda のロググループの保持日数。既定は 365 日。dev では dev.tfvars で 14 にする。CloudWatch Logs が受け付ける値だけを指定できる。"
+  description = "API のアクセスログと管理 Lambda のロググループの保持日数。既定は 365 日。dev では dev.tfvars で 14 にする。CloudWatch Logs が受け付ける値（modules/lambda_log_group/retention_days.json）だけを指定できる。"
   type        = number
   default     = 365
+
+  validation {
+    condition     = contains(jsondecode(file("${path.module}/modules/lambda_log_group/retention_days.json")), var.log_retention_in_days)
+    error_message = "log_retention_in_days には、CloudWatch Logs が受け付ける保持日数（${join(", ", jsondecode(file("${path.module}/modules/lambda_log_group/retention_days.json")))}）を指定してください。"
+  }
 }
 variable "lambda_zip_path" {
   description = "管理・決裁・イベント処理 Lambda 共通の ZIP のパス。scripts/build_lambda.py で生成する。deploy.sh は一時ディレクトリの ZIP を指定する。"

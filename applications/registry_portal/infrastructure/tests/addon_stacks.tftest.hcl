@@ -87,7 +87,8 @@ run "events_policy_is_known_on_first_plan" {
 }
 
 # ログの保持期間（#62）。追加スタックの Lambda のロググループも、本体と同じ変数で保持日数を変えられる
-# 不正な値の検証は、本体と同じく modules/lambda_log_group が行う（portal.tftest.hcl の log_retention_dev_value の説明）
+# 不正な値は、ルートスタック（decision・notification_events）の変数と modules/lambda_log_group が同じ一覧
+# （retention_days.json）で止める。ルートスタックの検証は test_log_retention.py で確かめる
 run "decision_log_retention_dev_value" {
   command = plan
   module {
@@ -134,7 +135,7 @@ run "events_log_retention_dev_value" {
   }
 }
 
-# 予約同時実行数（#61 実装案 5）。既定値では属性を設定せず（予約なし）、今の動作と差分を出さない
+# 予約同時実行数（変数 lambda_reserved_concurrency）。既定値では属性を設定せず（予約なし）、今の動作と差分を出さない
 run "decision_reserved_concurrency" {
   command = plan
   module {
