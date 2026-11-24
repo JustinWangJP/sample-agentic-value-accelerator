@@ -1,6 +1,6 @@
 """予算アラートの通知先メールアドレスが、リポジトリの tfvars に書かれていないことを確かめる。
 
-通知先は個人情報なので、環境変数 TF_VAR_budget_notification_emails で渡す（Issue #61 の実装案 4）。
+通知先は個人情報なので、環境変数 TF_VAR_budget_notification_emails で渡す。
 tfvars の例や dev の値に書くと、そのままコミットされてしまう。
 """
 

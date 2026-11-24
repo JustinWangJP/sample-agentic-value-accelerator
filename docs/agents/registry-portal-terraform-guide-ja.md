@@ -285,7 +285,7 @@ cp infrastructure/terraform.tfvars.example infrastructure/dev.tfvars
 | `allowed_source_cidrs` | 許可する IPv4 CIDR を 1 件以上、JSON 配列で指定 | 本体の環境変数 `TF_VAR_allowed_source_cidrs` |
 | `lambda_reserved_concurrency` | 本体と決裁は `5`、イベント処理は `2`〜`5`（既定は `null`、予約なし） | 本体・決裁・イベント処理 |
 
-予約同時実行数を設定する前に、対象リージョンで `aws lambda get-account-settings` を実行して `AccountLimit.ConcurrentExecutions` と既存の予約を確認します。予約後も未予約の枠を 100 残せる場合に設定してください。イベント処理では、上限に達した場合の再試行とデッドレターキューへの転送を考慮してください。
+予約同時実行数を設定する前に、対象リージョンで `aws lambda get-account-settings` を実行して `AccountLimit.ConcurrentExecutions` と既存の予約を確認します。予約後も未予約の枠を 100 残せる場合に設定してください。イベント処理では、上限に達した場合の再試行とデッドレターキューへの転送を考慮してください。本体の管理 Lambda は、すべての経路のプリフライト（`OPTIONS`）も処理します。決裁 Lambda の経路へのプリフライトも管理 Lambda が答えるため、本体の予約数にはプリフライトの分も見込みます。ブラウザはプリフライトの結果を `Access-Control-Max-Age`（300 秒）の間は再利用するため、プリフライトが重なるのは主に画面の初回表示です。dev の推奨値 5 はこの分を含めた目安です。画面の表示中に 429 や 5xx が出る場合は、本体の値を上げてください（[ADR-0015](../adr/0015-rest-api-with-source-ip-policy-and-script-deployment.md)）。
 
 Identity Center の deployer で SPA のライフサイクル設定を初めて反映する前に、管理者が bootstrap を再適用して deployer に `s3:PutLifecycleConfiguration` を付与します。
 
@@ -348,6 +348,19 @@ aws cognito-idp admin-get-user --profile registry-deploy --region "$COGNITO_REGI
 - [DomainDescriptionType](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_DomainDescriptionType.html)（`ManagedLoginVersion`。managed login は Lite 以外のプランが必要）
 - [AdminGetUser](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_AdminGetUser.html)（`UserMFASettingList`、`PreferredMfaSetting`）
 - [User pool feature plans](https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-sign-in-feature-plans.html)、[Essentials plan features](https://docs.aws.amazon.com/cognito/latest/developerguide/feature-plans-features-essentials.html)
+
+### 3.8 API Gateway の CloudWatch ロールを確認する
+
+本体スタックは REST API のステージにアクセスログ（`access_log_settings`）を設定します。REST API がアクセスログを CloudWatch Logs に書くには、リージョンごとのアカウント設定 `cloudWatchRoleArn` にロールが必要です（[REST API の CloudWatch ログの設定](https://docs.aws.amazon.com/apigateway/latest/developerguide/set-up-logging.html)）。新しいアカウントやリージョンで本体を初めて配信する前に、管理者が次を確認します。
+
+```bash
+aws apigateway get-account --region us-east-1 --query cloudwatchRoleArn
+```
+
+- 有効なロールの ARN が表示された場合は、そのロールを使います。bootstrap の `manage_api_gateway_account` は既定の `false` のままにします。
+- 何も表示されない場合（`null`）は、bootstrap で `manage_api_gateway_account = true` を設定して再適用します。この設定はリージョン内のすべての REST API で共有されます。
+
+ロールがないまま本体を配信すると、ステージの作成が失敗するおそれがあります（ADR-0015 の未確認の事項）。
 
 ## 4. 配信の手順
 
@@ -416,10 +429,13 @@ aws apigateway update-stage --rest-api-id "$api_id" --stage-name "$stage" \
 
 #### HTTP API から切り替える
 
-1. 管理者が対象リージョンで `aws apigateway get-account --region us-east-1 --query cloudwatchRoleArn` を実行します。すでに有効なロールが設定されていれば、そのロールを使います。ロール設定がなければ bootstrap で `manage_api_gateway_account = true` を設定し、再適用します。この設定はリージョン内の API Gateway REST API で共有されます。既存ロールを使う場合も、Identity Center の deployer を使う環境では REST API の更新権限を反映するため、bootstrap を再適用します。
-2. 本体を配信します。既存 HTTP API が REST API に置き換わるため、追加スタックを反映するまで、その経路は利用できません。
-3. 本体の新しい output `rest_api` を 4.3 に沿って転記し、管理・決裁を順に配信します。ローカル SPA の設定も、新しい URL に `/v1` を含めて更新します。追加スタックは撤去せず、既存 state をそのまま使います。HTTP API と一緒に削除された route は、追加スタックの plan の refresh で state から外れます。旧 HTTP API 向けの Lambda 呼び出し許可は、REST API 向けの許可への置き換えとして plan に表示されます（[ADR-0015](../adr/0015-rest-api-with-source-ip-policy-and-script-deployment.md)）。
-4. `local_dev_origins` を後から変更した場合も、本体の output `rest_api` を決裁スタックへ転記し直して反映します（`cors_allowed_origins` が変わるため）。
+dev は REST API への移行を済ませています。HTTP API 形式への対応を外したとき（#77）に、bootstrap の deployer の権限から HTTP API（`/apis`、`/apis/*`）を外しました（[ADR-0015](../adr/0015-rest-api-with-source-ip-policy-and-script-deployment.md)）。HTTP API が残っている環境を移行する場合だけ、次の手順に従います。
+
+1. 3.8 の CloudWatch ロールを確認します。
+2. 移行の apply で既存の HTTP API を削除するため、bootstrap の `PortalApis` の文の `Resource` に `arn:aws:apigateway:<リージョン>::/apis` と `arn:aws:apigateway:<リージョン>::/apis/*` を一時的に足し、再適用します。この変更はコミットしません。
+3. 本体を配信します。既存 HTTP API が REST API に置き換わるため、追加スタックを反映するまで、その経路は利用できません。
+4. 本体の新しい output `rest_api` を 4.3 に沿って転記し、管理・決裁を順に配信します。ローカル SPA の設定も、新しい URL に `/v1` を含めて更新します。追加スタックは撤去せず、既存 state をそのまま使います。HTTP API と一緒に削除された route は、追加スタックの plan の refresh で state から外れます。旧 HTTP API 向けの Lambda 呼び出し許可は、REST API 向けの許可への置き換えとして plan に表示されます。
+5. 2 で足した `/apis` の権限を外し、bootstrap を再適用します。
 
 ### 4.3 追加スタックに渡す値を集める
 
@@ -446,6 +462,8 @@ AWS_PROFILE=registry-deploy-tf terraform -chdir=infrastructure output
 | `lambda_zip_path` | 4.4 で作った共通 ZIP のパス | decision、notification_events |
 
 `rest_api` は `terraform -chdir=infrastructure output rest_api` が表示するオブジェクトを、そのまま `rest_api = { ... }` として貼り付けます。management は `cors_allowed_origins` を使わないため変数の型に含めていません。それでも両スタックで同じ値を転記します（型にない属性は Terraform が捨てます）。`scripts/deploy.sh` は追加スタックの再デプロイ先（REST API の ID とステージ名）を、この値から読みます。
+
+本体で `local_dev_origins` を変えると、output `rest_api` の `cors_allowed_origins` も変わります。そのときは management と decision の `rest_api` を転記し直して反映します（決裁 Lambda の CORS 許可リストはこの値から作るため）。`scripts/deploy.sh --stack management|decision` は、apply の前に本体の state から output `rest_api` を読み、転記した値と一致しなければ止まります。本体の state は、追加スタックの `backend.hcl` の `key` だけを本体のものに差し替えて読みます（4.5 のとおり、`bucket` は本体と同じにします）。撤去（`--destroy`）では照合しません。
 
 `cognito_issuer` の output は確認用です。decision のルートスタックは `region` と `cognito_user_pool_id` から issuer を組み立てるため、tfvars に `cognito_issuer` を追加しません。
 
