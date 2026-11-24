@@ -85,14 +85,17 @@ resource "aws_api_gateway_resource" "depth5" {
 
 # 本体の経路（routes.json の main）も管理 Lambda に割り当てる
 module "main_routes" {
-  source              = "./modules/api_routes"
-  route_group         = "main"
-  authorization_scope = local.portal_api_scope
-  rest_api_id         = aws_api_gateway_rest_api.portal.id
-  authorizer_id       = aws_api_gateway_authorizer.human.id
-  resource_ids        = local.api_resources
-  lambda_invoke_arn   = aws_lambda_function.management.invoke_arn
-  function_name       = aws_lambda_function.management.function_name
+  source      = "./modules/api_routes"
+  route_group = "main"
+  # output の rest_api と同じ形にする。output はステージ（経路の作成後に作る）を含むため、そのまま渡すと循環する
+  rest_api = {
+    id               = aws_api_gateway_rest_api.portal.id
+    authorizer_id    = aws_api_gateway_authorizer.human.id
+    portal_api_scope = local.portal_api_scope
+  }
+  resource_ids      = local.api_resources
+  lambda_invoke_arn = aws_lambda_function.management.invoke_arn
+  function_name     = aws_lambda_function.management.function_name
 }
 
 # 移動先は旧名のまま残し、modules/api_routes の moved で aws_lambda_permission.route へつなぐ

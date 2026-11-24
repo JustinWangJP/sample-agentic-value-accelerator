@@ -1,20 +1,24 @@
-variable "rest_api_id" {
-  type        = string
-  description = "経路を割り当てる API Gateway REST API の ID。本体スタックが作成し、追加スタックは借用する"
+variable "rest_api" {
+  type = object({
+    id               = string
+    authorizer_id    = string
+    portal_api_scope = string
+  })
+  description = "経路を割り当てる API Gateway REST API（本体スタックの output rest_api と同じ形）。id は REST API の ID（本体スタックが作成し、追加スタックは借用する）、authorizer_id は人間用 SPA client のトークンを検証する Cognito User Pools authorizer の ID、portal_api_scope は authorizer が検証するポータル用のカスタム scope（<リソースサーバー ID>/<scope 名>、本体スタックの local.portal_api_scope と同じ値）。output のそれ以外の属性は使わないため型に含めず、渡しても Terraform が型の変換で捨てる"
 
   validation {
-    condition     = can(regex("^[a-z0-9]{10}$", var.rest_api_id))
+    condition     = can(regex("^[a-z0-9]{10}$", var.rest_api.id))
     error_message = "API Gateway REST API の ID（英小文字と数字の10文字）を指定してください。"
   }
-}
-
-variable "authorizer_id" {
-  type        = string
-  description = "経路に適用する Cognito User Pools authorizer の ID。人間用 SPA client のトークンを検証する authorizer を指定する"
 
   validation {
-    condition     = can(regex("^[a-z0-9]+$", var.authorizer_id))
+    condition     = can(regex("^[a-z0-9]+$", var.rest_api.authorizer_id))
     error_message = "REST API の Cognito User Pools authorizer の ID を指定してください。"
+  }
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$", var.rest_api.portal_api_scope))
+    error_message = "カスタム scope を「<リソースサーバー ID>/<scope 名>」の形で指定してください。"
   }
 }
 
@@ -46,15 +50,5 @@ variable "route_group" {
   validation {
     condition     = contains(keys(jsondecode(file("${path.module}/routes.json"))), var.route_group)
     error_message = "route_group には routes.json のグループ名（${join("・", sort(keys(jsondecode(file("${path.module}/routes.json")))))}）のいずれかを指定してください。"
-  }
-}
-
-variable "authorization_scope" {
-  type        = string
-  description = "経路の Cognito User Pools authorizer が検証するポータル用のカスタム scope（<リソースサーバー ID>/<scope 名>）。本体スタックの local.portal_api_scope と同じ値"
-
-  validation {
-    condition     = can(regex("^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$", var.authorization_scope))
-    error_message = "カスタム scope を「<リソースサーバー ID>/<scope 名>」の形で指定してください。"
   }
 }

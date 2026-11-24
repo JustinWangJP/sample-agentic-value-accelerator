@@ -48,22 +48,22 @@ class PortalScopeTests(unittest.TestCase):
         main = (INFRA / "rest_api.tf").read_text()
         self.assertRegex(
             main,
-            r'module "main_routes" \{[^}]*authorization_scope\s*=\s*local\.portal_api_scope\n',
+            r'module "main_routes" \{[^}]*rest_api = \{[^}]*portal_api_scope\s*=\s*local\.portal_api_scope\n',
         )
 
     def test_addon_stack_routes_require_the_transcribed_scope(self):
         modules = INFRA / "modules"
         self.assertRegex(
             (modules / "decision/main.tf").read_text(),
-            r"authorization_scope\s*=\s*var\.rest_api\.portal_api_scope\n",
+            r"\n\s*rest_api\s*=\s*var\.rest_api\n",
         )
         self.assertIn(
-            "authorization_scopes = [var.authorization_scope]",
+            "authorization_scopes = [var.rest_api.portal_api_scope]",
             (modules / "api_routes/main.tf").read_text(),
         )
         for stack, pattern in [
             ("decision", r"rest_api\s*=\s*var\.rest_api\n"),
-            ("management", r"authorization_scope\s*=\s*var\.rest_api\.portal_api_scope\n"),
+            ("management", r"\n\s*rest_api\s*=\s*var\.rest_api\n"),
         ]:
             with self.subTest(stack=stack):
                 self.assertRegex((INFRA / stack / "main.tf").read_text(), pattern)

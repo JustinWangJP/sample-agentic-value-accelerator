@@ -110,9 +110,7 @@ def test_root_module_applies_the_routes_module():
     # パスは本体スタックが作ったものを REST API から引くため、resource_ids は渡さない
     passed_through = {
         "route_group": '"management"',
-        "rest_api_id": "var.rest_api.id",
-        "authorizer_id": "var.rest_api.authorizer_id",
-        "authorization_scope": "var.rest_api.portal_api_scope",
+        "rest_api": "var.rest_api",
         "lambda_invoke_arn": "data.aws_lambda_function.management.invoke_arn",
         "function_name": "var.management_function_name",
     }

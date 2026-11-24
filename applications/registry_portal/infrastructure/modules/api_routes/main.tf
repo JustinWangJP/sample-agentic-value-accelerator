@@ -7,8 +7,8 @@ locals {
   resource_ids = var.resource_ids != null ? var.resource_ids : {
     for path, resource in data.aws_api_gateway_resource.portal : path => resource.id
   }
-  # 追加スタックは REST API の ID しか受け取らないため、実行 ARN を ID から組み立てる
-  api_execution_arn = "arn:${data.aws_partition.current.partition}:execute-api:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:${var.rest_api_id}"
+  # 追加スタックは REST API の実行 ARN を受け取らないため、ID から組み立てる
+  api_execution_arn = "arn:${data.aws_partition.current.partition}:execute-api:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:${var.rest_api.id}"
   invoke_paths = {
     for name, route in local.routes :
     name => "${route.method}${replace(route.path, "/\\{[^}]+\\}/", "*")}"
@@ -21,24 +21,24 @@ data "aws_region" "current" {}
 
 data "aws_api_gateway_resource" "portal" {
   for_each    = var.resource_ids == null ? local.paths : toset([])
-  rest_api_id = var.rest_api_id
+  rest_api_id = var.rest_api.id
   path        = each.key
 }
 
 resource "aws_api_gateway_method" "route" {
   for_each             = local.routes
-  rest_api_id          = var.rest_api_id
+  rest_api_id          = var.rest_api.id
   resource_id          = local.resource_ids[each.value.path]
   http_method          = each.value.method
   authorization        = "COGNITO_USER_POOLS"
-  authorizer_id        = var.authorizer_id
-  authorization_scopes = [var.authorization_scope]
+  authorizer_id        = var.rest_api.authorizer_id
+  authorization_scopes = [var.rest_api.portal_api_scope]
   request_parameters   = { "method.request.header.Origin" = false }
 }
 
 resource "aws_api_gateway_integration" "route" {
   for_each                = aws_api_gateway_method.route
-  rest_api_id             = var.rest_api_id
+  rest_api_id             = var.rest_api.id
   resource_id             = each.value.resource_id
   http_method             = each.value.http_method
   integration_http_method = "POST"

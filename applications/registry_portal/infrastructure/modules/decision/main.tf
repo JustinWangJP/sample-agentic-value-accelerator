@@ -88,11 +88,9 @@ resource "aws_lambda_function" "decision" {
 
 # パスと authorizer は本体スタックから借用する。
 module "decision_routes" {
-  source              = "../api_routes"
-  route_group         = "decision"
-  authorization_scope = var.rest_api.portal_api_scope
-  rest_api_id         = var.rest_api.id
-  authorizer_id       = var.rest_api.authorizer_id
-  lambda_invoke_arn   = aws_lambda_function.decision.invoke_arn
-  function_name       = aws_lambda_function.decision.function_name
+  source            = "../api_routes"
+  route_group       = "decision"
+  rest_api          = var.rest_api
+  lambda_invoke_arn = aws_lambda_function.decision.invoke_arn
+  function_name     = aws_lambda_function.decision.function_name
 }

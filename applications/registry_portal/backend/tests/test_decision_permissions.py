@@ -116,7 +116,8 @@ def test_module_routes_only_curator_and_recovery_apis_to_the_decision_lambda():
     assert re.search(r'route_group\s*=\s*"decision"', wiring)
     assert re.search(r"lambda_invoke_arn\s*=\s*aws_lambda_function\.decision\.invoke_arn", wiring)
     assert re.search(r"function_name\s*=\s*aws_lambda_function\.decision\.function_name", wiring)
-    assert re.search(r"authorization_scope\s*=\s*var\.rest_api\.portal_api_scope", wiring)
+    # REST API の ID・authorizer・scope は、本体スタックの output を転記した rest_api をまとめて渡す
+    assert re.search(r"^\s*rest_api\s*=\s*var\.rest_api$", wiring, re.MULTILINE)
 
 
 def test_arn_validation_does_not_pin_a_region():
