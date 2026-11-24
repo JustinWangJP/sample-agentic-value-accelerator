@@ -216,6 +216,33 @@ tf plan "${plan_args[@]}"
   cd "$stack_dir"
   AWS_PROFILE="$terraform_profile" python3 "$portal_dir/scripts/check_plan.py" --saved-plan "$work_dir/approved.tfplan"
 )
+# 経路を持つ追加スタックの反映では、tfvars に転記した rest_api が本体の今の output rest_api と一致することを
+# apply の前に確かめる。本体で local_dev_origins などを変えた後に転記し直さないと、決裁 Lambda の CORS 許可リストや
+# 再デプロイ先が古いまま反映されるため（ガイド 4.3）。本体の state は、本体の backend.hcl と同じバケットにある前提で
+# 追加スタックの backend.hcl の key だけを差し替えて読む（ガイド 4.5）
+if [[ "$redeploy_from" == plan && "$destroy" == false ]]; then
+  main_state_key="$(stack_config main && printf '%s' "$state_key")"
+  tf show -json "$work_dir/approved.tfplan" > "$work_dir/addon-plan.json"
+  tf_init "$infra_dir" -backend-config="key=$main_state_key"
+  tf_at "$infra_dir" output -json rest_api > "$work_dir/main-rest-api.json"
+  python3 - "$work_dir/addon-plan.json" "$work_dir/main-rest-api.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+transcribed = json.loads(Path(sys.argv[1]).read_text())["variables"]["rest_api"]["value"]
+current = json.loads(Path(sys.argv[2]).read_text())
+# plan に残った転記値の属性だけを比べる（management の型にない cors_allowed_origins は plan に残らない場合がある）
+stale = sorted(name for name in transcribed if name in current and transcribed[name] != current[name])
+if stale:
+    print(
+        "tfvars の rest_api が本体の output rest_api と一致しません（" + "、".join(stale) + "）。"
+        "terraform -chdir=infrastructure output rest_api の値を転記し直してください（ガイド 4.3）。",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+PY
+fi
 # 本体の撤去では、保護を外す apply（ガイド 5.4 の手順 3）が state に入っていることを apply の前に確かめる。
 # 飛ばすと、保護のないリソースだけを消してから途中で失敗する
 if [[ "$is_main_destroy" == true ]]; then
