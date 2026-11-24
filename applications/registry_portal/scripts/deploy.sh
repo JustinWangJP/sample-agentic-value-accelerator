@@ -216,16 +216,19 @@ tf plan "${plan_args[@]}"
   cd "$stack_dir"
   AWS_PROFILE="$terraform_profile" python3 "$portal_dir/scripts/check_plan.py" --saved-plan "$work_dir/approved.tfplan"
 )
+# plan の JSON は一度だけ作り、転記値の照合・撤去前の確認・再デプロイ先の読み取りで使い回す
+if [[ "$redeploy_from" == plan || "$is_main_destroy" == true ]]; then
+  tf show -json "$work_dir/approved.tfplan" > "$work_dir/plan.json"
+fi
 # 経路を持つ追加スタックの反映では、tfvars に転記した rest_api が本体の今の output rest_api と一致することを
 # apply の前に確かめる。本体で local_dev_origins などを変えた後に転記し直さないと、決裁 Lambda の CORS 許可リストや
 # 再デプロイ先が古いまま反映されるため（ガイド 4.3）。本体の state は、本体の backend.hcl と同じバケットにある前提で
 # 追加スタックの backend.hcl の key だけを差し替えて読む（ガイド 4.5）
 if [[ "$redeploy_from" == plan && "$destroy" == false ]]; then
   main_state_key="$(stack_config main && printf '%s' "$state_key")"
-  tf show -json "$work_dir/approved.tfplan" > "$work_dir/addon-plan.json"
   tf_init "$infra_dir" -backend-config="key=$main_state_key"
   tf_at "$infra_dir" output -json rest_api > "$work_dir/main-rest-api.json"
-  python3 - "$work_dir/addon-plan.json" "$work_dir/main-rest-api.json" <<'PY'
+  python3 - "$work_dir/plan.json" "$work_dir/main-rest-api.json" <<'PY'
 import json
 from pathlib import Path
 import sys
@@ -246,7 +249,6 @@ fi
 # 本体の撤去では、保護を外す apply（ガイド 5.4 の手順 3）が state に入っていることを apply の前に確かめる。
 # 飛ばすと、保護のないリソースだけを消してから途中で失敗する
 if [[ "$is_main_destroy" == true ]]; then
-  tf show -json "$work_dir/approved.tfplan" > "$work_dir/plan.json"
   python3 "$portal_dir/scripts/check_teardown.py" main-protection "$work_dir/plan.json"
 fi
 tf show -no-color "$work_dir/approved.tfplan"
@@ -262,8 +264,7 @@ else
 fi
 if [[ "$redeploy_from" == plan ]]; then
   # 撤去の apply の後は state から値を読めないため、apply の前に plan から読む
-  read -r api_id api_stage api_region <<<"$(tf show -json "$work_dir/approved.tfplan" \
-    | json_values variables.rest_api.value.id variables.rest_api.value.stage_name variables.region.value)"
+  read -r api_id api_stage api_region <<<"$(json_values variables.rest_api.value.id variables.rest_api.value.stage_name variables.region.value < "$work_dir/plan.json")"
 fi
 tf apply -input=false "$work_dir/approved.tfplan"
 if [[ "$redeploy_from" == output ]]; then
