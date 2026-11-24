@@ -169,12 +169,17 @@ def _json_body(event: LambdaEvent, max_length: int = 8192) -> Mapping[str, Any]:
     return body
 
 
-def _idempotency_key(event: LambdaEvent) -> str:
-    """Idempotency-Key ヘッダーの値。ヘッダー名の大文字・小文字は区別しない。なければ空文字。"""
+def _header(event: LambdaEvent, name: str) -> Any:
+    """リクエストヘッダーの値。ヘッダー名の大文字・小文字は区別しない。なければ None。"""
     headers = _mapping_or_empty(event.get("headers"))
-    return next(
-        (str(value) for name, value in headers.items() if name.lower() == "idempotency-key"), ""
-    )
+    wanted = name.lower()
+    return next((value for key, value in headers.items() if key.lower() == wanted), None)
+
+
+def _idempotency_key(event: LambdaEvent) -> str:
+    """Idempotency-Key ヘッダーの値。なければ空文字。"""
+    value = _header(event, "Idempotency-Key")
+    return "" if value is None else str(value)
 
 
 def get_me(caller: Caller, event: LambdaEvent) -> tuple[int, Mapping[str, Any]]:
@@ -217,24 +222,23 @@ class CorsPolicy:
 
     def __init__(self, origins: frozenset[str], *, answers_preflight: bool) -> None:
         self._origins = origins
-        self.answers_preflight = answers_preflight
+        self._answers_preflight = answers_preflight
 
     def headers(self, event: LambdaEvent) -> dict[str, str]:
         """通常の応答に付けるヘッダー。許可していない Origin には Vary だけを返す。"""
         headers = {"Vary": "Origin"}
-        origin = next(
-            (
-                value
-                for name, value in _mapping_or_empty(event.get("headers")).items()
-                if name.lower() == "origin"
-            ),
-            None,
-        )
+        origin = _header(event, "Origin")
         if isinstance(origin, str) and origin in self._origins:
             headers["Access-Control-Allow-Origin"] = origin
         return headers
 
-    def preflight_response(self, event: LambdaEvent) -> LambdaResponse:
+    def preflight(self, event: LambdaEvent, method: str) -> LambdaResponse | None:
+        """この policy が答えるプリフライトなら 204 応答を返す。それ以外は None（ルート表で処理する）。"""
+        if not self._answers_preflight or method != "OPTIONS":
+            return None
+        return self._preflight_response(event)
+
+    def _preflight_response(self, event: LambdaEvent) -> LambdaResponse:
         """プリフライトへの 204 応答。許可した Origin にだけメソッド・ヘッダー・有効期間を返す。"""
         headers = self.headers(event)
         if "Access-Control-Allow-Origin" in headers:
@@ -251,6 +255,9 @@ class CorsPolicy:
 class ApiHandler:
     """ルート表で要求を処理する Lambda handler。認可・エラー応答はすべての API で共通。
 
+    ルート表は経路のキー（例: GET /api/me）から処理する関数への辞書で、Lambda 側の定義元。
+    API Gateway 側の定義元である経路表（routes.json）とは別物で、両者の一致は
+    tests/test_route_tables.py で確かめる（用語は README の「経路」「経路表」「ルート表」）。
     REST API 形式の応答には CorsPolicy が決めた CORS ヘッダーを付ける。
     """
 
@@ -266,13 +273,18 @@ class ApiHandler:
 
     @property
     def route_keys(self) -> frozenset[str]:
-        """ルート表のキー（例: GET /api/records/{recordId}）。経路表との照合に使う。"""
+        """ルート表のキー（例: GET /api/records/{recordId}）。
+
+        ルート表は create_*_handler の中で依存を閉じ込めて組み立てるため、経路表との一致を
+        確かめる（tests/test_route_tables.py）には handler からキーを取り出すしかない。
+        """
         return frozenset(self._routes)
 
     def __call__(self, event: LambdaEvent, context: Any) -> LambdaResponse:
         request = _api_request(event)
-        if self._cors.answers_preflight and request.method == "OPTIONS":
-            return self._cors.preflight_response(event)
+        preflight = self._cors.preflight(event, request.method)
+        if preflight is not None:
+            return preflight
         response = self._dispatch(event, request)
         response["headers"].update(self._cors.headers(event))
         return response
