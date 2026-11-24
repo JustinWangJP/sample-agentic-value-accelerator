@@ -434,3 +434,19 @@ run "allowed_source_cidrs_rejects_invalid" {
   }
   expect_failures = [var.allowed_source_cidrs]
 }
+
+run "local_dev_origins_rejects_port_zero" {
+  command = plan
+  variables {
+    local_dev_origins = ["http://localhost:0"]
+  }
+  expect_failures = [var.local_dev_origins]
+}
+
+run "local_dev_origins_rejects_port_above_range" {
+  command = plan
+  variables {
+    local_dev_origins = ["http://localhost:99999"]
+  }
+  expect_failures = [var.local_dev_origins]
+}

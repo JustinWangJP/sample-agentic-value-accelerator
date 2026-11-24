@@ -131,8 +131,12 @@ variable "local_dev_origins" {
   default     = []
   validation {
     # 開発用の HTTP コールバック先は localhost と 127.0.0.1 に限定する
-    condition     = alltrue([for o in var.local_dev_origins : can(regex("^http://(localhost|127\\.0\\.0\\.1):[0-9]{1,5}$", o))])
-    error_message = "local_dev_origins には http://localhost:<port> または http://127.0.0.1:<port> を、末尾の / なしで指定してください。"
+    # port は 1〜65535。regex に合わない値は先に弾くので、tonumber は数字だけに対して呼ばれる
+    condition = alltrue([
+      for o in var.local_dev_origins :
+      can(regex("^http://(localhost|127\\.0\\.0\\.1):[0-9]{1,5}$", o)) ? (tonumber(split(":", o)[2]) >= 1 && tonumber(split(":", o)[2]) <= 65535) : false
+    ])
+    error_message = "local_dev_origins には http://localhost:<port> または http://127.0.0.1:<port> を、末尾の / なしで指定してください。port は 1〜65535 です。"
   }
 }
 
