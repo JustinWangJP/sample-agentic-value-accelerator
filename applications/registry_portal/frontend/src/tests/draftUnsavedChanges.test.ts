@@ -171,6 +171,50 @@ describe('下書きの編集画面', () => {
     expect(location.get()).toBe('#/drafts')
   })
 
+  it('サーバーがキー順を変えたり定義 JSON を正規化して返しても、保存成功後は未保存が解除され申請できる', async () => {
+    // バックエンド（drafts.py）と同様に environment を先頭にし、definition を空白なしで返す
+    const normalized = {
+      environment: 'dev',
+      name: draft.name,
+      displayName: draft.displayName,
+      description: draft.description,
+      recordVersion: draft.recordVersion,
+      ownerTeam: draft.ownerTeam,
+      dataClassification: draft.dataClassification,
+      connectionReference: draft.connectionReference,
+      contact: draft.contact,
+      termsOfUse: draft.termsOfUse,
+      recordType: draft.recordType,
+      descriptorType: draft.descriptorType,
+      schemaVersion: draft.schemaVersion,
+      definition: '{"name":"payments-a2a","description":"決済（改）","version":"1.0.0"}',
+    }
+    await mount('#/drafts/agentABC1234', [
+      jsonResponse(200, detail()),
+      jsonResponse(200, { ...detail(normalized), operationId: 'op-2', operationState: 'SUCCEEDED' }),
+    ])
+    // 整形された JSON を入力して保存する
+    await setValue('definition', '{\n  "name": "payments-a2a",\n  "description": "決済（改）",\n  "version": "1.0.0"\n}')
+    expect(location.attemptUnload()).toBe(true)
+
+    await act(() =>
+      container.querySelector('form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+    )
+    expect(container.textContent).toContain('下書きを保存しました。')
+    expect(container.textContent).not.toContain('未保存の変更あり')
+    expect(location.attemptUnload()).toBe(false)
+    expect(button('保存済みの内容を申請').disabled).toBe(false)
+  })
+
+  it('JSON 編集でキー順が変わっても、値が保存済みと同じなら未保存としない', async () => {
+    await mount('#/drafts/agentABC1234', [jsonResponse(200, detail())])
+    await click('JSON で入力')
+    const reordered = JSON.stringify(Object.fromEntries(Object.entries(draft).reverse()))
+    await setValue('draftJson', reordered)
+    expect(location.attemptUnload()).toBe(false)
+    expect(container.textContent).not.toContain('未保存の変更あり')
+  })
+
   it('JSON として読み取れない入力は、未保存の変更として扱う', async () => {
     await mount('#/drafts/agentABC1234', [jsonResponse(200, detail())])
     await click('JSON で入力')

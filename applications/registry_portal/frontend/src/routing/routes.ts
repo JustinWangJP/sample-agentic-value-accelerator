@@ -22,7 +22,7 @@ export type ScreenName = Route['screen']
 /** ログイン直後・存在しないルートで表示する画面 */
 export const DEFAULT_ROUTE: Route = { screen: 'catalog', recordId: null }
 
-/** 画面ごとに必要な業務ロール。null は全員（Viewer を含む）。API 側でも同じ権限を検査する */
+/** 画面ごとに必要な業務ロール。null は全員（Viewer を含む）。API 側でも同じ業務ロールを検査する */
 export const SCREEN_REQUIRED_ROLE: Record<ScreenName, Role | null> = {
   catalog: null,
   drafts: 'Publisher',
@@ -33,7 +33,7 @@ export const SCREEN_REQUIRED_ROLE: Record<ScreenName, Role | null> = {
 }
 
 /** 業務ロールで、その画面を開けるか */
-export function canOpenScreen(screen: ScreenName, roles: readonly string[]): boolean {
+export function canOpenScreen(screen: ScreenName, roles: readonly Role[]): boolean {
   const required = SCREEN_REQUIRED_ROLE[screen]
   return required === null || roles.includes(required)
 }

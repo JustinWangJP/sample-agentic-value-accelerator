@@ -4,7 +4,7 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { createApiClient } from '../api/client'
+import { createApiClient, type Role } from '../api/client'
 import { RecoveryView } from '../recovery/RecoveryView'
 import { fakeFetch, jsonResponse } from './helpers'
 
@@ -65,7 +65,7 @@ async function setValue(name: string, value: string) {
     node.dispatchEvent(new Event('input', { bubbles: true }))
   })
 }
-async function mount(responses: (Response | Error)[], roles: string[] = ['Admin']) {
+async function mount(responses: (Response | Error)[], roles: Role[] = ['Admin']) {
   const { fetchImpl, calls } = fakeFetch(responses)
   const api = createApiClient({ baseUrl: '', fetch: fetchImpl, getAccessToken: () => 'token' })
   await act(() => root.render(createElement(RecoveryView, { api, roles, onRelogin: vi.fn() })))

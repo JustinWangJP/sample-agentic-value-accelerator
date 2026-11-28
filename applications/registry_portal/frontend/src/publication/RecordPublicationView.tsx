@@ -1,12 +1,12 @@
 import { useState, type FormEvent } from 'react'
-import type { ApiClient } from '../api/client'
+import type { ApiClient, Role } from '../api/client'
 import { PageHeader } from '../components/StatePanel'
 import { RECORD_ID_LENGTH, RECORD_ID_PATTERN } from '../drafts/api'
 import { button, card, fieldLabel } from '../ui/classes'
 import { RecordPublicationPanel } from './RecordPublicationPanel'
 import { RecordPublicationSearch } from './RecordPublicationSearch'
 
-type Props = { api: ApiClient; roles: string[]; onRelogin: () => void }
+type Props = { api: ApiClient; roles: readonly Role[]; onRelogin: () => void }
 
 /**
  * Curator が公開管理を開く入口。管理レコードの検索（名前の一部と状態）とレコード ID の指定の2つがあり、

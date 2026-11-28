@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import type { Me } from '../api/client'
+import type { Me, Role } from '../api/client'
 import { Drawer } from '../components/Overlay'
 import { POPOVER_PANEL, POPOVER_TRIGGER, usePopover } from '../components/usePopover'
 import { useNavigation } from '../routing/navigation'
@@ -37,7 +37,7 @@ export function PortalLogo({ linked = true }: { linked?: boolean }) {
 }
 
 /** 業務ロール別のナビゲーション。デスクトップのサイドバーとモバイルメニューで共通 */
-export function PortalNav({ roles, label, onNavigate }: { roles: readonly string[]; label: string; onNavigate?: () => void }) {
+export function PortalNav({ roles, label, onNavigate }: { roles: readonly Role[]; label: string; onNavigate?: () => void }) {
   const { route } = useNavigation()
   return (
     <nav aria-label={label} className="space-y-6">
@@ -89,32 +89,32 @@ export function PrincipalMenu({ me }: { me: Me }) {
       </button>
       {/* 閉じている間も描画しておき、hidden で隠す（支援技術からも隠れる） */}
       <div className={`${POPOVER_PANEL} p-4`} hidden={!open}>
-          <h2 className="text-sm font-semibold text-slate-900 mb-3">自分の主体・業務ロール・所属チーム</h2>
-          <dl className="space-y-2.5 text-xs">
-            <div>
-              <dt className="text-slate-500 font-medium">発行元（iss）</dt>
-              <dd className="mt-0.5 font-mono text-slate-800 break-all bg-slate-50 px-2 py-1 rounded border border-slate-200">
-                {me.principal.issuer}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-slate-500 font-medium">主体（sub）</dt>
-              <dd className="mt-0.5 font-mono text-slate-800 break-all bg-slate-50 px-2 py-1 rounded border border-slate-200">
-                {me.principal.subject}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-slate-500 font-medium">業務ロール</dt>
-              <dd className="mt-0.5 text-slate-900 font-medium">{me.roles.join('、')}</dd>
-            </div>
-            <div>
-              <dt className="text-slate-500 font-medium">所属チーム</dt>
-              <dd className="mt-0.5 text-slate-900">{me.teams.length > 0 ? me.teams.join('、') : '所属チームなし'}</dd>
-            </div>
-          </dl>
-          <p className="mt-3 pt-3 border-t border-slate-200 text-[11px] text-slate-500 leading-relaxed">
-            アクセストークンはメモリー上だけで保持しています。ページを再読み込みすると、もう一度 SSO でログインします。
-          </p>
+        <h2 className="text-sm font-semibold text-slate-900 mb-3">自分の主体・業務ロール・所属チーム</h2>
+        <dl className="space-y-2.5 text-xs">
+          <div>
+            <dt className="text-slate-500 font-medium">発行元（iss）</dt>
+            <dd className="mt-0.5 font-mono text-slate-800 break-all bg-slate-50 px-2 py-1 rounded border border-slate-200">
+              {me.principal.issuer}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-slate-500 font-medium">主体（sub）</dt>
+            <dd className="mt-0.5 font-mono text-slate-800 break-all bg-slate-50 px-2 py-1 rounded border border-slate-200">
+              {me.principal.subject}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-slate-500 font-medium">業務ロール</dt>
+            <dd className="mt-0.5 text-slate-900 font-medium">{me.roles.join('、')}</dd>
+          </div>
+          <div>
+            <dt className="text-slate-500 font-medium">所属チーム</dt>
+            <dd className="mt-0.5 text-slate-900">{me.teams.length > 0 ? me.teams.join('、') : '所属チームなし'}</dd>
+          </div>
+        </dl>
+        <p className="mt-3 pt-3 border-t border-slate-200 text-[11px] text-slate-500 leading-relaxed">
+          アクセストークンはメモリー上だけで保持しています。ページを再読み込みすると、もう一度 SSO でログインします。
+        </p>
       </div>
     </div>
   )

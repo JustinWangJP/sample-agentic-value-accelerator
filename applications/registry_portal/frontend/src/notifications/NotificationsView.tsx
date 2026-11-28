@@ -12,7 +12,7 @@ import {
 
 type Props = { api: ApiClient; onRelogin: () => void }
 
-/** 通知種別のバッジの色。依頼・申請は対応待ち、承認は完了、停止・廃止・却下は注意 */
+/** 通知種別のバッジの色。依頼・申請は対応待ち、公開承認は完了、公開停止・廃止・却下は注意 */
 const KIND_BADGE: Record<NotificationKind, string> = {
   SUBMITTED: 'bg-amber-100 text-amber-800',
   DEPRECATION_REQUESTED: 'bg-amber-100 text-amber-800',

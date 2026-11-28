@@ -74,7 +74,7 @@ export function StartupView({ state, location }: { state: StartupState | null; l
   )
 }
 
-/** ルートに対応する画面。業務ロールが足りない画面は、403 相当の表示にする（API 側でも同じ権限を検査する） */
+/** ルートに対応する画面。業務ロールが足りない画面は、403 相当の表示にする（API 側でも同じ業務ロールを検査する） */
 function CurrentScreen({ me, api, onRelogin }: { me: Me; api: ApiClient; onRelogin: () => void }) {
   const { route } = useNavigation()
   if (!canOpenScreen(route.screen, me.roles)) {

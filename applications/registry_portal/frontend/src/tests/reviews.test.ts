@@ -5,7 +5,7 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { createApiClient } from '../api/client'
+import { createApiClient, type Role } from '../api/client'
 import { ReviewsView } from '../reviews/ReviewsView'
 import { fakeFetch, jsonResponse, withNavigation } from './helpers'
 
@@ -147,7 +147,7 @@ async function submitForm(index: number) {
   const form = container.querySelectorAll('form')[index]
   await act(() => form?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
 }
-async function mount(responses: (Response | Error)[], roles: string[] = ['Curator']) {
+async function mount(responses: (Response | Error)[], roles: Role[] = ['Curator']) {
   const { fetchImpl, calls } = fakeFetch(responses)
   const api = createApiClient({ baseUrl: '', fetch: fetchImpl, getAccessToken: () => 'token' })
   await act(() =>

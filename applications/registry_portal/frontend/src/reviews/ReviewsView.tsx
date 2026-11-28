@@ -1,11 +1,11 @@
-import { useEffect, useState, type ReactNode } from 'react'
-import { toApiError, type ApiClient, type ApiError } from '../api/client'
+import { useEffect, useState } from 'react'
+import { toApiError, type ApiClient, type ApiError, type Role } from '../api/client'
 import { RECORD_TYPE_LABELS } from '../api/recordType'
+import { CursorPager, DetailBreadcrumb } from '../components/NavigationControls'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { EmptyState, LoadingState, PageHeader } from '../components/StatePanel'
 import { useNavigation } from '../routing/navigation'
-import { RouteLink } from '../routing/NavigationProvider'
-import { badge, button, callout, card, fieldLabel, pager } from '../ui/classes'
+import { badge, button, callout, card, fieldLabel } from '../ui/classes'
 import { RecordHistoryToggle } from '../drafts/RecordHistoryView'
 import {
   PUBLISHED_STATUS,
@@ -30,7 +30,7 @@ import {
 } from './api'
 import { OperationCheck } from '../components/OperationCheck'
 
-type Props = { api: ApiClient; roles: string[]; onRelogin: () => void }
+type Props = { api: ApiClient; roles: readonly Role[]; onRelogin: () => void }
 type ListState =
   | { kind: 'loading' }
   | { kind: 'ready'; page: PendingPage }
@@ -265,32 +265,21 @@ function ReviewList({
               </ul>
             </div>
           )}
-          <nav className={pager} aria-label="審査待ちのページ">
-            <button
-              type="button"
-              className={button.small}
-              disabled={token === undefined}
-              onClick={() => {
+          <CursorPager
+            ariaLabel="審査待ちのページ"
+            hasPrevious={token !== undefined}
+            hasNext={list.page.nextToken !== null}
+            onFirst={() => {
+              setList({ kind: 'loading' })
+              setToken(undefined)
+            }}
+            onNext={() => {
+              if (list.page.nextToken) {
+                setToken(list.page.nextToken)
                 setList({ kind: 'loading' })
-                setToken(undefined)
-              }}
-            >
-              最初のページ
-            </button>
-            <button
-              type="button"
-              className={button.small}
-              disabled={list.page.nextToken === null}
-              onClick={() => {
-                if (list.page.nextToken) {
-                  setToken(list.page.nextToken)
-                  setList({ kind: 'loading' })
-                }
-              }}
-            >
-              次のページ
-            </button>
-          </nav>
+              }
+            }}
+          />
         </div>
       )}
     </section>
@@ -349,34 +338,18 @@ function ReviewDetailLoader({
     return <ReviewDetailView api={api} initial={state.detail} onBack={onBack} onRelogin={onRelogin} />
   return (
     <section aria-label="審査する" className="space-y-4">
-      <ReviewBreadcrumb onBack={onBack} />
+      <DetailBreadcrumb
+        parentTo={{ screen: 'reviews', recordId: null }}
+        parentLabel="審査待ち"
+        current="審査詳細"
+        onBack={onBack}
+      />
       {state.kind === 'loading' ? (
         <LoadingState>審査対象を読み込んでいます…</LoadingState>
       ) : (
         <RequestErrorAlert error={state.error} onRelogin={onRelogin} onRetry={() => setState({ kind: 'loading' })} />
       )}
     </section>
-  )
-}
-
-/** 審査詳細の上部。一覧への戻り道 */
-function ReviewBreadcrumb({ onBack, backDisabled = false, children }: { onBack: () => void; backDisabled?: boolean; children?: ReactNode }) {
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-3">
-      <nav aria-label="パンくずリスト" className="flex items-center gap-2 text-xs text-slate-500">
-        <RouteLink to={{ screen: 'reviews', recordId: null }} className="hover:text-slate-900">
-          審査待ち
-        </RouteLink>
-        <span aria-hidden="true">/</span>
-        <span className="text-slate-900 font-medium">審査詳細</span>
-      </nav>
-      <div className="flex flex-wrap items-center gap-2">
-        {children}
-        <button type="button" className={button.small} disabled={backDisabled} onClick={onBack}>
-          一覧に戻る
-        </button>
-      </div>
-    </div>
   )
 }
 
@@ -455,11 +428,17 @@ function ReviewDetailView({
 
   return (
     <section aria-labelledby="review-heading" className="space-y-6">
-      <ReviewBreadcrumb onBack={onBack} backDisabled={deciding}>
+      <DetailBreadcrumb
+        parentTo={{ screen: 'reviews', recordId: null }}
+        parentLabel="審査待ち"
+        current="審査詳細"
+        onBack={onBack}
+        backDisabled={deciding}
+      >
         <div className="w-56">
           <RecordHistoryToggle api={api} recordId={detail.recordId} onRelogin={onRelogin} />
         </div>
-      </ReviewBreadcrumb>
+      </DetailBreadcrumb>
       <section className={`${card} p-6`}>
         <div className="flex flex-wrap items-center gap-2 mb-2">
           <span className={badge.warning}>{recordStatusLabel(detail.status)}</span>

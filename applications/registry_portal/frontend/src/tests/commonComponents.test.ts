@@ -70,7 +70,7 @@ describe('失敗の表示', () => {
     expect(unauthenticated).toContain('もう一度ログインする')
     expect(unauthenticated).not.toContain('再試行')
 
-    const forbidden = render(new ApiError(403, 'FORBIDDEN', '権限がありません。'))
+    const forbidden = render(new ApiError(403, 'FORBIDDEN', 'この操作に必要な業務ロールがありません。'))
     expect(forbidden).not.toContain('<button')
   })
 

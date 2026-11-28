@@ -2,7 +2,7 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { createApiClient } from '../api/client'
+import { createApiClient, type Role } from '../api/client'
 import { AdministrationView } from '../administration/AdministrationView'
 import { fakeFetch, jsonResponse } from './helpers'
 
@@ -28,7 +28,7 @@ const record = {
   recordId: 'agentABC1234', name: 'existing-agent', displayName: '既存 Agent', recordType: 'AGENT',
   recordVersion: '1.0.0', status: 'DRAFT', managed: false, ownerTeam: null, managementHash: null,
 }
-async function mount(responses: (Response | Error)[], roles: string[] = ['Admin']) {
+async function mount(responses: (Response | Error)[], roles: Role[] = ['Admin']) {
   const { fetchImpl, calls } = fakeFetch(responses)
   const api = createApiClient({ baseUrl: '', fetch: fetchImpl, getAccessToken: () => 'token' })
   await act(() => root.render(createElement(AdministrationView, { api, roles, onRelogin: vi.fn() })))

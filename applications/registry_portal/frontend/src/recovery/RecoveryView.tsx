@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { toApiError, type ApiClient, type ApiError } from '../api/client'
+import { toApiError, type ApiClient, type ApiError, type Role } from '../api/client'
 import { RecoveryDetails } from '../components/RecoveryDetails'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { EmptyState, LoadingState, PageHeader } from '../components/StatePanel'
@@ -7,7 +7,7 @@ import { badge, button, callout, card, fieldLabel } from '../ui/classes'
 import { KIND_LABELS, RECORD_ID_PATTERN, RECORD_ID_LENGTH, STATE_LABELS } from '../drafts/api'
 import { RECOVERY_REASON_MAX_LENGTH, type RecoveryInspection, type RecoveryResult } from './api'
 
-type Props = { api: ApiClient; roles: string[]; onRelogin: () => void }
+type Props = { api: ApiClient; roles: readonly Role[]; onRelogin: () => void }
 
 type Loaded =
   | { kind: 'idle' }

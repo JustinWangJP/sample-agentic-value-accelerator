@@ -50,6 +50,7 @@ export const badge = {
   info: 'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-sky-50 text-sky-700 ring-1 ring-inset ring-sky-600/20',
   success: 'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20',
   warning: 'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-600/20',
+  suspended: 'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-orange-50 text-orange-800 ring-1 ring-inset ring-orange-600/20',
   danger: 'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-600/20',
   code: 'inline-flex items-center px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-[11px] font-mono',
 } as const

@@ -39,6 +39,7 @@ export function NavigationProvider({ location, children }: { location: HashLocat
   const go = useCallback(
     (target: string, replace: boolean) => {
       if (target !== location.get()) location.set(target, replace)
+      else location.commit()
       currentHash.current = target
       setHash(target)
     },
@@ -62,8 +63,11 @@ export function NavigationProvider({ location, children }: { location: HashLocat
     () =>
       location.subscribe(() => {
         const target = location.get()
-        if (target === currentHash.current) return
-        // 戻る・進むはすでに URL が変わっている。確認で「編集に戻る」を選んだら元に戻す
+        if (target === currentHash.current) {
+          setPending((current) => (current?.kind === 'history' ? null : current))
+          return
+        }
+        // 戻る・進む・アドレス欄編集はすでに URL が変わっている。確認で「編集に戻る」を選んだら履歴位置ごと元に戻す
         if (holds.current.size > 0) setPending({ kind: 'history', target })
         else go(target, true)
       }),
@@ -89,7 +93,7 @@ export function NavigationProvider({ location, children }: { location: HashLocat
   }
 
   function keepEditing() {
-    if (pending?.kind === 'history') location.set(currentHash.current, true)
+    if (pending?.kind === 'history') location.revert(currentHash.current)
     setPending(null)
   }
 

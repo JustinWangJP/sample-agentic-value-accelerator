@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { toApiError, type ApiClient, type ApiError } from '../api/client'
 import { RECORD_TYPE_LABELS } from '../api/recordType'
+import { CursorPager } from '../components/NavigationControls'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { EmptyState, LoadingState } from '../components/StatePanel'
 import { recordStatusLabel } from '../drafts/api'
@@ -87,43 +88,43 @@ export function RecordPublicationSearch({ api, onRelogin, aside }: Props) {
   return (
     <section aria-label="管理レコードの検索" className="space-y-4">
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
-      <div className={`${card} p-5 space-y-3 lg:col-span-2`}>
-        <h2 className="text-sm font-semibold text-slate-900">管理レコードの検索</h2>
-        <p className={note}>名前の一部と状態で、管理下のレコードを探せます。所有チームでは絞り込みません。</p>
-        <form onSubmit={search} className="flex flex-col sm:flex-row sm:items-end gap-2.5">
-          <label className={`${fieldLabel} flex-1`}>
-            名前（部分一致）
-            <input
-              name="publicationSearchName"
-              type="search"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-            />
-          </label>
-          <label className={fieldLabel}>
-            状態
-            <select
-              name="publicationSearchStatus"
-              value={status}
-              onChange={(event) => {
-                const value = event.target.value
-                setStatus(value === '' ? '' : isPublicationSearchStatus(value) ? value : '')
-              }}
-            >
-              <option value="">すべて</option>
-              {PUBLICATION_SEARCH_STATUSES.map((value) => (
-                <option key={value} value={value}>
-                  {searchStatusLabel(value)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button type="submit" className={`${button.primary} shrink-0`}>
-            検索する
-          </button>
-        </form>
-      </div>
-      {aside}
+        <div className={`${card} p-5 space-y-3 lg:col-span-2`}>
+          <h2 className="text-sm font-semibold text-slate-900">管理レコードの検索</h2>
+          <p className={note}>名前の一部と状態で、管理下のレコードを探せます。所有チームでは絞り込みません。</p>
+          <form onSubmit={search} className="flex flex-col sm:flex-row sm:items-end gap-2.5">
+            <label className={`${fieldLabel} flex-1`}>
+              名前（部分一致）
+              <input
+                name="publicationSearchName"
+                type="search"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+              />
+            </label>
+            <label className={fieldLabel}>
+              状態
+              <select
+                name="publicationSearchStatus"
+                value={status}
+                onChange={(event) => {
+                  const value = event.target.value
+                  setStatus(value === '' ? '' : isPublicationSearchStatus(value) ? value : '')
+                }}
+              >
+                <option value="">すべて</option>
+                {PUBLICATION_SEARCH_STATUSES.map((value) => (
+                  <option key={value} value={value}>
+                    {searchStatusLabel(value)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button type="submit" className={`${button.primary} shrink-0`}>
+              検索する
+            </button>
+          </form>
+        </div>
+        {aside}
       </div>
       {state.kind === 'loading' && <LoadingState>管理レコードを検索しています…</LoadingState>}
       {state.kind === 'error' && (
@@ -156,32 +157,22 @@ export function RecordPublicationSearch({ api, onRelogin, aside }: Props) {
               <PublicationResult key={item.recordId} api={api} item={item} onRelogin={onRelogin} />
             ))}
           </ul>
-          <nav className="px-4 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-end gap-2 text-xs" aria-label="管理レコード検索のページ">
-            <button
-              type="button"
-              className={button.small}
-              disabled={token === undefined}
-              onClick={() => {
-                setToken(undefined)
+          <CursorPager
+            ariaLabel="管理レコード検索のページ"
+            className="px-4 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-end gap-2 text-xs"
+            hasPrevious={token !== undefined}
+            hasNext={state.page.nextToken !== null}
+            onFirst={() => {
+              setToken(undefined)
+              setState({ kind: 'loading' })
+            }}
+            onNext={() => {
+              if (state.page.nextToken) {
+                setToken(state.page.nextToken)
                 setState({ kind: 'loading' })
-              }}
-            >
-              最初のページ
-            </button>
-            <button
-              type="button"
-              className={button.small}
-              disabled={state.page.nextToken === null}
-              onClick={() => {
-                if (state.page.nextToken) {
-                  setToken(state.page.nextToken)
-                  setState({ kind: 'loading' })
-                }
-              }}
-            >
-              次のページ
-            </button>
-          </nav>
+              }
+            }}
+          />
         </div>
       )}
     </section>
@@ -220,7 +211,7 @@ function PublicationResult({
           </p>
         </div>
         <p className="px-4 md:py-3 text-xs">
-          <span className={item.suspended ? SUSPENDED_BADGE : badge.neutral}>
+          <span className={item.suspended ? badge.suspended : badge.neutral}>
             状態 {searchStatusLabel(item.status)}
             {item.suspended ? `・${SUSPENDED_LABEL}` : ''}
           </span>
@@ -239,6 +230,3 @@ function PublicationResult({
     </li>
   )
 }
-
-const SUSPENDED_BADGE =
-  'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-orange-50 text-orange-800 ring-1 ring-inset ring-orange-600/20'

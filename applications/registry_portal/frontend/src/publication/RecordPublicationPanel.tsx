@@ -491,7 +491,7 @@ const ACTION_TONES: Record<PublicationAction, { frame: string; title: string; bu
 /** レコードの状態のバッジ。公開中は緑、公開停止中は橙、廃止は灰、それ以外は中立 */
 function statusBadge(status: string, suspended: boolean): string {
   if (status === DEPRECATED_STATUS) return badge.neutral
-  if (suspended) return 'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-orange-50 text-orange-800 ring-1 ring-inset ring-orange-600/20'
+  if (suspended) return badge.suspended
   if (status === PUBLISHED_STATUS) return badge.success
   return badge.neutral
 }

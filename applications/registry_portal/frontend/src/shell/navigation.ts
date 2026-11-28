@@ -46,6 +46,6 @@ export const NAV_SECTIONS: NavSection[] = [
 ]
 
 /** 業務ロールで表示するナビの区分。必要な業務ロールのない区分は出さない */
-export function visibleNavSections(roles: readonly string[]): NavSection[] {
+export function visibleNavSections(roles: readonly Role[]): NavSection[] {
   return NAV_SECTIONS.filter((section) => section.requiredRole === null || roles.includes(section.requiredRole))
 }

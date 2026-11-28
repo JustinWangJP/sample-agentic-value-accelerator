@@ -147,7 +147,7 @@ describe('未保存の変更の確認', () => {
     expect(currentRoute()).toBe('#/reviews')
   })
 
-  it('戻る・進むで「編集に戻る」を選ぶと、ハッシュを元の画面に戻す', async () => {
+  it('戻る・進むで「編集に戻る」を選ぶと、履歴を壊さずに元の位置へ戻す', async () => {
     const location = await mount('#/catalog')
     await click('審査へ')
     await click('入力する')
@@ -159,6 +159,21 @@ describe('未保存の変更の確認', () => {
     await click(KEEP_EDITING)
     expect(location.get()).toBe('#/reviews')
     expect(currentRoute()).toBe('#/reviews')
+    // 遷移元の履歴エントリが上書き消去されず、保存後に戻るで前画面へ戻れる
+    expect(location.entries).toEqual(['#/catalog', '#/reviews'])
+    await click('保存する')
+    await act(() => location.back())
+    expect(currentRoute()).toBe('#/catalog')
+    expect(location.get()).toBe('#/catalog')
+
+    // 進む操作のキャンセルも、履歴を壊さずに元の画面へ戻る
+    await click('入力する')
+    await act(() => location.forward())
+    expect(dialog()).not.toBeNull()
+    await click(KEEP_EDITING)
+    expect(location.get()).toBe('#/catalog')
+    expect(currentRoute()).toBe('#/catalog')
+    expect(location.entries).toEqual(['#/catalog', '#/reviews'])
   })
 
   it('戻る・進むで「破棄して移動」を選ぶと、戻った先の画面を表示する', async () => {
@@ -185,7 +200,18 @@ describe('未保存の変更の確認', () => {
 describe('ブラウザのハッシュ', () => {
   function fakeWindow(hash = '') {
     const listeners = new Map<string, EventListener>()
-    const history = { state: null, pushState: vi.fn(), replaceState: vi.fn() }
+    const history = {
+      state: null as unknown,
+      pushState: vi.fn((state: unknown, _unused: string, url?: string | URL | null) => {
+        history.state = state
+        if (typeof url === 'string') win.location.hash = url
+      }),
+      replaceState: vi.fn((state: unknown, _unused: string, url?: string | URL | null) => {
+        history.state = state
+        if (typeof url === 'string' && url !== '') win.location.hash = url
+      }),
+      go: vi.fn(),
+    }
     const win = {
       location: { hash },
       history,
@@ -195,16 +221,17 @@ describe('ブラウザのハッシュ', () => {
     return { win: win as unknown as Window, history, listeners }
   }
 
-  it('遷移は pushState、置き換えは replaceState で行い、hashchange を購読する', async () => {
+  it('遷移は pushState、置き換えは replaceState で位置を記録し、hashchange を購読する', async () => {
     const { browserHashLocation } = await import('../routing/location')
     const { win, history, listeners } = fakeWindow('#/catalog')
     const location = browserHashLocation(win)
     expect(location.get()).toBe('#/catalog')
+    expect(history.replaceState).toHaveBeenCalledWith({ __registryPortalNavIndex: 0 }, '')
 
     location.set('#/reviews', false)
     location.set('#/drafts', true)
-    expect(history.pushState).toHaveBeenCalledWith(null, '', '#/reviews')
-    expect(history.replaceState).toHaveBeenCalledWith(null, '', '#/drafts')
+    expect(history.pushState).toHaveBeenCalledWith({ __registryPortalNavIndex: 1 }, '', '#/reviews')
+    expect(history.replaceState).toHaveBeenCalledWith({ __registryPortalNavIndex: 1 }, '', '#/drafts')
 
     const listener = vi.fn()
     const unsubscribe = location.subscribe(listener)
@@ -212,6 +239,25 @@ describe('ブラウザのハッシュ', () => {
     expect(listener).toHaveBeenCalledTimes(1)
     unsubscribe()
     expect(listeners.has('hashchange')).toBe(false)
+  })
+
+  it('戻る・進むの取り消し（revert）は replaceState で上書きせず history.go で元の位置へ戻す', async () => {
+    const { browserHashLocation } = await import('../routing/location')
+    const { win, history } = fakeWindow('#/catalog')
+    const location = browserHashLocation(win)
+    location.set('#/drafts/agentABC1234', false)
+
+    // 戻るで初期位置（index 0）へ移動した状態を再現
+    history.state = { __registryPortalNavIndex: 0 }
+    win.location.hash = '#/catalog'
+    location.revert('#/drafts/agentABC1234')
+    expect(history.go).toHaveBeenCalledWith(1)
+
+    // 進むで次の位置（index 2）へ移動した状態を再現
+    history.state = { __registryPortalNavIndex: 2 }
+    win.location.hash = '#/reviews'
+    location.revert('#/drafts/agentABC1234')
+    expect(history.go).toHaveBeenCalledWith(-1)
   })
 
   it('再読み込みの前の確認は、止めるべきときだけ beforeunload を取り消す', async () => {

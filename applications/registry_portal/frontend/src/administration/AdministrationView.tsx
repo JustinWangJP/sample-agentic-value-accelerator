@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { toApiError, type ApiError } from '../api/client'
+import { toApiError, type ApiError, type Role } from '../api/client'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { EmptyState, LoadingState, PageHeader } from '../components/StatePanel'
 import { badge, button, callout, card, fieldLabel, note } from '../ui/classes'
@@ -17,7 +17,7 @@ import {
   type RegistryConnection,
 } from './api'
 
-type Props = { api: AdministrationApi; roles: readonly string[]; onRelogin: () => void }
+type Props = { api: AdministrationApi; roles: readonly Role[]; onRelogin: () => void }
 export function AdministrationView(props: Props) {
   return props.roles.includes('Admin') ? <AdministrationPanel {...props} /> : null
 }
