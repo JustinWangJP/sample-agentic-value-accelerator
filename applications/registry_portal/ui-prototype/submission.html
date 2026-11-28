@@ -8,47 +8,11 @@
   <link rel="stylesheet" href="./assets/styles.css" />
   <script src="./assets/prototype.js" defer></script>
 </head>
-<body class="bg-slate-50 text-slate-900 min-h-screen flex flex-col">
-  <div class="bg-slate-900 text-slate-200 text-xs px-4 py-2 border-b border-slate-800">
-    <div class="max-w-screen-2xl mx-auto flex flex-wrap items-center justify-between gap-2">
-      <div class="flex flex-wrap items-center gap-2">
-        <span class="inline-flex items-center px-2 py-0.5 rounded bg-blue-500/20 text-blue-200 font-semibold">PROTOTYPE</span>
-        <span class="text-slate-400">業務ロール切替:</span>
-        <div class="inline-flex flex-wrap gap-1">
-          <button type="button" data-role-preset="all" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer">全ロール</button>
-          <button type="button" data-role-preset="publisher" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer">Publisher</button>
-        </div>
-      </div>
-      <a href="./states.html" class="text-blue-300 hover:text-blue-200 underline underline-offset-2">状態・エラー・デザインシステム一覧 →</a>
-    </div>
-  </div>
-
-  <header class="sticky top-0 z-30 bg-white border-b border-slate-200 h-15 flex items-center px-4 lg:px-6">
-    <div class="w-full max-w-screen-2xl mx-auto flex items-center justify-between gap-4">
-      <a href="./index.html" class="flex items-center gap-2.5 text-slate-900 no-underline">
-        <span class="w-8 h-8 rounded-lg bg-blue-600 text-white font-bold text-sm inline-flex items-center justify-center">R</span>
-        <div class="leading-tight">
-          <div class="font-semibold text-sm">Registry ポータル</div>
-          <div class="text-[11px] text-slate-500">AWS Agent Registry 管理・発見基盤</div>
-        </div>
-      </a>
-      <span class="text-xs font-medium text-slate-600" data-role-summary></span>
-    </div>
-  </header>
+<body data-portal-nav="drafts" class="bg-slate-50 text-slate-900 min-h-screen flex flex-col">
+  <div data-portal-shell-top></div>
 
   <div class="flex-1 flex max-w-screen-2xl w-full mx-auto">
-    <aside class="hidden lg:block w-64 shrink-0 border-r border-slate-200 bg-white px-3 py-5">
-      <nav aria-label="メインナビゲーション" class="space-y-6">
-        <div>
-          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">発見</div>
-          <ul class="space-y-1"><li><a href="./index.html" class="block px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">カタログ</a></li></ul>
-        </div>
-        <div data-requires-roles="Publisher">
-          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">登録（Publisher）</div>
-          <ul class="space-y-1"><li><a href="./drafts.html" aria-current="page" class="block px-3 py-2 rounded-lg text-sm font-semibold bg-blue-50 text-blue-700">下書き・申請</a></li></ul>
-        </div>
-      </nav>
-    </aside>
+    <aside data-portal-shell-sidebar class="hidden lg:block w-64 shrink-0 border-r border-slate-200 bg-white px-3 py-5"></aside>
 
     <main class="flex-1 min-w-0 px-4 sm:px-6 lg:px-8 py-6">
       <div class="flex flex-wrap items-center justify-between gap-3 mb-5">
@@ -80,8 +44,8 @@
         <!-- 申請フォーム -->
         <section class="bg-white border border-slate-200 rounded-xl shadow-xs p-6 space-y-5">
           <div>
-            <label for="submission-reason" class="block text-sm font-semibold text-slate-900 mb-1.5">申請理由 <span class="text-rose-600">*</span></label>
-            <textarea id="submission-reason" rows="3" maxlength="255" placeholder="変更内容や公開の背景を Curator 向けに記入してください（最大255文字）" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">特約リスク項目の判定ロジックを追加し、v1.2.0 として検証環境でのテストを完了したため公開承認を申請します。</textarea>
+            <label for="submission-reason" class="block text-sm font-semibold text-slate-900 mb-1.5">申請理由 <span class="text-rose-600">*</span>（最大 4,096 文字）</label>
+            <textarea id="submission-reason" rows="3" maxlength="4096" placeholder="変更内容や公開の背景を Curator 向けに記入してください（最大 4,096 文字）" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">特約リスク項目の判定ロジックを追加し、v1.2.0 として検証環境でのテストを完了したため公開承認を申請します。</textarea>
           </div>
 
           <!-- 関連参照（Agent のみ） -->

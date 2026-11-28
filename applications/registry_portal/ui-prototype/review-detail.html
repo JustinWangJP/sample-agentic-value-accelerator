@@ -8,50 +8,11 @@
   <link rel="stylesheet" href="./assets/styles.css" />
   <script src="./assets/prototype.js" defer></script>
 </head>
-<body class="bg-slate-50 text-slate-900 min-h-screen flex flex-col">
-  <div class="bg-slate-900 text-slate-200 text-xs px-4 py-2 border-b border-slate-800">
-    <div class="max-w-screen-2xl mx-auto flex flex-wrap items-center justify-between gap-2">
-      <div class="flex flex-wrap items-center gap-2">
-        <span class="inline-flex items-center px-2 py-0.5 rounded bg-blue-500/20 text-blue-200 font-semibold">PROTOTYPE</span>
-        <span class="text-slate-400">業務ロール切替:</span>
-        <div class="inline-flex flex-wrap gap-1">
-          <button type="button" data-role-preset="all" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer">全ロール</button>
-          <button type="button" data-role-preset="curator" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer">Curator</button>
-        </div>
-      </div>
-      <a href="./states.html#review-warnings" class="text-blue-300 hover:text-blue-200 underline underline-offset-2">自己承認禁止・改ざん警告の表示例 →</a>
-    </div>
-  </div>
-
-  <header class="sticky top-0 z-30 bg-white border-b border-slate-200 h-15 flex items-center px-4 lg:px-6">
-    <div class="w-full max-w-screen-2xl mx-auto flex items-center justify-between gap-4">
-      <a href="./index.html" class="flex items-center gap-2.5 text-slate-900 no-underline">
-        <span class="w-8 h-8 rounded-lg bg-blue-600 text-white font-bold text-sm inline-flex items-center justify-center">R</span>
-        <div class="leading-tight">
-          <div class="font-semibold text-sm">Registry ポータル</div>
-          <div class="text-[11px] text-slate-500">AWS Agent Registry 管理・発見基盤</div>
-        </div>
-      </a>
-      <span class="text-xs font-medium text-slate-600" data-role-summary></span>
-    </div>
-  </header>
+<body data-portal-nav="reviews" data-states-href="./states.html#review-warnings" data-states-label="自己承認禁止・改ざん警告の表示例 →" class="bg-slate-50 text-slate-900 min-h-screen flex flex-col">
+  <div data-portal-shell-top></div>
 
   <div class="flex-1 flex max-w-screen-2xl w-full mx-auto">
-    <aside class="hidden lg:block w-64 shrink-0 border-r border-slate-200 bg-white px-3 py-5">
-      <nav aria-label="メインナビゲーション" class="space-y-6">
-        <div>
-          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">発見</div>
-          <ul class="space-y-1"><li><a href="./index.html" class="block px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">カタログ</a></li></ul>
-        </div>
-        <div data-requires-roles="Curator">
-          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">審査・公開（Curator）</div>
-          <ul class="space-y-1">
-            <li><a href="./reviews.html" aria-current="page" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm font-semibold bg-blue-50 text-blue-700"><span>審査待ち</span><span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-amber-100 text-amber-800">3</span></a></li>
-            <li><a href="./publication.html" class="block px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">公開管理</a></li>
-          </ul>
-        </div>
-      </nav>
-    </aside>
+    <aside data-portal-shell-sidebar class="hidden lg:block w-64 shrink-0 border-r border-slate-200 bg-white px-3 py-5"></aside>
 
     <main class="flex-1 min-w-0 px-4 sm:px-6 lg:px-8 py-6 space-y-6">
       <div class="flex flex-wrap items-center justify-between gap-3">
@@ -174,18 +135,18 @@
   <!-- 履歴ドロワー -->
   <div id="history-drawer" data-drawer aria-hidden="true" class="is-hidden fixed inset-0 z-50 flex justify-end">
     <div data-close-drawer class="fixed inset-0 bg-slate-900/40"></div>
-    <div role="dialog" aria-modal="true" class="relative w-full max-w-lg bg-white h-full shadow-2xl flex flex-col">
+    <div role="dialog" aria-modal="true" aria-labelledby="review-history-drawer-title" class="relative w-full max-w-lg bg-white h-full shadow-2xl flex flex-col">
       <div class="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
-        <h2 class="text-base font-semibold text-slate-900">操作と審査の履歴</h2>
-        <button type="button" data-close-drawer class="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 cursor-pointer">✕</button>
+        <h2 id="review-history-drawer-title" class="text-base font-semibold text-slate-900">操作と審査の履歴</h2>
+        <button type="button" data-close-drawer class="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 cursor-pointer" aria-label="閉じる">✕</button>
       </div>
       <div class="p-5 text-xs text-slate-600 space-y-3">
         <div class="p-3 rounded-lg border border-slate-200 bg-slate-50">
-          <div class="font-semibold text-amber-800">申請（SUCCEEDED）· 2026-11-28 09:40</div>
+          <div class="font-semibold text-amber-800">申請（成功 / SUCCEEDED）· 2026-11-28 09:40</div>
           <div class="font-mono text-slate-500 mt-1">版: v1.2.0 / 主体: sub=publisher-042</div>
         </div>
         <div class="p-3 rounded-lg border border-slate-200 bg-slate-50">
-          <div class="font-semibold text-emerald-700">公開承認（SUCCEEDED）· 2026-11-20 14:32</div>
+          <div class="font-semibold text-emerald-700">公開承認（成功 / SUCCEEDED）· 2026-11-20 14:32</div>
           <div class="font-mono text-slate-500 mt-1">版: v1.1.0 / 主体: sub=curator-001</div>
         </div>
       </div>

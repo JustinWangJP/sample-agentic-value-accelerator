@@ -131,13 +131,14 @@
         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-medium bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20">公開中（APPROVED）</span>
         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-medium bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-600/20">審査待ち（PENDING_APPROVAL）</span>
         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-medium bg-slate-100 text-slate-700 ring-1 ring-inset ring-slate-500/20">下書き（DRAFT）</span>
-        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-medium bg-orange-50 text-orange-800 ring-1 ring-inset ring-orange-600/20">公開停止中（SUSPENDED）</span>
+        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-medium bg-orange-50 text-orange-800 ring-1 ring-inset ring-orange-600/20">公開停止中（AWS 状態: REJECTED / 検索値: SUSPENDED）</span>
         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-medium bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-600/20">廃止済み（DEPRECATED）</span>
         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-medium bg-indigo-50 text-indigo-700 ring-1 ring-inset ring-indigo-600/20">結果確認中（VERIFYING）</span>
         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-medium bg-sky-50 text-sky-700 ring-1 ring-inset ring-sky-600/20">A2A</span>
         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-medium bg-teal-50 text-teal-700">public</span>
         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-medium bg-violet-50 text-violet-700">private</span>
       </div>
+      <p class="text-xs text-slate-500">※ <code class="font-mono">SUSPENDED</code> は管理レコード検索専用の絞り込み値であり、AWS Agent Registry 上の状態は <code class="font-mono">REJECTED</code> です（<code class="font-mono">GLOSSARY.md</code> 参照）。</p>
     </section>
   </main>
 </body>

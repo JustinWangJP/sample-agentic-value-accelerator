@@ -8,89 +8,11 @@
   <link rel="stylesheet" href="./assets/styles.css" />
   <script src="./assets/prototype.js" defer></script>
 </head>
-<body class="bg-slate-50 text-slate-900 min-h-screen flex flex-col">
-  <div class="bg-slate-900 text-slate-200 text-xs px-4 py-2 border-b border-slate-800">
-    <div class="max-w-screen-2xl mx-auto flex flex-wrap items-center justify-between gap-2">
-      <div class="flex flex-wrap items-center gap-2">
-        <span class="inline-flex items-center px-2 py-0.5 rounded bg-blue-500/20 text-blue-200 font-semibold">PROTOTYPE</span>
-        <span class="text-slate-400">業務ロール切替:</span>
-        <div class="inline-flex flex-wrap gap-1">
-          <button type="button" data-role-preset="all" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer">全ロール</button>
-          <button type="button" data-role-preset="viewer" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer">Viewer</button>
-          <button type="button" data-role-preset="publisher" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer">Publisher</button>
-          <button type="button" data-role-preset="curator" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer">Curator</button>
-          <button type="button" data-role-preset="admin" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer">Admin</button>
-        </div>
-      </div>
-      <a href="./states.html" class="text-blue-300 hover:text-blue-200 underline underline-offset-2">状態・エラー・デザインシステム一覧 →</a>
-    </div>
-  </div>
-
-  <header class="sticky top-0 z-30 bg-white border-b border-slate-200 h-15 flex items-center px-4 lg:px-6">
-    <div class="w-full max-w-screen-2xl mx-auto flex items-center justify-between gap-4">
-      <div class="flex items-center gap-3">
-        <button type="button" data-open-drawer="mobile-nav-drawer" class="lg:hidden p-2 rounded-lg text-slate-600 hover:bg-slate-100" aria-label="メニューを開く">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
-        </button>
-        <a href="./index.html" class="flex items-center gap-2.5 text-slate-900 no-underline">
-          <span class="w-8 h-8 rounded-lg bg-blue-600 text-white font-bold text-sm inline-flex items-center justify-center">R</span>
-          <div class="leading-tight">
-            <div class="font-semibold text-sm">Registry ポータル</div>
-            <div class="text-[11px] text-slate-500">AWS Agent Registry 管理・発見基盤</div>
-          </div>
-        </a>
-      </div>
-      <div class="relative">
-        <button type="button" data-toggle-popover="principal-popover" aria-expanded="false" class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100 border border-slate-200 cursor-pointer">
-          <span class="w-6 h-6 rounded-full bg-slate-800 text-white text-xs font-semibold inline-flex items-center justify-center">主</span>
-          <span class="hidden md:inline max-w-44 truncate text-xs font-medium" data-role-summary></span>
-          <span class="px-1.5 py-0.5 text-[11px] font-semibold rounded bg-slate-100 text-slate-700" data-role-count></span>
-        </button>
-        <div id="principal-popover" data-popover class="is-hidden absolute right-0 mt-2 w-96 max-w-[calc(100vw-2rem)] bg-white rounded-xl border border-slate-200 shadow-xl z-40 p-4">
-          <h2 class="text-sm font-semibold text-slate-900 mb-3">自分の主体・業務ロール・所属チーム</h2>
-          <dl class="space-y-2 text-xs">
-            <div><dt class="text-slate-500">業務ロール</dt><dd class="font-medium mt-0.5" data-role-summary></dd></div>
-            <div><dt class="text-slate-500">所属チーム</dt><dd class="mt-0.5" data-team-summary></dd></div>
-          </dl>
-        </div>
-      </div>
-    </div>
-  </header>
+<body data-portal-nav="drafts" class="bg-slate-50 text-slate-900 min-h-screen flex flex-col">
+  <div data-portal-shell-top></div>
 
   <div class="flex-1 flex max-w-screen-2xl w-full mx-auto">
-    <aside class="hidden lg:block w-64 shrink-0 border-r border-slate-200 bg-white px-3 py-5">
-      <nav aria-label="メインナビゲーション" class="space-y-6">
-        <div>
-          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">発見</div>
-          <ul class="space-y-1">
-            <li><a href="./index.html" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100"><span>カタログ</span></a></li>
-          </ul>
-        </div>
-        <div data-requires-roles="Publisher">
-          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">登録（Publisher）</div>
-          <ul class="space-y-1">
-            <li><a href="./drafts.html" aria-current="page" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm font-semibold bg-blue-50 text-blue-700"><span>下書き・申請</span></a></li>
-          </ul>
-        </div>
-        <div data-requires-roles="Curator">
-          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">審査・公開（Curator）</div>
-          <ul class="space-y-1">
-            <li><a href="./reviews.html" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100"><span>審査待ち</span><span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-amber-100 text-amber-800">3</span></a></li>
-            <li><a href="./publication.html" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100"><span>公開管理</span></a></li>
-          </ul>
-        </div>
-        <div data-requires-roles="Admin">
-          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">管理（Admin）</div>
-          <ul class="space-y-1">
-            <li><a href="./administration.html" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100"><span>Registry 管理</span></a></li>
-            <li><a href="./recovery.html" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100"><span>回復操作</span><span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-indigo-100 text-indigo-800">1</span></a></li>
-          </ul>
-        </div>
-        <div class="pt-4 border-t border-slate-200">
-          <a href="./states.html" class="block px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">状態・デザイン一覧</a>
-        </div>
-      </nav>
-    </aside>
+    <aside data-portal-shell-sidebar class="hidden lg:block w-64 shrink-0 border-r border-slate-200 bg-white px-3 py-5"></aside>
 
     <main class="flex-1 min-w-0 px-4 sm:px-6 lg:px-8 py-6">
       <div class="flex flex-wrap items-end justify-between gap-4 mb-6">
@@ -142,7 +64,7 @@
                 </td>
               </tr>
 
-              <!-- 審査待ち -->
+              <!-- 審査待ち（現行仕様: 編集可能。保存すると元の申請は無効化される） -->
               <tr class="hover:bg-slate-50/70">
                 <td class="py-3.5 px-4">
                   <div class="font-semibold text-slate-900">社内規定検索 MCP サーバー</div>
@@ -158,9 +80,10 @@
                 </td>
                 <td class="py-3.5 px-4">
                   <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-600/20">審査待ち</span>
+                  <div class="text-[11px] text-amber-800 mt-1">編集して保存すると元の申請は無効化されます</div>
                 </td>
                 <td class="py-3.5 px-4 text-right whitespace-nowrap">
-                  <button type="button" disabled class="inline-flex items-center px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-slate-400 text-xs font-medium cursor-not-allowed" title="審査待ちのため編集できません">編集不可</button>
+                  <a href="./draft-edit.html" class="inline-flex items-center px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold">編集</a>
                 </td>
               </tr>
 
@@ -221,21 +144,6 @@
         </div>
       </section>
     </main>
-  </div>
-
-  <div id="mobile-nav-drawer" data-drawer aria-hidden="true" class="is-hidden fixed inset-0 z-50 flex">
-    <div data-close-drawer class="fixed inset-0 bg-slate-900/40"></div>
-    <div class="relative w-72 max-w-[85vw] bg-white h-full shadow-2xl p-4 flex flex-col">
-      <div class="flex items-center justify-between pb-3 border-b border-slate-200"><span class="font-semibold text-sm">メニュー</span><button type="button" data-close-drawer class="p-1.5 rounded-lg text-slate-500">✕</button></div>
-      <nav class="mt-4 space-y-2 text-sm">
-        <a href="./index.html" class="block px-3 py-2 rounded-lg text-slate-700">カタログ</a>
-        <a href="./drafts.html" class="block px-3 py-2 rounded-lg bg-blue-50 text-blue-700 font-semibold">下書き・申請</a>
-        <a href="./reviews.html" data-requires-roles="Curator" class="block px-3 py-2 rounded-lg text-slate-700">審査待ち</a>
-        <a href="./publication.html" data-requires-roles="Curator" class="block px-3 py-2 rounded-lg text-slate-700">公開管理</a>
-        <a href="./administration.html" data-requires-roles="Admin" class="block px-3 py-2 rounded-lg text-slate-700">Registry 管理</a>
-        <a href="./recovery.html" data-requires-roles="Admin" class="block px-3 py-2 rounded-lg text-slate-700">回復操作</a>
-      </nav>
-    </div>
   </div>
 </body>
 </html>
