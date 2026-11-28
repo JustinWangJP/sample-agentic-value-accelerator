@@ -176,8 +176,10 @@ class RecordState:
 
 
 # 公開中の版を残したまま新しい版が下書き・審査待ち・却下済みになっている状態（二重リビジョン）。
-# この状態で却下したときに旧版が発見されなくなるかは AWS の文書になく、実環境でも未確認のため、
-# 公開停止を受け付けない（README「公開停止・廃止・廃止依頼」）
+# AWS の文書は、この状態で発見 API と MCP endpoint が公開承認済みの版を返すこと（Record lifecycle の
+# 「Dual-revision behavior」）まで明記する。この状態で却下したときに旧版が発見されなくなるかの
+# 記載は依然としてなく、実環境でも未確認のため、公開停止を受け付けない
+# （README「公開停止・廃止・廃止依頼」。検証は scripts/verify_suspend_dual_revision.py と #33）
 DUAL_REVISION_STATUSES: frozenset[RecordStatus] = frozenset(
     {DRAFT_STATUS, PENDING_APPROVAL_STATUS, REJECTED_STATUS}
 )
@@ -201,6 +203,9 @@ def check_suspendable(state: RecordState) -> None:
             "Publisher に修正を依頼し、状態が確定してから確認してください。"
         )
     if status in DUAL_REVISION_STATUSES and state.published_version is not None:
+        # 「申請を却下すれば表示が消えるか」は #33 のケース C で確かめる内容で、却下後は最新版が
+        # REJECTED になりこの検査で再び拒否される。案内文は #33 の結果に応じて見直す
+        # （文言を変えたら frontend/src/tests/publication.test.ts の Seam 2 も更新する）
         raise ValueError(
             f"公開中の版 {state.published_version} に加えて新しい版があるため、公開停止できません。"
             "この状態で公開を止められるかは確認できていません。審査待ちなら先に申請を却下し、"
