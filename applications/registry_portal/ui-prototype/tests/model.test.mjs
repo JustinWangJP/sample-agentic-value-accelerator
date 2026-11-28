@@ -37,11 +37,15 @@ describe('本番フロントエンドの定義との照合', () => {
     assert.deepEqual(labels(model.DESCRIPTOR_TYPES), extractStringRecord(source, 'DESCRIPTOR_LABELS'));
   });
 
-  it('データ分類の値が一致する', () => {
+  it('データ分類の値と表示ラベルが一致する', () => {
     const source = frontend('api/dataClassification.ts');
     assert.deepEqual(
       values(model.DATA_CLASSIFICATIONS),
       extractStringArray(source, 'DATA_CLASSIFICATIONS'),
+    );
+    assert.deepEqual(
+      labels(model.DATA_CLASSIFICATIONS),
+      extractStringRecord(source, 'DATA_CLASSIFICATION_LABELS'),
     );
   });
 
