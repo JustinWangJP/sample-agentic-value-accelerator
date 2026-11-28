@@ -1,4 +1,5 @@
 import type { RecoveryMode, RecoveryRecord } from '../drafts/api'
+import { button, callout } from '../ui/classes'
 
 const MODE_LABELS: Record<RecoveryMode, string> = {
   RECONCILED: 'Registry を再取得して確定',
@@ -13,7 +14,7 @@ export function RecoveryDetails({ recovery }: { recovery: RecoveryRecord }) {
   return (
     <>
       <p>回復の方法 {MODE_LABELS[recovery.mode]}</p>
-      <p>
+      <p className="break-all">
         回復した主体 {recovery.by.subject}（{recovery.by.issuer}）・{recovery.at}
       </p>
       <p>回復の理由 {recovery.reason}</p>
@@ -33,12 +34,14 @@ export function RecoveredOperationNotice({
   onContinue: () => void
 }) {
   return (
-    <div role="status">
-      <p>この操作は、Admin の回復操作で結果が確定しました。</p>
+    <div role="status" className={`${callout.info} space-y-1`}>
+      <p className="font-semibold">この操作は、Admin の回復操作で結果が確定しました。</p>
       <RecoveryDetails recovery={recovery} />
-      <button type="button" onClick={onContinue}>
-        結果を表示
-      </button>
+      <div className="pt-1">
+        <button type="button" className={button.smallPrimary} onClick={onContinue}>
+          結果を表示
+        </button>
+      </div>
     </div>
   )
 }
