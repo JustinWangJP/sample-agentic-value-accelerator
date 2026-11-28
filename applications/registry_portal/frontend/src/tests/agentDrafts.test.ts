@@ -358,6 +358,9 @@ it('下書きの準備中（503）は一覧の0件や作成結果の不明と区
     jsonResponse(503, notConfigured),
   ])
   expect(container.textContent).toContain('下書きの管理は準備中です。')
+  // 一覧の準備中は失敗と見分けられるバッジで示し、再読み込みしても解決しないため再読み込みを出さない
+  expect(container.textContent).toContain('準備中（503 DRAFTS_NOT_CONFIGURED）')
+  expect(container.textContent).not.toContain('一覧を再読み込み')
   expect(container.textContent).not.toContain('所属チームの下書き対象はありません。')
   await click('下書きを作成')
   await fillDraft()

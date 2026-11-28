@@ -165,20 +165,18 @@ export function CatalogSearchView({ api, onRelogin, onOpenDetail, onBrowseA2A, c
             {view.status === 'loading' ? (
               <LoadingState>検索しています…</LoadingState>
             ) : view.status === 'error' ? (
-              view.error.code === A2A_SEARCH_NOT_READY ? (
-                // 準備ができるまでは再試行しても解決しないので、一覧への入口だけを示す
-                <RequestErrorAlert error={view.error} onRelogin={onRelogin}>
+              // 準備中（503）は RequestErrorAlert が再試行ボタンを出さないため、A2A の一覧への入口を示す
+              <RequestErrorAlert
+                error={view.error}
+                onRelogin={onRelogin}
+                onRetry={() => setView({ status: 'loading', request: view.request })}
+              >
+                {view.error.code === A2A_SEARCH_NOT_READY && (
                   <button type="button" className={button.warningOutline} onClick={browseA2A}>
                     A2A の Agent 一覧を開く
                   </button>
-                </RequestErrorAlert>
-              ) : (
-                <RequestErrorAlert
-                  error={view.error}
-                  onRelogin={onRelogin}
-                  onRetry={() => setView({ status: 'loading', request: view.request })}
-                />
-              )
+                )}
+              </RequestErrorAlert>
             ) : (
               <SearchResult result={view.result} onOpenDetail={onOpenDetail} />
             )}

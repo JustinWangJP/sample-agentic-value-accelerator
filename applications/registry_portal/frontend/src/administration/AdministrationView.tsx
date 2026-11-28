@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { toApiError, type ApiError, type Role } from '../api/client'
+import { toApiError, type ApiError } from '../api/client'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { EmptyState, LoadingState, PageHeader } from '../components/StatePanel'
 import { badge, button, callout, card, fieldLabel, note } from '../ui/classes'
@@ -16,10 +16,12 @@ import {
   type ManagementFilter,
   type RegistryConnection,
 } from './api'
+import { canOpenScreen } from '../routing/routes'
+import type { ScreenProps } from '../shell/screenProps'
 
-type Props = { api: AdministrationApi; roles: readonly Role[]; onRelogin: () => void }
+type Props = ScreenProps<AdministrationApi>
 export function AdministrationView(props: Props) {
-  return props.roles.includes('Admin') ? <AdministrationPanel {...props} /> : null
+  return canOpenScreen('administration', props.roles) ? <AdministrationPanel {...props} /> : null
 }
 
 const AUTO_APPROVAL_LABELS: Record<AutoApprovalState, string> = { DISABLED: '無効', ENABLED: '有効', UNKNOWN: '未取得' }

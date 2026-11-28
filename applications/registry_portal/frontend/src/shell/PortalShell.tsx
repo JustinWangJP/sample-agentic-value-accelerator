@@ -1,11 +1,12 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type { Me, Role } from '../api/client'
 import { Drawer } from '../components/Overlay'
-import { POPOVER_PANEL, POPOVER_TRIGGER, usePopover } from '../components/usePopover'
+import { usePopover } from '../components/usePopover'
+import { popover } from '../ui/classes'
 import { useNavigation } from '../routing/navigation'
 import { RouteLink } from '../routing/NavigationProvider'
 import { DEFAULT_ROUTE } from '../routing/routes'
-import { visibleNavSections, type NavItem } from './navigation'
+import { visibleNavSections, type NavItem } from './navSections'
 
 const NAV_LINK = {
   current: 'flex items-center px-3 py-2 rounded-lg text-sm font-semibold bg-blue-50 text-blue-700',
@@ -78,7 +79,7 @@ export function PrincipalMenu({ me }: { me: Me }) {
         aria-expanded={open}
         aria-label={`自分の主体・業務ロール・所属チーム（${roleSummary || '業務ロールなし'}）`}
         onClick={() => setOpen(!open)}
-        className={POPOVER_TRIGGER}
+        className={popover.trigger}
       >
         <span className="w-6 h-6 rounded-full bg-slate-800 text-white text-xs font-semibold inline-flex items-center justify-center" aria-hidden="true">
           主
@@ -88,7 +89,7 @@ export function PrincipalMenu({ me }: { me: Me }) {
         </span>
       </button>
       {/* 閉じている間も描画しておき、hidden で隠す（支援技術からも隠れる） */}
-      <div className={`${POPOVER_PANEL} p-4`} hidden={!open}>
+      <div className={`${popover.panel} p-4`} hidden={!open}>
         <h2 className="text-sm font-semibold text-slate-900 mb-3">自分の主体・業務ロール・所属チーム</h2>
         <dl className="space-y-2.5 text-xs">
           <div>

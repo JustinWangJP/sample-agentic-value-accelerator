@@ -21,9 +21,3 @@ export function usePopover() {
   }, [open])
   return { open, setOpen, container }
 }
-
-/** ポップオーバーの開閉ボタンと本体の見た目 */
-export const POPOVER_TRIGGER =
-  'relative inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100 border border-slate-200'
-export const POPOVER_PANEL =
-  'absolute right-0 mt-2 w-96 max-w-[calc(100vw-2rem)] bg-white rounded-xl border border-slate-200 shadow-xl z-40 overflow-hidden'

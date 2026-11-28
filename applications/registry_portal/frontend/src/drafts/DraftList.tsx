@@ -82,11 +82,7 @@ export function DraftList({
       {page.kind === 'loading' ? (
         <LoadingState>一覧を読み込んでいます…</LoadingState>
       ) : page.kind === 'error' ? (
-        <RequestErrorAlert error={page.error} onRelogin={onRelogin}>
-          <button type="button" className={button.dangerOutline} onClick={reload}>
-            一覧を再読み込み
-          </button>
-        </RequestErrorAlert>
+        <RequestErrorAlert error={page.error} onRelogin={onRelogin} onRetry={reload} retryLabel="一覧を再読み込み" />
       ) : (
         <div className="space-y-4">
           {page.page.items.length === 0 && (

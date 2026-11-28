@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { toApiError, type ApiClient, type ApiError } from '../api/client'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { LoadingState } from '../components/StatePanel'
-import { badge, button, callout, card, codeBlock, fieldLabel, note } from '../ui/classes'
+import { badge, button, callout, card, codeBlock, fieldLabel, note, pageTitle } from '../ui/classes'
 import { AGENT_RECORD_TYPE, RECORD_TYPE_LABELS } from '../api/recordType'
 import {
   isUncertainWriteError,
@@ -87,7 +87,7 @@ export function SubmissionView({
             {detail.publishedVersion ? `公開中の版 ${detail.publishedVersion}` : '公開版なし'}
           </span>
         </div>
-        <h1 id="submission-heading" className="text-2xl font-bold tracking-tight text-slate-900">
+        <h1 id="submission-heading" className={pageTitle}>
           下書きを申請
         </h1>
         <p className="text-sm text-slate-700 break-all">

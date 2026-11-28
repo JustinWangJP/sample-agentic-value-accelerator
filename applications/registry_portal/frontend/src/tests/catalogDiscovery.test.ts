@@ -221,7 +221,11 @@ describe('カタログ検索', () => {
     await search('受注')
 
     const results = element('[aria-label="検索結果"]')
-    expect(results.querySelector('[role="alert"]')?.textContent).toContain('準備中です')
+    const alert = results.querySelector('[role="alert"]')
+    expect(alert?.textContent).toContain('準備中です')
+    // 準備中は失敗と見分けられるよう、準備中のバッジで表示する
+    expect(alert?.textContent).toContain('準備中（503 A2A_SEARCH_NOT_READY）')
+    expect(alert?.textContent).not.toContain('失敗（')
     expect(results.textContent).not.toContain('条件に一致するカタログ項目はありません。')
     expect(buttonNames(results)).not.toContain('再試行')
     await clickButton('A2A の Agent 一覧を開く')

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createApiClient } from '../api/client'
 import { RecordDraftsView } from '../drafts/RecordDraftsView'
 import { settlesIdempotencyKey } from '../drafts/api'
+import { memoryHashLocation } from '../routing/location'
 import { fakeFetch, jsonResponse, withNavigation } from './helpers'
 
 const common = {
@@ -125,17 +126,20 @@ async function submit() {
       ?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
   )
 }
-async function mount(responses: (Response | Error)[]) {
+async function mount(responses: (Response | Error)[], hash = '') {
   const { fetchImpl, calls } = fakeFetch(responses)
   const api = createApiClient({ baseUrl: '', fetch: fetchImpl, getAccessToken: () => 'token' })
   await act(() =>
     root.render(
-      withNavigation(createElement(RecordDraftsView, {
-        api,
-        roles: ['Publisher'],
-        teams: ['team-payments'],
-        onRelogin: vi.fn(),
-      })),
+      withNavigation(
+        createElement(RecordDraftsView, {
+          api,
+          roles: ['Publisher'],
+          teams: ['team-payments'],
+          onRelogin: vi.fn(),
+        }),
+        memoryHashLocation(hash),
+      ),
     ),
   )
   return calls
@@ -660,4 +664,29 @@ it('解決の項目が欠けた廃止依頼の応答は拒否する', async () =
       ?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
   )
   expect(container.textContent).toContain('API から想定外の応答が返されました。')
+})
+
+it('#/drafts/<レコード ID> を直接開いて取得が 403 のときは、再試行ボタンを出さない', async () => {
+  const calls = await mount(
+    [jsonResponse(403, { error: { code: 'FORBIDDEN', message: 'この下書きを操作できるチームに所属していません。' } })],
+    '#/drafts/agentABC1234',
+  )
+  expect(calls[0]?.url).toBe('/api/records/agentABC1234')
+  const alert = container.querySelector('[role="alert"]')
+  expect(alert?.textContent).toContain('失敗（403 FORBIDDEN）')
+  expect(alert?.querySelectorAll('button')).toHaveLength(0)
+})
+
+it('#/drafts/<レコード ID> の取得が 5xx のときは、再試行で取得し直せる', async () => {
+  const calls = await mount(
+    [
+      jsonResponse(502, { error: { code: 'REGISTRY_UNAVAILABLE', message: '下書きを取得できませんでした。' } }),
+      jsonResponse(502, { error: { code: 'REGISTRY_UNAVAILABLE', message: '下書きを取得できませんでした。' } }),
+    ],
+    '#/drafts/agentABC1234',
+  )
+  const retry = [...container.querySelectorAll('button')].find((node) => node.textContent === '再試行')
+  expect(retry).toBeDefined()
+  await act(() => retry?.click())
+  expect(calls).toHaveLength(2)
 })

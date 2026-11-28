@@ -1,6 +1,6 @@
 // 画面のルート（URL のハッシュ）の解釈・組み立てと、業務ロールによる画面の可否
 import { describe, expect, it } from 'vitest'
-import { canOpenScreen, DEFAULT_ROUTE, formatRoute, parseRoute, type Route } from '../routing/routes'
+import { canOpenScreen, DEFAULT_ROUTE, formatRoute, hasRequiredRole, parseRoute, type Route } from '../routing/routes'
 
 describe('ルートの解釈と組み立て', () => {
   const routes: [string, Route][] = [
@@ -54,5 +54,13 @@ describe('業務ロールによる画面の可否', () => {
     expect(canOpenScreen('administration', ['Curator'])).toBe(false)
     expect(canOpenScreen('administration', ['Admin'])).toBe(true)
     expect(canOpenScreen('recovery', ['Admin'])).toBe(true)
+  })
+})
+
+describe('業務ロールの判定', () => {
+  it('必要な業務ロールが null なら全員、そうでなければその業務ロールを持つ人だけが満たす', () => {
+    expect(hasRequiredRole(null, [])).toBe(true)
+    expect(hasRequiredRole('Curator', ['Publisher', 'Curator'])).toBe(true)
+    expect(hasRequiredRole('Admin', ['Publisher', 'Curator'])).toBe(false)
   })
 })

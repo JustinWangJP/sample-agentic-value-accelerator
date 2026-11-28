@@ -1,13 +1,15 @@
 import { useState, type FormEvent } from 'react'
-import { toApiError, type ApiClient, type ApiError, type Role } from '../api/client'
+import { toApiError, type ApiError } from '../api/client'
 import { RecoveryDetails } from '../components/RecoveryDetails'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { EmptyState, LoadingState, PageHeader } from '../components/StatePanel'
 import { badge, button, callout, card, fieldLabel } from '../ui/classes'
 import { KIND_LABELS, RECORD_ID_PATTERN, RECORD_ID_LENGTH, STATE_LABELS } from '../drafts/api'
 import { RECOVERY_REASON_MAX_LENGTH, type RecoveryInspection, type RecoveryResult } from './api'
+import { canOpenScreen } from '../routing/routes'
+import type { ScreenProps } from '../shell/screenProps'
 
-type Props = { api: ApiClient; roles: readonly Role[]; onRelogin: () => void }
+type Props = ScreenProps
 
 type Loaded =
   | { kind: 'idle' }
@@ -25,7 +27,7 @@ export function RecoveryView({ api, roles, onRelogin }: Props) {
   const [error, setError] = useState<ApiError | null>(null)
   const [busy, setBusy] = useState(false)
 
-  if (!roles.includes('Admin')) return null
+  if (!canOpenScreen('recovery', roles)) return null
 
   async function inspect(event: FormEvent) {
     event.preventDefault()

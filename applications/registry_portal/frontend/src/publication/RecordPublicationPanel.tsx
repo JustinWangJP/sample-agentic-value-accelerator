@@ -50,8 +50,10 @@ type Confirmation = {
   submit: string
 }
 
-/** 操作ごとの画面の文言と送信。公開停止は却下で発見できなくし、廃止は元に戻せない */
+/** 操作ごとの画面の文言・見た目・送信。公開停止は却下で発見できなくし、廃止は元に戻せない */
 type ActionSpec = {
+  /** 公開停止は再公開できる注意（橙）、廃止は元に戻せない危険（赤）で見分ける */
+  tone: { frame: string; title: string; button: string }
   legend: string
   description: string
   reasonLabel: string
@@ -64,6 +66,12 @@ type ActionSpec = {
 
 const ACTION_SPECS: Record<PublicationAction, ActionSpec> = {
   suspend: {
+    tone: {
+      frame: 'border-orange-200 bg-orange-50/30',
+      title: 'text-orange-950',
+      button:
+        'inline-flex items-center justify-center px-4 py-2 rounded-lg bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed',
+    },
     legend: '公開停止',
     description:
       '問題が見つかったものを、理由を付けて却下し、発見できなくします。廃止依頼は閉じないため、' +
@@ -75,6 +83,12 @@ const ACTION_SPECS: Record<PublicationAction, ActionSpec> = {
     send: (api, recordId, reason, key) => api.suspendRecord(recordId, { reason }, key),
   },
   deprecate: {
+    tone: {
+      frame: 'border-rose-200 bg-rose-50/30',
+      title: 'text-rose-950',
+      button:
+        'inline-flex items-center justify-center px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed',
+    },
     legend: '廃止',
     description:
       '廃止は元に戻せません。レコードは DEPRECATED になり、編集も再公開もできなくなります。' +
@@ -321,9 +335,8 @@ export function RecordPublicationPanel({ api, recordId, onRelogin, onChanged }: 
           {PUBLICATION_ACTIONS.map((kind) => {
             const availability = view.actions[kind]
             const spec = ACTION_SPECS[kind]
-            const { confirmation } = spec
+            const { confirmation, tone } = spec
             const blocked = !availability.allowed || busy || finished
-            const tone = ACTION_TONES[kind]
             return (
               <form
                 key={kind}
@@ -470,22 +483,6 @@ export function RecordPublicationPanel({ api, recordId, onRelogin, onChanged }: 
       </div>
     </section>
   )
-}
-
-/** 公開停止は再公開できる注意（橙）、廃止は元に戻せない危険（赤）で見分ける */
-const ACTION_TONES: Record<PublicationAction, { frame: string; title: string; button: string }> = {
-  suspend: {
-    frame: 'border-orange-200 bg-orange-50/30',
-    title: 'text-orange-950',
-    button:
-      'inline-flex items-center justify-center px-4 py-2 rounded-lg bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed',
-  },
-  deprecate: {
-    frame: 'border-rose-200 bg-rose-50/30',
-    title: 'text-rose-950',
-    button:
-      'inline-flex items-center justify-center px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed',
-  },
 }
 
 /** レコードの状態のバッジ。公開中は緑、公開停止中は橙、廃止は灰、それ以外は中立 */

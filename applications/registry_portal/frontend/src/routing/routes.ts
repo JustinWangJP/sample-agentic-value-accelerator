@@ -32,10 +32,14 @@ export const SCREEN_REQUIRED_ROLE: Record<ScreenName, Role | null> = {
   recovery: 'Admin',
 }
 
+/** 必要な業務ロール（null は全員）を持っているか。画面とナビの区分の判定で共有する */
+export function hasRequiredRole(required: Role | null, roles: readonly Role[]): boolean {
+  return required === null || roles.includes(required)
+}
+
 /** 業務ロールで、その画面を開けるか */
 export function canOpenScreen(screen: ScreenName, roles: readonly Role[]): boolean {
-  const required = SCREEN_REQUIRED_ROLE[screen]
-  return required === null || roles.includes(required)
+  return hasRequiredRole(SCREEN_REQUIRED_ROLE[screen], roles)
 }
 
 /** レコード ID として受け付ける値。空や区切り文字を含む値は、存在しないルートとして扱う */

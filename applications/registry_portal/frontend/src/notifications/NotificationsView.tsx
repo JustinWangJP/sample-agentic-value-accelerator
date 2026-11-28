@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { toApiError, type ApiClient, type ApiError } from '../api/client'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { EmptyState, LoadingState } from '../components/StatePanel'
-import { POPOVER_PANEL, POPOVER_TRIGGER, usePopover } from '../components/usePopover'
+import { usePopover } from '../components/usePopover'
+import { popover } from '../ui/classes'
 import {
   NOTIFICATION_KIND_LABELS,
   NOTIFICATION_POLL_INTERVAL_MS,
@@ -72,7 +73,7 @@ export function NotificationsView({ api, onRelogin }: Props) {
 
   return (
     <section aria-label="通知" className="relative" ref={container}>
-      <button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className={POPOVER_TRIGGER}>
+      <button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className={popover.trigger}>
         <svg className="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" aria-hidden="true">
           <path strokeLinecap="round" strokeLinejoin="round" d="M15 17h5l-1.4-1.4A2 2 0 0 1 18 14.2V11a6 6 0 1 0-12 0v3.2c0 .5-.2 1-.6 1.4L4 17h5m6 0a3 3 0 1 1-6 0" />
         </svg>
@@ -102,7 +103,7 @@ export function NotificationsView({ api, onRelogin }: Props) {
         )}
       </button>
       {open && (
-        <div className={POPOVER_PANEL}>
+        <div className={popover.panel}>
           <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
             <div>
               <h2 className="text-sm font-semibold text-slate-900">通知</h2>

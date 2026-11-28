@@ -7,6 +7,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createApiClient, type Role } from '../api/client'
 import { ReviewsView } from '../reviews/ReviewsView'
+import { memoryHashLocation } from '../routing/location'
 import { fakeFetch, jsonResponse, withNavigation } from './helpers'
 
 const SNAPSHOT_HASH = 'b'.repeat(64)
@@ -147,11 +148,11 @@ async function submitForm(index: number) {
   const form = container.querySelectorAll('form')[index]
   await act(() => form?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
 }
-async function mount(responses: (Response | Error)[], roles: Role[] = ['Curator']) {
+async function mount(responses: (Response | Error)[], roles: Role[] = ['Curator'], hash = '') {
   const { fetchImpl, calls } = fakeFetch(responses)
   const api = createApiClient({ baseUrl: '', fetch: fetchImpl, getAccessToken: () => 'token' })
   await act(() =>
-    root.render(withNavigation(createElement(ReviewsView, { api, roles, onRelogin: vi.fn() }))),
+    root.render(withNavigation(createElement(ReviewsView, { api, roles, onRelogin: vi.fn() }), memoryHashLocation(hash))),
   )
   return calls
 }
@@ -491,4 +492,26 @@ it('一覧の項目は種別ごとの必須の項目を検査し、欠けてい�
     await act(() => root.unmount())
     root = createRoot(container)
   }
+})
+
+it('#/reviews/<レコード ID> を直接開いて取得が 403 のときは、再試行ボタンを出さない', async () => {
+  const calls = await mount(
+    [jsonResponse(403, { error: { code: 'FORBIDDEN', message: 'この操作に必要な業務ロールがありません。' } })],
+    ['Curator'],
+    '#/reviews/agentABC1234',
+  )
+  expect(calls[0]?.url).toBe('/api/reviews/agentABC1234')
+  const alert = container.querySelector('[role="alert"]')
+  expect(alert?.textContent).toContain('失敗（403 FORBIDDEN）')
+  expect(alert?.querySelectorAll('button')).toHaveLength(0)
+})
+
+it('審査待ちの一覧の取得失敗は、一覧を再読み込みできる', async () => {
+  await mount([jsonResponse(502, { error: { code: 'REGISTRY_UNAVAILABLE', message: '一覧を取得できませんでした。' } })])
+  expect(button('一覧を再読み込み')).toBeDefined()
+})
+
+it('審査待ちの一覧の取得が 403 のときは、一覧の再読み込みを出さない', async () => {
+  await mount([jsonResponse(403, { error: { code: 'FORBIDDEN', message: 'この操作に必要な業務ロールがありません。' } })])
+  expect(container.querySelector('[role="alert"]')?.querySelectorAll('button')).toHaveLength(0)
 })

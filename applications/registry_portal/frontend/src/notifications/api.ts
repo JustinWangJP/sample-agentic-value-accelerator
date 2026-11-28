@@ -31,6 +31,9 @@ export const NOTIFICATION_KIND_LABELS: Record<NotificationKind, string> = {
   OUTSIDE_CHANGE: 'ポータル外の変更',
 }
 
+/** 補助テーブルが未設定で、通知を提供できないときのエラーコード（503）。バックエンドの NotificationsNotConfigured と揃える */
+export const NOTIFICATIONS_NOT_CONFIGURED = 'NOTIFICATIONS_NOT_CONFIGURED'
+
 /** ポーリングの間隔（設計書「画面と機能の範囲」の通知欄: 約60秒ごと） */
 export const NOTIFICATION_POLL_INTERVAL_MS = 60_000
 

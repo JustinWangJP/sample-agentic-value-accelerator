@@ -6,9 +6,11 @@ import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { LoadingState } from '../components/StatePanel'
 import { useUnsavedChangesGuard } from '../routing/navigation'
 import type { Route } from '../routing/routes'
-import { badge, button, callout, card, fieldLabel, note } from '../ui/classes'
+import { badge, button, callout, card, fieldLabel, note, pageTitle } from '../ui/classes'
 import {
   DEPRECATED_STATUS,
+  DRAFT_STATUS,
+  PENDING_APPROVAL_STATUS,
   isUncertainWriteError,
   recordStatusLabel,
   settlesIdempotencyKey,
@@ -187,7 +189,7 @@ export function DraftEditor({
           {savedDetail?.publishedVersion && <span className={badge.success}>公開中の版: {savedDetail.publishedVersion}</span>}
           {dirty && <span className={badge.warning}>未保存の変更あり</span>}
         </div>
-        <h1 id="draft-editor-heading" className="text-2xl font-bold tracking-tight text-slate-900">
+        <h1 id="draft-editor-heading" className={pageTitle}>
           {text.title}
         </h1>
         {initial.kind === 'edit' && (
@@ -202,7 +204,7 @@ export function DraftEditor({
       <p className={callout.info}>
         秘密情報を入力せず、接続先や認証情報の参照を記載してください。申請するときは、公開中の版より大きい版が必要です。
       </p>
-      {initial.kind === 'edit' && initial.detail.status === 'PENDING_APPROVAL' && (
+      {initial.kind === 'edit' && initial.detail.status === PENDING_APPROVAL_STATUS && (
         <p className={callout.warning}>審査待ちです。下書きを編集して保存すると、元の申請は無効になります。</p>
       )}
       <form
@@ -284,7 +286,7 @@ export function DraftEditor({
         (save.operation.operationState === 'SUCCEEDED' ? (
           <p role="status" className={callout.success}>
             下書きを保存しました。公開版は変わりません。
-            {initial.kind === 'edit' && initial.detail.status === 'PENDING_APPROVAL' &&
+            {initial.kind === 'edit' && initial.detail.status === PENDING_APPROVAL_STATUS &&
               '元の申請を無効にしました。再度申請してください。'}
           </p>
         ) : save.operation.operationState === 'FAILED' ? (
@@ -311,7 +313,7 @@ export function DraftEditor({
             type="button"
             className={button.primary}
             disabled={
-              savedDetail.status !== 'DRAFT' ||
+              savedDetail.status !== DRAFT_STATUS ||
               !savedDetail.hasDraft ||
               save.kind === 'saving' ||
               (save.kind === 'result' && save.operation.operationState === 'VERIFYING') ||

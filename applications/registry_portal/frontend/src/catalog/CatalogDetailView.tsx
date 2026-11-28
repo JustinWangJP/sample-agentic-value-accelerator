@@ -6,7 +6,7 @@ import { LoadingState } from '../components/StatePanel'
 import { RecordHistoryToggle } from '../drafts/RecordHistoryView'
 import { RecordPublicationToggle } from '../publication/RecordPublicationPanel'
 import { RouteLink } from '../routing/NavigationProvider'
-import { badge, button, callout, card } from '../ui/classes'
+import { badge, button, callout, card, pageTitle } from '../ui/classes'
 import { catalogTypeLabel } from './recordTypes'
 import { settleWhileActive } from './requests'
 
@@ -79,7 +79,7 @@ export function CatalogDetailView({
               id="catalog-detail-heading"
               ref={heading}
               tabIndex={-1}
-              className="text-2xl font-bold text-slate-900 break-all outline-none"
+              className={`${pageTitle} break-all outline-none`}
             >
               {title}
             </h1>

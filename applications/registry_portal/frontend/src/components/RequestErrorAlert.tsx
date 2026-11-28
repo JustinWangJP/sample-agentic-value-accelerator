@@ -1,53 +1,60 @@
 import type { ReactNode } from 'react'
 import { button } from '../ui/classes'
+import { requestErrorKind } from './requestErrorKind'
+import { StatePanelFrame } from './StatePanel'
 
 type Props = {
   /** ApiError のほか、ページ送りの失敗などメッセージだけを持つ値も受け付ける */
   error: { message: string; requiresLogin: boolean; status?: number; code?: string; requestId?: string | null }
-  /** 省略すると再試行ボタンを出さない（再試行しても解決しないエラー） */
+  /** 再試行の操作。省略したとき、および 403・準備中（再試行しても解決しない）のときは再試行ボタンを出さない */
   onRetry?: () => void
+  /** 再試行ボタンの文言 */
+  retryLabel?: string
   onRelogin: () => void
   /** エラーに応じた追加の操作 */
   children?: ReactNode
 }
 
 /** HTTP の状態とエラーコード。サーバーから応答がない失敗（status 0）は出さない */
-function statusLabel({ status, code }: Props['error']): string | null {
-  if (!status || !code) return null
-  return `失敗（${status} ${code}）`
+function statusText({ status, code }: Props['error']): string | null {
+  return status && code ? `${status} ${code}` : null
 }
 
 /**
- * API の失敗を、0件とは別の状態として表示する。401 のときは再試行ではなくログインし直しを促し、
- * 403 など再試行しても解決しない失敗では再試行ボタンを出さない
+ * API の失敗を、0件とは別の状態として表示する。準備中（503）は失敗と色とバッジで区別する。
+ * 401 のときは再試行ではなくログインし直しを促し、403 と準備中では再試行ボタンを出さない
  */
-export function RequestErrorAlert({ error, onRetry, onRelogin, children }: Props) {
-  const label = statusLabel(error)
+export function RequestErrorAlert({ error, onRetry, retryLabel = '再試行', onRelogin, children }: Props) {
+  const kind = requestErrorKind(error)
+  const status = statusText(error)
+  const preparing = kind === 'preparing'
+  const retry = kind === 'failure' ? onRetry : undefined
   return (
-    <div role="alert" className="bg-rose-50 border border-rose-200 rounded-xl p-4 space-y-2">
-      {label && (
-        <span className="inline-flex px-2.5 py-0.5 rounded-full text-xs font-semibold font-mono bg-rose-100 text-rose-800">
-          {label}
-        </span>
+    <StatePanelFrame
+      tone={preparing ? 'warning' : 'danger'}
+      badge={status && (preparing ? `準備中（${status}）` : `失敗（${status}）`)}
+      role="alert"
+    >
+      <p className={`text-sm font-semibold ${preparing ? 'text-amber-950' : 'text-rose-950'}`}>{error.message}</p>
+      {error.requestId && (
+        <p className={`text-xs font-mono ${preparing ? 'text-amber-800' : 'text-rose-700'}`}>requestId: {error.requestId}</p>
       )}
-      <p className="text-sm font-semibold text-rose-950">{error.message}</p>
-      {error.requestId && <p className="text-xs font-mono text-rose-700">requestId: {error.requestId}</p>}
-      {(error.requiresLogin || onRetry || children) && (
+      {(kind === 'login' || retry || children) && (
         <div className="flex flex-wrap gap-2 pt-1">
-          {error.requiresLogin ? (
+          {kind === 'login' ? (
             <button type="button" className={button.danger} onClick={onRelogin}>
               もう一度ログインする
             </button>
           ) : (
-            onRetry && (
-              <button type="button" className={button.dangerOutline} onClick={onRetry}>
-                再試行
+            retry && (
+              <button type="button" className={button.dangerOutline} onClick={retry}>
+                {retryLabel}
               </button>
             )
           )}
           {children}
         </div>
       )}
-    </div>
+    </StatePanelFrame>
   )
 }

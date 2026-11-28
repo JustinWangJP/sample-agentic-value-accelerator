@@ -1,17 +1,18 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { ApiError, toApiError, type ApiClient, type Role } from '../api/client'
+import { ApiError, toApiError, type ApiClient } from '../api/client'
 import { DetailBreadcrumb } from '../components/NavigationControls'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { LoadingState, PageHeader } from '../components/StatePanel'
 import { useNavigation } from '../routing/navigation'
-import type { DraftsScreen } from '../routing/routes'
+import { canOpenScreen, type DraftsScreen } from '../routing/routes'
 import { callout } from '../ui/classes'
 import type { DraftDetail } from './api'
 import { DraftEditor, NewDraftScreen, type BackOptions } from './DraftEditor'
 import { DraftList } from './DraftList'
 import { SubmissionView } from './SubmissionView'
+import type { ScreenProps } from '../shell/screenProps'
 
-type Props = { api: ApiClient; roles: readonly Role[]; teams: string[]; onRelogin: () => void }
+type Props = ScreenProps & { teams: string[] }
 
 const DRAFTS_LIST: DraftsScreen = { kind: 'list' }
 
@@ -24,9 +25,9 @@ export function RecordDraftsView({ api, roles, teams, onRelogin }: Props) {
   const screen = route.screen === 'drafts' ? route.view : DRAFTS_LIST
   // 編集画面から申請へ進むときに渡す、保存済みの下書き。URL から直接開いたときは取得し直す
   const [savedForSubmit, setSavedForSubmit] = useState<DraftDetail | null>(null)
-  const allowed = roles.includes('Publisher') && teams.length > 0
+  const allowed = canOpenScreen('drafts', roles) && teams.length > 0
 
-  if (!roles.includes('Publisher')) return null
+  if (!canOpenScreen('drafts', roles)) return null
   if (!allowed)
     return (
       <section aria-labelledby="drafts-heading">

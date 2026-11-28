@@ -1,6 +1,6 @@
 // 左サイドバーとモバイルメニューの項目。UI プロトタイプの NAV_SECTIONS（ui-prototype/assets/prototype-model.js）に対応する
 import type { Role } from '../api/client'
-import { SCREEN_REQUIRED_ROLE, type Route, type ScreenName } from '../routing/routes'
+import { SCREEN_REQUIRED_ROLE, hasRequiredRole, type Route, type ScreenName } from '../routing/routes'
 
 export type NavItem = { screen: ScreenName; label: string; route: Route }
 export type NavSection = { title: string; requiredRole: Role | null; items: NavItem[] }
@@ -47,5 +47,5 @@ export const NAV_SECTIONS: NavSection[] = [
 
 /** 業務ロールで表示するナビの区分。必要な業務ロールのない区分は出さない */
 export function visibleNavSections(roles: readonly Role[]): NavSection[] {
-  return NAV_SECTIONS.filter((section) => section.requiredRole === null || roles.includes(section.requiredRole))
+  return NAV_SECTIONS.filter((section) => hasRequiredRole(section.requiredRole, roles))
 }

@@ -70,8 +70,41 @@ describe('失敗の表示', () => {
     expect(unauthenticated).toContain('もう一度ログインする')
     expect(unauthenticated).not.toContain('再試行')
 
-    const forbidden = render(new ApiError(403, 'FORBIDDEN', 'この操作に必要な業務ロールがありません。'))
+    // 再試行の操作を渡されても、403 は再試行しても解決しないためボタンを出さない
+    const forbidden = render(new ApiError(403, 'FORBIDDEN', 'この操作に必要な業務ロールがありません。'), () => {})
+    expect(forbidden).toContain('失敗（403 FORBIDDEN）')
     expect(forbidden).not.toContain('<button')
+  })
+
+  it.each(['A2A_SEARCH_NOT_READY', 'DRAFTS_NOT_CONFIGURED', 'NOTIFICATIONS_NOT_CONFIGURED'])(
+    '準備中（503 %s）は失敗と区別し、再試行ボタンを出さない',
+    (code) => {
+      const output = render(new ApiError(503, code, '準備中です。'), () => {})
+      expect(output).toContain(`準備中（503 ${code}）`)
+      expect(output).toContain('bg-amber-50')
+      expect(output).not.toContain('失敗（')
+      expect(output).not.toContain('bg-rose-50')
+      expect(output).not.toContain('<button')
+    },
+  )
+
+  it('準備中でない 503 は失敗として扱い、再試行できる', () => {
+    const output = render(new ApiError(503, 'APPROVAL_CONFIGURATION_CHANGED', '申請を停止しました。'), () => {})
+    expect(output).toContain('失敗（503 APPROVAL_CONFIGURATION_CHANGED）')
+    expect(output).toContain('再試行')
+  })
+
+  it('再試行ボタンの文言を変えられる', () => {
+    const output = html(
+      createElement(RequestErrorAlert, {
+        error: new ApiError(502, 'DISCOVERY_UNAVAILABLE', '取得できませんでした。'),
+        onRetry: () => {},
+        retryLabel: '一覧を再読み込み',
+        onRelogin: () => {},
+      }),
+    )
+    expect(output).toContain('一覧を再読み込み')
+    expect(output).not.toContain('>再試行<')
   })
 
   it('サーバーから応答がない失敗（status 0）は、状態のバッジを出さない', () => {

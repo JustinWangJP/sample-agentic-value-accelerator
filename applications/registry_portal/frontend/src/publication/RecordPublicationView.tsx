@@ -1,12 +1,13 @@
 import { useState, type FormEvent } from 'react'
-import type { ApiClient, Role } from '../api/client'
 import { PageHeader } from '../components/StatePanel'
 import { RECORD_ID_LENGTH, RECORD_ID_PATTERN } from '../drafts/api'
 import { button, card, fieldLabel } from '../ui/classes'
 import { RecordPublicationPanel } from './RecordPublicationPanel'
 import { RecordPublicationSearch } from './RecordPublicationSearch'
+import { canOpenScreen } from '../routing/routes'
+import type { ScreenProps } from '../shell/screenProps'
 
-type Props = { api: ApiClient; roles: readonly Role[]; onRelogin: () => void }
+type Props = ScreenProps
 
 /**
  * Curator が公開管理を開く入口。管理レコードの検索（名前の一部と状態）とレコード ID の指定の2つがあり、
@@ -17,7 +18,7 @@ export function RecordPublicationView({ api, roles, onRelogin }: Props) {
   const [recordId, setRecordId] = useState('')
   const [target, setTarget] = useState<string | null>(null)
 
-  if (!roles.includes('Curator')) return null
+  if (!canOpenScreen('publication', roles)) return null
 
   function open(event: FormEvent) {
     event.preventDefault()

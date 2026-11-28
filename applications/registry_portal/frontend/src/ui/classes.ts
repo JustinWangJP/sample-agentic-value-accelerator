@@ -16,6 +16,26 @@ export const button = {
   link: 'inline-flex items-center gap-1 text-sm font-semibold text-blue-600 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50',
 } as const
 
+/** 画面の見出し（h1） */
+export const pageTitle = 'text-2xl font-bold tracking-tight text-slate-900'
+
+/** 状態パネル（0 件・読み込み中・準備中・失敗）の枠とバッジ。色で状態を見分ける（CODING_STANDARDS.md） */
+const STATE_PANEL_FRAME = 'rounded-xl p-5 space-y-2'
+const STATE_PANEL_BADGE = 'inline-flex px-2.5 py-0.5 rounded-full text-xs font-semibold'
+export const statePanel = {
+  neutral: { frame: `${STATE_PANEL_FRAME} bg-white border border-slate-200`, badge: `${STATE_PANEL_BADGE} bg-slate-100 text-slate-600` },
+  warning: { frame: `${STATE_PANEL_FRAME} bg-amber-50 border border-amber-200`, badge: `${STATE_PANEL_BADGE} font-mono bg-amber-100 text-amber-900` },
+  danger: { frame: `${STATE_PANEL_FRAME} bg-rose-50 border border-rose-200`, badge: `${STATE_PANEL_BADGE} font-mono bg-rose-100 text-rose-800` },
+} as const
+
+/** ヘッダーのポップオーバー（業務ロール・通知）の開閉ボタンと本体 */
+export const popover = {
+  trigger:
+    'relative inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100 border border-slate-200',
+  panel:
+    'absolute right-0 mt-2 w-96 max-w-[calc(100vw-2rem)] bg-white rounded-xl border border-slate-200 shadow-xl z-40 overflow-hidden',
+} as const
+
 /** 白背景のカード（一覧の項目・フォームの枠） */
 export const card = 'bg-white border border-slate-200 rounded-xl shadow-xs'
 

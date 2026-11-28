@@ -38,6 +38,8 @@ export type RecordStatus = (typeof AWS_RECORD_STATUSES)[number]
 export function isRecordStatus(value: unknown): value is RecordStatus {
   return AWS_RECORD_STATUSES.some((status) => status === value)
 }
+/** 下書き。申請できるのはこの状態だけ。バックエンドの DRAFT_STATUS と揃える */
+export const DRAFT_STATUS: RecordStatus = 'DRAFT'
 /** 審査待ち。画面では「審査待ち」と表示する（GLOSSARY「申請」）。バックエンドの PENDING_APPROVAL_STATUS と揃える */
 export const PENDING_APPROVAL_STATUS: RecordStatus = 'PENDING_APPROVAL'
 /** 公開承認済み。バックエンドの PUBLISHED_STATUS と揃える */
