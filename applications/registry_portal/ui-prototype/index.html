@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="no-referrer" />
+  <title>カタログ | Registry ポータル（UI プロトタイプ）</title>
+  <link rel="stylesheet" href="./assets/styles.css" />
+  <script src="./assets/prototype.js" defer></script>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen flex flex-col">
+  <!-- プロトタイプ確認用バー（本番 SPA には含めない） -->
+  <div class="bg-slate-900 text-slate-200 text-xs px-4 py-2 border-b border-slate-800">
+    <div class="max-w-screen-2xl mx-auto flex flex-wrap items-center justify-between gap-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="inline-flex items-center px-2 py-0.5 rounded bg-blue-500/20 text-blue-200 font-semibold tracking-wide">PROTOTYPE</span>
+        <span class="text-slate-400">業務ロール切替:</span>
+        <div class="inline-flex flex-wrap gap-1" role="group" aria-label="プロトタイプ業務ロール切替">
+          <button type="button" data-role-preset="all" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer transition">全ロール</button>
+          <button type="button" data-role-preset="viewer" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer transition">Viewer</button>
+          <button type="button" data-role-preset="publisher" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer transition">Publisher</button>
+          <button type="button" data-role-preset="curator" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer transition">Curator</button>
+          <button type="button" data-role-preset="admin" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer transition">Admin</button>
+        </div>
+      </div>
+      <div class="flex items-center gap-3">
+        <a href="./states.html" class="text-blue-300 hover:text-blue-200 underline underline-offset-2">状態・エラー・デザインシステム一覧 →</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- 上部ヘッダー -->
+  <header class="sticky top-0 z-30 bg-white border-b border-slate-200 h-15 flex items-center px-4 lg:px-6">
+    <div class="w-full max-w-screen-2xl mx-auto flex items-center justify-between gap-4">
+      <div class="flex items-center gap-3">
+        <button type="button" data-open-drawer="mobile-nav-drawer" class="lg:hidden inline-flex items-center justify-center p-2 rounded-lg text-slate-600 hover:bg-slate-100" aria-label="メニューを開く">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <a href="./index.html" class="flex items-center gap-2.5 text-slate-900 no-underline">
+          <span class="w-8 h-8 rounded-lg bg-blue-600 text-white font-bold text-sm inline-flex items-center justify-center shadow-xs">R</span>
+          <div class="leading-tight">
+            <div class="font-semibold text-sm tracking-tight">Registry ポータル</div>
+            <div class="text-[11px] text-slate-500">AWS Agent Registry 管理・発見基盤</div>
+          </div>
+        </a>
+      </div>
+
+      <div class="flex items-center gap-2">
+        <!-- 通知ポップオーバー -->
+        <div class="relative">
+          <button type="button" data-toggle-popover="notifications-popover" aria-expanded="false" aria-controls="notifications-popover" class="relative inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100 border border-slate-200 cursor-pointer">
+            <svg class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.4-1.4A2 2 0 0 1 18 14.2V11a6 6 0 1 0-12 0v3.2c0 .5-.2 1-.6 1.4L4 17h5m6 0a3 3 0 1 1-6 0"/></svg>
+            <span class="hidden sm:inline">通知</span>
+            <span data-unread-badge class="inline-flex items-center justify-center min-w-5 h-5 px-1.5 text-xs font-semibold rounded-full bg-blue-600 text-white">2</span>
+          </button>
+
+          <div id="notifications-popover" data-popover class="is-hidden absolute right-0 mt-2 w-96 max-w-[calc(100vw-2rem)] bg-white rounded-xl border border-slate-200 shadow-xl z-40 overflow-hidden">
+            <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
+              <div>
+                <h2 class="text-sm font-semibold text-slate-900">通知</h2>
+                <p class="text-xs text-slate-500">約60秒ごとに自動更新（90日間保持）</p>
+              </div>
+              <button type="button" data-mark-all-read class="text-xs font-medium text-blue-600 hover:text-blue-700 cursor-pointer">すべて既読にする</button>
+            </div>
+            <ul class="divide-y divide-slate-100 max-h-80 overflow-y-auto">
+              <li data-unread-row class="px-4 py-3 bg-blue-50/50">
+                <div class="flex items-start gap-2.5">
+                  <span data-unread-dot class="mt-1.5 w-2 h-2 rounded-full bg-blue-600 shrink-0"></span>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <span class="text-[11px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">審査待ち</span>
+                      <span class="text-xs text-slate-500">12分前</span>
+                    </div>
+                    <p class="text-sm font-medium text-slate-900 mt-1">引受審査トリアージ Agent（v1.2.0）</p>
+                    <p class="text-xs text-slate-600 mt-0.5">team-fsi-core から公開承認の申請が届きました。</p>
+                  </div>
+                </div>
+              </li>
+              <li data-unread-row class="px-4 py-3 bg-blue-50/50">
+                <div class="flex items-start gap-2.5">
+                  <span data-unread-dot class="mt-1.5 w-2 h-2 rounded-full bg-blue-600 shrink-0"></span>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <span class="text-[11px] font-semibold px-1.5 py-0.5 rounded bg-rose-100 text-rose-800">ポータル外の変更</span>
+                      <span class="text-xs text-slate-500">2時間前</span>
+                    </div>
+                    <p class="text-sm font-medium text-slate-900 mt-1">legacy-billing-mcp（rec881029384）</p>
+                    <p class="text-xs text-slate-600 mt-0.5">ポータルの操作記録と一致しない状態変化を検知しました。</p>
+                  </div>
+                </div>
+              </li>
+              <li class="px-4 py-3">
+                <div class="flex items-start gap-2.5">
+                  <span class="mt-1.5 w-2 h-2 rounded-full bg-transparent shrink-0"></span>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <span class="text-[11px] font-semibold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">公開承認</span>
+                      <span class="text-xs text-slate-500">昨日 16:40</span>
+                    </div>
+                    <p class="text-sm font-medium text-slate-900 mt-1">社内規定検索 MCP サーバー（v2.0.1）</p>
+                    <p class="text-xs text-slate-600 mt-0.5">公開承認が完了し、カタログ項目として発見可能になりました。</p>
+                  </div>
+                </div>
+              </li>
+            </ul>
+            <div class="px-4 py-2.5 bg-slate-50 border-t border-slate-200 text-xs text-slate-500 flex items-center justify-between">
+              <span>最大 50 件を表示</span>
+              <a href="./states.html#notifications-states" class="text-blue-600 hover:underline">取得失敗時の表示例</a>
+            </div>
+          </div>
+        </div>
+
+        <!-- 主体・業務ロール・所属チーム ポップオーバー -->
+        <div class="relative">
+          <button type="button" data-toggle-popover="principal-popover" aria-expanded="false" aria-controls="principal-popover" class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100 border border-slate-200 cursor-pointer">
+            <span class="w-6 h-6 rounded-full bg-slate-800 text-white text-xs font-semibold inline-flex items-center justify-center">主</span>
+            <span class="hidden md:inline max-w-44 truncate text-xs font-medium" data-role-summary>Viewer / Publisher / Curator / Admin</span>
+            <span class="inline-flex items-center justify-center px-1.5 py-0.5 text-[11px] font-semibold rounded bg-slate-100 text-slate-700" data-role-count>4</span>
+          </button>
+
+          <div id="principal-popover" data-popover class="is-hidden absolute right-0 mt-2 w-96 max-w-[calc(100vw-2rem)] bg-white rounded-xl border border-slate-200 shadow-xl z-40 p-4">
+            <h2 class="text-sm font-semibold text-slate-900 mb-3">自分の主体・業務ロール・所属チーム</h2>
+            <dl class="space-y-2.5 text-xs">
+              <div>
+                <dt class="text-slate-500 font-medium">発行元（iss）</dt>
+                <dd class="mt-0.5 font-mono text-slate-800 break-all bg-slate-50 px-2 py-1 rounded border border-slate-200">https://cognito-idp.us-east-1.amazonaws.com/us-east-1_AbCdEf123</dd>
+              </div>
+              <div>
+                <dt class="text-slate-500 font-medium">主体（sub）</dt>
+                <dd class="mt-0.5 font-mono text-slate-800 break-all bg-slate-50 px-2 py-1 rounded border border-slate-200">74a8b1c2-9d0e-4f1a-8b2c-3d4e5f6a7b8c</dd>
+              </div>
+              <div>
+                <dt class="text-slate-500 font-medium">業務ロール</dt>
+                <dd class="mt-0.5 text-slate-900 font-medium" data-role-summary>Viewer / Publisher / Curator / Admin</dd>
+              </div>
+              <div>
+                <dt class="text-slate-500 font-medium">所属チーム</dt>
+                <dd class="mt-0.5 text-slate-900" data-team-summary>team-platform、team-fsi-core</dd>
+              </div>
+            </dl>
+            <p class="mt-3 pt-3 border-t border-slate-200 text-[11px] text-slate-500 leading-relaxed">
+              アクセストークンはメモリー上だけで保持しています。ページを再読み込みすると、もう一度 SSO でログインします。
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- 本体レイアウト（左サイドバー + メイン） -->
+  <div class="flex-1 flex max-w-screen-2xl w-full mx-auto">
+    <!-- 左サイドバー（デスクトップ） -->
+    <aside class="hidden lg:block w-64 shrink-0 border-r border-slate-200 bg-white px-3 py-5">
+      <nav aria-label="メインナビゲーション" class="space-y-6">
+        <div>
+          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">発見</div>
+          <ul class="space-y-1">
+            <li>
+              <a href="./index.html" aria-current="page" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm font-semibold bg-blue-50 text-blue-700">
+                <span>カタログ</span>
+              </a>
+            </li>
+          </ul>
+        </div>
+
+        <div data-requires-roles="Publisher">
+          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">登録（Publisher）</div>
+          <ul class="space-y-1">
+            <li>
+              <a href="./drafts.html" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">
+                <span>下書き・申請</span>
+              </a>
+            </li>
+          </ul>
+        </div>
+
+        <div data-requires-roles="Curator">
+          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">審査・公開（Curator）</div>
+          <ul class="space-y-1">
+            <li>
+              <a href="./reviews.html" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">
+                <span>審査待ち</span>
+                <span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-amber-100 text-amber-800">3</span>
+              </a>
+            </li>
+            <li>
+              <a href="./publication.html" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">
+                <span>公開管理</span>
+              </a>
+            </li>
+          </ul>
+        </div>
+
+        <div data-requires-roles="Admin">
+          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">管理（Admin）</div>
+          <ul class="space-y-1">
+            <li>
+              <a href="./administration.html" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">
+                <span>Registry 管理</span>
+              </a>
+            </li>
+            <li>
+              <a href="./recovery.html" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">
+                <span>回復操作</span>
+                <span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-indigo-100 text-indigo-800">1</span>
+              </a>
+            </li>
+          </ul>
+        </div>
+
+        <div class="pt-4 border-t border-slate-200">
+          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">プロトタイプ参照</div>
+          <ul class="space-y-1">
+            <li>
+              <a href="./states.html" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">
+                <span>状態・デザイン一覧</span>
+              </a>
+            </li>
+          </ul>
+        </div>
+      </nav>
+    </aside>
+
+    <!-- メインコンテンツ -->
+    <main class="flex-1 min-w-0 px-4 sm:px-6 lg:px-8 py-6">
+      <!-- ページヘッダー -->
+      <div class="flex flex-wrap items-end justify-between gap-4 mb-6">
+        <div>
+          <h1 class="text-2xl font-bold tracking-tight text-slate-900">カタログ</h1>
+          <p class="mt-1 text-sm text-slate-600">公開承認済みの Agent・MCP サーバー・Skill を種別一覧または自然言語・キーワード検索で探せます。</p>
+        </div>
+        <div data-requires-roles="Publisher">
+          <a href="./draft-edit.html" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium shadow-xs">
+            <span>＋ 下書きを作成</span>
+          </a>
+        </div>
+      </div>
+
+      <!-- 統合検索バー（POST /api/catalog/search） -->
+      <section aria-label="カタログ検索" class="bg-white border border-slate-200 rounded-xl shadow-xs p-4 sm:p-5 mb-6">
+        <form data-catalog-search-form class="space-y-3">
+          <div class="flex flex-col sm:flex-row gap-2.5">
+            <div class="relative flex-1">
+              <label for="catalog-search-input" class="sr-only">検索語（必須、最大256文字）</label>
+              <svg class="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m21 21-4.35-4.35M17 11a6 6 0 1 1-12 0 6 6 0 0 1 12 0Z"/></svg>
+              <input id="catalog-search-input" type="search" maxlength="256" placeholder="自然言語やキーワードで検索（例: 引受審査、社内規定、請求書チェック）…" class="w-full pl-10 pr-4 py-2.5 text-sm rounded-lg border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
+            </div>
+            <button type="submit" class="px-5 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium shadow-xs cursor-pointer shrink-0">検索する</button>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-x-4 gap-y-2 pt-1 text-xs">
+            <div class="flex items-center gap-2">
+              <label for="search-type-filter" class="font-medium text-slate-600">種別</label>
+              <select id="search-type-filter" class="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-800">
+                <option value="">すべて</option>
+                <option value="AGENT">Agent</option>
+                <option value="MCP">MCP サーバー</option>
+                <option value="SKILL">Skill</option>
+              </select>
+            </div>
+            <div class="flex items-center gap-2">
+              <label for="search-classification-filter" class="font-medium text-slate-600">データ分類</label>
+              <select id="search-classification-filter" class="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-800">
+                <option value="">すべて</option>
+                <option value="public">public（組織外公開可）</option>
+                <option value="private">private（組織内限定）</option>
+              </select>
+            </div>
+            <div class="flex items-center gap-2">
+              <label for="search-a2a-filter" class="font-medium text-slate-600">A2A（Agent のみ）</label>
+              <select id="search-a2a-filter" class="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-800">
+                <option value="">指定しない</option>
+                <option value="true">A2A のみ</option>
+                <option value="false">A2A 以外（custom Agent）</option>
+              </select>
+            </div>
+            <span class="text-slate-400 ml-auto">※ 検索はキーワード必須・関連度順に最大 20 件表示。条件だけで探す場合は下の一覧を使用します。</span>
+          </div>
+        </form>
+      </section>
+
+      <!-- 通常モード：種別タブ＋一覧（GET /api/catalog） -->
+      <section id="catalog-browse-mode" aria-label="カタログ一覧">
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 mb-5">
+          <div class="flex items-center gap-1 -mb-px" role="tablist" data-tab-group="catalog-type">
+            <button type="button" role="tab" aria-selected="true" data-tab-target="tab-agent" class="px-4 py-2.5 text-sm font-semibold border-b-2 border-blue-600 text-blue-700 bg-blue-50/70 rounded-t-lg cursor-pointer">
+              Agent <span class="ml-1 text-xs font-normal text-blue-600">4</span>
+            </button>
+            <button type="button" role="tab" aria-selected="false" data-tab-target="tab-mcp" class="px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-slate-600 hover:text-slate-900 rounded-t-lg cursor-pointer">
+              MCP サーバー <span class="ml-1 text-xs font-normal text-slate-400">2</span>
+            </button>
+            <button type="button" role="tab" aria-selected="false" data-tab-target="tab-skill" class="px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-slate-600 hover:text-slate-900 rounded-t-lg cursor-pointer">
+              Skill <span class="ml-1 text-xs font-normal text-slate-400">2</span>
+            </button>
+          </div>
+
+          <label class="inline-flex items-center gap-2 text-sm text-slate-700 pb-2 cursor-pointer select-none">
+            <input type="checkbox" class="w-4 h-4 rounded border-slate-300 text-blue-600" />
+            <span>A2A の Agent のみ表示</span>
+          </label>
+        </div>
+
+        <!-- Agent タブ -->
+        <div id="tab-agent" data-tab-panel-group="catalog-type">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <article class="bg-white border border-slate-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-sm transition flex flex-col justify-between">
+              <div>
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <h2 class="text-base font-semibold text-slate-900">引受審査トリアージ Agent</h2>
+                      <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-sky-50 text-sky-700 ring-1 ring-inset ring-sky-600/20">A2A</span>
+                    </div>
+                    <p class="mt-0.5 text-xs font-mono text-slate-500">underwriting-triage-agent · v1.1.0</p>
+                  </div>
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-violet-50 text-violet-700">private</span>
+                </div>
+                <p class="mt-3 text-sm text-slate-600 leading-relaxed">
+                  新規保険契約の申込書類を解析し、リスク区分・追加確認項目を一次判定する A2A 対応 Agent です。
+                </p>
+              </div>
+              <div class="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
+                <span class="text-slate-500">所有チーム: <strong class="font-medium text-slate-700">team-fsi-core</strong></span>
+                <a href="./catalog-detail.html" class="font-semibold text-blue-600 hover:text-blue-700">詳細を見る →</a>
+              </div>
+            </article>
+
+            <article class="bg-white border border-slate-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-sm transition flex flex-col justify-between">
+              <div>
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <h2 class="text-base font-semibold text-slate-900">社内問い合わせ案内 Agent</h2>
+                    </div>
+                    <p class="mt-0.5 text-xs font-mono text-slate-500">internal-helpdesk-agent · v2.3.0</p>
+                  </div>
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-violet-50 text-violet-700">private</span>
+                </div>
+                <p class="mt-3 text-sm text-slate-600 leading-relaxed">
+                  IT ヘルプデスクおよび総務規定に関する質問に回答し、必要な申請フォームへ誘導する custom Agent です。
+                </p>
+              </div>
+              <div class="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
+                <span class="text-slate-500">所有チーム: <strong class="font-medium text-slate-700">team-platform</strong></span>
+                <a href="./catalog-detail.html" class="font-semibold text-blue-600 hover:text-blue-700">詳細を見る →</a>
+              </div>
+            </article>
+
+            <article class="bg-white border border-slate-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-sm transition flex flex-col justify-between">
+              <div>
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <h2 class="text-base font-semibold text-slate-900">公開ドキュメント要約 Agent</h2>
+                      <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-sky-50 text-sky-700 ring-1 ring-inset ring-sky-600/20">A2A</span>
+                    </div>
+                    <p class="mt-0.5 text-xs font-mono text-slate-500">public-doc-summarizer · v1.0.2</p>
+                  </div>
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-teal-50 text-teal-700">public</span>
+                </div>
+                <p class="mt-3 text-sm text-slate-600 leading-relaxed">
+                  公開技術文書・プレスリリースを構造化要約し、参照リンク付きで返却する A2A Agent。
+                </p>
+              </div>
+              <div class="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
+                <span class="text-slate-500">所有チーム: <strong class="font-medium text-slate-700">team-devrel</strong></span>
+                <a href="./catalog-detail.html" class="font-semibold text-blue-600 hover:text-blue-700">詳細を見る →</a>
+              </div>
+            </article>
+
+            <article class="bg-white border border-slate-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-sm transition flex flex-col justify-between">
+              <div>
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <h2 class="text-base font-semibold text-slate-900">財務データ異常検知 Agent</h2>
+                    </div>
+                    <p class="mt-0.5 text-xs font-mono text-slate-500">finance-anomaly-agent · v0.9.4</p>
+                  </div>
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-violet-50 text-violet-700">private</span>
+                </div>
+                <p class="mt-3 text-sm text-slate-600 leading-relaxed">
+                  月次仕訳データの外れ値を抽出し、確認が必要な証憑番号を一覧化する custom Agent です。
+                </p>
+              </div>
+              <div class="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
+                <span class="text-slate-500">所有チーム: <strong class="font-medium text-slate-700">team-fsi-core</strong></span>
+                <a href="./catalog-detail.html" class="font-semibold text-blue-600 hover:text-blue-700">詳細を見る →</a>
+              </div>
+            </article>
+          </div>
+        </div>
+
+        <!-- MCP サーバータブ -->
+        <div id="tab-mcp" data-tab-panel-group="catalog-type" class="is-hidden">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <article class="bg-white border border-slate-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-sm transition flex flex-col justify-between">
+              <div>
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 class="text-base font-semibold text-slate-900">社内規定検索 MCP サーバー</h2>
+                    <p class="mt-0.5 text-xs font-mono text-slate-500">policy-search-mcp · v2.0.1</p>
+                  </div>
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-violet-50 text-violet-700">private</span>
+                </div>
+                <p class="mt-3 text-sm text-slate-600 leading-relaxed">
+                  社内就業規則・情報セキュリティ規定を全文検索し、該当条文を返す MCP サーバーです。
+                </p>
+              </div>
+              <div class="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
+                <span class="text-slate-500">所有チーム: <strong class="font-medium text-slate-700">team-platform</strong></span>
+                <a href="./catalog-detail.html" class="font-semibold text-blue-600 hover:text-blue-700">詳細を見る →</a>
+              </div>
+            </article>
+
+            <article class="bg-white border border-slate-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-sm transition flex flex-col justify-between">
+              <div>
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 class="text-base font-semibold text-slate-900">契約書メタデータ照会 MCP サーバー</h2>
+                    <p class="mt-0.5 text-xs font-mono text-slate-500">contract-meta-mcp · v1.4.0</p>
+                  </div>
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-violet-50 text-violet-700">private</span>
+                </div>
+                <p class="mt-3 text-sm text-slate-600 leading-relaxed">
+                  契約管理台帳から契約番号・更新期限・担当部署を安全に参照する読み取り専用 MCP サーバー。
+                </p>
+              </div>
+              <div class="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
+                <span class="text-slate-500">所有チーム: <strong class="font-medium text-slate-700">team-fsi-core</strong></span>
+                <a href="./catalog-detail.html" class="font-semibold text-blue-600 hover:text-blue-700">詳細を見る →</a>
+              </div>
+            </article>
+          </div>
+        </div>
+
+        <!-- Skill タブ -->
+        <div id="tab-skill" data-tab-panel-group="catalog-type" class="is-hidden">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <article class="bg-white border border-slate-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-sm transition flex flex-col justify-between">
+              <div>
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 class="text-base font-semibold text-slate-900">金融コンプライアンス点検 Skill</h2>
+                    <p class="mt-0.5 text-xs font-mono text-slate-500">fsi-compliance-check-skill · v1.0.0</p>
+                  </div>
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-violet-50 text-violet-700">private</span>
+                </div>
+                <p class="mt-3 text-sm text-slate-600 leading-relaxed">
+                  提案書や顧客向け文面の表現が社内コンプライアンス基準に適合しているかを点検する SKILL.md パッケージ。
+                </p>
+              </div>
+              <div class="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
+                <span class="text-slate-500">所有チーム: <strong class="font-medium text-slate-700">team-fsi-core</strong></span>
+                <a href="./catalog-detail.html#skill" class="font-semibold text-blue-600 hover:text-blue-700">詳細を見る →</a>
+              </div>
+            </article>
+
+            <article class="bg-white border border-slate-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-sm transition flex flex-col justify-between">
+              <div>
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 class="text-base font-semibold text-slate-900">Terraform レビュー Skill</h2>
+                    <p class="mt-0.5 text-xs font-mono text-slate-500">terraform-review-skill · v1.3.1</p>
+                  </div>
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-teal-50 text-teal-700">public</span>
+                </div>
+                <p class="mt-3 text-sm text-slate-600 leading-relaxed">
+                  IAM 最小権限・削除保護・タグ付与などの標準観点で Terraform 定義をレビューするための Skill。
+                </p>
+              </div>
+              <div class="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
+                <span class="text-slate-500">所有チーム: <strong class="font-medium text-slate-700">team-platform</strong></span>
+                <a href="./catalog-detail.html#skill" class="font-semibold text-blue-600 hover:text-blue-700">詳細を見る →</a>
+              </div>
+            </article>
+          </div>
+        </div>
+
+        <!-- ページング（nextToken 中継方式） -->
+        <nav aria-label="ページング" class="mt-6 flex items-center justify-between border-t border-slate-200 pt-4 text-sm">
+          <div class="flex items-center gap-2">
+            <button type="button" disabled class="px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-slate-400 text-xs font-medium cursor-not-allowed">最初のページに戻る</button>
+            <button type="button" disabled class="px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-slate-400 text-xs font-medium cursor-not-allowed">前のページ</button>
+          </div>
+          <span class="text-xs text-slate-500">ページ 1（1ページ最大 50 件）</span>
+          <button type="button" class="px-3.5 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium cursor-pointer">次のページ →</button>
+        </nav>
+      </section>
+
+      <!-- 検索結果モード（検索フォーム送信時に切替） -->
+      <section id="catalog-search-mode" aria-label="検索結果" class="is-hidden space-y-4">
+        <div class="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+          <div class="text-sm text-blue-950">
+            <strong class="font-semibold">「<span id="catalog-search-query-display">引受審査</span>」</strong> の検索結果：<strong class="font-semibold">2 件</strong>（関連度順・最大 20 件）
+          </div>
+          <button type="button" data-catalog-back-to-list class="px-3 py-1.5 rounded-lg bg-white border border-blue-200 hover:bg-blue-100/50 text-blue-700 text-xs font-semibold cursor-pointer">
+            ← 一覧に戻る
+          </button>
+        </div>
+
+        <!-- 不整合 A2A 除外警告（inconsistentA2ACount > 0 の場合の例） -->
+        <div role="status" class="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs text-amber-900 flex items-start gap-2.5">
+          <span class="font-bold text-amber-700">注意:</span>
+          <span>検索用の写し（<code class="font-mono">isA2A</code>）と定義（descriptor）が食い違う 1 件を結果から除外しました。ほかの該当項目を表示しています。</span>
+        </div>
+
+        <div class="space-y-3">
+          <article class="bg-white border border-slate-200 rounded-xl p-5 hover:border-blue-300 transition">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-medium">Agent</span>
+                  <h2 class="text-base font-semibold text-slate-900">引受審査トリアージ Agent</h2>
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-sky-50 text-sky-700 ring-1 ring-inset ring-sky-600/20">A2A</span>
+                </div>
+                <p class="mt-0.5 text-xs font-mono text-slate-500">underwriting-triage-agent · v1.1.0</p>
+              </div>
+              <a href="./catalog-detail.html" class="px-3.5 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-semibold">詳細を見る →</a>
+            </div>
+            <p class="mt-2.5 text-sm text-slate-600">新規保険契約の申込書類を解析し、リスク区分・追加確認項目を一次判定する A2A 対応 Agent です。</p>
+          </article>
+
+          <article class="bg-white border border-slate-200 rounded-xl p-5 hover:border-blue-300 transition">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-medium">Skill</span>
+                  <h2 class="text-base font-semibold text-slate-900">金融コンプライアンス点検 Skill</h2>
+                </div>
+                <p class="mt-0.5 text-xs font-mono text-slate-500">fsi-compliance-check-skill · v1.0.0</p>
+              </div>
+              <a href="./catalog-detail.html#skill" class="px-3.5 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-semibold">詳細を見る →</a>
+            </div>
+            <p class="mt-2.5 text-sm text-slate-600">提案書や顧客向け文面の表現が社内コンプライアンス基準に適合しているかを点検する SKILL.md パッケージ。</p>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- モバイル用ナビゲーションドロワー -->
+  <div id="mobile-nav-drawer" data-drawer aria-hidden="true" class="is-hidden fixed inset-0 z-50 flex">
+    <div data-close-drawer class="fixed inset-0 bg-slate-900/40"></div>
+    <div class="relative w-72 max-w-[85vw] bg-white h-full shadow-2xl p-4 flex flex-col">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-200">
+        <span class="font-semibold text-sm text-slate-900">メニュー</span>
+        <button type="button" data-close-drawer class="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100" aria-label="閉じる">✕</button>
+      </div>
+      <nav class="mt-4 space-y-4 text-sm overflow-y-auto">
+        <a href="./index.html" class="block px-3 py-2 rounded-lg bg-blue-50 text-blue-700 font-semibold">カタログ</a>
+        <a href="./drafts.html" data-requires-roles="Publisher" class="block px-3 py-2 rounded-lg text-slate-700 hover:bg-slate-100">下書き・申請</a>
+        <a href="./reviews.html" data-requires-roles="Curator" class="block px-3 py-2 rounded-lg text-slate-700 hover:bg-slate-100">審査待ち（3）</a>
+        <a href="./publication.html" data-requires-roles="Curator" class="block px-3 py-2 rounded-lg text-slate-700 hover:bg-slate-100">公開管理</a>
+        <a href="./administration.html" data-requires-roles="Admin" class="block px-3 py-2 rounded-lg text-slate-700 hover:bg-slate-100">Registry 管理</a>
+        <a href="./recovery.html" data-requires-roles="Admin" class="block px-3 py-2 rounded-lg text-slate-700 hover:bg-slate-100">回復操作（1）</a>
+        <a href="./states.html" class="block px-3 py-2 rounded-lg text-slate-500 hover:bg-slate-100 border-t border-slate-200 pt-3">状態・デザイン一覧</a>
+      </nav>
+    </div>
+  </div>
+</body>
+</html>

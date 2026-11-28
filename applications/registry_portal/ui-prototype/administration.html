@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="no-referrer" />
+  <title>Registry 管理 | Registry ポータル（UI プロトタイプ）</title>
+  <link rel="stylesheet" href="./assets/styles.css" />
+  <script src="./assets/prototype.js" defer></script>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen flex flex-col">
+  <div class="bg-slate-900 text-slate-200 text-xs px-4 py-2 border-b border-slate-800">
+    <div class="max-w-screen-2xl mx-auto flex flex-wrap items-center justify-between gap-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="inline-flex items-center px-2 py-0.5 rounded bg-blue-500/20 text-blue-200 font-semibold">PROTOTYPE</span>
+        <span class="text-slate-400">業務ロール切替:</span>
+        <div class="inline-flex flex-wrap gap-1">
+          <button type="button" data-role-preset="all" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer">全ロール</button>
+          <button type="button" data-role-preset="admin" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer">Admin</button>
+        </div>
+      </div>
+      <a href="./states.html" class="text-blue-300 hover:text-blue-200 underline underline-offset-2">状態・エラー・デザインシステム一覧 →</a>
+    </div>
+  </div>
+
+  <header class="sticky top-0 z-30 bg-white border-b border-slate-200 h-15 flex items-center px-4 lg:px-6">
+    <div class="w-full max-w-screen-2xl mx-auto flex items-center justify-between gap-4">
+      <a href="./index.html" class="flex items-center gap-2.5 text-slate-900 no-underline">
+        <span class="w-8 h-8 rounded-lg bg-blue-600 text-white font-bold text-sm inline-flex items-center justify-center">R</span>
+        <div class="leading-tight">
+          <div class="font-semibold text-sm">Registry ポータル</div>
+          <div class="text-[11px] text-slate-500">AWS Agent Registry 管理・発見基盤</div>
+        </div>
+      </a>
+      <span class="text-xs font-medium text-slate-600" data-role-summary></span>
+    </div>
+  </header>
+
+  <div class="flex-1 flex max-w-screen-2xl w-full mx-auto">
+    <aside class="hidden lg:block w-64 shrink-0 border-r border-slate-200 bg-white px-3 py-5">
+      <nav aria-label="メインナビゲーション" class="space-y-6">
+        <div>
+          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">発見</div>
+          <ul class="space-y-1"><li><a href="./index.html" class="block px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">カタログ</a></li></ul>
+        </div>
+        <div data-requires-roles="Publisher">
+          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">登録（Publisher）</div>
+          <ul class="space-y-1"><li><a href="./drafts.html" class="block px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">下書き・申請</a></li></ul>
+        </div>
+        <div data-requires-roles="Curator">
+          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">審査・公開（Curator）</div>
+          <ul class="space-y-1">
+            <li><a href="./reviews.html" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100"><span>審査待ち</span><span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-amber-100 text-amber-800">3</span></a></li>
+            <li><a href="./publication.html" class="block px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">公開管理</a></li>
+          </ul>
+        </div>
+        <div data-requires-roles="Admin">
+          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">管理（Admin）</div>
+          <ul class="space-y-1">
+            <li><a href="./administration.html" aria-current="page" class="block px-3 py-2 rounded-lg text-sm font-semibold bg-blue-50 text-blue-700">Registry 管理</a></li>
+            <li><a href="./recovery.html" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100"><span>回復操作</span><span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-indigo-100 text-indigo-800">1</span></a></li>
+          </ul>
+        </div>
+      </nav>
+    </aside>
+
+    <main class="flex-1 min-w-0 px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+      <div class="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 class="text-2xl font-bold tracking-tight text-slate-900">Registry 管理</h1>
+          <p class="mt-1 text-sm text-slate-600">接続先の AWS Agent Registry の設定状態確認、未管理レコードの取り込み、管理レコードの所有チーム変更を行います。</p>
+        </div>
+        <button type="button" class="px-3.5 py-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium cursor-pointer">再読み込み</button>
+      </div>
+
+      <!-- Registry 接続情報カード -->
+      <section class="bg-white border border-slate-200 rounded-xl shadow-xs p-5 space-y-4">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h2 class="text-sm font-semibold text-slate-900">接続先 Registry 情報</h2>
+          <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20">接続正常</span>
+        </div>
+        <dl class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 text-xs">
+          <div class="md:col-span-2">
+            <dt class="text-slate-500">Registry ARN</dt>
+            <dd class="mt-1 font-mono text-slate-800 bg-slate-50 px-2.5 py-1.5 rounded border border-slate-200 break-all">arn:aws:agent-registry:us-east-1:123456789012:registry/reg0123456789ab</dd>
+          </div>
+          <div>
+            <dt class="text-slate-500">リージョン / 認可方式</dt>
+            <dd class="mt-1 font-mono text-slate-900">us-east-1 · JWT（発見用 M2M）</dd>
+          </div>
+          <div>
+            <dt class="text-slate-500">自動承認（approvalConfiguration）</dt>
+            <dd class="mt-1 font-semibold text-emerald-700">無効（手動審査が有効）</dd>
+          </div>
+        </dl>
+      </section>
+
+      <!-- 未管理 / 管理レコード切替テーブル -->
+      <section class="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
+        <div class="px-4 pt-3 border-b border-slate-200 flex items-center justify-between gap-3">
+          <div class="flex items-center gap-1 -mb-px" role="tablist" data-tab-group="admin-records">
+            <button type="button" role="tab" aria-selected="true" data-tab-target="admin-unmanaged" class="px-4 py-2.5 text-sm font-semibold border-b-2 border-blue-600 text-blue-700 bg-blue-50/70 rounded-t-lg cursor-pointer">
+              未管理レコード <span class="ml-1 text-xs">2</span>
+            </button>
+            <button type="button" role="tab" aria-selected="false" data-tab-target="admin-managed" class="px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-slate-600 hover:text-slate-900 rounded-t-lg cursor-pointer">
+              管理レコード（所有チーム変更） <span class="ml-1 text-xs">4</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 未管理レコードタブ -->
+        <div id="admin-unmanaged" data-tab-panel-group="admin-records">
+          <div class="overflow-x-auto">
+            <table class="w-full text-left border-collapse">
+              <thead>
+                <tr class="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
+                  <th class="py-3 px-4">レコード名 / ID</th>
+                  <th class="py-3 px-4">種別</th>
+                  <th class="py-3 px-4">状態 / 版</th>
+                  <th class="py-3 px-4">現在の metadata 所有チーム</th>
+                  <th class="py-3 px-4 text-right">操作</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-200 text-sm">
+                <tr class="bg-blue-50/40">
+                  <td class="py-3.5 px-4">
+                    <div class="font-semibold text-slate-900">既存・請求連携 MCP サーバー</div>
+                    <div class="text-xs font-mono text-slate-500">legacy-billing-mcp · rec881029384</div>
+                  </td>
+                  <td class="py-3.5 px-4"><span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-medium">MCP サーバー</span></td>
+                  <td class="py-3.5 px-4 text-xs font-mono">APPROVED · v1.0.0</td>
+                  <td class="py-3.5 px-4 text-xs text-slate-500 italic">未設定（未管理）</td>
+                  <td class="py-3.5 px-4 text-right"><span class="text-xs font-semibold text-blue-700">選択中（下記フォーム）</span></td>
+                </tr>
+                <tr class="hover:bg-slate-50/70">
+                  <td class="py-3.5 px-4">
+                    <div class="font-semibold text-slate-900">初期導入テスト Agent</div>
+                    <div class="text-xs font-mono text-slate-500">bootstrap-demo-agent · rec881029999</div>
+                  </td>
+                  <td class="py-3.5 px-4"><span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-medium">Agent</span></td>
+                  <td class="py-3.5 px-4 text-xs font-mono">DRAFT · v0.1.0</td>
+                  <td class="py-3.5 px-4 text-xs text-slate-500 italic">未設定（未管理）</td>
+                  <td class="py-3.5 px-4 text-right"><button type="button" class="px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold cursor-pointer">取り込む</button></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- 取り込みフォーム -->
+          <div class="p-6 bg-slate-50 border-t border-slate-200">
+            <h3 class="text-sm font-semibold text-slate-900 mb-3">未管理レコードの取り込み：legacy-billing-mcp（rec881029384）</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-3xl">
+              <div>
+                <label for="adopt-team" class="block text-xs font-semibold text-slate-700 mb-1">割り当てる所有チーム（team-*） <span class="text-rose-600">*</span></label>
+                <input id="adopt-team" type="text" value="team-platform" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-mono" />
+              </div>
+              <div>
+                <label for="adopt-reason" class="block text-xs font-semibold text-slate-700 mb-1">取り込み理由 <span class="text-rose-600">*</span></label>
+                <input id="adopt-reason" type="text" placeholder="例: ポータル導入前の既存レコードを管理下へ移管" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" />
+              </div>
+            </div>
+            <div class="mt-4 flex items-center gap-3">
+              <button type="button" class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-xs cursor-pointer">取り込みを実行する</button>
+              <span class="text-xs text-slate-500">※ Idempotency-Key を付与して管理情報（正本）を登録します。</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 管理レコード（所有チーム変更）タブ -->
+        <div id="admin-managed" data-tab-panel-group="admin-records" class="is-hidden p-6 space-y-4">
+          <div class="text-xs text-slate-600">管理レコードの所有チームを移管する場合は、対象レコードを選択し新しい所有チームと理由を入力します。</div>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-4xl bg-slate-50 p-4 rounded-xl border border-slate-200">
+            <div>
+              <div class="text-xs text-slate-500">対象レコード</div>
+              <div class="text-sm font-semibold text-slate-900 mt-0.5">引受審査トリアージ Agent</div>
+              <div class="text-xs font-mono text-slate-500">現在: team-fsi-core</div>
+            </div>
+            <div>
+              <label for="change-team" class="block text-xs font-semibold text-slate-700 mb-1">変更後の所有チーム <span class="text-rose-600">*</span></label>
+              <input id="change-team" type="text" placeholder="team-..." class="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-mono" />
+            </div>
+            <div>
+              <label for="change-reason" class="block text-xs font-semibold text-slate-700 mb-1">変更理由 <span class="text-rose-600">*</span></label>
+              <input id="change-reason" type="text" placeholder="組織再編による移管" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs" />
+            </div>
+          </div>
+          <button type="button" class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold cursor-pointer">所有チームを変更する</button>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

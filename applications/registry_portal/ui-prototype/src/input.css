@@ -1,0 +1,38 @@
+@import "tailwindcss";
+@source "../*.html";
+@source "../assets/*.js";
+
+@theme {
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    color: #0f172a;
+    background-color: #f8fafc;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    margin: 0;
+  }
+}
+
+/* 状態・UI パターン用の最小限の補助ユーティリティ（React 移植時にそのまま利用可能） */
+.diff-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+.diff-table th,
+.diff-table td {
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+
+.is-hidden {
+  display: none !important;
+}

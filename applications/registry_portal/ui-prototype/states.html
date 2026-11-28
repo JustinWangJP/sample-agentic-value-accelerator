@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="no-referrer" />
+  <title>状態・デザインシステム一覧 | Registry ポータル（UI プロトタイプ）</title>
+  <link rel="stylesheet" href="./assets/styles.css" />
+  <script src="./assets/prototype.js" defer></script>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen flex flex-col">
+  <div class="bg-slate-900 text-slate-200 text-xs px-4 py-2 border-b border-slate-800">
+    <div class="max-w-screen-2xl mx-auto flex flex-wrap items-center justify-between gap-2">
+      <div class="flex items-center gap-2">
+        <span class="inline-flex items-center px-2 py-0.5 rounded bg-blue-500/20 text-blue-200 font-semibold">PROTOTYPE REFERENCE</span>
+        <span class="text-slate-300">CODING_STANDARDS.md の 4 状態・エラー・警告・バッジ一覧</span>
+      </div>
+      <a href="./index.html" class="text-blue-300 hover:text-blue-200 underline underline-offset-2">← カタログへ戻る</a>
+    </div>
+  </div>
+
+  <main class="max-w-6xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-10">
+    <div>
+      <h1 class="text-2xl font-bold tracking-tight text-slate-900">状態・エラー・デザインシステム一覧</h1>
+      <p class="mt-1 text-sm text-slate-600">本番 React 実装時に共通コンポーネント化する状態表現・エラーハンドリング・バッジの仕様確認用ページです。</p>
+    </div>
+
+    <!-- 1. 起動状態と認証・API エラー -->
+    <section class="space-y-4">
+      <h2 class="text-lg font-bold text-slate-900 border-b border-slate-200 pb-2">1. 起動・認証エラー（401 と 403/5xx の厳密な区別）</h2>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <!-- ログイン中 -->
+        <div class="bg-white border border-slate-200 rounded-xl p-5 flex flex-col items-center justify-center text-center min-h-36">
+          <div class="w-7 h-7 rounded-full border-2 border-slate-200 border-t-blue-600 animate-spin mb-3"></div>
+          <p role="status" class="text-sm font-medium text-slate-700">ログインしています…</p>
+          <p class="text-xs text-slate-400 mt-1">SSO 認証および主体情報の取得中</p>
+        </div>
+
+        <!-- 401 UNAUTHENTICATED（再ログインボタンあり） -->
+        <div role="alert" class="bg-rose-50 border border-rose-200 rounded-xl p-5 space-y-3">
+          <div class="flex items-center gap-2">
+            <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-rose-100 text-rose-800">401 UNAUTHENTICATED</span>
+          </div>
+          <p class="text-sm font-medium text-rose-900">認証が必要です。ログインし直してください。</p>
+          <p class="text-xs text-rose-700">※ 401 またはログイン失敗のときだけ再ログインボタンを表示します。</p>
+          <button type="button" class="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold cursor-pointer">もう一度ログインする</button>
+        </div>
+
+        <!-- 403 FORBIDDEN / 502 DISCOVERY_UNAVAILABLE（再ログインボタンなし） -->
+        <div role="alert" class="bg-rose-50 border border-rose-200 rounded-xl p-5 space-y-3">
+          <div class="flex items-center gap-2">
+            <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-rose-100 text-rose-800">403 FORBIDDEN / 502</span>
+          </div>
+          <p class="text-sm font-medium text-rose-900">この操作を行う権限がないか、現在サービスを利用できません。</p>
+          <p class="text-xs font-mono text-rose-700">requestId: req-01jd9x...</p>
+          <button type="button" class="px-4 py-1.5 rounded-lg border border-rose-300 bg-white hover:bg-rose-50 text-rose-800 text-xs font-semibold cursor-pointer">再試行</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. CODING_STANDARDS.md の 4 状態 -->
+    <section class="space-y-4">
+      <h2 class="text-lg font-bold text-slate-900 border-b border-slate-200 pb-2">2. 「0 件」「未取得」「準備中」「失敗」の 4 状態</h2>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <!-- 0 件 -->
+        <div class="bg-white border border-slate-200 rounded-xl p-6 text-center space-y-2">
+          <span class="inline-flex px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600">0 件（正常応答）</span>
+          <h3 class="text-sm font-semibold text-slate-900">該当するカタログ項目はありません</h3>
+          <p class="text-xs text-slate-500">検索条件を変えるか、別の種別タブを確認してください。</p>
+        </div>
+
+        <!-- 未取得 -->
+        <div class="bg-white border border-dashed border-slate-300 rounded-xl p-6 space-y-2">
+          <span class="inline-flex px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-700">未取得（スナップショットなし）</span>
+          <h3 class="text-sm font-semibold text-slate-900">連絡先・利用条件・接続先の参照は「未取得」です</h3>
+          <p class="text-xs text-slate-500">未管理レコードまたは公開版スナップショット未保存のため取得できません（「未登録」とは区別して表示します）。</p>
+        </div>
+
+        <!-- 準備中（A2A 検索未準備 503） -->
+        <div class="bg-amber-50 border border-amber-200 rounded-xl p-6 space-y-3">
+          <span class="inline-flex px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-900">準備中（503 A2A_SEARCH_NOT_READY）</span>
+          <h3 class="text-sm font-semibold text-amber-950">A2A での絞り込み検索は現在準備中です</h3>
+          <p class="text-xs text-amber-900">A2A の Agent を探す場合は、一覧画面の「A2A の Agent のみ表示」をご利用ください。</p>
+          <a href="./index.html" class="inline-flex items-center px-3.5 py-1.5 rounded-lg bg-white border border-amber-300 hover:bg-amber-100 text-amber-900 text-xs font-semibold">A2A の Agent 一覧を開く →</a>
+        </div>
+
+        <!-- 失敗（障害と 0 件の区別） -->
+        <div role="alert" class="bg-rose-50 border border-rose-200 rounded-xl p-6 space-y-3">
+          <span class="inline-flex px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-100 text-rose-800">失敗（502 DISCOVERY_UNAVAILABLE）</span>
+          <h3 class="text-sm font-semibold text-rose-950">カタログの取得に失敗しました</h3>
+          <p class="text-xs text-rose-800">一時的な通信異常またはサービス障害のため結果を表示できません（0 件ではありません）。</p>
+          <button type="button" class="px-3.5 py-1.5 rounded-lg border border-rose-300 bg-white hover:bg-rose-100 text-rose-800 text-xs font-semibold cursor-pointer">再試行する</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. 業務固有の警告・制約表示 -->
+    <section id="review-warnings" class="space-y-4">
+      <h2 class="text-lg font-bold text-slate-900 border-b border-slate-200 pb-2">3. 業務固有の警告・制約バナー</h2>
+      <div class="space-y-3">
+        <!-- 自己承認禁止 -->
+        <div class="bg-amber-50 border-l-4 border-amber-500 rounded-r-xl p-4 text-xs text-amber-950">
+          <strong class="font-semibold block text-sm mb-0.5">自己承認禁止：この申請は決裁できません</strong>
+          申請者または最終編集者があなた自身と一致しているため、公開承認・却下のボタンを無効化しています。別の Curator に決裁を依頼してください。
+        </div>
+
+        <!-- 無効化・改ざん警告 -->
+        <div class="bg-rose-50 border-l-4 border-rose-600 rounded-r-xl p-4 text-xs text-rose-950">
+          <strong class="font-semibold block text-sm mb-0.5">申請スナップショットとの不整合（無効化 / 改ざん警告）</strong>
+          保存済みの申請スナップショットと現在の Registry レコード内容が一致しません。決裁は実行できません。Publisher による再申請または Admin の確認が必要です。
+        </div>
+
+        <!-- 所属チームなし Publisher -->
+        <div class="bg-slate-100 border border-slate-300 rounded-xl p-4 text-xs text-slate-800">
+          <strong class="font-semibold block text-sm mb-0.5">所属チームが割り当てられていません（Publisher）</strong>
+          業務ロールに Publisher を持っていますが、Cognito の所属チーム（<code class="font-mono">team-*</code>）が未設定のため、下書きの作成・編集・申請・廃止依頼は行えません。管理者にチーム割当てを依頼してください。
+        </div>
+
+        <!-- 通知取得失敗 -->
+        <div id="notifications-states" class="bg-rose-50 border border-rose-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3 text-xs text-rose-900">
+          <span><strong>通知の取得に失敗しました。</strong>通信状況を確認のうえ再試行してください。</span>
+          <button type="button" class="px-3 py-1 rounded-lg border border-rose-300 bg-white font-semibold cursor-pointer">再試行</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4. 状態バッジ・カラーシステム -->
+    <section class="space-y-4">
+      <h2 class="text-lg font-bold text-slate-900 border-b border-slate-200 pb-2">4. 状態バッジ・ラベル一覧</h2>
+      <div class="bg-white border border-slate-200 rounded-xl p-5 flex flex-wrap gap-2.5 text-xs">
+        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-medium bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20">公開中（APPROVED）</span>
+        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-medium bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-600/20">審査待ち（PENDING_APPROVAL）</span>
+        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-medium bg-slate-100 text-slate-700 ring-1 ring-inset ring-slate-500/20">下書き（DRAFT）</span>
+        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-medium bg-orange-50 text-orange-800 ring-1 ring-inset ring-orange-600/20">公開停止中（SUSPENDED）</span>
+        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-medium bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-600/20">廃止済み（DEPRECATED）</span>
+        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-medium bg-indigo-50 text-indigo-700 ring-1 ring-inset ring-indigo-600/20">結果確認中（VERIFYING）</span>
+        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-medium bg-sky-50 text-sky-700 ring-1 ring-inset ring-sky-600/20">A2A</span>
+        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-medium bg-teal-50 text-teal-700">public</span>
+        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-medium bg-violet-50 text-violet-700">private</span>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

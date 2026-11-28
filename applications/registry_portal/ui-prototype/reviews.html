@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="no-referrer" />
+  <title>審査待ち | Registry ポータル（UI プロトタイプ）</title>
+  <link rel="stylesheet" href="./assets/styles.css" />
+  <script src="./assets/prototype.js" defer></script>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen flex flex-col">
+  <div class="bg-slate-900 text-slate-200 text-xs px-4 py-2 border-b border-slate-800">
+    <div class="max-w-screen-2xl mx-auto flex flex-wrap items-center justify-between gap-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="inline-flex items-center px-2 py-0.5 rounded bg-blue-500/20 text-blue-200 font-semibold">PROTOTYPE</span>
+        <span class="text-slate-400">業務ロール切替:</span>
+        <div class="inline-flex flex-wrap gap-1">
+          <button type="button" data-role-preset="all" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer">全ロール</button>
+          <button type="button" data-role-preset="curator" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer">Curator</button>
+          <button type="button" data-role-preset="admin" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer">Admin</button>
+        </div>
+      </div>
+      <a href="./states.html" class="text-blue-300 hover:text-blue-200 underline underline-offset-2">状態・エラー・デザインシステム一覧 →</a>
+    </div>
+  </div>
+
+  <header class="sticky top-0 z-30 bg-white border-b border-slate-200 h-15 flex items-center px-4 lg:px-6">
+    <div class="w-full max-w-screen-2xl mx-auto flex items-center justify-between gap-4">
+      <a href="./index.html" class="flex items-center gap-2.5 text-slate-900 no-underline">
+        <span class="w-8 h-8 rounded-lg bg-blue-600 text-white font-bold text-sm inline-flex items-center justify-center">R</span>
+        <div class="leading-tight">
+          <div class="font-semibold text-sm">Registry ポータル</div>
+          <div class="text-[11px] text-slate-500">AWS Agent Registry 管理・発見基盤</div>
+        </div>
+      </a>
+      <span class="text-xs font-medium text-slate-600" data-role-summary></span>
+    </div>
+  </header>
+
+  <div class="flex-1 flex max-w-screen-2xl w-full mx-auto">
+    <aside class="hidden lg:block w-64 shrink-0 border-r border-slate-200 bg-white px-3 py-5">
+      <nav aria-label="メインナビゲーション" class="space-y-6">
+        <div>
+          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">発見</div>
+          <ul class="space-y-1"><li><a href="./index.html" class="block px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">カタログ</a></li></ul>
+        </div>
+        <div data-requires-roles="Publisher">
+          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">登録（Publisher）</div>
+          <ul class="space-y-1"><li><a href="./drafts.html" class="block px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">下書き・申請</a></li></ul>
+        </div>
+        <div data-requires-roles="Curator">
+          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">審査・公開（Curator）</div>
+          <ul class="space-y-1">
+            <li><a href="./reviews.html" aria-current="page" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm font-semibold bg-blue-50 text-blue-700"><span>審査待ち</span><span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-amber-100 text-amber-800">3</span></a></li>
+            <li><a href="./publication.html" class="block px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">公開管理</a></li>
+          </ul>
+        </div>
+        <div data-requires-roles="Admin">
+          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">管理（Admin）</div>
+          <ul class="space-y-1">
+            <li><a href="./administration.html" class="block px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">Registry 管理</a></li>
+            <li><a href="./recovery.html" class="block px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">回復操作</a></li>
+          </ul>
+        </div>
+      </nav>
+    </aside>
+
+    <main class="flex-1 min-w-0 px-4 sm:px-6 lg:px-8 py-6">
+      <div class="flex flex-wrap items-end justify-between gap-4 mb-6">
+        <div>
+          <h1 class="text-2xl font-bold tracking-tight text-slate-900">審査待ち</h1>
+          <p class="mt-1 text-sm text-slate-600">Curator が対応する公開承認の申請（PENDING_APPROVAL）と、未解決の廃止依頼を一覧表示します。</p>
+        </div>
+        <button type="button" class="px-3.5 py-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium cursor-pointer">再読み込み</button>
+      </div>
+
+      <section class="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse">
+            <thead>
+              <tr class="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
+                <th class="py-3 px-4">区分</th>
+                <th class="py-3 px-4">レコード名 / 所有チーム</th>
+                <th class="py-3 px-4">版</th>
+                <th class="py-3 px-4">理由・申請者 / 経過</th>
+                <th class="py-3 px-4">状態</th>
+                <th class="py-3 px-4 text-right">操作</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-200 text-sm">
+              <tr class="hover:bg-slate-50/70">
+                <td class="py-3.5 px-4 whitespace-nowrap">
+                  <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-600/20">公開申請</span>
+                </td>
+                <td class="py-3.5 px-4">
+                  <div class="font-semibold text-slate-900">引受審査トリアージ Agent</div>
+                  <div class="text-xs text-slate-500"><span class="font-mono">underwriting-triage-agent</span> · Agent · <strong>team-fsi-core</strong></div>
+                </td>
+                <td class="py-3.5 px-4 text-xs font-mono font-semibold text-slate-900">v1.2.0</td>
+                <td class="py-3.5 px-4 text-xs text-slate-600 max-w-xs">
+                  <div class="truncate">特約リスク項目の判定ロジックを追加し検証完了。</div>
+                  <div class="text-slate-400 mt-0.5">申請者: sub=publisher-042 · 2時間前</div>
+                </td>
+                <td class="py-3.5 px-4 whitespace-nowrap">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-50 text-amber-800">審査待ち</span>
+                </td>
+                <td class="py-3.5 px-4 text-right whitespace-nowrap">
+                  <a href="./review-detail.html" class="inline-flex items-center px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold">審査する →</a>
+                </td>
+              </tr>
+
+              <tr class="hover:bg-slate-50/70">
+                <td class="py-3.5 px-4 whitespace-nowrap">
+                  <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-600/20">廃止依頼</span>
+                </td>
+                <td class="py-3.5 px-4">
+                  <div class="font-semibold text-slate-900">旧・契約照会 MCP サーバー</div>
+                  <div class="text-xs text-slate-500"><span class="font-mono">legacy-contract-mcp</span> · MCP サーバー · <strong>team-fsi-core</strong></div>
+                </td>
+                <td class="py-3.5 px-4 text-xs font-mono font-semibold text-slate-900">v1.0.3</td>
+                <td class="py-3.5 px-4 text-xs text-slate-600 max-w-xs">
+                  <div class="truncate">contract-meta-mcp v1.4.0 へ完全移行したため廃止を依頼します。</div>
+                  <div class="text-rose-700 font-medium mt-0.5">依頼者: sub=publisher-019 · 経過 5 日</div>
+                </td>
+                <td class="py-3.5 px-4 whitespace-nowrap">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-50 text-emerald-700">公開中</span>
+                </td>
+                <td class="py-3.5 px-4 text-right whitespace-nowrap">
+                  <a href="./publication.html" class="inline-flex items-center px-3.5 py-1.5 rounded-lg border border-rose-300 bg-rose-50 hover:bg-rose-100 text-rose-800 text-xs font-semibold">対応する（公開管理）</a>
+                </td>
+              </tr>
+
+              <tr class="bg-indigo-50/30">
+                <td class="py-3.5 px-4 whitespace-nowrap">
+                  <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-600/20">公開申請</span>
+                </td>
+                <td class="py-3.5 px-4">
+                  <div class="font-semibold text-slate-900">社内規定検索 MCP サーバー</div>
+                  <div class="text-xs text-slate-500"><span class="font-mono">policy-search-mcp</span> · MCP サーバー · <strong>team-platform</strong></div>
+                </td>
+                <td class="py-3.5 px-4 text-xs font-mono font-semibold text-slate-900">v2.1.0</td>
+                <td class="py-3.5 px-4 text-xs text-slate-600 max-w-xs">
+                  <div class="truncate">検索対象に情報セキュリティ規定 2026 年版を追加。</div>
+                  <div class="text-slate-400 mt-0.5">申請者: sub=publisher-008 · 1日前</div>
+                </td>
+                <td class="py-3.5 px-4 whitespace-nowrap">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-50 text-indigo-700 ring-1 ring-inset ring-indigo-600/20">結果確認中</span>
+                </td>
+                <td class="py-3.5 px-4 text-right whitespace-nowrap">
+                  <a href="./review-detail.html" class="inline-flex items-center px-3.5 py-1.5 rounded-lg border border-indigo-300 bg-white hover:bg-indigo-50 text-indigo-700 text-xs font-semibold">詳細・結果確認</a>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="px-4 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between text-xs text-slate-600">
+          <span>3 件を表示</span>
+          <div class="flex items-center gap-2">
+            <button type="button" disabled class="px-3 py-1 rounded border border-slate-200 text-slate-400 cursor-not-allowed">最初のページ</button>
+            <button type="button" disabled class="px-3 py-1 rounded border border-slate-200 text-slate-400 cursor-not-allowed">次のページ →</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

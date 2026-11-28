@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="no-referrer" />
+  <title>回復操作 | Registry ポータル（UI プロトタイプ）</title>
+  <link rel="stylesheet" href="./assets/styles.css" />
+  <script src="./assets/prototype.js" defer></script>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen flex flex-col">
+  <div class="bg-slate-900 text-slate-200 text-xs px-4 py-2 border-b border-slate-800">
+    <div class="max-w-screen-2xl mx-auto flex flex-wrap items-center justify-between gap-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="inline-flex items-center px-2 py-0.5 rounded bg-blue-500/20 text-blue-200 font-semibold">PROTOTYPE</span>
+        <span class="text-slate-400">業務ロール切替:</span>
+        <div class="inline-flex flex-wrap gap-1">
+          <button type="button" data-role-preset="all" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer">全ロール</button>
+          <button type="button" data-role-preset="admin" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer">Admin</button>
+        </div>
+      </div>
+      <a href="./states.html" class="text-blue-300 hover:text-blue-200 underline underline-offset-2">状態・エラー・デザインシステム一覧 →</a>
+    </div>
+  </div>
+
+  <header class="sticky top-0 z-30 bg-white border-b border-slate-200 h-15 flex items-center px-4 lg:px-6">
+    <div class="w-full max-w-screen-2xl mx-auto flex items-center justify-between gap-4">
+      <a href="./index.html" class="flex items-center gap-2.5 text-slate-900 no-underline">
+        <span class="w-8 h-8 rounded-lg bg-blue-600 text-white font-bold text-sm inline-flex items-center justify-center">R</span>
+        <div class="leading-tight">
+          <div class="font-semibold text-sm">Registry ポータル</div>
+          <div class="text-[11px] text-slate-500">AWS Agent Registry 管理・発見基盤</div>
+        </div>
+      </a>
+      <span class="text-xs font-medium text-slate-600" data-role-summary></span>
+    </div>
+  </header>
+
+  <div class="flex-1 flex max-w-screen-2xl w-full mx-auto">
+    <aside class="hidden lg:block w-64 shrink-0 border-r border-slate-200 bg-white px-3 py-5">
+      <nav aria-label="メインナビゲーション" class="space-y-6">
+        <div>
+          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">発見</div>
+          <ul class="space-y-1"><li><a href="./index.html" class="block px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">カタログ</a></li></ul>
+        </div>
+        <div data-requires-roles="Admin">
+          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">管理（Admin）</div>
+          <ul class="space-y-1">
+            <li><a href="./administration.html" class="block px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">Registry 管理</a></li>
+            <li><a href="./recovery.html" aria-current="page" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm font-semibold bg-blue-50 text-blue-700"><span>回復操作</span><span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-indigo-100 text-indigo-800">1</span></a></li>
+          </ul>
+        </div>
+      </nav>
+    </aside>
+
+    <main class="flex-1 min-w-0 px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+      <div>
+        <h1 class="text-2xl font-bold tracking-tight text-slate-900">回復操作</h1>
+        <p class="mt-1 text-sm text-slate-600">結果確認中のまま停止した操作を Registry の再取得で照合・確定します。確定できない場合のみ、理由と確認を添えて強制解除します。</p>
+      </div>
+
+      <!-- 12桁レコード ID 照会 -->
+      <section class="bg-white border border-slate-200 rounded-xl shadow-xs p-5 max-w-2xl">
+        <h2 class="text-sm font-semibold text-slate-900 mb-3">結果確認中の操作を照会</h2>
+        <div class="flex gap-2.5">
+          <input type="text" maxlength="12" value="rec774411223" placeholder="12桁のレコード ID を入力" class="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono" />
+          <button type="button" class="px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium cursor-pointer">照会する</button>
+        </div>
+      </section>
+
+      <!-- 照会結果と回復操作パネル -->
+      <section class="bg-white border border-indigo-200 rounded-xl shadow-xs overflow-hidden max-w-3xl">
+        <div class="px-6 py-4 bg-indigo-50/70 border-b border-indigo-200 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-800">結果確認中（VERIFYING）</span>
+            <h2 class="text-base font-bold text-slate-900 mt-1">請求書照合 custom Agent（rec774411223）</h2>
+          </div>
+          <span class="text-xs text-indigo-800 font-medium">ロック保持中</span>
+        </div>
+
+        <div class="p-6 space-y-5">
+          <dl class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs bg-slate-50 p-4 rounded-lg border border-slate-200">
+            <div><dt class="text-slate-500">操作種別</dt><dd class="mt-0.5 font-semibold text-slate-900">下書き作成（CREATE_DRAFT）</dd></div>
+            <div><dt class="text-slate-500">操作 ID</dt><dd class="mt-0.5 font-mono text-slate-800">op_01JD9Q2M8N7P...</dd></div>
+            <div><dt class="text-slate-500">実行主体</dt><dd class="mt-0.5 font-mono text-slate-800">sub=publisher-042</dd></div>
+            <div><dt class="text-slate-500">開始時刻 / 回復可能時刻</dt><dd class="mt-0.5 font-mono text-slate-800">2026-11-28 11:10:02（経過済み・回復可能）</dd></div>
+          </dl>
+
+          <div>
+            <label for="recovery-reason" class="block text-xs font-semibold text-slate-700 mb-1.5">回復理由 <span class="text-rose-600">*</span></label>
+            <textarea id="recovery-reason" rows="2" placeholder="回復操作を行う理由（操作記録に無期限で残ります）" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">下書き保存時のネットワークタイムアウトにより結果確認中のまま停止したため、Registry の実状態を再取得して照合する。</textarea>
+          </div>
+
+          <div class="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-200">
+            <button type="button" class="px-5 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold shadow-xs cursor-pointer">Registry を再取得して照合</button>
+            <button type="button" data-open-modal="force-unlock-modal" class="px-4 py-2 rounded-lg border border-rose-300 bg-rose-50 hover:bg-rose-100 text-rose-800 text-xs font-semibold cursor-pointer">確定できない場合：強制解除へ進む</button>
+          </div>
+
+          <p class="text-[11px] text-slate-500">
+            ※ AWS が受け付けを返した操作や、AWS 側が処理中（CREATING / UPDATING）のレコードは強制解除できません。
+          </p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 強制解除確認モーダル（role="alertdialog"） -->
+  <div id="force-unlock-modal" data-modal aria-hidden="true" class="is-hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div data-close-modal class="fixed inset-0 bg-slate-900/50"></div>
+    <div role="alertdialog" aria-modal="true" aria-labelledby="force-unlock-title" class="relative w-full max-w-md bg-white rounded-2xl shadow-2xl border border-rose-200 overflow-hidden">
+      <div class="px-6 py-4 bg-rose-50 border-b border-rose-200 flex items-center justify-between">
+        <h2 id="force-unlock-title" class="text-base font-bold text-rose-900">操作を失敗として確定しロックを解除</h2>
+        <button type="button" data-close-modal class="p-1 rounded-lg text-rose-700 hover:bg-rose-100 cursor-pointer">✕</button>
+      </div>
+      <div class="p-6 space-y-4 text-xs text-slate-700">
+        <p class="leading-relaxed">
+          Registry の再取得でも操作結果を確定できない場合のみ、この操作を失敗（FAILED）として確定しロックを解除します。回復した主体・理由・方法は操作記録に永続保存されます。
+        </p>
+        <label class="flex items-start gap-2.5 bg-slate-50 p-3 rounded-lg border border-slate-200 cursor-pointer">
+          <input id="force-unlock-check" type="checkbox" class="mt-0.5 w-4 h-4 rounded border-slate-300 text-rose-600" />
+          <span>Registry の状態を確認済みであり、強制解除によりロックを解放することを承認します。</span>
+        </label>
+      </div>
+      <div class="px-6 py-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2.5">
+        <button type="button" data-close-modal class="px-4 py-2 rounded-lg border border-slate-300 bg-white text-slate-700 text-xs font-semibold cursor-pointer">キャンセル</button>
+        <button id="force-unlock-submit" type="button" disabled class="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 disabled:bg-rose-300 disabled:cursor-not-allowed text-white text-xs font-semibold cursor-pointer">強制解除する</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

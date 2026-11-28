@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="no-referrer" />
+  <title>下書きの作成・編集 | Registry ポータル（UI プロトタイプ）</title>
+  <link rel="stylesheet" href="./assets/styles.css" />
+  <script src="./assets/prototype.js" defer></script>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen flex flex-col">
+  <div class="bg-slate-900 text-slate-200 text-xs px-4 py-2 border-b border-slate-800">
+    <div class="max-w-screen-2xl mx-auto flex flex-wrap items-center justify-between gap-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="inline-flex items-center px-2 py-0.5 rounded bg-blue-500/20 text-blue-200 font-semibold">PROTOTYPE</span>
+        <span class="text-slate-400">業務ロール切替:</span>
+        <div class="inline-flex flex-wrap gap-1">
+          <button type="button" data-role-preset="all" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer">全ロール</button>
+          <button type="button" data-role-preset="publisher" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer">Publisher</button>
+          <button type="button" data-role-preset="curator" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer">Curator</button>
+          <button type="button" data-role-preset="admin" class="px-2 py-0.5 rounded border border-slate-700 text-xs font-medium cursor-pointer">Admin</button>
+        </div>
+      </div>
+      <a href="./states.html" class="text-blue-300 hover:text-blue-200 underline underline-offset-2">状態・エラー・デザインシステム一覧 →</a>
+    </div>
+  </div>
+
+  <header class="sticky top-0 z-30 bg-white border-b border-slate-200 h-15 flex items-center px-4 lg:px-6">
+    <div class="w-full max-w-screen-2xl mx-auto flex items-center justify-between gap-4">
+      <a href="./index.html" class="flex items-center gap-2.5 text-slate-900 no-underline">
+        <span class="w-8 h-8 rounded-lg bg-blue-600 text-white font-bold text-sm inline-flex items-center justify-center">R</span>
+        <div class="leading-tight">
+          <div class="font-semibold text-sm">Registry ポータル</div>
+          <div class="text-[11px] text-slate-500">AWS Agent Registry 管理・発見基盤</div>
+        </div>
+      </a>
+      <span class="text-xs font-medium text-slate-600" data-role-summary></span>
+    </div>
+  </header>
+
+  <div class="flex-1 flex max-w-screen-2xl w-full mx-auto">
+    <aside class="hidden lg:block w-64 shrink-0 border-r border-slate-200 bg-white px-3 py-5">
+      <nav aria-label="メインナビゲーション" class="space-y-6">
+        <div>
+          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">発見</div>
+          <ul class="space-y-1"><li><a href="./index.html" class="block px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">カタログ</a></li></ul>
+        </div>
+        <div data-requires-roles="Publisher">
+          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">登録（Publisher）</div>
+          <ul class="space-y-1"><li><a href="./drafts.html" aria-current="page" class="block px-3 py-2 rounded-lg text-sm font-semibold bg-blue-50 text-blue-700">下書き・申請</a></li></ul>
+        </div>
+        <div data-requires-roles="Curator">
+          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">審査・公開（Curator）</div>
+          <ul class="space-y-1">
+            <li><a href="./reviews.html" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100"><span>審査待ち</span><span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-amber-100 text-amber-800">3</span></a></li>
+            <li><a href="./publication.html" class="block px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">公開管理</a></li>
+          </ul>
+        </div>
+        <div data-requires-roles="Admin">
+          <div class="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">管理（Admin）</div>
+          <ul class="space-y-1">
+            <li><a href="./administration.html" class="block px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">Registry 管理</a></li>
+            <li><a href="./recovery.html" class="block px-3 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100">回復操作</a></li>
+          </ul>
+        </div>
+      </nav>
+    </aside>
+
+    <main class="flex-1 min-w-0 px-4 sm:px-6 lg:px-8 py-6 pb-28">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-5">
+        <nav aria-label="パンくずリスト" class="flex items-center gap-2 text-xs text-slate-500">
+          <a href="./drafts.html" class="hover:text-slate-900">下書き・申請</a>
+          <span>/</span>
+          <span class="text-slate-900 font-medium">下書きを編集</span>
+        </nav>
+        <div class="flex items-center gap-2">
+          <button type="button" data-open-drawer="history-drawer" class="px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold cursor-pointer">操作と審査の履歴</button>
+          <a href="./drafts.html" class="px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium">← 一覧に戻る</a>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-start justify-between gap-4 mb-6">
+        <div>
+          <div class="flex items-center gap-2 mb-1">
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700 ring-1 ring-inset ring-slate-500/20">下書き</span>
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20">公開中の版: v1.1.0（二重リビジョン）</span>
+          </div>
+          <h1 class="text-2xl font-bold tracking-tight text-slate-900">引受審査トリアージ Agent の編集</h1>
+          <p class="mt-1 text-xs font-mono text-slate-500">recordId: rec102938475 · contentHash: sha256:9d1e...4a2f（楽観ロック）</p>
+        </div>
+
+        <!-- 入力モード切替（フォーム入力 / JSON 入力） -->
+        <div class="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 text-xs" role="tablist" data-tab-group="draft-input-mode">
+          <button type="button" role="tab" aria-selected="true" data-tab-target="draft-form-mode" class="px-3.5 py-1.5 rounded-md border-b-2 border-blue-600 text-blue-700 bg-blue-50/70 font-semibold cursor-pointer">フォーム入力</button>
+          <button type="button" role="tab" aria-selected="false" data-tab-target="draft-json-mode" class="px-3.5 py-1.5 rounded-md border-b-2 border-transparent text-slate-600 font-medium cursor-pointer">JSON 入力</button>
+        </div>
+      </div>
+
+      <form class="space-y-6 max-w-4xl">
+        <!-- フォーム入力モード -->
+        <div id="draft-form-mode" data-tab-panel-group="draft-input-mode" class="space-y-6">
+          <!-- セクション 1: 基本情報 -->
+          <section class="bg-white border border-slate-200 rounded-xl shadow-xs p-6 space-y-4">
+            <h2 class="text-base font-semibold text-slate-900 pb-3 border-b border-slate-200">1. 基本情報</h2>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label for="draft-type" class="block text-xs font-semibold text-slate-700 mb-1.5">種別</label>
+                <select id="draft-type" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+                  <option value="AGENT" selected>Agent</option>
+                  <option value="MCP">MCP サーバー</option>
+                  <option value="SKILL">Skill</option>
+                </select>
+              </div>
+              <div>
+                <label for="draft-descriptor" class="block text-xs font-semibold text-slate-700 mb-1.5">descriptor 種別</label>
+                <select id="draft-descriptor" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+                  <option value="a2aAgentCard" selected>a2aAgentCard（A2A）</option>
+                  <option value="custom">custom（custom Agent）</option>
+                </select>
+                <p class="mt-1 text-[11px] text-slate-500">検索用の写し（isA2A）は descriptor から自動導出されます。</p>
+              </div>
+              <div>
+                <label for="draft-display-name" class="block text-xs font-semibold text-slate-700 mb-1.5">表示名 <span class="text-rose-600">*</span></label>
+                <input id="draft-display-name" type="text" value="引受審査トリアージ Agent" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label for="draft-name" class="block text-xs font-semibold text-slate-700 mb-1.5">レコード名（name） <span class="text-rose-600">*</span></label>
+                <input id="draft-name" type="text" value="underwriting-triage-agent" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono" />
+              </div>
+              <div>
+                <label for="draft-version" class="block text-xs font-semibold text-slate-700 mb-1.5">版（semver） <span class="text-rose-600">*</span></label>
+                <input id="draft-version" type="text" value="1.2.0" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono" />
+                <p class="mt-1 text-[11px] text-slate-500">公開中の版（1.1.0）より新しい semver を指定してください。</p>
+              </div>
+              <div>
+                <label for="draft-env" class="block text-xs font-semibold text-slate-700 mb-1.5">environment</label>
+                <input id="draft-env" type="text" value="dev" readonly class="w-full rounded-lg border border-slate-200 bg-slate-100 text-slate-600 px-3 py-2 text-sm font-mono" />
+              </div>
+            </div>
+            <div>
+              <label for="draft-desc" class="block text-xs font-semibold text-slate-700 mb-1.5">説明 <span class="text-rose-600">*</span></label>
+              <textarea id="draft-desc" rows="3" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">新規保険契約の申込書類を解析し、リスク区分・追加確認項目を一次判定する A2A 対応 Agent です。v1.2.0 では特約リスク項目の判定精度を改善しました。</textarea>
+            </div>
+          </section>
+
+          <!-- セクション 2: 管理・公開情報 -->
+          <section class="bg-white border border-slate-200 rounded-xl shadow-xs p-6 space-y-4">
+            <h2 class="text-base font-semibold text-slate-900 pb-3 border-b border-slate-200">2. 管理・公開情報</h2>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label for="draft-team" class="block text-xs font-semibold text-slate-700 mb-1.5">所有チーム <span class="text-rose-600">*</span></label>
+                <select id="draft-team" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+                  <option value="team-fsi-core" selected>team-fsi-core</option>
+                  <option value="team-platform">team-platform</option>
+                </select>
+              </div>
+              <div>
+                <label for="draft-classification" class="block text-xs font-semibold text-slate-700 mb-1.5">データ分類 <span class="text-rose-600">*</span></label>
+                <select id="draft-classification" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+                  <option value="private" selected>private（組織内限定）</option>
+                  <option value="public">public（組織外公開可）</option>
+                </select>
+              </div>
+              <div>
+                <label for="draft-contact" class="block text-xs font-semibold text-slate-700 mb-1.5">連絡先</label>
+                <input id="draft-contact" type="text" value="Slack #fsi-agent-ops / fsi-platform@example.com" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label for="draft-conn-ref" class="block text-xs font-semibold text-slate-700 mb-1.5">接続先の参照</label>
+                <input id="draft-conn-ref" type="text" value="https://wiki.internal.example.com/agents/underwriting-triage" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono" />
+              </div>
+            </div>
+            <div>
+              <label for="draft-terms" class="block text-xs font-semibold text-slate-700 mb-1.5">利用条件</label>
+              <textarea id="draft-terms" rows="2" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">社内引受業務システムからのみ呼び出し可能。顧客個人情報のログ保存は禁止。</textarea>
+            </div>
+          </section>
+        </div>
+
+        <!-- JSON 入力モード -->
+        <div id="draft-json-mode" data-tab-panel-group="draft-input-mode" class="is-hidden">
+          <section class="bg-white border border-slate-200 rounded-xl shadow-xs p-6 space-y-3">
+            <div class="flex items-center justify-between">
+              <h2 class="text-base font-semibold text-slate-900">JSON 入力</h2>
+              <span class="text-xs text-slate-500">フォーム入力と内容を相互変換します</span>
+            </div>
+            <textarea rows="14" class="w-full rounded-lg border border-slate-300 bg-slate-900 text-slate-100 p-4 text-xs font-mono leading-relaxed">{
+  "recordType": "AGENT",
+  "name": "underwriting-triage-agent",
+  "displayName": "引受審査トリアージ Agent",
+  "recordVersion": "1.2.0",
+  "ownerTeam": "team-fsi-core",
+  "environment": "dev",
+  "dataClassification": "private",
+  "descriptorType": "a2aAgentCard",
+  "description": "新規保険契約の申込書類を解析し、リスク区分・追加確認項目を一次判定する A2A 対応 Agent です。"
+}</textarea>
+          </section>
+        </div>
+
+        <!-- 廃止依頼（編集時かつ未廃止の場合のみ表示） -->
+        <section class="bg-white border border-rose-200 rounded-xl shadow-xs p-6 space-y-3">
+          <div class="flex items-center justify-between gap-2">
+            <div>
+              <h2 class="text-base font-semibold text-rose-900">廃止依頼（Publisher）</h2>
+              <p class="text-xs text-slate-600 mt-0.5">この Registry レコードの廃止が必要な場合、理由を添えて Curator へ廃止依頼を送れます。廃止は Curator が決裁・実行します。</p>
+            </div>
+          </div>
+          <div>
+            <label for="dep-req-reason" class="block text-xs font-semibold text-slate-700 mb-1.5">廃止依頼の理由</label>
+            <textarea id="dep-req-reason" rows="2" placeholder="例: 後継の v2 系 Agent へ移行完了したため廃止を依頼します。" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"></textarea>
+          </div>
+          <div class="flex justify-end">
+            <button type="button" class="px-4 py-2 rounded-lg border border-rose-300 bg-rose-50 hover:bg-rose-100 text-rose-800 text-xs font-semibold cursor-pointer">廃止依頼を送信する</button>
+          </div>
+        </section>
+      </form>
+    </main>
+  </div>
+
+  <!-- 下部固定アクションバー -->
+  <div class="fixed bottom-0 inset-x-0 z-20 bg-white/95 backdrop-blur border-t border-slate-200 px-4 lg:px-8 py-3">
+    <div class="max-w-screen-2xl mx-auto flex flex-wrap items-center justify-between gap-3">
+      <div class="text-xs text-slate-500">保存してから「保存済みの内容を申請」へ進みます（更新時は楽観ロックを検証）。</div>
+      <div class="flex items-center gap-2.5">
+        <a href="./drafts.html" class="px-4 py-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium">キャンセル</a>
+        <button type="button" class="px-4 py-2 rounded-lg border border-blue-600 bg-white hover:bg-blue-50 text-blue-700 text-sm font-semibold cursor-pointer">下書きを保存</button>
+        <a href="./submission.html" class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold shadow-xs">保存済みの内容を申請 →</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- 履歴ドロワー -->
+  <div id="history-drawer" data-drawer aria-hidden="true" class="is-hidden fixed inset-0 z-50 flex justify-end">
+    <div data-close-drawer class="fixed inset-0 bg-slate-900/40"></div>
+    <div role="dialog" aria-modal="true" class="relative w-full max-w-lg bg-white h-full shadow-2xl flex flex-col">
+      <div class="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+        <h2 class="text-base font-semibold text-slate-900">操作と審査の履歴</h2>
+        <button type="button" data-close-drawer class="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 cursor-pointer">✕</button>
+      </div>
+      <div class="p-5 text-xs text-slate-600 space-y-3">
+        <div class="p-3 rounded-lg border border-slate-200 bg-slate-50">
+          <div class="font-semibold text-slate-900">下書き更新（SUCCEEDED）· 2026-11-27 15:10</div>
+          <div class="font-mono text-slate-500 mt-1">版: v1.2.0 / 主体: sub=publisher-042</div>
+        </div>
+        <div class="p-3 rounded-lg border border-slate-200 bg-slate-50">
+          <div class="font-semibold text-emerald-700">公開承認（SUCCEEDED）· 2026-11-20 14:32</div>
+          <div class="font-mono text-slate-500 mt-1">版: v1.1.0 / 主体: sub=curator-001</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
