@@ -29,8 +29,7 @@ const DECISIONS: Record<
     failure: '公開承認できませんでした。',
     field: 'approveReason',
     frame: 'border-emerald-200 bg-emerald-50/30',
-    button:
-      'inline-flex items-center justify-center px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold shadow-xs disabled:opacity-50 disabled:cursor-not-allowed',
+    button: button.success,
   },
   reject: {
     legend: '却下',
@@ -39,8 +38,7 @@ const DECISIONS: Record<
     failure: '却下できませんでした。',
     field: 'rejectReason',
     frame: 'border-rose-200 bg-rose-50/30',
-    button:
-      'inline-flex items-center justify-center px-5 py-2 rounded-lg border border-rose-300 bg-rose-50 hover:bg-rose-100 text-rose-800 text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed',
+    button: button.dangerSoft,
   },
 }
 

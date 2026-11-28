@@ -3,7 +3,7 @@ import { toApiError, type ApiClient, type ApiError } from '../api/client'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { EmptyState, LoadingState } from '../components/StatePanel'
 import { usePopover } from '../components/usePopover'
-import { popover } from '../ui/classes'
+import { badge, popover } from '../ui/classes'
 import {
   NOTIFICATION_KIND_LABELS,
   NOTIFICATION_POLL_INTERVAL_MS,
@@ -15,16 +15,16 @@ type Props = { api: ApiClient; onRelogin: () => void }
 
 /** 通知種別のバッジの色。依頼・申請は対応待ち、公開承認は完了、公開停止・廃止・却下は注意 */
 const KIND_BADGE: Record<NotificationKind, string> = {
-  SUBMITTED: 'bg-amber-100 text-amber-800',
-  DEPRECATION_REQUESTED: 'bg-amber-100 text-amber-800',
-  APPROVED: 'bg-emerald-100 text-emerald-800',
-  REJECTED: 'bg-rose-100 text-rose-800',
-  SUSPENDED: 'bg-rose-100 text-rose-800',
-  DEPRECATED: 'bg-rose-100 text-rose-800',
-  DEPRECATION_DECLINED: 'bg-slate-100 text-slate-700',
-  REFERENCE_SUSPENDED: 'bg-rose-100 text-rose-800',
-  REFERENCE_DEPRECATED: 'bg-rose-100 text-rose-800',
-  OUTSIDE_CHANGE: 'bg-rose-100 text-rose-800',
+  SUBMITTED: badge.warning,
+  DEPRECATION_REQUESTED: badge.warning,
+  APPROVED: badge.success,
+  REJECTED: badge.danger,
+  SUSPENDED: badge.danger,
+  DEPRECATED: badge.danger,
+  DEPRECATION_DECLINED: badge.neutral,
+  REFERENCE_SUSPENDED: badge.danger,
+  REFERENCE_DEPRECATED: badge.danger,
+  OUTSIDE_CHANGE: badge.danger,
 }
 
 /**
@@ -144,7 +144,7 @@ export function NotificationsView({ api, onRelogin }: Props) {
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 flex-wrap">
                         {!item.read && <strong className="sr-only">未読 </strong>}
-                        <span className={`text-[11px] font-semibold px-1.5 py-0.5 rounded ${KIND_BADGE[item.kind]}`}>
+                        <span className={KIND_BADGE[item.kind]}>
                           {NOTIFICATION_KIND_LABELS[item.kind]}
                         </span>{' '}
                         <time dateTime={item.createdAt} className="text-xs text-slate-500">

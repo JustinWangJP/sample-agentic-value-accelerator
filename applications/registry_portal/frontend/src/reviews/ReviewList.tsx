@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { toApiError, type ApiClient, type ApiError } from '../api/client'
 import { RECORD_TYPE_LABELS } from '../api/recordType'
 import { CursorPager } from '../components/NavigationControls'
@@ -7,7 +7,7 @@ import { EmptyState, LoadingState, PageHeader } from '../components/StatePanel'
 import { recordStatusLabel } from '../drafts/api'
 import { elapsedDays } from '../elapsedDays'
 import { RecordPublicationToggle } from '../publication/RecordPublicationPanel'
-import { badge, button, callout, card } from '../ui/classes'
+import { badge, button, callout, card, listHeader } from '../ui/classes'
 import type { DeprecationRequestSummary, PendingPage, SubmissionSummary } from './api'
 
 type ListState =
@@ -102,7 +102,7 @@ export function ReviewList({
           {list.page.items.length > 0 && (
             <div className={`${card} overflow-hidden`}>
               <div
-                className={`hidden md:grid ${REVIEW_COLUMNS} bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600`}
+                className={`${listHeader} ${REVIEW_COLUMNS}`}
                 aria-hidden="true"
               >
                 <span className="py-3 px-4">区分</span>
@@ -115,27 +115,21 @@ export function ReviewList({
               <ul className="divide-y divide-slate-200 text-sm">
                 {list.page.items.map((item) =>
                   item.reviewKind === 'DEPRECATION_REQUEST' ? (
-                    <li key={`request-${item.recordId}`} className="hover:bg-slate-50/70">
-                      <div className={`grid grid-cols-1 ${REVIEW_COLUMNS} items-start`}>
-                        <p className="pt-3.5 px-4 md:py-3.5">
-                          <span className={badge.danger}>廃止依頼</span>
-                        </p>
-                        <ReviewRecordCell item={item} />
-                        <p className="px-4 md:py-3.5 text-xs font-mono font-semibold text-slate-900">版 {item.recordVersion}</p>
-                        <div className="px-4 md:py-3.5 text-xs text-slate-600 break-all">
+                    <ReviewRow
+                      key={`request-${item.recordId}`}
+                      item={item}
+                      kindLabel="廃止依頼"
+                      kindClassName={badge.danger}
+                      statusClassName={badge.neutral}
+                      reason={
+                        <>
                           <p>
                             廃止依頼: {item.reason}（依頼者 {item.requestedBy.subject}）
                           </p>
                           <p className="mt-0.5 text-rose-700 font-medium">{requestProgress(item)}</p>
-                        </div>
-                        <p className="px-4 md:py-3.5 text-xs">
-                          <span className={badge.neutral}>
-                            状態 {recordStatusLabel(item.status)}
-                            {item.operationId && ' / 結果確認中'}
-                          </span>
-                        </p>
-                        <div className="py-3.5 px-4 md:text-right" />
-                      </div>
+                        </>
+                      }
+                    >
                       <div className="px-4 pb-4 space-y-2">
                         {!item.managed && (
                           <p className={callout.warning}>ポータルで管理されていないため、ここでは対応できません。</p>
@@ -147,42 +141,35 @@ export function ReviewList({
                           label="対応する"
                         />
                       </div>
-                    </li>
+                    </ReviewRow>
                   ) : (
-                    <li key={item.recordId} className="hover:bg-slate-50/70">
-                      <div className={`grid grid-cols-1 ${REVIEW_COLUMNS} items-start`}>
-                        <p className="pt-3.5 px-4 md:py-3.5">
-                          <span className={badge.warning}>申請</span>
+                    <ReviewRow
+                      key={item.recordId}
+                      item={item}
+                      kindLabel="申請"
+                      kindClassName={badge.warning}
+                      statusClassName={badge.warning}
+                      reason={
+                        <p>
+                          申請理由: {submissionLine(item)}
+                          {item.submittedBy && `（申請者 ${item.submittedBy.subject}）`}
                         </p>
-                        <ReviewRecordCell item={item} />
-                        <p className="px-4 md:py-3.5 text-xs font-mono font-semibold text-slate-900">版 {item.recordVersion}</p>
-                        <div className="px-4 md:py-3.5 text-xs text-slate-600 break-all">
-                          <p>
-                            申請理由: {submissionLine(item)}
-                            {item.submittedBy && `（申請者 ${item.submittedBy.subject}）`}
-                          </p>
-                        </div>
-                        <p className="px-4 md:py-3.5 text-xs">
-                          <span className={badge.warning}>
-                            状態 {recordStatusLabel(item.status)}
-                            {item.operationId && ' / 結果確認中'}
-                          </span>
-                        </p>
-                        <div className="py-3.5 px-4 md:text-right">
-                          <button
-                            type="button"
-                            className={button.smallPrimary}
-                            disabled={item.operationId !== null || !item.snapshotHash}
-                            onClick={() => onOpen(item.recordId)}
-                          >
-                            審査する
-                          </button>
-                        </div>
-                      </div>
+                      }
+                      action={
+                        <button
+                          type="button"
+                          className={button.smallPrimary}
+                          disabled={item.operationId !== null || !item.snapshotHash}
+                          onClick={() => onOpen(item.recordId)}
+                        >
+                          審査する
+                        </button>
+                      }
+                    >
                       {!item.managed && (
                         <p className={`mx-4 mb-4 ${callout.warning}`}>ポータルで管理されていないため、ここでは決裁できません。</p>
                       )}
-                    </li>
+                    </ReviewRow>
                   ),
                 )}
               </ul>
@@ -206,6 +193,49 @@ export function ReviewList({
         </div>
       )}
     </section>
+  )
+}
+
+/**
+ * 審査待ちの 1 行。申請と廃止依頼で、区分・理由・操作の中身だけを変え、列の並びは共有する。
+ * children は行の下に置く補足（管理外の警告・公開管理）
+ */
+function ReviewRow({
+  item,
+  kindLabel,
+  kindClassName,
+  statusClassName,
+  reason,
+  action,
+  children,
+}: {
+  item: SubmissionSummary | DeprecationRequestSummary
+  kindLabel: string
+  kindClassName: string
+  statusClassName: string
+  reason: ReactNode
+  action?: ReactNode
+  children?: ReactNode
+}) {
+  return (
+    <li className="hover:bg-slate-50/70">
+      <div className={`grid grid-cols-1 ${REVIEW_COLUMNS} items-start`}>
+        <p className="pt-3.5 px-4 md:py-3.5">
+          <span className={kindClassName}>{kindLabel}</span>
+        </p>
+        <ReviewRecordCell item={item} />
+        <p className="px-4 md:py-3.5 text-xs font-mono font-semibold text-slate-900">版 {item.recordVersion}</p>
+        <div className="px-4 md:py-3.5 text-xs text-slate-600 break-all">{reason}</div>
+        <p className="px-4 md:py-3.5 text-xs">
+          <span className={statusClassName}>
+            状態 {recordStatusLabel(item.status)}
+            {item.operationId && ' / 結果確認中'}
+          </span>
+        </p>
+        <div className="py-3.5 px-4 md:text-right">{action}</div>
+      </div>
+      {children}
+    </li>
   )
 }
 

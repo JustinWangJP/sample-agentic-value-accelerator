@@ -1,11 +1,10 @@
 import type { ReactNode } from 'react'
-import { button } from '../ui/classes'
-import { requestErrorKind } from './requestErrorKind'
+import { button, statePanel } from '../ui/classes'
+import { requestErrorKind, type DisplayedError } from './requestErrorKind'
 import { StatePanelFrame } from './StatePanel'
 
 type Props = {
-  /** ApiError のほか、ページ送りの失敗などメッセージだけを持つ値も受け付ける */
-  error: { message: string; requiresLogin: boolean; status?: number; code?: string; requestId?: string | null }
+  error: DisplayedError
   /** 再試行の操作。省略したとき、および 403・準備中（再試行しても解決しない）のときは再試行ボタンを出さない */
   onRetry?: () => void
   /** 再試行ボタンの文言 */
@@ -16,7 +15,7 @@ type Props = {
 }
 
 /** HTTP の状態とエラーコード。サーバーから応答がない失敗（status 0）は出さない */
-function statusText({ status, code }: Props['error']): string | null {
+function statusText({ status, code }: DisplayedError): string | null {
   return status && code ? `${status} ${code}` : null
 }
 
@@ -28,17 +27,12 @@ export function RequestErrorAlert({ error, onRetry, retryLabel = '再試行', on
   const kind = requestErrorKind(error)
   const status = statusText(error)
   const preparing = kind === 'preparing'
+  const tone = preparing ? 'warning' : 'danger'
   const retry = kind === 'failure' ? onRetry : undefined
   return (
-    <StatePanelFrame
-      tone={preparing ? 'warning' : 'danger'}
-      badge={status && (preparing ? `準備中（${status}）` : `失敗（${status}）`)}
-      role="alert"
-    >
-      <p className={`text-sm font-semibold ${preparing ? 'text-amber-950' : 'text-rose-950'}`}>{error.message}</p>
-      {error.requestId && (
-        <p className={`text-xs font-mono ${preparing ? 'text-amber-800' : 'text-rose-700'}`}>requestId: {error.requestId}</p>
-      )}
+    <StatePanelFrame tone={tone} badge={status && `${preparing ? '準備中' : '失敗'}（${status}）`} role="alert">
+      <p className={`text-sm font-semibold ${statePanel[tone].title}`}>{error.message}</p>
+      {error.requestId && <p className={`text-xs font-mono ${statePanel[tone].detail}`}>requestId: {error.requestId}</p>}
       {(kind === 'login' || retry || children) && (
         <div className="flex flex-wrap gap-2 pt-1">
           {kind === 'login' ? (

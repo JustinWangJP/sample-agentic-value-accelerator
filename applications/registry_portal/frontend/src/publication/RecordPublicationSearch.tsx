@@ -14,7 +14,8 @@ import {
   type PublicationSearchStatus,
 } from './api'
 import { RecordPublicationPanel } from './RecordPublicationPanel'
-import { badge, button, card, fieldLabel, note } from '../ui/classes'
+import { SUSPENDED_LABEL, recordStatusBadge } from './publicationStatus'
+import { button, card, fieldLabel, listHeader, note } from '../ui/classes'
 
 type Props = {
   api: ApiClient
@@ -31,9 +32,6 @@ type PageState =
   | { kind: 'loading' }
   | { kind: 'ready'; page: PublicationRecordPage }
   | { kind: 'error'; error: ApiError }
-
-/** 公開停止中の表示。検索条件の選択肢と、一覧の項目の区別で同じ文言を使う */
-const SUSPENDED_LABEL = '公開停止中'
 
 /** 検索条件の状態のラベル。公開停止中だけポータルの区別の表示で、他は AWS の状態の既存の表示（recordStatusLabel）に合わせる */
 function searchStatusLabel(status: PublicationSearchStatus): string {
@@ -144,7 +142,7 @@ export function RecordPublicationSearch({ api, onRelogin, aside }: Props) {
             <span className="text-xs text-slate-500">所有チームによらず管理下のレコードを表示します</span>
           </div>
           {state.page.items.length > 0 && (
-            <div className={`hidden md:grid ${RESULT_COLUMNS} bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600`} aria-hidden="true">
+            <div className={`${listHeader} ${RESULT_COLUMNS}`} aria-hidden="true">
               <span className="py-3 px-4">レコード名 / ID</span>
               <span className="py-3 px-4">種別・所有チーム</span>
               <span className="py-3 px-4">版 / 公開中の版</span>
@@ -192,6 +190,7 @@ function PublicationResult({
   onRelogin: () => void
 }) {
   const [open, setOpen] = useState(false)
+  const status = recordStatusBadge(item)
   return (
     <li className={open ? 'bg-blue-50/40' : 'hover:bg-slate-50/70'}>
       <div className={`grid grid-cols-1 ${RESULT_COLUMNS} items-center`}>
@@ -211,10 +210,7 @@ function PublicationResult({
           </p>
         </div>
         <p className="px-4 md:py-3 text-xs">
-          <span className={item.suspended ? badge.suspended : badge.neutral}>
-            状態 {searchStatusLabel(item.status)}
-            {item.suspended ? `・${SUSPENDED_LABEL}` : ''}
-          </span>
+          <span className={status.className}>状態 {status.label}</span>
         </p>
         <div className="py-3 px-4 md:text-right">
           <button type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)} className={button.small}>

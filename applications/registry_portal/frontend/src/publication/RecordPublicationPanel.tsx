@@ -9,7 +9,6 @@ import { RecordHistoryToggle } from '../drafts/RecordHistoryView'
 import {
   DEPRECATED_STATUS,
   DEPRECATION_REASON_MAX_LENGTH,
-  PUBLISHED_STATUS,
   STATUS_REASON_MAX_LENGTH,
   isUncertainWriteError,
   recordStatusLabel,
@@ -20,6 +19,7 @@ import type { DecisionOperation } from '../reviews/api'
 import { elapsedDays } from '../elapsedDays'
 import { badge, button, callout, card, fieldLabel } from '../ui/classes'
 import { PUBLICATION_ACTIONS, type PublicationAction, type PublicationView } from './api'
+import { isShownAsSuspended, recordStatusBadge } from './publicationStatus'
 
 type Props = {
   api: ApiClient
@@ -69,8 +69,7 @@ const ACTION_SPECS: Record<PublicationAction, ActionSpec> = {
     tone: {
       frame: 'border-orange-200 bg-orange-50/30',
       title: 'text-orange-950',
-      button:
-        'inline-flex items-center justify-center px-4 py-2 rounded-lg bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed',
+      button: button.suspend,
     },
     legend: '公開停止',
     description:
@@ -86,8 +85,7 @@ const ACTION_SPECS: Record<PublicationAction, ActionSpec> = {
     tone: {
       frame: 'border-rose-200 bg-rose-50/30',
       title: 'text-rose-950',
-      button:
-        'inline-flex items-center justify-center px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed',
+      button: button.danger,
     },
     legend: '廃止',
     description:
@@ -233,6 +231,7 @@ export function RecordPublicationPanel({ api, recordId, onRelogin, onChanged }: 
   const request = view.deprecationRequest
   const finished = action.kind === 'result' || action.kind === 'declined'
   const days = request ? elapsedDays(request.requestedAt) : null
+  const status = recordStatusBadge(view)
 
   return (
     // 置き場所の幅（カタログ詳細の右列・検索結果の行・画面幅）で列数を変えるため、コンテナクエリを使う
@@ -240,10 +239,7 @@ export function RecordPublicationPanel({ api, recordId, onRelogin, onChanged }: 
       <div className="px-5 py-4 bg-slate-50 border-b border-slate-200 flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className={statusBadge(view.status, view.suspended)}>
-              {recordStatusLabel(view.status)}
-              {view.suspended && view.status !== DEPRECATED_STATUS ? '・公開停止中' : ''}
-            </span>
+            <span className={status.className}>{status.label}</span>
             {request && (
               <span className={badge.danger}>
                 未解決の廃止依頼あり{days !== null && `（${days} 日経過）`}
@@ -278,7 +274,7 @@ export function RecordPublicationPanel({ api, recordId, onRelogin, onChanged }: 
         </div>
       </div>
       <div className="p-5 space-y-5">
-        {view.suspended && view.status !== DEPRECATED_STATUS && (
+        {isShownAsSuspended(view) && (
           <p className={callout.warning}>公開停止中です。再公開には Publisher の編集と再申請が必要です。</p>
         )}
         {view.operationId && (
@@ -433,7 +429,7 @@ export function RecordPublicationPanel({ api, recordId, onRelogin, onChanged }: 
           <RequestErrorAlert error={action.error} onRelogin={onRelogin}>
             {action.error.status === 409 && (
               <p className="text-xs text-rose-800">
-                状態が変わったか、別の操作が処理中です。最新の状態を読み込んでから判断してください。
+                状態が変わったか、別の操作が結果確認中です。最新の状態を読み込んでから判断してください。
               </p>
             )}
             {action.retry !== null && (
@@ -483,14 +479,6 @@ export function RecordPublicationPanel({ api, recordId, onRelogin, onChanged }: 
       </div>
     </section>
   )
-}
-
-/** レコードの状態のバッジ。公開中は緑、公開停止中は橙、廃止は灰、それ以外は中立 */
-function statusBadge(status: string, suspended: boolean): string {
-  if (status === DEPRECATED_STATUS) return badge.neutral
-  if (suspended) return badge.suspended
-  if (status === PUBLISHED_STATUS) return badge.success
-  return badge.neutral
 }
 
 /** 公開管理を開閉するボタン。カタログの詳細と審査待ちの一覧から、同じ公開管理を開く */

@@ -42,8 +42,8 @@ export function LoadingState({ children }: { children: ReactNode }) {
 export function EmptyState({ children, hint }: { children: ReactNode; hint?: ReactNode }) {
   return (
     <StatePanelFrame tone="neutral" badge="0 件（正常応答）" className="text-center">
-      <p className="text-sm font-semibold text-slate-900">{children}</p>
-      {hint && <p className="text-xs text-slate-500">{hint}</p>}
+      <p className={`text-sm font-semibold ${statePanel.neutral.title}`}>{children}</p>
+      {hint && <p className={`text-xs ${statePanel.neutral.detail}`}>{hint}</p>}
     </StatePanelFrame>
   )
 }
@@ -52,8 +52,8 @@ export function EmptyState({ children, hint }: { children: ReactNode; hint?: Rea
 export function ForbiddenState({ screenLabel }: { screenLabel: string }) {
   return (
     <StatePanelFrame tone="danger" badge="失敗（403 FORBIDDEN）" role="alert">
-      <h2 className="text-sm font-semibold text-rose-950">{screenLabel}を表示できません</h2>
-      <p className="text-xs text-rose-800">
+      <h2 className={`text-sm font-semibold ${statePanel.danger.title}`}>{screenLabel}を表示できません</h2>
+      <p className={`text-xs ${statePanel.danger.detail}`}>
         この画面を利用する業務ロールがありません。ログインし直しても、再試行しても解決しないため、再ログイン・再試行のボタンは表示しません。管理者に業務ロールを確認してください。
       </p>
     </StatePanelFrame>

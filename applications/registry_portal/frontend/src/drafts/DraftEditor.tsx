@@ -9,7 +9,6 @@ import type { Route } from '../routing/routes'
 import { badge, button, callout, card, fieldLabel, note, pageTitle } from '../ui/classes'
 import {
   DEPRECATED_STATUS,
-  DRAFT_STATUS,
   PENDING_APPROVAL_STATUS,
   isUncertainWriteError,
   recordStatusLabel,
@@ -17,6 +16,7 @@ import {
   type DraftDetail,
   type DraftOperation,
   type RecordDraft,
+  type RecordStatus,
 } from './api'
 import { DeprecationRequestForm } from './DeprecationRequestForm'
 import { DescriptorFields, FORM_SECTION, KindFields, MetadataFields } from './DraftFormSections'
@@ -25,6 +25,12 @@ import { RecordHistoryToggle } from './RecordHistoryView'
 
 export type BackOptions = { force?: boolean }
 export type EditorInitial = { kind: 'new'; key: string } | { kind: 'edit'; detail: DraftDetail }
+
+/**
+ * 下書き。申請できるのはこの状態だけ。バックエンドの DRAFT_STATUS と揃える。
+ * 各 api.ts は変更しない方針（Issue #85）のため、使う画面のここで定義する
+ */
+const DRAFT_STATUS: RecordStatus = 'DRAFT'
 
 const DRAFTS_LIST_ROUTE: Route = { screen: 'drafts', view: { kind: 'list' } }
 

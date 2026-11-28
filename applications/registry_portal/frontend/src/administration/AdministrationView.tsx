@@ -216,7 +216,7 @@ function AdministrationPanel({ api, onRelogin }: Props) {
         <p className={note}>既存の Cognito グループ名を {OWNER_TEAM_PREFIX} から入力してください。</p>
         <button type="submit" className={button.primary} disabled={submitting || !isOwnerTeam(ownerTeam) || !reason.trim()}>{submitting ? '結果を確認しています…' : action.submitLabel}</button>
       </form>}
-      <p className={`px-5 pb-5 pt-1 ${note}`}>取り込みは Registry を更新しません。取り込み後は所有チームの Publisher が通常の編集・申請・公開承認を進めてください。既存 metadata は保持され、A2A 検索用の isA2A は所有チームが保存したときに descriptor から補完されます（編集画面にも補完が必要なことを表示します）。検索の全ページ照合が完了するまで A2A 検索を有効にしません。取り込み前の承認者は履歴で「不明」と表示します。</p>
+      <p className={`px-5 pb-5 pt-1 ${note}`}>取り込みは Registry を更新しません。取り込み後は所有チームの Publisher が通常の編集・申請・公開承認を進めてください。既存 metadata は保持され、A2A 検索用の isA2A は所有チームが保存したときに descriptor から補完されます（編集画面にも補完が必要なことを表示します）。検索の全ページ照合が完了するまで A2A 検索を有効にしません。取り込み前に決裁した Curator は履歴で「不明」と表示します。</p>
     </section>
   </section>
 }

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, createApiClient } from '../api/client'
 import { DATA_CLASSIFICATIONS, DATA_CLASSIFICATION_LABELS } from '../api/dataClassification'
 import { CatalogSearchView } from '../catalog/CatalogSearchView'
+import { DetailBreadcrumb } from '../components/NavigationControls'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { EmptyState, ForbiddenState, LoadingState } from '../components/StatePanel'
 import { RecordHistoryToggle } from '../drafts/RecordHistoryView'
@@ -111,6 +112,23 @@ describe('失敗の表示', () => {
     const output = render(new ApiError(0, 'UNEXPECTED_ERROR', '想定外のエラーです。'))
     expect(output).not.toContain('失敗（')
     expect(output).toContain('想定外のエラーです。')
+  })
+})
+
+describe('詳細画面のパンくず', () => {
+  it('親の画面を省略すると親の名前をリンクにせず、戻るボタンの文言を変えられる', () => {
+    const output = html(
+      createElement(DetailBreadcrumb, {
+        parentLabel: '下書き・申請',
+        current: '申請',
+        onBack: () => {},
+        backLabel: '申請をやめる',
+        backDisabled: true,
+      }),
+    )
+    expect(output).toContain('下書き・申請')
+    expect(output).not.toContain('<a')
+    expect(output).toMatch(/<button[^>]*disabled=""[^>]*>申請をやめる<\/button>/)
   })
 })
 

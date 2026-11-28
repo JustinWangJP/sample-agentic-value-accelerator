@@ -5,7 +5,7 @@ import { CursorPager } from '../components/NavigationControls'
 import { OperationCheck } from '../components/OperationCheck'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { EmptyState, LoadingState, PageHeader } from '../components/StatePanel'
-import { badge, button, card } from '../ui/classes'
+import { badge, button, card, listHeader } from '../ui/classes'
 import {
   DEFAULT_DRAFT_ENVIRONMENT,
   isEditableStatus,
@@ -94,7 +94,7 @@ export function DraftList({
           )}
           {page.page.items.length > 0 && (
             <div className={`${card} overflow-hidden`}>
-              <div className={`hidden md:grid ${DRAFT_COLUMNS} bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600`} aria-hidden="true">
+              <div className={`${listHeader} ${DRAFT_COLUMNS}`} aria-hidden="true">
                 <span className="py-3 px-4">レコード名 / 種別・所有チーム</span>
                 <span className="py-3 px-4">版（最新 / 公開中）</span>
                 <span className="py-3 px-4">状態</span>

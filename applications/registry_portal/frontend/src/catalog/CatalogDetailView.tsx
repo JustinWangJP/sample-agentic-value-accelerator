@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { ApiClient, ApiError, CatalogDetail, CatalogItem } from '../api/client'
 import { DATA_CLASSIFICATION_LABELS } from '../api/dataClassification'
+import { DetailBreadcrumb } from '../components/NavigationControls'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { LoadingState } from '../components/StatePanel'
 import { RecordHistoryToggle } from '../drafts/RecordHistoryView'
 import { RecordPublicationToggle } from '../publication/RecordPublicationPanel'
 import { RouteLink } from '../routing/NavigationProvider'
-import { badge, button, callout, card, pageTitle } from '../ui/classes'
+import { badge, callout, card, pageTitle } from '../ui/classes'
 import { catalogTypeLabel } from './recordTypes'
 import { settleWhileActive } from './requests'
 
@@ -59,18 +60,14 @@ export function CatalogDetailView({
   const title = record ? record.displayName || record.name : recordId
   return (
     <section aria-labelledby="catalog-detail-heading">
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
-        <nav aria-label="パンくずリスト" className="flex items-center gap-2 text-xs text-slate-500">
-          <RouteLink to={{ screen: 'catalog', recordId: null }} className="hover:text-slate-900">
-            カタログ
-          </RouteLink>
-          <span aria-hidden="true">/</span>
-          <span className="text-slate-900 font-medium">詳細</span>
-        </nav>
-        <button type="button" className={button.small} onClick={onClose}>
-          カタログに戻る
-        </button>
-      </div>
+      <DetailBreadcrumb
+        parentTo={{ screen: 'catalog', recordId: null }}
+        parentLabel="カタログ"
+        current="詳細"
+        onBack={onClose}
+        backLabel="カタログに戻る"
+        className="mb-5"
+      />
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
         <div className="xl:col-span-2 space-y-6">
           <section className={`${card} p-6`}>

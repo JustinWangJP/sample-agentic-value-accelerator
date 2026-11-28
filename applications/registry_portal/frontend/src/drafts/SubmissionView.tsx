@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { toApiError, type ApiClient, type ApiError } from '../api/client'
+import { DetailBreadcrumb } from '../components/NavigationControls'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
 import { LoadingState } from '../components/StatePanel'
 import { badge, button, callout, card, codeBlock, fieldLabel, note, pageTitle } from '../ui/classes'
@@ -70,16 +71,12 @@ export function SubmissionView({
 
   return (
     <section aria-labelledby="submission-heading" className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <nav aria-label="パンくずリスト" className="flex items-center gap-2 text-xs text-slate-500">
-          <span>下書き・申請</span>
-          <span aria-hidden="true">/</span>
-          <span className="text-slate-900 font-medium">申請</span>
-        </nav>
-        <button type="button" className={button.small} disabled={state.kind === 'submitting'} onClick={onBack}>
-          一覧に戻る
-        </button>
-      </div>
+      <DetailBreadcrumb
+        parentLabel="下書き・申請"
+        current="申請"
+        onBack={onBack}
+        backDisabled={state.kind === 'submitting'}
+      />
       <section className={`${card} p-6 space-y-2`}>
         <div className="flex flex-wrap items-center gap-2">
           <span className={badge.neutral}>{RECORD_TYPE_LABELS[detail.draft.recordType]}</span>
