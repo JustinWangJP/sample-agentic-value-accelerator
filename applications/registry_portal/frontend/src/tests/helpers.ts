@@ -2,6 +2,9 @@
 import type { AuthEnvironment } from '../auth/session'
 import { PENDING_LOGIN_KEY } from '../auth/session'
 import type { PortalConfig } from '../config'
+import { createElement, type ReactElement } from 'react'
+import { memoryHashLocation, type HashLocation } from '../routing/location'
+import { NavigationProvider } from '../routing/NavigationProvider'
 
 /** loadConfig が返す形の設定（末尾の / は取り除き済み） */
 export const TEST_CONFIG: PortalConfig = {
@@ -85,4 +88,9 @@ export function fakeBrowser(href: string, responses: (Response | Error)[] = []) 
     crypto: globalThis.crypto,
   }
   return { browser, calls, redirects, replacedUrls, sessionStorage }
+}
+
+/** 画面の部品を、ルーティング（メモリー上のハッシュ）の内側に置く。location を渡すと履歴を検査できる */
+export function withNavigation(element: ReactElement, location: HashLocation = memoryHashLocation()): ReactElement {
+  return createElement(NavigationProvider, { location, children: element })
 }

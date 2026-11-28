@@ -5,7 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApiClient, type CatalogDetail, type CatalogItem } from '../api/client'
 import { CatalogView } from '../catalog/CatalogView'
-import { fakeFetch, jsonResponse } from './helpers'
+import { fakeFetch, jsonResponse, withNavigation } from './helpers'
 
 const agent: CatalogItem = {
   recordId: 'agentAbc1234',
@@ -80,7 +80,7 @@ async function mount(...responses: (Response | Error)[]) {
   const { fetchImpl, calls } = fakeFetch([jsonResponse(200, { items: [agent], nextToken: null }), ...responses])
   const api = createApiClient({ baseUrl: '', fetch: fetchImpl, getAccessToken: () => 'viewer-token' })
   const relogin = vi.fn()
-  await act(() => root.render(createElement(CatalogView, { api, canViewHistory: false, onRelogin: relogin })))
+  await act(() => root.render(withNavigation(createElement(CatalogView, { api, canViewHistory: false, onRelogin: relogin }))))
   return { calls, relogin }
 }
 
@@ -221,7 +221,11 @@ describe('カタログ検索', () => {
     await search('受注')
 
     const results = element('[aria-label="検索結果"]')
-    expect(results.querySelector('[role="alert"]')?.textContent).toContain('準備中です')
+    const alert = results.querySelector('[role="alert"]')
+    expect(alert?.textContent).toContain('準備中です')
+    // 準備中は失敗と見分けられるよう、準備中のバッジで表示する
+    expect(alert?.textContent).toContain('準備中（503 A2A_SEARCH_NOT_READY）')
+    expect(alert?.textContent).not.toContain('失敗（')
     expect(results.textContent).not.toContain('条件に一致するカタログ項目はありません。')
     expect(buttonNames(results)).not.toContain('再試行')
     await clickButton('A2A の Agent 一覧を開く')

@@ -220,6 +220,26 @@ UI プロトタイプのテストは GitHub Actions の対象外です。プロ�
 
 GitHub Actions（`.github/workflows/registry-portal-ci.yml`）では上記に加え、Terraform と配信スクリプトのローカル検査を実行します。AWS の認証情報は持たせず、AWS への反映は行いません（ADR-0004）。
 
+### フロントエンドの画面構成とルーティング
+
+SPA の見た目は UI プロトタイプ（`ui-prototype/`）に合わせ、Tailwind CSS をビルド時に静的 CSS へ出力します（[ADR-0016](../../docs/adr/0016-registry-portal-frontend-tailwind-css.md)）。共通のクラスは `frontend/src/ui/classes.ts` に、入力欄の既定の見た目は `frontend/src/index.css` にまとめています。ログイン後は、上部ヘッダー（通知・自分の主体と業務ロール）、業務ロール別の左サイドバー、メインの 3 つで構成します（`frontend/src/shell/`）。
+
+画面は URL のハッシュで切り替えます（`frontend/src/routing/routes.ts`）。
+
+| ハッシュ | 画面 | 必要な業務ロール |
+|---|---|---|
+| `#/catalog`・`#/catalog/<レコード ID>` | カタログの一覧・検索と詳細 | なし（全員） |
+| `#/drafts`・`#/drafts/new`・`#/drafts/<レコード ID>`・`#/drafts/<レコード ID>/submit` | 下書きの一覧・作成・編集・申請 | Publisher |
+| `#/reviews`・`#/reviews/<レコード ID>` | 審査待ちの一覧と審査詳細 | Curator |
+| `#/publication` | 公開管理 | Curator |
+| `#/administration` | Registry 管理 | Admin |
+| `#/recovery` | 回復操作 | Admin |
+
+- ハッシュがないとき（ログイン直後）と存在しないルートでは、カタログの一覧を表示します。
+- 業務ロールのない画面を直接開くと、403 相当の表示にします。再ログイン・再試行のボタンは出さず、その画面の API も呼びません。API 側でも、これまでどおり業務ロールを検査します。
+- ハッシュルーティングにした理由は次のとおりです。ライブラリーを追加せずに済みます。CloudFront Function の書き換え（`infrastructure/spa_rewrite.js`）と Vite の設定のどちらにも依存しません。Cognito のコールバック（認可コードを付けてルートに戻る）と干渉しません。アクセストークンはメモリー上にしか保持しないため、ページを再読み込みすると必ず再ログインしてルートに戻ります。そのため、パスで直接開けることの利点はほとんどありません。
+- 下書きの作成・編集画面では、保存していない変更があると、画面遷移・戻る/進む・「一覧に戻る」の前に確認します。再読み込み・タブを閉じる操作では、ブラウザ標準の確認が出ます。比べる相手は、既存の下書きでは最後に保存した内容、新規作成では初期値です。フォームと JSON を切り替えただけでは変更とみなしません（Issue #85）。
+
 ### ローカルの開発サーバーから dev に接続する
 
 日々の機能確認は、手元の開発サーバー（`npm run dev`、`http://localhost:5173`）から dev の API と Cognito に接続して行えます。配信を待たずに確認でき、SPA の配信も不要です。CloudFront の SPA は配信後の確認に使います。

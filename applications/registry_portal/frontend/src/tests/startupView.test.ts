@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { StartupView } from '../App'
 import { createApiClient } from '../api/client'
+import { memoryHashLocation } from '../routing/location'
 import type { StartupState } from '../startup'
 
 // 静的な描画では effect が動かないので、API は呼ばれない
@@ -13,7 +14,8 @@ const unusedApi = createApiClient({
   getAccessToken: () => 'viewer-token',
 })
 
-const render = (state: StartupState | null) => renderToStaticMarkup(createElement(StartupView, { state }))
+const render = (state: StartupState | null) =>
+  renderToStaticMarkup(createElement(StartupView, { state, location: memoryHashLocation() }))
 
 describe('起動処理の画面表示', () => {
   it('起動処理の完了待ちとリダイレクト中は、ログイン中と表示する', () => {

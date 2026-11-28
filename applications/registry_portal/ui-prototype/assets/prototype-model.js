@@ -99,10 +99,7 @@
     { value: 'agentSkillsDefinition', label: 'Skill（SKILL.md と配布物の参照）' },
   ]);
 
-  /**
-   * frontend/src/api/dataClassification.ts の DATA_CLASSIFICATIONS。
-   * 本番には表示ラベルの定義がないため、括弧内の補足はプロトタイプで提案する表示。
-   */
+  /** frontend/src/api/dataClassification.ts の DATA_CLASSIFICATIONS と DATA_CLASSIFICATION_LABELS */
   const DATA_CLASSIFICATIONS = Object.freeze([
     { value: 'public', label: 'public（組織外公開可）' },
     { value: 'private', label: 'private（組織内限定）' },

@@ -57,7 +57,7 @@ python3 -m http.server 8080 --directory applications/registry_portal/ui-prototyp
 |---|---|
 | `RECORD_TYPES` | `frontend/src/api/recordType.ts` の `CATALOG_RECORD_TYPES`・`RECORD_TYPE_LABELS` |
 | `DESCRIPTOR_TYPES`・`SCHEMA_VERSIONS` | `frontend/src/drafts/descriptors.ts` の `DESCRIPTOR_TYPES`・`DESCRIPTOR_LABELS`・`*_SCHEMA_VERSIONS` |
-| `DATA_CLASSIFICATIONS` | `frontend/src/api/dataClassification.ts` の `DATA_CLASSIFICATIONS`（括弧内の補足ラベルはプロトタイプの提案） |
+| `DATA_CLASSIFICATIONS` | `frontend/src/api/dataClassification.ts` の `DATA_CLASSIFICATIONS`・`DATA_CLASSIFICATION_LABELS` |
 | `HISTORY_KIND_LABELS`・`HISTORY_STATE_LABELS` | `frontend/src/drafts/api.ts` の `KIND_LABELS`・`STATE_LABELS` |
 | `NOTIFICATION_KIND_LABELS` | `frontend/src/notifications/api.ts` の `NOTIFICATION_KIND_LABELS` |
 

@@ -9,8 +9,10 @@ import {
   type CatalogSearchRequest,
   type CatalogSearchResult,
 } from '../api/client'
-import { DATA_CLASSIFICATIONS } from '../api/dataClassification'
+import { DATA_CLASSIFICATIONS, DATA_CLASSIFICATION_LABELS } from '../api/dataClassification'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
+import { EmptyState, LoadingState } from '../components/StatePanel'
+import { button, callout, card } from '../ui/classes'
 import { CatalogItems } from './CatalogItems'
 import { CATALOG_TYPES } from './recordTypes'
 import { settleWhileActive } from './requests'
@@ -29,6 +31,9 @@ type Props = {
   onBrowseA2A: () => void
   children: ReactNode
 }
+
+const FILTER_LABEL = 'flex items-center gap-2 text-xs font-medium text-slate-600'
+const FILTER_SELECT = 'w-auto py-1.5 px-2.5 text-xs'
 
 export function CatalogSearchView({ api, onRelogin, onOpenDetail, onBrowseA2A, children }: Props) {
   const [view, setView] = useState<SearchView>({ status: 'idle' })
@@ -71,18 +76,53 @@ export function CatalogSearchView({ api, onRelogin, onOpenDetail, onBrowseA2A, c
 
   return (
     <>
-      <section aria-labelledby="catalog-search-heading" className="catalog">
-        <h2 id="catalog-search-heading">カタログを検索</h2>
-        <form className="catalog-search-form" onSubmit={submit}>
-          <label className="catalog-search-query">
-            自然言語またはキーワード
-            <input name="query" type="search" required pattern=".*\S.*" maxLength={256} />
-          </label>
-          <div className="catalog-search-filters">
-            <label>
+      <section aria-labelledby="catalog-search-heading" className={`${card} p-4 sm:p-5 mb-6`}>
+        <h2 id="catalog-search-heading" className="sr-only">
+          カタログを検索
+        </h2>
+        <form className="space-y-3" onSubmit={submit}>
+          <div className="flex flex-col sm:flex-row sm:items-end gap-2.5">
+            <label className="flex-1 flex flex-col gap-1.5 text-xs font-medium text-slate-600">
+              自然言語またはキーワード
+              <span className="relative block">
+                <svg
+                  className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35M17 11a6 6 0 1 1-12 0 6 6 0 0 1 12 0Z" />
+                </svg>
+                <input
+                  name="query"
+                  type="search"
+                  required
+                  pattern=".*\S.*"
+                  maxLength={256}
+                  placeholder="例: 引受審査、社内規定、請求書チェック"
+                  className="pl-10 py-2.5"
+                />
+              </span>
+            </label>
+            <div className="flex gap-2 shrink-0">
+              <button type="submit" className={`${button.primary} py-2.5`}>
+                検索する
+              </button>
+              {view.status !== 'idle' && (
+                <button type="button" className={`${button.secondary} py-2.5`} onClick={() => setView({ status: 'idle' })}>
+                  一覧に戻る
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-1">
+            <label className={FILTER_LABEL}>
               種別
               <select
                 name="type"
+                className={FILTER_SELECT}
                 value={recordType ?? ''}
                 onChange={(event) =>
                   setRecordType(
@@ -96,50 +136,47 @@ export function CatalogSearchView({ api, onRelogin, onOpenDetail, onBrowseA2A, c
                 ))}
               </select>
             </label>
-            <label>
+            <label className={FILTER_LABEL}>
               A2A
-              <select name="a2a" disabled={!supportsA2AFilter(recordType)}>
+              <select name="a2a" className={FILTER_SELECT} disabled={!supportsA2AFilter(recordType)}>
                 <option value="">指定なし</option>
                 <option value="true">A2A の Agent</option>
                 <option value="false">A2A 以外の Agent</option>
               </select>
             </label>
-            <label>
+            <label className={FILTER_LABEL}>
               データ分類
-              <select name="dataClassification">
+              <select name="dataClassification" className={FILTER_SELECT}>
                 <option value="">すべて</option>
                 {DATA_CLASSIFICATIONS.map((classification) => (
-                  <option key={classification} value={classification}>{classification}</option>
+                  <option key={classification} value={classification}>
+                    {DATA_CLASSIFICATION_LABELS[classification]}
+                  </option>
                 ))}
               </select>
             </label>
+            <span className="text-xs text-slate-400 sm:ml-auto">
+              ※ 検索は検索語が必須です。条件だけで探す場合は下の一覧を使います。
+            </span>
           </div>
-          <button type="submit">検索する</button>
-          {view.status !== 'idle' && (
-            <button type="button" onClick={() => setView({ status: 'idle' })}>
-              一覧に戻る
-            </button>
-          )}
         </form>
         {view.status !== 'idle' && (
-          <div aria-label="検索結果" role="region">
+          <div aria-label="検索結果" role="region" className="mt-5 pt-5 border-t border-slate-200 space-y-4">
             {view.status === 'loading' ? (
-              <p role="status">検索しています…</p>
+              <LoadingState>検索しています…</LoadingState>
             ) : view.status === 'error' ? (
-              view.error.code === A2A_SEARCH_NOT_READY ? (
-                // 準備ができるまでは再試行しても解決しないので、一覧への入口だけを示す
-                <RequestErrorAlert error={view.error} onRelogin={onRelogin}>
-                  <button type="button" onClick={browseA2A}>
+              // 準備中（503）は RequestErrorAlert が再試行ボタンを出さないため、A2A の一覧への入口を示す
+              <RequestErrorAlert
+                error={view.error}
+                onRelogin={onRelogin}
+                onRetry={() => setView({ status: 'loading', request: view.request })}
+              >
+                {view.error.code === A2A_SEARCH_NOT_READY && (
+                  <button type="button" className={button.warningOutline} onClick={browseA2A}>
                     A2A の Agent 一覧を開く
                   </button>
-                </RequestErrorAlert>
-              ) : (
-                <RequestErrorAlert
-                  error={view.error}
-                  onRelogin={onRelogin}
-                  onRetry={() => setView({ status: 'loading', request: view.request })}
-                />
-              )
+                )}
+              </RequestErrorAlert>
             ) : (
               <SearchResult result={view.result} onOpenDetail={onOpenDetail} />
             )}
@@ -161,13 +198,15 @@ function SearchResult({
   return (
     <>
       {result.inconsistentA2ACount > 0 && (
-        <p role="note" className="note warning">
+        <p role="note" className={callout.warning}>
           A2A の検索用情報と定義が一致しない {result.inconsistentA2ACount}{' '}
           件を結果から除外しました。所有チームまたは管理者に確認してください。
         </p>
       )}
       {result.items.length === 0 ? (
-        <p role="status">条件に一致するカタログ項目はありません。</p>
+        <EmptyState>
+          <span role="status">条件に一致するカタログ項目はありません。</span>
+        </EmptyState>
       ) : (
         <CatalogItems items={result.items} onOpenDetail={onOpenDetail} />
       )}

@@ -4,6 +4,8 @@
 import { useState } from 'react'
 import { toApiError, type ApiClient, type ApiError } from '../api/client'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
+import { LoadingState } from '../components/StatePanel'
+import { callout, fieldLabel } from '../ui/classes'
 import { DEPRECATION_REASON_MAX_LENGTH, type DeprecationRequest } from './api'
 
 type State =
@@ -37,20 +39,21 @@ export function DeprecationRequestForm({
   }
 
   return (
-    <section aria-labelledby="deprecation-request-heading">
-      <h4 id="deprecation-request-heading">廃止を依頼する</h4>
-      <p>
+    <section aria-labelledby="deprecation-request-heading" className="rounded-xl border border-rose-200 bg-rose-50/40 p-5 space-y-3">
+      <h3 id="deprecation-request-heading" className="text-sm font-semibold text-rose-950">廃止を依頼する</h3>
+      <p className="text-xs text-slate-600 leading-relaxed">
         使われなくなったレコードの廃止を Curator に依頼できます。依頼は審査待ちの一覧に表示され、
         Curator が廃止するか、理由を付けて見送るかを判断します（先に公開停止で止めることがあります）。
         結果は操作履歴で確認できます。
       </p>
       <form
+        className="space-y-2"
         onSubmit={(event) => {
           event.preventDefault()
           void request()
         }}
       >
-        <label>
+        <label className={fieldLabel}>
           廃止依頼の理由（必須。終了の背景を記録します）
           <textarea
             name="deprecationReason"
@@ -61,14 +64,18 @@ export function DeprecationRequestForm({
             onChange={(event) => setReason(event.target.value)}
           />
         </label>
-        <button type="submit" disabled={state.kind === 'sending' || !reason.trim()}>
+        <button
+          type="submit"
+          className="inline-flex items-center justify-center px-4 py-2 rounded-lg border border-rose-300 bg-white hover:bg-rose-100 text-rose-800 text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+          disabled={state.kind === 'sending' || !reason.trim()}
+        >
           廃止を依頼する
         </button>
       </form>
-      {state.kind === 'sending' && <p role="status">依頼を送信しています…</p>}
+      {state.kind === 'sending' && <LoadingState>依頼を送信しています…</LoadingState>}
       {state.kind === 'error' && <RequestErrorAlert error={state.error} onRelogin={onRelogin} />}
       {state.kind === 'sent' && (
-        <p role="status">
+        <p role="status" className={callout.success}>
           廃止依頼を送信しました。Curator が廃止するか見送るかを判断します（依頼 ID{' '}
           {state.request.requestId}）。結果は操作履歴で確認できます。
         </p>

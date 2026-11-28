@@ -1,6 +1,7 @@
 /// <reference types="vitest/config" />
 import { defineConfig, loadEnv, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 import { connectSrcPolicy } from './src/connectCsp'
 
 // 本番ビルドだけ、接続先を自分の REST API と Cognito に絞る CSP を index.html に埋め込む（src/connectCsp.ts）。
@@ -20,7 +21,8 @@ function connectCsp(mode: string): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => ({
-  plugins: [react(), connectCsp(mode)],
+  // Tailwind CSS はビルド時に静的 CSS を出力する（ADR-0016）。CSP は変更しない
+  plugins: [react(), tailwindcss(), connectCsp(mode)],
   server: {
     port: 5173,
     strictPort: true,

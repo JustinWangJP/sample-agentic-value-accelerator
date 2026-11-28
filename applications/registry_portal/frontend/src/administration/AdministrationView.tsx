@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { toApiError, type ApiError } from '../api/client'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
+import { EmptyState, LoadingState, PageHeader } from '../components/StatePanel'
+import { badge, button, callout, card, fieldLabel, note } from '../ui/classes'
 import { SUBMISSION_REASON_MAX_LENGTH } from '../drafts/api'
 import {
   OWNER_TEAM_MAX_LENGTH,
@@ -14,10 +16,12 @@ import {
   type ManagementFilter,
   type RegistryConnection,
 } from './api'
+import { canOpenScreen } from '../routing/routes'
+import type { ScreenProps } from '../shell/screenProps'
 
-type Props = { api: AdministrationApi; roles: readonly string[]; onRelogin: () => void }
+type Props = ScreenProps<AdministrationApi>
 export function AdministrationView(props: Props) {
-  return props.roles.includes('Admin') ? <AdministrationPanel {...props} /> : null
+  return canOpenScreen('administration', props.roles) ? <AdministrationPanel {...props} /> : null
 }
 
 const AUTO_APPROVAL_LABELS: Record<AutoApprovalState, string> = { DISABLED: '無効', ENABLED: '有効', UNKNOWN: '未取得' }
@@ -116,46 +120,109 @@ function AdministrationPanel({ api, onRelogin }: Props) {
   }
 
   const loading = list.kind === 'loading'
-  return <section aria-labelledby="administration-heading">
-    <h2 id="administration-heading">Registry 管理</h2>
-    <h3>接続情報</h3>
-    {connectionError && <RequestErrorAlert error={connectionError} onRelogin={onRelogin} />}
-    {!connection && !connectionError && <p role="status">接続情報を取得しています…</p>}
-    {connection && <>
-      <dl><dt>Registry ARN</dt><dd>{connection.registryArn}</dd><dt>リージョン</dt><dd>{connection.region}</dd>
-        <dt>認可方式</dt><dd>{connection.authorization ?? '未取得'}</dd>
-        <dt>接続</dt><dd>{connection.connection.state === 'CONNECTED' ? '接続情報取得済み' : `${connection.connection.message}（原因: ${connection.connection.cause}）`}</dd>
-        <dt>自動承認</dt><dd>{AUTO_APPROVAL_LABELS[connection.autoApproval.state]}</dd>
-      </dl>
-      {connection.warnings.map((warning) => <p role="alert" key={warning}>{warning}</p>)}
-    </>}
-    <h3>レコードの取り込み・所有チームの変更</h3>
-    <div className="actions">
-      <button type="button" disabled={loading || submitting} onClick={() => show('unmanaged')}>未管理レコード</button>
-      <button type="button" disabled={loading || submitting} onClick={() => show('managed')}>管理済みレコード</button>
-      <button type="button" disabled={loading || submitting} onClick={() => show(query.filter)}>一覧を再読み込み</button>
-    </div>
-    {list.kind === 'error' && <RequestErrorAlert error={list.error} onRelogin={onRelogin} />}
-    {error && <RequestErrorAlert error={error} onRelogin={onRelogin} />}
-    {error?.status === 409 && <p>一覧を再読み込みして最新の管理情報を確認してください。</p>}
-    {message && <p role="status">{message}</p>}
-    {loading && <p role="status">レコードを取得しています…</p>}
-    {list.kind === 'ready' && <>
-      {list.page.items.length === 0 && <p>{query.filter === 'unmanaged' ? '未管理レコードはありません。' : 'このページに管理済みレコードはありません。'}{list.page.nextToken ? '次のページも確認してください。' : ''}</p>}
-      <ul>{list.page.items.map((record) => <li key={record.recordId}>
-        <strong>{record.displayName}</strong> {record.recordType}・{record.status}・{record.recordVersion}
-        {record.ownerTeam && <span>・所有チーム {record.ownerTeam}</span>}
-        <button type="button" disabled={submitting} onClick={() => { setSelected(record); setOwnerTeam(record.ownerTeam ?? ''); setReason(''); setMessage('') }}>{record.displayName} を選択</button>
-      </li>)}</ul>
-      {list.page.nextToken && <button type="button" disabled={submitting} onClick={() => show(query.filter, list.page.nextToken ?? undefined)}>次のページ</button>}
-    </>}
-    {selected && action && <form onSubmit={(event) => { event.preventDefault(); void submit() }}>
-      <h4>{selected.displayName} の{action.title}</h4>
-      <label>所有チーム<input name="adminOwnerTeam" value={ownerTeam} maxLength={OWNER_TEAM_MAX_LENGTH} onChange={(event) => setOwnerTeam(event.target.value)} disabled={submitting} required /></label>
-      <p>既存の Cognito グループ名を {OWNER_TEAM_PREFIX} から入力してください。</p>
-      <label>理由<input name="adminReason" value={reason} maxLength={SUBMISSION_REASON_MAX_LENGTH} onChange={(event) => setReason(event.target.value)} disabled={submitting} required /></label>
-      <button type="submit" disabled={submitting || !isOwnerTeam(ownerTeam) || !reason.trim()}>{submitting ? '結果を確認しています…' : action.submitLabel}</button>
-    </form>}
-    <p className="note">取り込みは Registry を更新しません。取り込み後は所有チームの Publisher が通常の編集・申請・公開承認を進めてください。既存 metadata は保持され、A2A 検索用の isA2A は所有チームが保存したときに descriptor から補完されます（編集画面にも補完が必要なことを表示します）。検索の全ページ照合が完了するまで A2A 検索を有効にしません。取り込み前の承認者は履歴で「不明」と表示します。</p>
+  return <section aria-labelledby="administration-heading" className="space-y-6">
+    <PageHeader
+      headingId="administration-heading"
+      title="Registry 管理"
+      description={<p>接続先の AWS Agent Registry の設定状態の確認、未管理レコードの取り込み、管理レコードの所有チームの変更を行います。</p>}
+    />
+    <section className={`${card} p-5 space-y-4`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold text-slate-900">接続情報</h2>
+        {connection && (
+          <span className={connection.connection.state === 'CONNECTED' ? badge.success : badge.danger}>
+            {connection.connection.state === 'CONNECTED' ? '接続情報取得済み' : '接続に問題があります'}
+          </span>
+        )}
+      </div>
+      {connectionError && <RequestErrorAlert error={connectionError} onRelogin={onRelogin} />}
+      {!connection && !connectionError && <LoadingState>接続情報を取得しています…</LoadingState>}
+      {connection && <>
+        <dl className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 text-xs">
+          <div className="md:col-span-2">
+            <dt className="text-slate-500">Registry ARN</dt>
+            <dd className="mt-1 font-mono text-slate-800 bg-slate-50 px-2.5 py-1.5 rounded border border-slate-200 break-all">{connection.registryArn}</dd>
+          </div>
+          <div>
+            <dt className="text-slate-500">リージョン</dt>
+            <dd className="mt-1 font-mono text-slate-900">{connection.region}</dd>
+          </div>
+          <div>
+            <dt className="text-slate-500">認可方式</dt>
+            <dd className={`mt-1 font-mono ${connection.authorization ? 'text-slate-900' : 'text-amber-800'}`}>{connection.authorization ?? '未取得'}</dd>
+          </div>
+          <div className="md:col-span-2">
+            <dt className="text-slate-500">接続</dt>
+            <dd className="mt-1 text-slate-900">{connection.connection.state === 'CONNECTED' ? '接続情報取得済み' : `${connection.connection.message}（原因: ${connection.connection.cause}）`}</dd>
+          </div>
+          <div>
+            <dt className="text-slate-500">自動承認</dt>
+            <dd className={`mt-1 font-semibold ${connection.autoApproval.state === 'UNKNOWN' ? 'text-amber-800' : 'text-slate-900'}`}>{AUTO_APPROVAL_LABELS[connection.autoApproval.state]}</dd>
+          </div>
+        </dl>
+        {connection.warnings.map((warning) => <p role="alert" key={warning} className={callout.warning}>{warning}</p>)}
+      </>}
+    </section>
+    <section className={`${card} overflow-hidden`} aria-labelledby="administration-records-heading">
+      <div className="px-5 pt-4 space-y-3">
+        <h2 id="administration-records-heading" className="text-sm font-semibold text-slate-900">レコードの取り込み・所有チームの変更</h2>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200">
+          <div className="flex items-center gap-1 -mb-px">
+            {(['unmanaged', 'managed'] as const).map((filter) => (
+              <button
+                key={filter}
+                type="button"
+                aria-pressed={query.filter === filter}
+                className={query.filter === filter ? FILTER_TAB.selected : FILTER_TAB.normal}
+                disabled={loading || submitting}
+                onClick={() => show(filter)}
+              >
+                {FILTER_LABELS[filter]}
+              </button>
+            ))}
+          </div>
+          <button type="button" className={`${button.small} mb-2`} disabled={loading || submitting} onClick={() => show(query.filter)}>一覧を再読み込み</button>
+        </div>
+      </div>
+      <div className="p-5 space-y-4">
+        {list.kind === 'error' && <RequestErrorAlert error={list.error} onRelogin={onRelogin} />}
+        {error && <RequestErrorAlert error={error} onRelogin={onRelogin}>
+          {error.status === 409 && <p className="text-xs text-rose-800">一覧を再読み込みして最新の管理情報を確認してください。</p>}
+        </RequestErrorAlert>}
+        {message && <p role="status" className={callout.success}>{message}</p>}
+        {loading && <LoadingState>レコードを取得しています…</LoadingState>}
+        {list.kind === 'ready' && <>
+          {list.page.items.length === 0 && <EmptyState>{query.filter === 'unmanaged' ? '未管理レコードはありません。' : 'このページに管理済みレコードはありません。'}{list.page.nextToken ? '次のページも確認してください。' : ''}</EmptyState>}
+          {list.page.items.length > 0 && <ul className="divide-y divide-slate-200 border border-slate-200 rounded-lg overflow-hidden text-sm">{list.page.items.map((record) => <li key={record.recordId} className={selected?.recordId === record.recordId ? 'bg-blue-50/40' : 'hover:bg-slate-50/70'}>
+            <div className="px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <strong className="font-semibold text-slate-900 break-all">{record.displayName}</strong>
+                <p className="text-xs font-mono text-slate-500 break-all">{record.recordType}・{record.status}・{record.recordVersion}
+                  {record.ownerTeam ? <span>・所有チーム {record.ownerTeam}</span> : <span className="italic">・所有チーム未設定（未管理）</span>}
+                </p>
+              </div>
+              <button type="button" className={button.small} disabled={submitting} onClick={() => { setSelected(record); setOwnerTeam(record.ownerTeam ?? ''); setReason(''); setMessage('') }}>{record.displayName} を選択</button>
+            </div>
+          </li>)}</ul>}
+          {list.page.nextToken && <div className="flex justify-center"><button type="button" className={button.small} disabled={submitting} onClick={() => show(query.filter, list.page.nextToken ?? undefined)}>次のページ</button></div>}
+        </>}
+      </div>
+      {selected && action && <form className="p-6 bg-slate-50 border-t border-slate-200 space-y-4" onSubmit={(event) => { event.preventDefault(); void submit() }}>
+        <h3 className="text-sm font-semibold text-slate-900 break-all">{selected.displayName} の{action.title}</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-3xl">
+          <label className={fieldLabel}>所有チーム<input name="adminOwnerTeam" className="font-mono" value={ownerTeam} maxLength={OWNER_TEAM_MAX_LENGTH} onChange={(event) => setOwnerTeam(event.target.value)} disabled={submitting} required /></label>
+          <label className={fieldLabel}>理由<input name="adminReason" value={reason} maxLength={SUBMISSION_REASON_MAX_LENGTH} onChange={(event) => setReason(event.target.value)} disabled={submitting} required /></label>
+        </div>
+        <p className={note}>既存の Cognito グループ名を {OWNER_TEAM_PREFIX} から入力してください。</p>
+        <button type="submit" className={button.primary} disabled={submitting || !isOwnerTeam(ownerTeam) || !reason.trim()}>{submitting ? '結果を確認しています…' : action.submitLabel}</button>
+      </form>}
+      <p className={`px-5 pb-5 pt-1 ${note}`}>取り込みは Registry を更新しません。取り込み後は所有チームの Publisher が通常の編集・申請・公開承認を進めてください。既存 metadata は保持され、A2A 検索用の isA2A は所有チームが保存したときに descriptor から補完されます（編集画面にも補完が必要なことを表示します）。検索の全ページ照合が完了するまで A2A 検索を有効にしません。取り込み前に決裁した Curator は履歴で「不明」と表示します。</p>
+    </section>
   </section>
+}
+
+const FILTER_LABELS: Record<ManagementFilter, string> = { unmanaged: '未管理レコード', managed: '管理済みレコード' }
+const FILTER_TAB = {
+  selected: 'px-4 py-2.5 text-sm font-semibold border-b-2 border-blue-600 text-blue-700 bg-blue-50/70 rounded-t-lg disabled:opacity-50',
+  normal: 'px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-slate-600 hover:text-slate-900 rounded-t-lg disabled:opacity-50',
 }

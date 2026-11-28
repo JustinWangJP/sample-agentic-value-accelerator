@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import type { CatalogItem, CatalogPage } from '../api/client'
 import { CatalogPanel } from '../catalog/CatalogView'
 import { goNext, initialCatalogState, pageReceived, type CatalogState } from '../catalog/pager'
+import { badge } from '../ui/classes'
 
 const noop = () => {}
 const render = (state: CatalogState) =>
@@ -62,7 +63,8 @@ describe('カタログ画面の表示', () => {
     expect(html).toContain('order-agent')
     expect(html).toContain('1.2.0')
     expect(html).toContain('受注を処理する')
-    expect(html.match(/class="badge">A2A/g)).toHaveLength(1)
+    // A2A のバッジ（badge.info）は A2A の項目にだけ付ける
+    expect(html.split(`<span class="${badge.info}">A2A</span>`)).toHaveLength(2)
     // 表示名がなければ名前を見出しにする
     expect(html).toMatch(/<h3[^>]*>plain<\/h3>/)
   })

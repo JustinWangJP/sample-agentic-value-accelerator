@@ -75,9 +75,15 @@ export function draftPayload(draft: RecordDraft): RecordDraft {
   ) as RecordDraft
 }
 
-/** 2つの下書きが、サーバーへ送る本文として同じ内容か。未保存の変更の判定に使う */
+/** 2つの下書きが、サーバーへ送る本文として同じ内容か（キー順に依存しない）。未保存の変更の判定に使う */
 export function isSameDraft(a: RecordDraft, b: RecordDraft): boolean {
-  return JSON.stringify(draftPayload(a)) === JSON.stringify(draftPayload(b))
+  if (a.recordType !== b.recordType || a.descriptorType !== b.descriptorType) return false
+  const left = draftPayload(a) as Record<string, string | undefined>
+  const right = draftPayload(b) as Record<string, string | undefined>
+  for (const key of draftKeys(a.descriptorType)) {
+    if ((left[key] ?? '') !== (right[key] ?? '')) return false
+  }
+  return true
 }
 
 export type JsonDraftResult = { draft: RecordDraft } | { error: string }

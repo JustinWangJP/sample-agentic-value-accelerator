@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react'
 import { toApiError, type ApiClient, type ApiError } from '../api/client'
 import { RECORD_TYPE_LABELS } from '../api/recordType'
 import { OperationCheck } from '../components/OperationCheck'
+import { Modal } from '../components/Overlay'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
+import { LoadingState } from '../components/StatePanel'
 import { RecordHistoryToggle } from '../drafts/RecordHistoryView'
 import {
   DEPRECATED_STATUS,
@@ -15,7 +17,9 @@ import {
 } from '../drafts/api'
 import type { DecisionOperation } from '../reviews/api'
 import { elapsedDays } from '../elapsedDays'
+import { badge, button, callout, card, fieldLabel } from '../ui/classes'
 import { PUBLICATION_ACTIONS, type PublicationAction, type PublicationView } from './api'
+import { isShownAsSuspended, recordStatusBadge } from './publicationStatus'
 
 type Props = {
   api: ApiClient
@@ -46,8 +50,10 @@ type Confirmation = {
   submit: string
 }
 
-/** 操作ごとの画面の文言と送信。公開停止は却下で発見できなくし、廃止は元に戻せない */
+/** 操作ごとの画面の文言・見た目・送信。公開停止は却下で発見できなくし、廃止は元に戻せない */
 type ActionSpec = {
+  /** 公開停止は再公開できる注意（橙）、廃止は元に戻せない危険（赤）で見分ける */
+  tone: { frame: string; title: string; button: string }
   legend: string
   description: string
   reasonLabel: string
@@ -60,6 +66,11 @@ type ActionSpec = {
 
 const ACTION_SPECS: Record<PublicationAction, ActionSpec> = {
   suspend: {
+    tone: {
+      frame: 'border-orange-200 bg-orange-50/30',
+      title: 'text-orange-950',
+      button: button.suspend,
+    },
     legend: '公開停止',
     description:
       '問題が見つかったものを、理由を付けて却下し、発見できなくします。廃止依頼は閉じないため、' +
@@ -71,6 +82,11 @@ const ACTION_SPECS: Record<PublicationAction, ActionSpec> = {
     send: (api, recordId, reason, key) => api.suspendRecord(recordId, { reason }, key),
   },
   deprecate: {
+    tone: {
+      frame: 'border-rose-200 bg-rose-50/30',
+      title: 'text-rose-950',
+      button: button.danger,
+    },
     legend: '廃止',
     description:
       '廃止は元に戻せません。レコードは DEPRECATED になり、編集も再公開もできなくなります。' +
@@ -207,7 +223,7 @@ export function RecordPublicationPanel({ api, recordId, onRelogin, onChanged }: 
     }
   }
 
-  if (state.kind === 'loading') return <p role="status">公開管理の状態を読み込んでいます…</p>
+  if (state.kind === 'loading') return <LoadingState>公開管理の状態を読み込んでいます…</LoadingState>
   if (state.kind === 'error')
     return <RequestErrorAlert error={state.error} onRelogin={onRelogin} onRetry={reload} />
 
@@ -215,199 +231,252 @@ export function RecordPublicationPanel({ api, recordId, onRelogin, onChanged }: 
   const request = view.deprecationRequest
   const finished = action.kind === 'result' || action.kind === 'declined'
   const days = request ? elapsedDays(request.requestedAt) : null
+  const status = recordStatusBadge(view)
 
   return (
-    <section aria-label={`${view.displayName} の公開管理`} className="publication">
-      <h4>公開管理: {view.displayName}</h4>
-      <p>
-        {RECORD_TYPE_LABELS[view.recordType]}・{view.name}・{view.ownerTeam ?? '所有チーム不明'}・最新の版{' '}
-        {view.recordVersion}
-      </p>
-      <p>
-        状態 {recordStatusLabel(view.status)} /{' '}
-        {view.publishedVersion ? `公開中の版 ${view.publishedVersion}` : '公開中の版なし'}
-      </p>
-      {view.suspended && view.status !== DEPRECATED_STATUS && (
-        <p>公開停止中です。再公開には Publisher の編集と再申請が必要です。</p>
-      )}
-      {view.operationId && <p role="status">別の操作が結果確認中です。確定するまで操作できません。</p>}
-      {!view.managed && <p role="alert">ポータルで管理されていないため、ここでは操作できません。</p>}
-      {request && (
-        <section aria-label="未解決の廃止依頼">
-          <h5>未解決の廃止依頼</h5>
-          <p>
-            理由: {request.reason}（依頼者 {request.requestedBy.subject}
-            {days !== null && `・${days} 日経過`}）
-          </p>
-          <p>
-            {view.suspended
-              ? '公開停止済みです。影響を確かめてから、廃止するか見送るかを判断してください。'
-              : '廃止するか見送るかを判断してください。まず公開停止で止めてから判断することもできます。'}
-          </p>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault()
-              void decline(request)
-            }}
-          >
-            <fieldset disabled={busy || finished || view.operationId !== null}>
-              <legend>依頼を見送る</legend>
-              <p>レコードの状態は変えずに、依頼だけを閉じます（公開停止中ならそのまま）。</p>
-              <label>
-                見送りの理由（必須。Publisher が履歴で確認します）
-                <textarea
-                  name="declineReason"
-                  required
-                  maxLength={DEPRECATION_REASON_MAX_LENGTH}
-                  rows={3}
-                  value={reasons.decline}
-                  onChange={(event) => setReason('decline', event.target.value)}
-                />
-              </label>
-              <button type="submit" disabled={busy || !reasons.decline.trim()}>
-                依頼を見送る
-              </button>
-            </fieldset>
-          </form>
-        </section>
-      )}
-      {PUBLICATION_ACTIONS.map((kind) => {
-        const availability = view.actions[kind]
-        const spec = ACTION_SPECS[kind]
-        const { confirmation } = spec
-        const blocked = !availability.allowed || busy || finished
-        return (
-          <form
-            key={kind}
-            onSubmit={(event) => {
-              event.preventDefault()
-              requestAction(kind)
-            }}
-          >
-            <fieldset disabled={blocked || confirming === kind}>
-              <legend>{spec.legend}</legend>
-              <p>{spec.description}</p>
-              {!availability.allowed && availability.message && (
-                <p className="note">{availability.message}</p>
-              )}
-              <label>
-                {spec.reasonLabel}
-                <textarea
-                  name={`${kind}Reason`}
-                  required
-                  maxLength={STATUS_REASON_MAX_LENGTH}
-                  rows={3}
-                  value={reasons[kind]}
-                  onChange={(event) => setReason(kind, event.target.value)}
-                />
-              </label>
-              {confirmation && (
-                <label>
-                  <input
-                    type="checkbox"
-                    name={`${kind}Confirm`}
-                    checked={acknowledged === kind}
-                    onChange={(event) => setAcknowledged(event.target.checked ? kind : null)}
-                  />
-                  {confirmation.acknowledge}
-                </label>
-              )}
-              <button
-                type="submit"
-                disabled={
-                  blocked || !reasons[kind].trim() || (confirmation !== null && acknowledged !== kind)
-                }
-              >
-                {spec.submit}
-              </button>
-            </fieldset>
-            {confirmation && confirming === kind && (
-              <section role="alertdialog" aria-label={`${spec.legend}の最終確認`}>
-                <p>
-                  {view.displayName}（{view.name}）を{spec.legend}します。{spec.description}
-                </p>
-                <label>
-                  確認のため、レコード名 {view.name} を入力してください
-                  <input
-                    name={`${kind}ConfirmName`}
-                    autoComplete="off"
-                    value={confirmName}
-                    onChange={(event) => setConfirmName(event.target.value)}
-                  />
-                </label>
-                <button
-                  type="button"
-                  disabled={busy || blocked || confirmName !== view.name}
-                  onClick={() => void run(kind)}
-                >
-                  {confirmation.submit}
-                </button>
-                <button type="button" onClick={closeConfirmation}>
-                  やめる
-                </button>
-              </section>
+    // 置き場所の幅（カタログ詳細の右列・検索結果の行・画面幅）で列数を変えるため、コンテナクエリを使う
+    <section aria-label={`${view.displayName} の公開管理`} className={`${card} overflow-hidden @container`}>
+      <div className="px-5 py-4 bg-slate-50 border-b border-slate-200 flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={status.className}>{status.label}</span>
+            {request && (
+              <span className={badge.danger}>
+                未解決の廃止依頼あり{days !== null && `（${days} 日経過）`}
+              </span>
             )}
-          </form>
-        )
-      })}
-      {busy && <p role="status">実行しています…</p>}
-      {action.kind === 'error' && (
-        <RequestErrorAlert error={action.error} onRelogin={onRelogin}>
-          {action.error.status === 409 && (
-            <p>
-              状態が変わったか、別の操作が処理中です。最新の状態を読み込んでから判断してください。
+          </div>
+          <h3 className="text-lg font-bold text-slate-900 mt-1 break-all">公開管理: {view.displayName}</h3>
+          <p className="text-xs font-mono text-slate-500 break-all">
+            {RECORD_TYPE_LABELS[view.recordType]}・{view.name}・{view.ownerTeam ?? '所有チーム不明'}・最新の版{' '}
+            {view.recordVersion}
+          </p>
+          <p className="text-xs text-slate-600 mt-0.5">
+            状態 {recordStatusLabel(view.status)} /{' '}
+            {view.publishedVersion ? `公開中の版 ${view.publishedVersion}` : '公開中の版なし'}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className={button.small}
+            disabled={busy}
+            onClick={() => {
+              setAction({ kind: 'idle' })
+              reload()
+            }}
+          >
+            最新の状態を読み込む
+          </button>
+          <div className="w-56">
+            <RecordHistoryToggle api={api} recordId={recordId} onRelogin={onRelogin} />
+          </div>
+        </div>
+      </div>
+      <div className="p-5 space-y-5">
+        {isShownAsSuspended(view) && (
+          <p className={callout.warning}>公開停止中です。再公開には Publisher の編集と再申請が必要です。</p>
+        )}
+        {view.operationId && (
+          <p role="status" className={callout.warning}>
+            別の操作が結果確認中です。確定するまで操作できません。
+          </p>
+        )}
+        {!view.managed && (
+          <p role="alert" className={callout.danger}>
+            ポータルで管理されていないため、ここでは操作できません。
+          </p>
+        )}
+        {request && (
+          <section aria-label="未解決の廃止依頼" className="rounded-xl border border-rose-200 bg-rose-50/50 p-4 space-y-3">
+            <h4 className="text-sm font-semibold text-rose-900">未解決の廃止依頼</h4>
+            <p className="text-sm text-rose-950 break-all">
+              理由: {request.reason}（依頼者 {request.requestedBy.subject}
+              {days !== null && `・${days} 日経過`}）
             </p>
-          )}
-          {action.retry !== null && (
-            <p>
-              結果が不明です。同じ内容で再試行すると、同じ操作として確定を試みます。
-              <button
-                type="button"
-                onClick={() => {
-                  if (action.retry !== null) void run(action.retry, true)
+            <p className="text-xs text-rose-800">
+              {view.suspended
+                ? '公開停止済みです。影響を確かめてから、廃止するか見送るかを判断してください。'
+                : '廃止するか見送るかを判断してください。まず公開停止で止めてから判断することもできます。'}
+            </p>
+            <form
+              className="pt-3 border-t border-rose-200/70"
+              onSubmit={(event) => {
+                event.preventDefault()
+                void decline(request)
+              }}
+            >
+              <fieldset disabled={busy || finished || view.operationId !== null} className="space-y-2">
+                <legend className="text-xs font-semibold text-slate-800">依頼を見送る</legend>
+                <p className="text-xs text-slate-600">レコードの状態は変えずに、依頼だけを閉じます（公開停止中ならそのまま）。</p>
+                <label className={fieldLabel}>
+                  見送りの理由（必須。Publisher が履歴で確認します）
+                  <textarea
+                    name="declineReason"
+                    required
+                    maxLength={DEPRECATION_REASON_MAX_LENGTH}
+                    rows={2}
+                    value={reasons.decline}
+                    onChange={(event) => setReason('decline', event.target.value)}
+                  />
+                </label>
+                <button type="submit" className={button.small} disabled={busy || !reasons.decline.trim()}>
+                  依頼を見送る
+                </button>
+              </fieldset>
+            </form>
+          </section>
+        )}
+        <div className="grid grid-cols-1 @2xl:grid-cols-2 gap-5">
+          {PUBLICATION_ACTIONS.map((kind) => {
+            const availability = view.actions[kind]
+            const spec = ACTION_SPECS[kind]
+            const { confirmation, tone } = spec
+            const blocked = !availability.allowed || busy || finished
+            return (
+              <form
+                key={kind}
+                className={`rounded-xl border p-5 ${tone.frame}`}
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  requestAction(kind)
                 }}
               >
-                同じ内容で再試行
-              </button>
-            </p>
-          )}
-        </RequestErrorAlert>
-      )}
-      {action.kind === 'result' && action.operation.operationState === 'SUCCEEDED' && (
-        <p role="status">
-          {action.operation.status === DEPRECATED_STATUS
-            ? '廃止しました。この操作は元に戻せません。'
-            : '公開停止しました。廃止依頼があれば、廃止するか見送るかを判断してください。'}
-        </p>
-      )}
-      {action.kind === 'result' && action.operation.operationState === 'VERIFYING' && (
-        <OperationCheck
-          operationId={action.operation.operationId}
-          load={(id) => api.getDecisionOperation(id)}
-          onDone={(operation) => {
-            setAction({ kind: 'result', operation })
-            settled()
-          }}
-          onRelogin={onRelogin}
-        />
-      )}
-      {action.kind === 'result' && action.operation.operationState === 'FAILED' && (
-        <p role="alert">{action.operation.message}</p>
-      )}
-      {action.kind === 'declined' && (
-        <p role="status">廃止依頼を見送りました。理由は履歴に残り、Publisher が確認できます。</p>
-      )}
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => {
-          setAction({ kind: 'idle' })
-          reload()
-        }}
-      >
-        最新の状態を読み込む
-      </button>
-      <RecordHistoryToggle api={api} recordId={recordId} onRelogin={onRelogin} />
+                <fieldset disabled={blocked || confirming === kind} className="space-y-3">
+                  <legend className={`text-sm font-semibold ${tone.title}`}>{spec.legend}</legend>
+                  <p className="text-xs text-slate-600 leading-relaxed">{spec.description}</p>
+                  {!availability.allowed && availability.message && (
+                    <p className={callout.warning}>{availability.message}</p>
+                  )}
+                  <label className={fieldLabel}>
+                    {spec.reasonLabel}
+                    <textarea
+                      name={`${kind}Reason`}
+                      required
+                      maxLength={STATUS_REASON_MAX_LENGTH}
+                      rows={2}
+                      value={reasons[kind]}
+                      onChange={(event) => setReason(kind, event.target.value)}
+                    />
+                  </label>
+                  {confirmation && (
+                    <label className="flex items-start gap-2 text-xs text-rose-900">
+                      <input
+                        type="checkbox"
+                        name={`${kind}Confirm`}
+                        className="mt-0.5"
+                        checked={acknowledged === kind}
+                        onChange={(event) => setAcknowledged(event.target.checked ? kind : null)}
+                      />
+                      {confirmation.acknowledge}
+                    </label>
+                  )}
+                  <button
+                    type="submit"
+                    className={tone.button}
+                    disabled={
+                      blocked || !reasons[kind].trim() || (confirmation !== null && acknowledged !== kind)
+                    }
+                  >
+                    {spec.submit}
+                  </button>
+                </fieldset>
+                {confirmation && confirming === kind && (
+                  <Modal
+                    title={`${spec.legend}の最終確認`}
+                    tone="danger"
+                    role="alertdialog"
+                    ariaLabel={`${spec.legend}の最終確認`}
+                    onClose={closeConfirmation}
+                    actions={
+                      <>
+                        <button type="button" className={button.secondary} onClick={closeConfirmation}>
+                          やめる
+                        </button>
+                        <button
+                          type="button"
+                          className={button.danger}
+                          disabled={busy || blocked || confirmName !== view.name}
+                          onClick={() => void run(kind)}
+                        >
+                          {confirmation.submit}
+                        </button>
+                      </>
+                    }
+                  >
+                    <p className={callout.danger}>
+                      {view.displayName}（{view.name}）を{spec.legend}します。{spec.description}
+                    </p>
+                    <label className={fieldLabel}>
+                      確認のため、レコード名 {view.name} を入力してください
+                      <input
+                        name={`${kind}ConfirmName`}
+                        autoComplete="off"
+                        className="font-mono"
+                        data-autofocus
+                        value={confirmName}
+                        onChange={(event) => setConfirmName(event.target.value)}
+                      />
+                    </label>
+                  </Modal>
+                )}
+              </form>
+            )
+          })}
+        </div>
+        {busy && <LoadingState>実行しています…</LoadingState>}
+        {action.kind === 'error' && (
+          <RequestErrorAlert error={action.error} onRelogin={onRelogin}>
+            {action.error.status === 409 && (
+              <p className="text-xs text-rose-800">
+                状態が変わったか、別の操作が結果確認中です。最新の状態を読み込んでから判断してください。
+              </p>
+            )}
+            {action.retry !== null && (
+              <p className="text-xs text-rose-800 space-x-2">
+                <span>結果が不明です。同じ内容で再試行すると、同じ操作として確定を試みます。</span>
+                <button
+                  type="button"
+                  className={button.dangerOutline}
+                  onClick={() => {
+                    if (action.retry !== null) void run(action.retry, true)
+                  }}
+                >
+                  同じ内容で再試行
+                </button>
+              </p>
+            )}
+          </RequestErrorAlert>
+        )}
+        {action.kind === 'result' && action.operation.operationState === 'SUCCEEDED' && (
+          <p role="status" className={callout.success}>
+            {action.operation.status === DEPRECATED_STATUS
+              ? '廃止しました。この操作は元に戻せません。'
+              : '公開停止しました。廃止依頼があれば、廃止するか見送るかを判断してください。'}
+          </p>
+        )}
+        {action.kind === 'result' && action.operation.operationState === 'VERIFYING' && (
+          <OperationCheck
+            operationId={action.operation.operationId}
+            load={(id) => api.getDecisionOperation(id)}
+            onDone={(operation) => {
+              setAction({ kind: 'result', operation })
+              settled()
+            }}
+            onRelogin={onRelogin}
+          />
+        )}
+        {action.kind === 'result' && action.operation.operationState === 'FAILED' && (
+          <p role="alert" className={callout.danger}>
+            {action.operation.message}
+          </p>
+        )}
+        {action.kind === 'declined' && (
+          <p role="status" className={callout.success}>
+            廃止依頼を見送りました。理由は履歴に残り、Publisher が確認できます。
+          </p>
+        )}
+      </div>
     </section>
   )
 }
@@ -419,8 +488,13 @@ export function RecordPublicationToggle({
 }: Props & { label?: string }) {
   const [open, setOpen] = useState(false)
   return (
-    <div>
-      <button type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+    <div className="space-y-3">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className={`${button.small} w-full`}
+      >
         {open ? '公開管理を閉じる' : label}
       </button>
       {open && <RecordPublicationPanel {...props} />}

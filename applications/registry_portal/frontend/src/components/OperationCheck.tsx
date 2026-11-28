@@ -3,6 +3,7 @@ import { toApiError, type ApiError } from '../api/client'
 import type { OperationState, RecoveryRecord, UnsettledOperationState } from '../drafts/api'
 import { RecoveredOperationNotice } from './RecoveryDetails'
 import { RequestErrorAlert } from './RequestErrorAlert'
+import { button, callout } from '../ui/classes'
 
 /** 操作照会が返す操作のうち、結果確認で見る項目。下書きの操作と決裁 handler の操作で共通 */
 type CheckedOperation =
@@ -55,9 +56,9 @@ export function OperationCheck<T extends CheckedOperation>({
     )
   }
   return (
-    <div>
-      <p role="status">{message}</p>
-      <button type="button" disabled={busy} onClick={() => void check()}>
+    <div className={`${callout.warning} space-y-2`}>
+      <p role="status" className="font-medium">{message}</p>
+      <button type="button" className={button.warningOutline} disabled={busy} onClick={() => void check()}>
         処理結果を確認
       </button>
       {error && <RequestErrorAlert error={error} onRelogin={onRelogin} />}

@@ -149,6 +149,10 @@ it('通知の準備中（503）は、サーバーの案内を表示し、0件と
   await mount([jsonResponse(503, notConfigured)])
   expect(button('通知').textContent).toBe('通知（未読件数を取得できません）')
   await click('通知')
-  expect(container.querySelector('[role="alert"]')?.textContent).toContain('通知は準備中です')
+  const alert = container.querySelector('[role="alert"]')
+  expect(alert?.textContent).toContain('通知は準備中です')
+  // 準備中は失敗と見分けられるバッジで示し、再試行しても解決しないため再試行ボタンを出さない
+  expect(alert?.textContent).toContain('準備中（503 NOTIFICATIONS_NOT_CONFIGURED）')
+  expect(alert?.querySelectorAll('button')).toHaveLength(0)
   expect(container.textContent).not.toContain('通知はありません。')
 })
