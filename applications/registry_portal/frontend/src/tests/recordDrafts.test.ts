@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createApiClient } from '../api/client'
 import { RecordDraftsView } from '../drafts/RecordDraftsView'
 import { settlesIdempotencyKey } from '../drafts/api'
-import { fakeFetch, jsonResponse } from './helpers'
+import { fakeFetch, jsonResponse, withNavigation } from './helpers'
 
 const common = {
   name: 'payments-a2a',
@@ -130,12 +130,12 @@ async function mount(responses: (Response | Error)[]) {
   const api = createApiClient({ baseUrl: '', fetch: fetchImpl, getAccessToken: () => 'token' })
   await act(() =>
     root.render(
-      createElement(RecordDraftsView, {
+      withNavigation(createElement(RecordDraftsView, {
         api,
         roles: ['Publisher'],
         teams: ['team-payments'],
         onRelogin: vi.fn(),
-      }),
+      })),
     ),
   )
   return calls

@@ -10,7 +10,7 @@ import { createApiClient } from '../api/client'
 import { CatalogDetailView } from '../catalog/CatalogDetailView'
 import { canViewAllHistory } from '../drafts/api'
 import { RecordHistoryToggle, RecordHistoryView } from '../drafts/RecordHistoryView'
-import { fakeFetch, jsonResponse, TEST_CONFIG } from './helpers'
+import { fakeFetch, jsonResponse, TEST_CONFIG, withNavigation } from './helpers'
 
 let container: HTMLDivElement
 let root: Root
@@ -97,7 +97,7 @@ it('操作と審査の履歴を、項目ごとの操作 ID・主体・対象ハ�
       }),
     )
   })
-  const list = container.querySelector('ul.history-entries')
+  const list = container.querySelector('section[aria-labelledby^="history-"] ol')
   expect(list).not.toBeNull()
   const items = [...(list?.querySelectorAll('li') ?? [])]
   expect(items).toHaveLength(3)
@@ -139,7 +139,7 @@ it('失敗はエラーコード付き、結果の確定していない操作は�
   await act(async () => {
     root.render(createElement(RecordHistoryView, { api, recordId: 'agentABC1234', onRelogin: () => {} }))
   })
-  const items = [...container.querySelectorAll('ul.history-entries li')]
+  const items = [...container.querySelectorAll('section[aria-labelledby^="history-"] ol > li')]
   expect(items[0].textContent).toContain('失敗（AWS_REJECTED）')
   expect(items[1].textContent).toContain('結果確認中')
 })
@@ -153,7 +153,7 @@ it('履歴の開閉ボタンを押すまで履歴 API を呼ばない', async ()
   const button = container.querySelector('button')
   await act(async () => button?.click())
   expect(calls[0].url).toBe(`${TEST_CONFIG.apiBaseUrl}/api/records/agentABC1234/history`)
-  expect(container.querySelectorAll('ul.history-entries li')).toHaveLength(3)
+  expect(container.querySelectorAll('section[aria-labelledby^="history-"] ol > li')).toHaveLength(3)
   expect(button?.textContent).toBe('履歴を閉じる')
 })
 
@@ -165,16 +165,16 @@ it('カタログ詳細の履歴の導線は、Curator・Admin にだけ表示す
   } as Parameters<typeof CatalogDetailView>[0]['item']
   const detailError = () =>
     jsonResponse(502, { error: { code: 'DISCOVERY_UNAVAILABLE', message: '取得できません。' } })
-  const props = { item, onRelogin: () => {}, onClose: () => {} }
+  const props = { item, recordId: 'agentABC1234', onRelogin: () => {}, onClose: () => {} }
   const hidden = client([detailError()])
   await act(async () => {
-    root.render(createElement(CatalogDetailView, { ...props, api: hidden.api, canViewHistory: false }))
+    root.render(withNavigation(createElement(CatalogDetailView, { ...props, api: hidden.api, canViewHistory: false })))
   })
   expect(container.textContent).not.toContain('操作と審査の履歴を表示')
   const shown = client([detailError()])
   await act(async () => {
     root.render(
-      createElement(CatalogDetailView, { ...props, key: 'curator', api: shown.api, canViewHistory: true }),
+      withNavigation(createElement(CatalogDetailView, { ...props, key: 'curator', api: shown.api, canViewHistory: true })),
     )
   })
   expect(container.textContent).toContain('操作と審査の履歴を表示')
@@ -222,7 +222,7 @@ it('決裁した Curator 以外に伏せられた結果確認中の決裁は、�
     withheld: true,
   }
   await renderHistory(jsonResponse(200, { ...historyBody, entries: [withheld] }))
-  const item = container.querySelector('ul.history-entries li')
+  const item = container.querySelector('section[aria-labelledby^="history-"] ol > li')
   expect(item?.textContent).toContain('公開承認・結果確認中')
   expect(item?.textContent).toContain('carol')
   expect(item?.textContent).toContain('決裁した Curator 本人にだけ表示します')
@@ -243,7 +243,7 @@ it('カタログ詳細から開いた履歴で、管理下にないレコード�
   ])
   await act(async () => {
     root.render(
-      createElement(CatalogDetailView, { item, api, canViewHistory: true, onRelogin: () => {}, onClose: () => {} }),
+      withNavigation(createElement(CatalogDetailView, { item, recordId: 'agentABC1234', api, canViewHistory: true, onRelogin: () => {}, onClose: () => {} })),
     )
   })
   const button = [...container.querySelectorAll('button')].find(
@@ -277,7 +277,7 @@ it('Admin の回復操作で確定した操作は、回復の方法・主体・�
   await act(async () => {
     root.render(createElement(RecordHistoryView, { api, recordId: 'agentABC1234', onRelogin: () => {} }))
   })
-  const text = container.querySelector('ul.history-entries li')?.textContent ?? ''
+  const text = container.querySelector('section[aria-labelledby^="history-"] ol > li')?.textContent ?? ''
   expect(text).toContain('失敗（ADMIN_RELEASED）')
   expect(text).toContain('確定できないまま強制解除')
   expect(text).toContain('回復した主体 admin-1')

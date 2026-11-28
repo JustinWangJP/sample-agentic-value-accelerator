@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createApiClient } from '../api/client'
 import { RecordDraftsView } from '../drafts/RecordDraftsView'
-import { fakeFetch, jsonResponse } from './helpers'
+import { fakeFetch, jsonResponse, withNavigation } from './helpers'
 
 const draft = {
   name: 'payments-agent',
@@ -101,7 +101,7 @@ async function mount(
     getAccessToken: () => 'publisher-token',
   })
   await act(() =>
-    root.render(createElement(RecordDraftsView, { api, roles, teams, onRelogin: vi.fn() })),
+    root.render(withNavigation(createElement(RecordDraftsView, { api, roles, teams, onRelogin: vi.fn() }))),
   )
   return calls
 }
@@ -259,12 +259,12 @@ it('作成の通信結果が不明でも同じ Idempotency-Key と入力で再�
   })
   await act(() =>
     root.render(
-      createElement(RecordDraftsView, {
+      withNavigation(createElement(RecordDraftsView, {
         api,
         roles: ['Publisher'],
         teams: ['team-payments'],
         onRelogin: vi.fn(),
-      }),
+      })),
     ),
   )
   await click('下書きを作成')
