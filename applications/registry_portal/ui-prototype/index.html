@@ -6,7 +6,9 @@
   <meta name="referrer" content="no-referrer" />
   <title>カタログ | Registry ポータル（UI プロトタイプ）</title>
   <link rel="stylesheet" href="./assets/styles.css" />
+  <script src="./assets/prototype-model.js" defer></script>
   <script src="./assets/prototype.js" defer></script>
+  <script src="./assets/prototype-pages.js" defer></script>
 </head>
 <body data-portal-nav="catalog" class="bg-slate-50 text-slate-900 min-h-screen flex flex-col">
   <div data-portal-shell-top></div>
@@ -45,20 +47,11 @@
           <div class="flex flex-wrap items-center gap-x-4 gap-y-2 pt-1 text-xs">
             <div class="flex items-center gap-2">
               <label for="search-type-filter" class="font-medium text-slate-600">種別</label>
-              <select id="search-type-filter" class="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-800">
-                <option value="">すべて</option>
-                <option value="AGENT">Agent</option>
-                <option value="MCP">MCP サーバー</option>
-                <option value="SKILL">Skill</option>
-              </select>
+              <select id="search-type-filter" data-options="recordTypes" data-empty-label="すべて" class="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-800"></select>
             </div>
             <div class="flex items-center gap-2">
               <label for="search-classification-filter" class="font-medium text-slate-600">データ分類</label>
-              <select id="search-classification-filter" class="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-800">
-                <option value="">すべて</option>
-                <option value="public">public（組織外公開可）</option>
-                <option value="private">private（組織内限定）</option>
-              </select>
+              <select id="search-classification-filter" data-options="dataClassifications" data-empty-label="すべて" class="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-800"></select>
             </div>
             <div class="flex items-center gap-2">
               <label for="search-a2a-filter" class="font-medium text-slate-600">A2A（Agent のみ）</label>
@@ -96,7 +89,7 @@
 
         <!-- Agent タブ -->
         <div id="tab-agent" data-tab-panel-group="catalog-type">
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4" data-state-region data-state-label="公開中の Agent" data-state-error="502 DISCOVERY_UNAVAILABLE" data-state-empty-hint="別の種別タブを確認するか、検索をお試しください。">
             <article class="bg-white border border-slate-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-sm transition flex flex-col justify-between">
               <div>
                 <div class="flex items-start justify-between gap-3">
@@ -187,7 +180,7 @@
 
         <!-- MCP サーバータブ -->
         <div id="tab-mcp" data-tab-panel-group="catalog-type" class="is-hidden">
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4" data-state-region data-state-label="公開中の MCP サーバー" data-state-error="502 DISCOVERY_UNAVAILABLE" data-state-empty-hint="別の種別タブを確認するか、検索をお試しください。">
             <article class="bg-white border border-slate-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-sm transition flex flex-col justify-between">
               <div>
                 <div class="flex items-start justify-between gap-3">
@@ -230,7 +223,7 @@
 
         <!-- Skill タブ -->
         <div id="tab-skill" data-tab-panel-group="catalog-type" class="is-hidden">
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4" data-state-region data-state-label="公開中の Skill" data-state-error="502 DISCOVERY_UNAVAILABLE" data-state-empty-hint="別の種別タブを確認するか、検索をお試しください。">
             <article class="bg-white border border-slate-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-sm transition flex flex-col justify-between">
               <div>
                 <div class="flex items-start justify-between gap-3">
@@ -286,7 +279,7 @@
       <section id="catalog-search-mode" aria-label="検索結果" class="is-hidden space-y-4">
         <div class="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3">
           <div class="text-sm text-blue-950">
-            <strong class="font-semibold">「<span id="catalog-search-query-display">引受審査</span>」</strong> の検索結果：<strong class="font-semibold">2 件</strong>（関連度順・最大 20 件）
+            <strong class="font-semibold">「<span id="catalog-search-query-display">引受審査</span>」</strong> の検索結果<span data-state-hide="loading empty preparing error401 error403 error5xx">：<strong class="font-semibold">2 件</strong></span>（関連度順・最大 20 件）
           </div>
           <button type="button" data-catalog-back-to-list class="px-3 py-1.5 rounded-lg bg-white border border-blue-200 hover:bg-blue-100/50 text-blue-700 text-xs font-semibold cursor-pointer">
             ← 一覧に戻る
@@ -294,12 +287,12 @@
         </div>
 
         <!-- 不整合 A2A 除外警告（inconsistentA2ACount > 0 の場合の例） -->
-        <div role="status" class="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs text-amber-900 flex items-start gap-2.5">
+        <div data-state-hide="loading empty preparing error401 error403 error5xx" role="status" class="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs text-amber-900 flex items-start gap-2.5">
           <span class="font-bold text-amber-700">注意:</span>
           <span>検索用の写し（<code class="font-mono">isA2A</code>）と定義（descriptor）が食い違う 1 件を結果から除外しました。ほかの該当項目を表示しています。</span>
         </div>
 
-        <div class="space-y-3">
+        <div class="space-y-3" data-state-region data-state-kinds="loading empty preparing error401 error403 error5xx" data-state-label="検索結果" data-state-error="502 DISCOVERY_UNAVAILABLE" data-state-empty-hint="キーワードを変えるか、種別・データ分類の条件を外してください。">
           <article class="bg-white border border-slate-200 rounded-xl p-5 hover:border-blue-300 transition">
             <div class="flex flex-wrap items-start justify-between gap-3">
               <div>

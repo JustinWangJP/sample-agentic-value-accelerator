@@ -5,10 +5,11 @@
   "description": "Registry ポータル UI 改善用の静的 HTML プロトタイプ（Tailwind CSS 静的ビルド）",
   "scripts": {
     "build:css": "tailwindcss -i ./src/input.css -o ./assets/styles.css --minify",
-    "watch:css": "tailwindcss -i ./src/input.css -o ./assets/styles.css --watch"
+    "watch:css": "tailwindcss -i ./src/input.css -o ./assets/styles.css --watch",
+    "test": "node --test tests/*.test.mjs"
   },
   "devDependencies": {
-    "@tailwindcss/cli": "^4.1.11",
-    "tailwindcss": "^4.1.11"
+    "@tailwindcss/cli": "4.3.5",
+    "tailwindcss": "4.3.5"
   }
 }

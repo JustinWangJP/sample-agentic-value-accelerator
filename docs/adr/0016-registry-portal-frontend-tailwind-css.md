@@ -1,6 +1,6 @@
 # Registry ポータルのフロントエンドに Tailwind CSS（静的ビルド配信）を採用する
 
-Registry ポータルのフロントエンド（`applications/registry_portal/frontend/`）の UI 改善および今後の画面実装において、スタイリング基盤に Tailwind CSS（v4）を採用し、ビルド時に単一の静的 CSS ファイルへ出力して配信する。MVP1 の機能およびバックエンド API のインターフェースは変更しない。
+Registry ポータルのフロントエンド（`applications/registry_portal/frontend/`）の UI 改善および今後の画面実装において、スタイリング基盤に Tailwind CSS（v4）を採用し、ビルド時に単一の静的 CSS ファイルへ出力して配信する。MVP1 の機能およびバックエンド API のインターフェースは変更しない（Issue #83）。
 
 現行のフロントエンドは外部 UI ライブラリを持たず、単一の `index.css` による素の CSS で構成されていた。UI/UX 改善により左サイドバー・ヘッダー・通知パネル・履歴ドロワー・差分テーブル・確認モーダルなど画面構成と状態表現が増えるにあたり、一貫したデザイントークン（色・余白・タイポグラフィ・状態バッジ）を保ちながら、静的 HTML プロトタイプ（`applications/registry_portal/ui-prototype/`）から React コンポーネントへそのままスタイルを移植できる基盤が必要になった。
 

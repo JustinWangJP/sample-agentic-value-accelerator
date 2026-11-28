@@ -6,7 +6,9 @@
   <meta name="referrer" content="no-referrer" />
   <title>Registry 管理 | Registry ポータル（UI プロトタイプ）</title>
   <link rel="stylesheet" href="./assets/styles.css" />
+  <script src="./assets/prototype-model.js" defer></script>
   <script src="./assets/prototype.js" defer></script>
+  <script src="./assets/prototype-pages.js" defer></script>
 </head>
 <body data-portal-nav="administration" class="bg-slate-50 text-slate-900 min-h-screen flex flex-col">
   <div data-portal-shell-top></div>
@@ -36,11 +38,11 @@
           </div>
           <div>
             <dt class="text-slate-500">リージョン / 認可方式</dt>
-            <dd class="mt-1 font-mono text-slate-900">us-east-1 · JWT（発見用 M2M）</dd>
+            <dd class="mt-1 font-mono text-slate-900">us-east-1 · <span data-state-hide="notFetched">JWT（発見用 M2M）</span><span data-state-only="notFetched" class="is-hidden font-sans text-slate-500">未取得</span></dd>
           </div>
           <div>
             <dt class="text-slate-500">自動承認（approvalConfiguration）</dt>
-            <dd class="mt-1 font-semibold text-emerald-700">無効（手動審査が有効）</dd>
+            <dd class="mt-1 font-semibold"><span data-state-hide="notFetched" class="text-emerald-700">無効（手動審査が有効）</span><span data-state-only="notFetched" class="is-hidden text-slate-500">未取得</span></dd>
           </div>
         </dl>
       </section>
@@ -60,7 +62,7 @@
 
         <!-- 未管理レコードタブ -->
         <div id="admin-unmanaged" data-tab-panel-group="admin-records">
-          <div class="overflow-x-auto">
+          <div class="overflow-x-auto" data-state-region data-state-label="未管理レコード" data-state-error="502 REGISTRY_UNAVAILABLE" data-state-empty-hint="Registry 上のレコードはすべてポータルの管理下にあります。">
             <table class="w-full text-left border-collapse">
               <thead>
                 <tr class="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
@@ -118,7 +120,7 @@
 
         <!-- 管理レコード（所有チーム変更）タブ -->
         <div id="admin-managed" data-tab-panel-group="admin-records" class="is-hidden">
-          <div class="overflow-x-auto">
+          <div class="overflow-x-auto" data-state-region data-state-label="管理レコード" data-state-error="502 REGISTRY_UNAVAILABLE" data-state-empty-hint="取り込み済みの管理レコードはまだありません。">
             <table class="w-full text-left border-collapse">
               <thead>
                 <tr class="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">

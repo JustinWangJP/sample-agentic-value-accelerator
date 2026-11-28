@@ -6,7 +6,9 @@
   <meta name="referrer" content="no-referrer" />
   <title>状態・デザインシステム一覧 | Registry ポータル（UI プロトタイプ）</title>
   <link rel="stylesheet" href="./assets/styles.css" />
+  <script src="./assets/prototype-model.js" defer></script>
   <script src="./assets/prototype.js" defer></script>
+  <script src="./assets/prototype-pages.js" defer></script>
 </head>
 <body class="bg-slate-50 text-slate-900 min-h-screen flex flex-col">
   <div class="bg-slate-900 text-slate-200 text-xs px-4 py-2 border-b border-slate-800">
@@ -27,8 +29,9 @@
 
     <!-- 1. 起動状態と認証・API エラー -->
     <section class="space-y-4">
-      <h2 class="text-lg font-bold text-slate-900 border-b border-slate-200 pb-2">1. 起動・認証エラー（401 と 403/5xx の厳密な区別）</h2>
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <h2 class="text-lg font-bold text-slate-900 border-b border-slate-200 pb-2">1. 起動・失敗（401・403・5xx の厳密な区別）</h2>
+      <p class="text-xs text-slate-600">401 だけが再ログイン、5xx だけが再試行を表示します。403 はログインし直しても再試行しても解決しないため、どちらのボタンも表示しません。各業務画面では、プロトタイプ確認用バーの「表示状態」で同じパネルを一覧領域に重ねて確認できます。</p>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <!-- ログイン中 -->
         <div class="bg-white border border-slate-200 rounded-xl p-5 flex flex-col items-center justify-center text-center min-h-36">
           <div class="w-7 h-7 rounded-full border-2 border-slate-200 border-t-blue-600 animate-spin mb-3"></div>
@@ -36,38 +39,21 @@
           <p class="text-xs text-slate-400 mt-1">SSO 認証および主体情報の取得中</p>
         </div>
 
-        <!-- 401 UNAUTHENTICATED（再ログインボタンあり） -->
-        <div role="alert" class="bg-rose-50 border border-rose-200 rounded-xl p-5 space-y-3">
-          <div class="flex items-center gap-2">
-            <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-rose-100 text-rose-800">401 UNAUTHENTICATED</span>
-          </div>
-          <p class="text-sm font-medium text-rose-900">認証が必要です。ログインし直してください。</p>
-          <p class="text-xs text-rose-700">※ 401 またはログイン失敗のときだけ再ログインボタンを表示します。</p>
-          <button type="button" class="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold cursor-pointer">もう一度ログインする</button>
-        </div>
-
-        <!-- 403 FORBIDDEN / 502 DISCOVERY_UNAVAILABLE（再ログインボタンなし） -->
-        <div role="alert" class="bg-rose-50 border border-rose-200 rounded-xl p-5 space-y-3">
-          <div class="flex items-center gap-2">
-            <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-rose-100 text-rose-800">403 FORBIDDEN / 502</span>
-          </div>
-          <p class="text-sm font-medium text-rose-900">この操作を行う権限がないか、現在サービスを利用できません。</p>
-          <p class="text-xs font-mono text-rose-700">requestId: req-01jd9x...</p>
-          <button type="button" class="px-4 py-1.5 rounded-lg border border-rose-300 bg-white hover:bg-rose-50 text-rose-800 text-xs font-semibold cursor-pointer">再試行</button>
-        </div>
+        <!-- 以下は prototype.js が業務画面の一覧領域と同じパネルを描画する -->
+        <div data-state-sample="error401"></div>
+        <div data-state-sample="error403" data-state-label="カタログ"></div>
+        <div data-state-sample="error5xx" data-state-label="カタログ" data-state-error="502 DISCOVERY_UNAVAILABLE"></div>
       </div>
     </section>
 
     <!-- 2. CODING_STANDARDS.md の 4 状態 -->
     <section class="space-y-4">
       <h2 class="text-lg font-bold text-slate-900 border-b border-slate-200 pb-2">2. 「0 件」「未取得」「準備中」「失敗」の 4 状態</h2>
+      <p class="text-xs text-slate-600">「失敗」は 1. の 401・403・5xx を参照してください。0 件・読み込み中・準備中のパネルも業務画面の一覧領域と共通です。</p>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <!-- 0 件 -->
-        <div class="bg-white border border-slate-200 rounded-xl p-6 text-center space-y-2">
-          <span class="inline-flex px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600">0 件（正常応答）</span>
-          <h3 class="text-sm font-semibold text-slate-900">該当するカタログ項目はありません</h3>
-          <p class="text-xs text-slate-500">検索条件を変えるか、別の種別タブを確認してください。</p>
-        </div>
+        <!-- 0 件・読み込み中（prototype.js が描画） -->
+        <div data-state-sample="empty" data-state-label="該当するカタログ項目" data-state-empty-hint="検索条件を変えるか、別の種別タブを確認してください。"></div>
+        <div data-state-sample="loading" data-state-label="カタログ"></div>
 
         <!-- 未取得 -->
         <div class="bg-white border border-dashed border-slate-300 rounded-xl p-6 space-y-2">
@@ -76,21 +62,8 @@
           <p class="text-xs text-slate-500">未管理レコードまたは公開版スナップショット未保存のため取得できません（「未登録」とは区別して表示します）。</p>
         </div>
 
-        <!-- 準備中（A2A 検索未準備 503） -->
-        <div class="bg-amber-50 border border-amber-200 rounded-xl p-6 space-y-3">
-          <span class="inline-flex px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-900">準備中（503 A2A_SEARCH_NOT_READY）</span>
-          <h3 class="text-sm font-semibold text-amber-950">A2A での絞り込み検索は現在準備中です</h3>
-          <p class="text-xs text-amber-900">A2A の Agent を探す場合は、一覧画面の「A2A の Agent のみ表示」をご利用ください。</p>
-          <a href="./index.html" class="inline-flex items-center px-3.5 py-1.5 rounded-lg bg-white border border-amber-300 hover:bg-amber-100 text-amber-900 text-xs font-semibold">A2A の Agent 一覧を開く →</a>
-        </div>
-
-        <!-- 失敗（障害と 0 件の区別） -->
-        <div role="alert" class="bg-rose-50 border border-rose-200 rounded-xl p-6 space-y-3">
-          <span class="inline-flex px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-100 text-rose-800">失敗（502 DISCOVERY_UNAVAILABLE）</span>
-          <h3 class="text-sm font-semibold text-rose-950">カタログの取得に失敗しました</h3>
-          <p class="text-xs text-rose-800">一時的な通信異常またはサービス障害のため結果を表示できません（0 件ではありません）。</p>
-          <button type="button" class="px-3.5 py-1.5 rounded-lg border border-rose-300 bg-white hover:bg-rose-100 text-rose-800 text-xs font-semibold cursor-pointer">再試行する</button>
-        </div>
+        <!-- 準備中（A2A 検索未準備 503。prototype.js が描画） -->
+        <div data-state-sample="preparing"></div>
       </div>
     </section>
 
@@ -98,16 +71,23 @@
     <section id="review-warnings" class="space-y-4">
       <h2 class="text-lg font-bold text-slate-900 border-b border-slate-200 pb-2">3. 業務固有の警告・制約バナー</h2>
       <div class="space-y-3">
-        <!-- 自己承認禁止 -->
-        <div class="bg-amber-50 border-l-4 border-amber-500 rounded-r-xl p-4 text-xs text-amber-950">
-          <strong class="font-semibold block text-sm mb-0.5">自己承認禁止：この申請は決裁できません</strong>
-          申請者または最終編集者があなた自身と一致しているため、公開承認・却下のボタンを無効化しています。別の Curator に決裁を依頼してください。
+        <!-- 自己承認（決裁の送信後に返る 403。ボタンは事前に無効化しない） -->
+        <div role="alert" class="bg-rose-50 border border-rose-200 rounded-xl p-4 space-y-1 text-xs text-rose-950">
+          <span class="inline-flex px-2 py-0.5 rounded font-mono font-bold bg-rose-100 text-rose-800">403 FORBIDDEN</span>
+          <p class="text-sm font-medium">申請者と最終編集者は決裁できません。別の Curator が審査してください。</p>
+          <p class="text-rose-800">自己承認かどうかは決裁の送信時にサーバーが判定します。公開承認・却下のボタンは事前に無効化せず、返ったメッセージをそのまま表示します。ログインし直しても解決しないため、再ログインボタンは表示しません。</p>
         </div>
 
-        <!-- 無効化・改ざん警告 -->
-        <div class="bg-rose-50 border-l-4 border-rose-600 rounded-r-xl p-4 text-xs text-rose-950">
-          <strong class="font-semibold block text-sm mb-0.5">申請スナップショットとの不整合（無効化 / 改ざん警告）</strong>
-          保存済みの申請スナップショットと現在の Registry レコード内容が一致しません。決裁は実行できません。Publisher による再申請または Admin の確認が必要です。
+        <!-- 審査中の編集で申請が無効になった（invalidated） -->
+        <div role="alert" class="bg-rose-50 border-l-4 border-rose-600 rounded-r-xl p-4 text-xs text-rose-950">
+          <strong class="font-semibold block text-sm mb-0.5">この申請は審査中の編集で無効になっています</strong>
+          決裁できません。一覧で最新の状態を確認してください。
+        </div>
+
+        <!-- 保存された申請スナップショットが申請時の内容と一致しない（snapshotIntact: false） -->
+        <div role="alert" class="bg-rose-50 border-l-4 border-rose-600 rounded-r-xl p-4 text-xs text-rose-950">
+          <strong class="font-semibold block text-sm mb-0.5">申請スナップショットが申請時の内容と一致しません</strong>
+          保存された申請スナップショットが申請時の内容と一致しません。決裁できません。Publisher に再申請を依頼し、管理者に連絡してください。
         </div>
 
         <!-- 所属チームなし Publisher -->
@@ -116,11 +96,8 @@
           業務ロールに Publisher を持っていますが、Cognito の所属チーム（<code class="font-mono">team-*</code>）が未設定のため、下書きの作成・編集・申請・廃止依頼は行えません。管理者にチーム割当てを依頼してください。
         </div>
 
-        <!-- 通知取得失敗 -->
-        <div id="notifications-states" class="bg-rose-50 border border-rose-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3 text-xs text-rose-900">
-          <span><strong>通知の取得に失敗しました。</strong>通信状況を確認のうえ再試行してください。</span>
-          <button type="button" class="px-3 py-1 rounded-lg border border-rose-300 bg-white font-semibold cursor-pointer">再試行</button>
-        </div>
+        <!-- 通知の取得失敗（通知ポップオーバーの一覧領域と同じパネル。prototype.js が描画） -->
+        <div id="notifications-states" data-state-sample="error5xx" data-state-label="通知" data-state-error="502 NOTIFICATIONS_UNAVAILABLE"></div>
       </div>
     </section>
 

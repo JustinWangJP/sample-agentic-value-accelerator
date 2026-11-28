@@ -6,7 +6,9 @@
   <meta name="referrer" content="no-referrer" />
   <title>下書き・申請 | Registry ポータル（UI プロトタイプ）</title>
   <link rel="stylesheet" href="./assets/styles.css" />
+  <script src="./assets/prototype-model.js" defer></script>
   <script src="./assets/prototype.js" defer></script>
+  <script src="./assets/prototype-pages.js" defer></script>
 </head>
 <body data-portal-nav="drafts" class="bg-slate-50 text-slate-900 min-h-screen flex flex-col">
   <div data-portal-shell-top></div>
@@ -28,7 +30,7 @@
 
       <!-- 業務キュー：データテーブル -->
       <section class="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
-        <div class="overflow-x-auto">
+        <div class="overflow-x-auto" data-state-region data-state-label="下書き" data-state-error="502 REGISTRY_UNAVAILABLE" data-state-empty-hint="「新しい下書き」から Agent・MCP サーバー・Skill を作成できます。">
           <table class="w-full text-left border-collapse">
             <thead>
               <tr class="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
