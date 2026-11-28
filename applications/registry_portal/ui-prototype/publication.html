@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="no-referrer" />
+  <title>公開管理 | Registry ポータル（UI プロトタイプ）</title>
+  <link rel="stylesheet" href="./assets/styles.css" />
+  <script src="./assets/prototype-model.js" defer></script>
+  <script src="./assets/prototype.js" defer></script>
+  <script src="./assets/prototype-pages.js" defer></script>
+</head>
+<body data-portal-nav="publication" class="bg-slate-50 text-slate-900 min-h-screen flex flex-col">
+  <div data-portal-shell-top></div>
+
+  <div class="flex-1 flex max-w-screen-2xl w-full mx-auto">
+    <aside data-portal-shell-sidebar class="hidden lg:block w-64 shrink-0 border-r border-slate-200 bg-white px-3 py-5"></aside>
+
+    <main class="flex-1 min-w-0 px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+      <div>
+        <h1 class="text-2xl font-bold tracking-tight text-slate-900">公開管理</h1>
+        <p class="mt-1 text-sm text-slate-600">公開中・公開停止中の管理レコードを検索またはレコード ID で照会し、公開停止・廃止・廃止依頼の見送りを行います。</p>
+      </div>
+
+      <!-- 検索 & ID 照会（2カード横並び） -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <section class="lg:col-span-2 bg-white border border-slate-200 rounded-xl shadow-xs p-5 space-y-3">
+          <h2 class="text-sm font-semibold text-slate-900">管理レコードを検索（GET /api/records/publication）</h2>
+          <div class="flex flex-col sm:flex-row gap-2.5">
+            <input type="search" placeholder="レコード名の一部で検索（例: contract）" class="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+            <select aria-label="状態で絞り込み" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+              <option value="">すべての状態</option>
+              <option value="SUSPENDED">公開停止中（ポータル検索値: SUSPENDED）</option>
+              <option value="DRAFT">DRAFT</option>
+              <option value="PENDING_APPROVAL">審査待ち（PENDING_APPROVAL）</option>
+              <option value="APPROVED">APPROVED</option>
+              <option value="REJECTED">REJECTED（公開停止中を除く）</option>
+              <option value="DEPRECATED">DEPRECATED</option>
+              <option value="CREATING">CREATING</option>
+              <option value="UPDATING">UPDATING</option>
+              <option value="CREATE_FAILED">CREATE_FAILED</option>
+              <option value="UPDATE_FAILED">UPDATE_FAILED</option>
+            </select>
+            <button type="button" class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium cursor-pointer shrink-0">検索</button>
+          </div>
+          <p class="text-[11px] text-slate-500">※「公開停止中（SUSPENDED）」は AWS 状態（REJECTED）と区別するポータル検索専用の絞り込み値です。</p>
+        </section>
+
+        <section class="bg-white border border-slate-200 rounded-xl shadow-xs p-5 space-y-3">
+          <h2 class="text-sm font-semibold text-slate-900">レコード ID で直接照会</h2>
+          <div class="flex gap-2">
+            <input type="text" maxlength="12" value="rec661122334" placeholder="12桁のレコード ID" class="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono" />
+            <button type="button" class="px-4 py-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-800 text-sm font-medium cursor-pointer shrink-0">照会</button>
+          </div>
+        </section>
+      </div>
+
+      <!-- 管理レコード検索結果一覧とページング -->
+      <section aria-label="管理レコード検索結果" class="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
+        <div class="px-5 py-3.5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
+          <h2 class="text-sm font-semibold text-slate-900">管理レコード検索結果</h2>
+          <span class="text-xs text-slate-500">所有チームによらず管理下のレコードを表示します</span>
+        </div>
+        <div class="overflow-x-auto" data-state-region data-state-label="管理レコード" data-state-error="502 REGISTRY_UNAVAILABLE" data-state-empty-hint="検索条件に一致する管理レコードはありません。状態や名前の条件を変えてください。">
+          <table class="w-full text-left border-collapse">
+            <thead>
+              <tr class="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
+                <th class="py-3 px-4">レコード名 / ID</th>
+                <th class="py-3 px-4">種別</th>
+                <th class="py-3 px-4">所有チーム</th>
+                <th class="py-3 px-4">版 / 公開中の版</th>
+                <th class="py-3 px-4">状態</th>
+                <th class="py-3 px-4 text-right">操作</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-200 text-sm">
+              <tr class="bg-blue-50/40">
+                <td class="py-3 px-4">
+                  <div class="font-semibold text-slate-900">旧・契約照会 MCP サーバー</div>
+                  <div class="text-xs font-mono text-slate-500">legacy-contract-mcp · rec661122334</div>
+                </td>
+                <td class="py-3 px-4"><span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-medium">MCP サーバー</span></td>
+                <td class="py-3 px-4 text-xs font-medium text-slate-700">team-fsi-core</td>
+                <td class="py-3 px-4 text-xs font-mono">
+                  <div>最新: v1.0.3</div>
+                  <div class="text-emerald-700">公開中の版: v1.0.3</div>
+                </td>
+                <td class="py-3 px-4">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20">APPROVED</span>
+                </td>
+                <td class="py-3 px-4 text-right text-xs font-semibold text-blue-700">表示中（下記）</td>
+              </tr>
+              <tr class="hover:bg-slate-50/70">
+                <td class="py-3 px-4">
+                  <div class="font-semibold text-slate-900">旧・与信判定 Agent</div>
+                  <div class="text-xs font-mono text-slate-500">legacy-credit-agent · rec551100229</div>
+                </td>
+                <td class="py-3 px-4"><span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-medium">Agent</span></td>
+                <td class="py-3 px-4 text-xs font-medium text-slate-700">team-fsi-core</td>
+                <td class="py-3 px-4 text-xs font-mono">
+                  <div>最新: v1.2.0</div>
+                  <div class="text-slate-400">公開中の版なし</div>
+                </td>
+                <td class="py-3 px-4">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-orange-50 text-orange-800 ring-1 ring-inset ring-orange-600/20">REJECTED・公開停止中</span>
+                </td>
+                <td class="py-3 px-4 text-right">
+                  <button type="button" class="px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold cursor-pointer">公開管理を開く</button>
+                </td>
+              </tr>
+              <tr class="hover:bg-slate-50/70">
+                <td class="py-3 px-4">
+                  <div class="font-semibold text-slate-900">契約書メタデータ照会 MCP サーバー</div>
+                  <div class="text-xs font-mono text-slate-500">contract-meta-mcp · rec554433221</div>
+                </td>
+                <td class="py-3 px-4"><span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-medium">MCP サーバー</span></td>
+                <td class="py-3 px-4 text-xs font-medium text-slate-700">team-fsi-core</td>
+                <td class="py-3 px-4 text-xs font-mono">
+                  <div>最新: v1.4.0</div>
+                  <div class="text-emerald-700">公開中の版: v1.4.0</div>
+                </td>
+                <td class="py-3 px-4">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20">APPROVED</span>
+                </td>
+                <td class="py-3 px-4 text-right">
+                  <button type="button" class="px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold cursor-pointer">公開管理を開く</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <nav aria-label="管理レコード検索のページ" class="px-4 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between text-xs text-slate-600">
+          <span>3 件を表示（nextToken 中継方式）</span>
+          <div class="flex items-center gap-2">
+            <button type="button" disabled class="px-3 py-1 rounded border border-slate-200 text-slate-400 cursor-not-allowed">最初のページ</button>
+            <button type="button" class="px-3 py-1 rounded border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium cursor-pointer">次のページ →</button>
+          </div>
+        </nav>
+      </section>
+
+      <!-- 選択中のレコード公開管理パネル -->
+      <section class="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
+        <div class="px-6 py-4 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20">公開中（APPROVED）</span>
+              <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-600/20">未解決の廃止依頼あり（5日経過）</span>
+            </div>
+            <h2 class="text-lg font-bold text-slate-900 mt-1">旧・契約照会 MCP サーバー</h2>
+            <p class="text-xs font-mono text-slate-500">legacy-contract-mcp · rec661122334 · 所有チーム: team-fsi-core · 公開中の版: v1.0.3</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button type="button" data-open-drawer="history-drawer" class="px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold cursor-pointer">履歴を見る</button>
+            <button type="button" class="px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium cursor-pointer">最新状態を再読み込み</button>
+          </div>
+        </div>
+
+        <div class="p-6 space-y-6">
+          <!-- 未解決の廃止依頼ボックス -->
+          <div class="rounded-xl border border-rose-200 bg-rose-50/50 p-4 space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <h3 class="text-sm font-semibold text-rose-900">未解決の廃止依頼</h3>
+              <span class="text-xs text-rose-700 font-medium">依頼日時: 2026-11-23 11:20（5日経過）</span>
+            </div>
+            <p class="text-sm text-rose-950">理由: contract-meta-mcp v1.4.0 へ完全移行したため廃止を依頼します。（依頼者: <code class="font-mono text-xs">sub=publisher-019</code>）</p>
+            <div class="pt-2 border-t border-rose-200/70 flex flex-col sm:flex-row gap-2.5">
+              <input type="text" maxlength="255" placeholder="見送り理由（見送る場合は必須・最大255文字。レコードの状態は変わりません）" class="flex-1 rounded-lg border border-rose-300 bg-white px-3 py-1.5 text-xs" />
+              <button type="button" class="px-3.5 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold cursor-pointer shrink-0">廃止依頼を見送る</button>
+            </div>
+          </div>
+
+          <!-- 公開停止と廃止の 2 カラム操作パネル -->
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            <!-- 公開停止 -->
+            <div class="rounded-xl border border-orange-200 bg-orange-50/30 p-5 space-y-3">
+              <h3 class="text-sm font-semibold text-orange-950">公開停止（再公開可能・AWS 状態は REJECTED）</h3>
+              <p class="text-xs text-slate-600 leading-relaxed">カタログから発見できなくします。再公開には編集と再申請が必要です。公開停止では廃止依頼は閉じません。</p>
+              <div>
+                <label for="suspend-reason" class="block text-xs font-semibold text-slate-700 mb-1">公開停止の理由 <span class="text-rose-600">*</span>（最大 255 文字）</label>
+                <textarea id="suspend-reason" rows="2" maxlength="255" placeholder="一時的に発見を止める理由を入力…" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"></textarea>
+              </div>
+              <button type="button" class="px-4 py-2 rounded-lg bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold cursor-pointer">公開停止を実行</button>
+            </div>
+
+            <!-- 廃止（不可逆 → モーダル二重確認） -->
+            <div class="rounded-xl border border-rose-200 bg-rose-50/30 p-5 flex flex-col justify-between space-y-3">
+              <div class="space-y-2">
+                <h3 class="text-sm font-semibold text-rose-950">廃止（元に戻せません / DEPRECATED）</h3>
+                <p class="text-xs text-slate-600 leading-relaxed">Registry レコードを終了状態にします。廃止後は再公開や編集が一切できなくなり、未解決の廃止依頼は廃止完了として閉じられます。</p>
+              </div>
+              <div>
+                <button type="button" data-open-modal="deprecate-modal" class="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold shadow-xs cursor-pointer">廃止手続きへ進む（確認ダイアログ）</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 廃止の二重確認モーダル（role="alertdialog"） -->
+  <div id="deprecate-modal" data-modal aria-hidden="true" class="is-hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div data-close-modal class="fixed inset-0 bg-slate-900/50"></div>
+    <div role="alertdialog" aria-modal="true" aria-labelledby="deprecate-modal-title" class="relative w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-rose-200 overflow-hidden">
+      <div class="px-6 py-4 bg-rose-50 border-b border-rose-200 flex items-center justify-between">
+        <h2 id="deprecate-modal-title" class="text-base font-bold text-rose-900">Registry レコードの廃止（元に戻せません）</h2>
+        <button type="button" data-close-modal class="p-1 rounded-lg text-rose-700 hover:bg-rose-100 cursor-pointer" aria-label="閉じる">✕</button>
+      </div>
+      <div class="p-6 space-y-4 text-sm">
+        <p class="text-slate-700 text-xs leading-relaxed">
+          <strong class="font-mono text-slate-900">legacy-contract-mcp</strong>（rec661122334）を <code class="font-mono">DEPRECATED</code> に変更します。この操作は取り消せません。
+        </p>
+        <div>
+          <label for="deprecate-reason" class="block text-xs font-semibold text-slate-700 mb-1">廃止理由 <span class="text-rose-600">*</span>（最大 255 文字）</label>
+          <textarea id="deprecate-reason" rows="2" maxlength="255" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs">後継 MCP サーバーへ移行完了したため廃止。</textarea>
+        </div>
+        <label class="flex items-start gap-2.5 text-xs text-slate-800 bg-slate-50 p-3 rounded-lg border border-slate-200 cursor-pointer">
+          <input id="deprecate-confirm-check" type="checkbox" class="mt-0.5 w-4 h-4 rounded border-slate-300 text-rose-600" />
+          <span>廃止すると元に戻せず、以降の編集・再公開ができなくなることを理解しました。</span>
+        </label>
+        <div>
+          <label for="deprecate-confirm-name" class="block text-xs font-semibold text-slate-700 mb-1">確認のためレコード名 <code class="font-mono text-rose-700">legacy-contract-mcp</code> を入力してください</label>
+          <input id="deprecate-confirm-name" type="text" data-expected-name="legacy-contract-mcp" placeholder="legacy-contract-mcp" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono" />
+        </div>
+      </div>
+      <div class="px-6 py-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2.5">
+        <button type="button" data-close-modal class="px-4 py-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold cursor-pointer">キャンセル</button>
+        <button id="deprecate-confirm-submit" type="button" disabled class="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 disabled:bg-rose-300 disabled:cursor-not-allowed text-white text-xs font-semibold cursor-pointer">廃止を実行する</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 操作と審査の履歴ドロワー（GET /api/records/{recordId}/history）。prototype.js が共通の形で描画する -->
+  <div data-history-drawer="publication"></div>
+</body>
+</html>

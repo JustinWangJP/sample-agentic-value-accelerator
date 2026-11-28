@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="no-referrer" />
+  <title>下書き・申請 | Registry ポータル（UI プロトタイプ）</title>
+  <link rel="stylesheet" href="./assets/styles.css" />
+  <script src="./assets/prototype-model.js" defer></script>
+  <script src="./assets/prototype.js" defer></script>
+  <script src="./assets/prototype-pages.js" defer></script>
+</head>
+<body data-portal-nav="drafts" class="bg-slate-50 text-slate-900 min-h-screen flex flex-col">
+  <div data-portal-shell-top></div>
+
+  <div class="flex-1 flex max-w-screen-2xl w-full mx-auto">
+    <aside data-portal-shell-sidebar class="hidden lg:block w-64 shrink-0 border-r border-slate-200 bg-white px-3 py-5"></aside>
+
+    <main class="flex-1 min-w-0 px-4 sm:px-6 lg:px-8 py-6">
+      <div class="flex flex-wrap items-end justify-between gap-4 mb-6">
+        <div>
+          <h1 class="text-2xl font-bold tracking-tight text-slate-900">下書き・申請</h1>
+          <p class="mt-1 text-sm text-slate-600">所属チーム（<span class="font-medium text-slate-800" data-team-summary>team-platform、team-fsi-core</span>）が所有する管理レコードの下書き作成・編集・申請・廃止依頼を行います。</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button type="button" class="px-3.5 py-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium cursor-pointer">再読み込み</button>
+          <a href="./draft-edit.html" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium shadow-xs">＋ 下書きを作成</a>
+        </div>
+      </div>
+
+      <!-- 業務キュー：データテーブル -->
+      <section class="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
+        <div class="overflow-x-auto" data-state-region data-state-label="下書き" data-state-error="502 REGISTRY_UNAVAILABLE" data-state-empty-hint="「新しい下書き」から Agent・MCP サーバー・Skill を作成できます。">
+          <table class="w-full text-left border-collapse">
+            <thead>
+              <tr class="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
+                <th class="py-3 px-4">レコード名 / ID</th>
+                <th class="py-3 px-4">種別</th>
+                <th class="py-3 px-4">所有チーム</th>
+                <th class="py-3 px-4">版（最新 / 公開中）</th>
+                <th class="py-3 px-4">状態</th>
+                <th class="py-3 px-4 text-right">操作</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-200 text-sm">
+              <!-- 下書き編集中（二重リビジョンあり） -->
+              <tr class="hover:bg-slate-50/70">
+                <td class="py-3.5 px-4">
+                  <div class="font-semibold text-slate-900">引受審査トリアージ Agent</div>
+                  <div class="text-xs font-mono text-slate-500">underwriting-triage-agent · rec102938475</div>
+                </td>
+                <td class="py-3.5 px-4">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-medium">Agent</span>
+                </td>
+                <td class="py-3.5 px-4 text-xs font-medium text-slate-700">team-fsi-core</td>
+                <td class="py-3.5 px-4 text-xs font-mono">
+                  <div class="text-slate-900 font-semibold">最新: v1.2.0</div>
+                  <div class="text-emerald-700">公開中: v1.1.0（二重リビジョン）</div>
+                </td>
+                <td class="py-3.5 px-4">
+                  <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700 ring-1 ring-inset ring-slate-500/20">下書きあり</span>
+                </td>
+                <td class="py-3.5 px-4 text-right whitespace-nowrap space-x-2">
+                  <a href="./draft-edit.html" class="inline-flex items-center px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold">編集</a>
+                  <a href="./submission.html" class="inline-flex items-center px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold">申請へ</a>
+                </td>
+              </tr>
+
+              <!-- 審査待ち（現行仕様: 編集可能。保存すると元の申請は無効化される） -->
+              <tr class="hover:bg-slate-50/70">
+                <td class="py-3.5 px-4">
+                  <div class="font-semibold text-slate-900">社内規定検索 MCP サーバー</div>
+                  <div class="text-xs font-mono text-slate-500">policy-search-mcp · rec332211009</div>
+                </td>
+                <td class="py-3.5 px-4">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-medium">MCP サーバー</span>
+                </td>
+                <td class="py-3.5 px-4 text-xs font-medium text-slate-700">team-platform</td>
+                <td class="py-3.5 px-4 text-xs font-mono">
+                  <div class="text-slate-900 font-semibold">最新: v2.1.0</div>
+                  <div class="text-emerald-700">公開中: v2.0.1</div>
+                </td>
+                <td class="py-3.5 px-4">
+                  <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-600/20">審査待ち</span>
+                  <div class="text-[11px] text-amber-800 mt-1">編集して保存すると元の申請は無効化されます</div>
+                </td>
+                <td class="py-3.5 px-4 text-right whitespace-nowrap">
+                  <a href="./draft-edit.html" class="inline-flex items-center px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold">編集</a>
+                </td>
+              </tr>
+
+              <!-- 結果確認中（VERIFYING + OperationCheck） -->
+              <tr class="bg-indigo-50/30">
+                <td class="py-3.5 px-4">
+                  <div class="font-semibold text-slate-900">請求書照合 custom Agent</div>
+                  <div class="text-xs font-mono text-slate-500">invoice-verify-agent · rec774411223</div>
+                </td>
+                <td class="py-3.5 px-4">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-medium">Agent</span>
+                </td>
+                <td class="py-3.5 px-4 text-xs font-medium text-slate-700">team-platform</td>
+                <td class="py-3.5 px-4 text-xs font-mono">
+                  <div class="text-slate-900 font-semibold">最新: v0.1.0</div>
+                  <div class="text-slate-400">公開中: なし</div>
+                </td>
+                <td class="py-3.5 px-4">
+                  <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-50 text-indigo-700 ring-1 ring-inset ring-indigo-600/20">結果確認中</span>
+                  <div class="text-[11px] text-indigo-700 mt-1">前回の保存結果が未確定のため書き込み停止中</div>
+                </td>
+                <td class="py-3.5 px-4 text-right whitespace-nowrap">
+                  <button type="button" class="inline-flex items-center px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold cursor-pointer">処理結果を確認</button>
+                </td>
+              </tr>
+
+              <!-- 公開中（新規下書き未作成） -->
+              <tr class="hover:bg-slate-50/70">
+                <td class="py-3.5 px-4">
+                  <div class="font-semibold text-slate-900">Terraform レビュー Skill</div>
+                  <div class="text-xs font-mono text-slate-500">terraform-review-skill · rec445566778</div>
+                </td>
+                <td class="py-3.5 px-4">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-medium">Skill</span>
+                </td>
+                <td class="py-3.5 px-4 text-xs font-medium text-slate-700">team-platform</td>
+                <td class="py-3.5 px-4 text-xs font-mono">
+                  <div class="text-slate-900 font-semibold">最新: v1.3.1</div>
+                  <div class="text-emerald-700">公開中: v1.3.1</div>
+                </td>
+                <td class="py-3.5 px-4">
+                  <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20">公開中</span>
+                </td>
+                <td class="py-3.5 px-4 text-right whitespace-nowrap">
+                  <a href="./draft-edit.html" class="inline-flex items-center px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold">新しい版を編集</a>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="px-4 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between text-xs text-slate-600">
+          <span>4 件を表示</span>
+          <div class="flex items-center gap-2">
+            <button type="button" disabled class="px-3 py-1 rounded border border-slate-200 text-slate-400 cursor-not-allowed">最初のページ</button>
+            <button type="button" class="px-3 py-1 rounded border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium cursor-pointer">次のページ →</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

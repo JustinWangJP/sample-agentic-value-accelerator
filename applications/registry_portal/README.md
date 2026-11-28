@@ -38,6 +38,7 @@ AWS Agent Registry を唯一の正本として、Agent・MCP サーバー・Skil
 | `backend/src/registry_portal/services/supplement_store.py` | 補助テーブルの項目（管理情報・ロック・操作・操作記録・申請スナップショット `SUBMISSION#`・無効化記録・公開版スナップショット・廃止依頼）の読み書き |
 | `infrastructure/` | 下書きの IAM モジュール（`modules/management_drafts`）、決裁 Lambda・実行ロール・審査と決裁の経路のモジュール（`modules/decision`）、既存ロールへ適用するルートモジュール（`management`）と決裁 Lambda 用のルートモジュール（`decision`） |
 | `frontend/` | React SPA。Authorization Code + PKCE でログインし、アクセストークンはメモリー上だけで保持する |
+| `ui-prototype/` | UI 改善用の静的 HTML プロトタイプ（11 画面、Tailwind CSS 静的ビルド）。React SPA 改修の設計図で、本番には配信しない。判断の背景は [ADR-0016](../../docs/adr/0016-registry-portal-frontend-tailwind-css.md)、閲覧・再ビルド・テストは [ui-prototype/README.md](ui-prototype/README.md) を参照 |
 
 ## 認可
 
@@ -208,7 +209,14 @@ npx --yes @redocly/cli@1.34.3 lint   # OpenAPI 仕様（openapi.yaml）。設定
 cd applications/registry_portal/frontend
 npm ci
 npm run lint && npm test && npm run typecheck && npm run build
+
+# UI プロトタイプ（静的 HTML。CSP・リンク・本番定義との一致を検査し、CSS を再生成する）
+cd applications/registry_portal/ui-prototype
+npm ci
+npm test && npm run build:css
 ```
+
+UI プロトタイプのテストは GitHub Actions の対象外です。プロトタイプの HTML・JS や、`frontend/src/` の種別・descriptor・データ分類・schema 版・操作種別・通知種別の定義を変えたときは、ローカルで `npm test` を実行してください。
 
 GitHub Actions（`.github/workflows/registry-portal-ci.yml`）では上記に加え、Terraform と配信スクリプトのローカル検査を実行します。AWS の認証情報は持たせず、AWS への反映は行いません（ADR-0004）。
 
