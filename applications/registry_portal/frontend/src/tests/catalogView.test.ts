@@ -62,7 +62,8 @@ describe('カタログ画面の表示', () => {
     expect(html).toContain('order-agent')
     expect(html).toContain('1.2.0')
     expect(html).toContain('受注を処理する')
-    expect(html.match(/class="badge">A2A/g)).toHaveLength(1)
+    // A2A のバッジは A2A の項目にだけ付ける
+    expect(html.match(/>A2A<\/span>/g)).toHaveLength(1)
     // 表示名がなければ名前を見出しにする
     expect(html).toMatch(/<h3[^>]*>plain<\/h3>/)
   })

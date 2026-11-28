@@ -5,7 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApiClient, type CatalogDetail, type CatalogItem } from '../api/client'
 import { CatalogView } from '../catalog/CatalogView'
-import { fakeFetch, jsonResponse } from './helpers'
+import { fakeFetch, jsonResponse, withNavigation } from './helpers'
 
 const agent: CatalogItem = {
   recordId: 'agentAbc1234',
@@ -80,7 +80,7 @@ async function mount(...responses: (Response | Error)[]) {
   const { fetchImpl, calls } = fakeFetch([jsonResponse(200, { items: [agent], nextToken: null }), ...responses])
   const api = createApiClient({ baseUrl: '', fetch: fetchImpl, getAccessToken: () => 'viewer-token' })
   const relogin = vi.fn()
-  await act(() => root.render(createElement(CatalogView, { api, canViewHistory: false, onRelogin: relogin })))
+  await act(() => root.render(withNavigation(createElement(CatalogView, { api, canViewHistory: false, onRelogin: relogin }))))
   return { calls, relogin }
 }
 
