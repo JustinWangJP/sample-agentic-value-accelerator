@@ -7,7 +7,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createApiClient } from '../api/client'
 import { ReviewsView } from '../reviews/ReviewsView'
-import { fakeFetch, jsonResponse } from './helpers'
+import { fakeFetch, jsonResponse, withNavigation } from './helpers'
 
 const SNAPSHOT_HASH = 'b'.repeat(64)
 const submittedBy = { issuer: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_EXAMPLE', subject: 'publisher-1' }
@@ -151,7 +151,7 @@ async function mount(responses: (Response | Error)[], roles: string[] = ['Curato
   const { fetchImpl, calls } = fakeFetch(responses)
   const api = createApiClient({ baseUrl: '', fetch: fetchImpl, getAccessToken: () => 'token' })
   await act(() =>
-    root.render(createElement(ReviewsView, { api, roles, onRelogin: vi.fn() })),
+    root.render(withNavigation(createElement(ReviewsView, { api, roles, onRelogin: vi.fn() }))),
   )
   return calls
 }

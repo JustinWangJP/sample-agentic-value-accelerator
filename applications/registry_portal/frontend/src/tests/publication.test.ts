@@ -8,7 +8,7 @@ import { createApiClient, type CatalogItem } from '../api/client'
 import { CatalogDetailView } from '../catalog/CatalogDetailView'
 import { RecordPublicationPanel } from '../publication/RecordPublicationPanel'
 import { RecordPublicationView } from '../publication/RecordPublicationView'
-import { fakeFetch, jsonResponse } from './helpers'
+import { fakeFetch, jsonResponse, withNavigation } from './helpers'
 
 const requestedBy = {
   issuer: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_EXAMPLE',
@@ -320,14 +320,15 @@ it('カタログの詳細は、Curator にだけ公開管理の入口を表示�
     const { api } = apiFor([failure.clone()])
     await act(() =>
       root.render(
-        createElement(CatalogDetailView, {
+        withNavigation(createElement(CatalogDetailView, {
           api,
+          recordId: item.recordId,
           item,
           canViewHistory: false,
           canManagePublication,
           onRelogin: vi.fn(),
           onClose: vi.fn(),
-        }),
+        })),
       ),
     )
     const entry = [...container.querySelectorAll('button')].some(

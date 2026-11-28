@@ -1,7 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { toApiError, type ApiClient, type ApiError } from '../api/client'
 import { RECORD_TYPE_LABELS } from '../api/recordType'
 import { RequestErrorAlert } from '../components/RequestErrorAlert'
+import { EmptyState, LoadingState, PageHeader } from '../components/StatePanel'
+import { useNavigation } from '../routing/navigation'
+import { RouteLink } from '../routing/NavigationProvider'
+import { badge, button, callout, card, fieldLabel, pager } from '../ui/classes'
 import { RecordHistoryToggle } from '../drafts/RecordHistoryView'
 import {
   PUBLISHED_STATUS,
@@ -81,14 +85,41 @@ function requestProgress(item: DeprecationRequestSummary): string {
 
 /** Curator の審査待ちの一覧と、申請のスナップショットに基づく公開承認・却下、廃止依頼への対応 */
 export function ReviewsView({ api, roles, onRelogin }: Props) {
+  const { route, navigate } = useNavigation()
+  const recordId = route.screen === 'reviews' ? route.recordId : null
+  if (!roles.includes('Curator')) return null
+  if (recordId !== null)
+    return (
+      <ReviewDetailLoader
+        key={recordId}
+        api={api}
+        recordId={recordId}
+        onBack={() => navigate({ screen: 'reviews', recordId: null })}
+        onRelogin={onRelogin}
+      />
+    )
+  return (
+    <ReviewList api={api} onOpen={(id) => navigate({ screen: 'reviews', recordId: id })} onRelogin={onRelogin} />
+  )
+}
+
+const REVIEW_COLUMNS = 'md:grid-cols-[6.5rem_minmax(0,2fr)_6rem_minmax(0,2.5fr)_9.5rem_7rem]'
+
+/** 審査待ちの一覧。開くたびに 1 ページ目から読み込む */
+function ReviewList({
+  api,
+  onOpen,
+  onRelogin,
+}: {
+  api: ApiClient
+  onOpen: (recordId: string) => void
+  onRelogin: () => void
+}) {
   const [list, setList] = useState<ListState>({ kind: 'loading' })
   const [token, setToken] = useState<string | undefined>()
   const [revision, setRevision] = useState(0)
-  const [detail, setDetail] = useState<PendingDetail | null>(null)
-  const isCurator = roles.includes('Curator')
 
   useEffect(() => {
-    if (!isCurator || detail) return
     let active = true
     api.listReviews(token).then(
       (result) => {
@@ -105,102 +136,139 @@ export function ReviewsView({ api, roles, onRelogin }: Props) {
     return () => {
       active = false
     }
-  }, [api, isCurator, detail, token, revision])
+  }, [api, token, revision])
 
-  if (!isCurator) return null
-
-  function back() {
-    setDetail(null)
+  function reload() {
     setList({ kind: 'loading' })
     setToken(undefined)
     setRevision((value) => value + 1)
   }
 
-  if (detail)
-    return (
-      <ReviewDetailView api={api} initial={detail} onBack={back} onRelogin={onRelogin} />
-    )
-
   return (
-    <section className="reviews" aria-labelledby="reviews-heading">
-      <h2 id="reviews-heading">審査待ち</h2>
-      <p>
-        AWS の承認待ち（PENDING_APPROVAL）を正本として表示します。申請のスナップショットを確認してから
-        公開承認または却下を行ってください。公開承認は実行の許可ではありません。
-      </p>
-      <p>
-        未解決の廃止依頼は、最初のページに古い順で表示します。公開停止で止めてから、廃止するか見送るかを判断できます。
-      </p>
+    <section aria-labelledby="reviews-heading">
+      <PageHeader
+        headingId="reviews-heading"
+        title="審査待ち"
+        description={
+          <>
+            <p>
+              AWS の承認待ち（PENDING_APPROVAL）を正本として表示します。申請のスナップショットを確認してから
+              公開承認または却下を行ってください。公開承認は実行の許可ではありません。
+            </p>
+            <p>
+              未解決の廃止依頼は、最初のページに古い順で表示します。公開停止で止めてから、廃止するか見送るかを判断できます。
+            </p>
+          </>
+        }
+      />
       {list.kind === 'loading' ? (
-        <p role="status">一覧を読み込んでいます…</p>
+        <LoadingState>一覧を読み込んでいます…</LoadingState>
       ) : list.kind === 'error' ? (
-        <>
-          <RequestErrorAlert error={list.error} onRelogin={onRelogin} />
-          <button type="button" onClick={back}>
+        <RequestErrorAlert error={list.error} onRelogin={onRelogin}>
+          <button type="button" className={button.dangerOutline} onClick={reload}>
             一覧を再読み込み
           </button>
-        </>
+        </RequestErrorAlert>
       ) : (
-        <>
+        <div className="space-y-4">
           {list.page.items.length === 0 && (
-            <p>{list.page.nextToken ? 'このページに審査待ちはありません。' : '審査待ちはありません。'}</p>
+            <EmptyState hint={list.page.nextToken ? undefined : '審査が必要な申請と廃止依頼はすべて処理済みです。'}>
+              {list.page.nextToken ? 'このページに審査待ちはありません。' : '審査待ちはありません。'}
+            </EmptyState>
           )}
-          <ul className="catalog-items">
-            {list.page.items.map((item) =>
-              item.reviewKind === 'DEPRECATION_REQUEST' ? (
-                <li key={`request-${item.recordId}`}>
-                  <h3>{item.displayName}</h3>
-                  <p>
-                    {RECORD_TYPE_LABELS[item.recordType]}・{item.name}・
-                    {item.ownerTeam ?? '所有チーム不明'}・版 {item.recordVersion}
-                  </p>
-                  <p>
-                    廃止依頼: {item.reason}（依頼者 {item.requestedBy.subject}）
-                  </p>
-                  <p>
-                    状態 {recordStatusLabel(item.status)} / {requestProgress(item)}
-                    {item.operationId && ' / 結果確認中'}
-                  </p>
-                  {!item.managed && <p>ポータルで管理されていないため、ここでは対応できません。</p>}
-                  <RecordPublicationToggle
-                    api={api}
-                    recordId={item.recordId}
-                    onRelogin={onRelogin}
-                    label="対応する"
-                  />
-                </li>
-              ) : (
-                <li key={item.recordId}>
-                  <h3>{item.displayName}</h3>
-                  <p>
-                    {RECORD_TYPE_LABELS[item.recordType]}・{item.name}・
-                    {item.ownerTeam ?? '所有チーム不明'}・版 {item.recordVersion}
-                  </p>
-                  <p>
-                    申請理由: {submissionLine(item)}
-                    {item.submittedBy && `（申請者 ${item.submittedBy.subject}）`}
-                  </p>
-                  <p>
-                    状態 {recordStatusLabel(item.status)}
-                    {item.operationId && ' / 結果確認中'}
-                  </p>
-                  {!item.managed && (
-                    <p>ポータルで管理されていないため、ここでは決裁できません。</p>
-                  )}
-                  <button
-                    type="button"
-                    disabled={item.operationId !== null || !item.snapshotHash}
-                    onClick={() => void openDetail(item.recordId)}
-                  >
-                    審査する
-                  </button>
-                </li>
-              ),
-            )}
-          </ul>
-          <nav className="pager" aria-label="審査待ちのページ">
+          {list.page.items.length > 0 && (
+            <div className={`${card} overflow-hidden`}>
+              <div
+                className={`hidden md:grid ${REVIEW_COLUMNS} bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600`}
+                aria-hidden="true"
+              >
+                <span className="py-3 px-4">区分</span>
+                <span className="py-3 px-4">レコード名 / 所有チーム</span>
+                <span className="py-3 px-4">版</span>
+                <span className="py-3 px-4">理由・申請者 / 経過</span>
+                <span className="py-3 px-4">状態</span>
+                <span className="py-3 px-4 text-right">操作</span>
+              </div>
+              <ul className="divide-y divide-slate-200 text-sm">
+                {list.page.items.map((item) =>
+                  item.reviewKind === 'DEPRECATION_REQUEST' ? (
+                    <li key={`request-${item.recordId}`} className="hover:bg-slate-50/70">
+                      <div className={`grid grid-cols-1 ${REVIEW_COLUMNS} items-start`}>
+                        <p className="pt-3.5 px-4 md:py-3.5">
+                          <span className={badge.danger}>廃止依頼</span>
+                        </p>
+                        <ReviewRecordCell item={item} />
+                        <p className="px-4 md:py-3.5 text-xs font-mono font-semibold text-slate-900">版 {item.recordVersion}</p>
+                        <div className="px-4 md:py-3.5 text-xs text-slate-600 break-all">
+                          <p>
+                            廃止依頼: {item.reason}（依頼者 {item.requestedBy.subject}）
+                          </p>
+                          <p className="mt-0.5 text-rose-700 font-medium">{requestProgress(item)}</p>
+                        </div>
+                        <p className="px-4 md:py-3.5 text-xs">
+                          <span className={badge.neutral}>
+                            状態 {recordStatusLabel(item.status)}
+                            {item.operationId && ' / 結果確認中'}
+                          </span>
+                        </p>
+                        <div className="py-3.5 px-4 md:text-right" />
+                      </div>
+                      <div className="px-4 pb-4 space-y-2">
+                        {!item.managed && (
+                          <p className={callout.warning}>ポータルで管理されていないため、ここでは対応できません。</p>
+                        )}
+                        <RecordPublicationToggle
+                          api={api}
+                          recordId={item.recordId}
+                          onRelogin={onRelogin}
+                          label="対応する"
+                        />
+                      </div>
+                    </li>
+                  ) : (
+                    <li key={item.recordId} className="hover:bg-slate-50/70">
+                      <div className={`grid grid-cols-1 ${REVIEW_COLUMNS} items-start`}>
+                        <p className="pt-3.5 px-4 md:py-3.5">
+                          <span className={badge.warning}>申請</span>
+                        </p>
+                        <ReviewRecordCell item={item} />
+                        <p className="px-4 md:py-3.5 text-xs font-mono font-semibold text-slate-900">版 {item.recordVersion}</p>
+                        <div className="px-4 md:py-3.5 text-xs text-slate-600 break-all">
+                          <p>
+                            申請理由: {submissionLine(item)}
+                            {item.submittedBy && `（申請者 ${item.submittedBy.subject}）`}
+                          </p>
+                        </div>
+                        <p className="px-4 md:py-3.5 text-xs">
+                          <span className={badge.warning}>
+                            状態 {recordStatusLabel(item.status)}
+                            {item.operationId && ' / 結果確認中'}
+                          </span>
+                        </p>
+                        <div className="py-3.5 px-4 md:text-right">
+                          <button
+                            type="button"
+                            className={button.smallPrimary}
+                            disabled={item.operationId !== null || !item.snapshotHash}
+                            onClick={() => onOpen(item.recordId)}
+                          >
+                            審査する
+                          </button>
+                        </div>
+                      </div>
+                      {!item.managed && (
+                        <p className={`mx-4 mb-4 ${callout.warning}`}>ポータルで管理されていないため、ここでは決裁できません。</p>
+                      )}
+                    </li>
+                  ),
+                )}
+              </ul>
+            </div>
+          )}
+          <nav className={pager} aria-label="審査待ちのページ">
             <button
               type="button"
+              className={button.small}
               disabled={token === undefined}
               onClick={() => {
                 setList({ kind: 'loading' })
@@ -211,6 +279,7 @@ export function ReviewsView({ api, roles, onRelogin }: Props) {
             </button>
             <button
               type="button"
+              className={button.small}
               disabled={list.page.nextToken === null}
               onClick={() => {
                 if (list.page.nextToken) {
@@ -222,18 +291,93 @@ export function ReviewsView({ api, roles, onRelogin }: Props) {
               次のページ
             </button>
           </nav>
-        </>
+        </div>
       )}
     </section>
   )
+}
 
-  async function openDetail(recordId: string) {
-    try {
-      setDetail(await api.getReview(recordId))
-    } catch (failure) {
-      setList({ kind: 'error', error: toApiError(failure, '審査対象を取得できませんでした。') })
+/** 一覧の名前・種別・所有チームの列 */
+function ReviewRecordCell({ item }: { item: SubmissionSummary | DeprecationRequestSummary }) {
+  return (
+    <div className="px-4 md:py-3.5 min-w-0">
+      <h3 className="font-semibold text-slate-900 break-all">{item.displayName}</h3>
+      <p className="text-xs text-slate-500 break-all">
+        {RECORD_TYPE_LABELS[item.recordType]}・<span className="font-mono">{item.name}</span>・
+        <strong>{item.ownerTeam ?? '所有チーム不明'}</strong>
+      </p>
+    </div>
+  )
+}
+
+type LoaderState =
+  | { kind: 'loading' }
+  | { kind: 'ready'; detail: PendingDetail }
+  | { kind: 'error'; error: ApiError }
+
+/** #/reviews/<レコード ID> の審査対象を取得してから、審査の画面を出す */
+function ReviewDetailLoader({
+  api,
+  recordId,
+  onBack,
+  onRelogin,
+}: {
+  api: ApiClient
+  recordId: string
+  onBack: () => void
+  onRelogin: () => void
+}) {
+  const [state, setState] = useState<LoaderState>({ kind: 'loading' })
+  const loading = state.kind === 'loading'
+  useEffect(() => {
+    if (!loading) return
+    let active = true
+    api.getReview(recordId).then(
+      (detail) => {
+        if (active) setState({ kind: 'ready', detail })
+      },
+      (failure: unknown) => {
+        if (active) setState({ kind: 'error', error: toApiError(failure, '審査対象を取得できませんでした。') })
+      },
+    )
+    return () => {
+      active = false
     }
-  }
+  }, [api, recordId, loading])
+
+  if (state.kind === 'ready')
+    return <ReviewDetailView api={api} initial={state.detail} onBack={onBack} onRelogin={onRelogin} />
+  return (
+    <section aria-label="審査する" className="space-y-4">
+      <ReviewBreadcrumb onBack={onBack} />
+      {state.kind === 'loading' ? (
+        <LoadingState>審査対象を読み込んでいます…</LoadingState>
+      ) : (
+        <RequestErrorAlert error={state.error} onRelogin={onRelogin} onRetry={() => setState({ kind: 'loading' })} />
+      )}
+    </section>
+  )
+}
+
+/** 審査詳細の上部。一覧への戻り道 */
+function ReviewBreadcrumb({ onBack, backDisabled = false, children }: { onBack: () => void; backDisabled?: boolean; children?: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <nav aria-label="パンくずリスト" className="flex items-center gap-2 text-xs text-slate-500">
+        <RouteLink to={{ screen: 'reviews', recordId: null }} className="hover:text-slate-900">
+          審査待ち
+        </RouteLink>
+        <span aria-hidden="true">/</span>
+        <span className="text-slate-900 font-medium">審査詳細</span>
+      </nav>
+      <div className="flex flex-wrap items-center gap-2">
+        {children}
+        <button type="button" className={button.small} disabled={backDisabled} onClick={onBack}>
+          一覧に戻る
+        </button>
+      </div>
+    </div>
+  )
 }
 
 type DecideState =
@@ -310,23 +454,37 @@ function ReviewDetailView({
   }
 
   return (
-    <section aria-labelledby="review-heading">
-      <h3 id="review-heading">審査する</h3>
-      <p>
-        {detail.displayName}（{RECORD_TYPE_LABELS[detail.recordType]}）・版 {detail.recordVersion}
-      </p>
-      <p>
-        所有チーム {detail.ownerTeam ?? '不明'} /{' '}
-        {detail.publishedVersion ? `公開中の版 ${detail.publishedVersion}` : '公開版なし（初回公開）'}
-      </p>
-      {detail.deprecationRequest && (
-        <p role="alert">
-          このレコードには未解決の廃止依頼があります（理由: {detail.deprecationRequest.reason}・依頼者{' '}
-          {detail.deprecationRequest.requestedBy.subject}）。依頼者の意図を確認してから決裁してください。
+    <section aria-labelledby="review-heading" className="space-y-6">
+      <ReviewBreadcrumb onBack={onBack} backDisabled={deciding}>
+        <div className="w-56">
+          <RecordHistoryToggle api={api} recordId={detail.recordId} onRelogin={onRelogin} />
+        </div>
+      </ReviewBreadcrumb>
+      <section className={`${card} p-6`}>
+        <div className="flex flex-wrap items-center gap-2 mb-2">
+          <span className={badge.warning}>{recordStatusLabel(detail.status)}</span>
+          <span className={badge.neutral}>{RECORD_TYPE_LABELS[detail.recordType]}</span>
+        </div>
+        <h1 id="review-heading" className="text-2xl font-bold text-slate-900 break-all">
+          <span className="sr-only">審査する: </span>
+          {detail.displayName}
+        </h1>
+        <p className="mt-1 text-sm text-slate-700">
+          {detail.displayName}（{RECORD_TYPE_LABELS[detail.recordType]}）・版 {detail.recordVersion}
         </p>
-      )}
+        <p className="mt-0.5 text-xs text-slate-600">
+          所有チーム {detail.ownerTeam ?? '不明'} /{' '}
+          {detail.publishedVersion ? `公開中の版 ${detail.publishedVersion}` : '公開版なし（初回公開）'}
+        </p>
+        {detail.deprecationRequest && (
+          <p role="alert" className={`mt-4 ${callout.danger}`}>
+            このレコードには未解決の廃止依頼があります（理由: {detail.deprecationRequest.reason}・依頼者{' '}
+            {detail.deprecationRequest.requestedBy.subject}）。依頼者の意図を確認してから決裁してください。
+          </p>
+        )}
+      </section>
       {!snapshot ? (
-        <p role="alert">
+        <p role="alert" className={DECISION_BLOCKED}>
           {detail.submissionState === 'MISSING'
             ? '申請スナップショットを取得できないため、決裁できません。管理者に連絡してください。'
             : 'このレコードにはポータル経由の申請がないため、決裁できません。管理者に連絡してください。'}
@@ -334,133 +492,179 @@ function ReviewDetailView({
       ) : (
         <>
           {detail.invalidated && (
-            <p role="alert">
+            <p role="alert" className={DECISION_BLOCKED}>
               この申請は審査中の編集で無効になっています。決裁できません。一覧で最新の状態を確認してください。
             </p>
           )}
           {!detail.snapshotIntact && (
-            <p role="alert">
+            <p role="alert" className={DECISION_BLOCKED}>
               保存された申請スナップショットが申請時の内容と一致しません。決裁できません。Publisher
               に再申請を依頼し、管理者に連絡してください。
             </p>
           )}
           <SnapshotSection snapshot={snapshot} />
-          <section aria-labelledby="review-diff-heading">
-            <h4 id="review-diff-heading">公開中の版との差分</h4>
+          <section aria-labelledby="review-diff-heading" className={`${card} overflow-hidden`}>
+            <div className="px-6 py-4 border-b border-slate-200">
+              <h2 id="review-diff-heading" className="text-base font-semibold text-slate-900">
+                公開中の版との差分
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                変更のある項目を強調表示しています。決裁は固定された申請スナップショットに対して実行します（差分は参考情報）。
+              </p>
+            </div>
             {detail.publishedState === 'MISSING' ? (
-              <p role="alert">
+              <p role="alert" className={`m-6 ${callout.danger}`}>
                 公開中の版 {detail.publishedVersion} のスナップショットは未取得です。差分を確認できないため、
                 管理者に連絡してください。
               </p>
             ) : detail.published ? (
               <>
-                <p>公開承認した Curator: {principalLabel(detail.published.approvedBy)}</p>
+                <p className="px-6 pt-4 text-xs text-slate-600">
+                  公開承認した Curator: {principalLabel(detail.published.approvedBy)}
+                </p>
                 <DiffTable
                   next={{ ...snapshot, recordVersion: detail.recordVersion }}
                   published={detail.published}
                 />
               </>
             ) : (
-              <p>公開版がないため、すべての項目が初めて公開されます。</p>
+              <p className="px-6 py-4 text-sm text-slate-600">公開版がないため、すべての項目が初めて公開されます。</p>
             )}
           </section>
-          {(['approve', 'reject'] as const).map((kind) => (
-            <form
-              key={kind}
-              onSubmit={(event) => {
-                event.preventDefault()
-                void decide(kind)
-              }}
-            >
-              <fieldset disabled={locked}>
-                <legend>{DECISION_COPY[kind].legend}</legend>
-                <label>
-                  {DECISION_COPY[kind].reasonLabel}
-                  <textarea
-                    name={DECISION_COPY[kind].field}
-                    required
-                    maxLength={STATUS_REASON_MAX_LENGTH}
-                    rows={3}
-                    value={reasons[kind]}
-                    onChange={(event) =>
-                      setReasons((current) => ({ ...current, [kind]: event.target.value }))
-                    }
-                  />
-                </label>
-                <button type="submit" disabled={locked || !reasons[kind].trim()}>
-                  {DECISION_COPY[kind].submit}
-                </button>
-              </fieldset>
-            </form>
-          ))}
+          <section className="bg-white border-2 border-slate-300 rounded-xl shadow-xs p-6 space-y-4">
+            <div>
+              <h2 className="text-base font-semibold text-slate-900">決裁（公開承認 / 却下）</h2>
+              <p className="text-xs text-slate-600 mt-0.5">
+                公開承認はカタログでの発見を許可するものです（実行の許可とは別に管理します）。どちらの決裁でも理由の入力が必須です。
+              </p>
+            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {(['approve', 'reject'] as const).map((kind) => (
+                <form
+                  key={kind}
+                  className={`rounded-xl border p-4 ${DECISION_TONES[kind].frame}`}
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    void decide(kind)
+                  }}
+                >
+                  <fieldset disabled={locked} className="space-y-3">
+                    <legend className="text-sm font-semibold text-slate-900">{DECISION_COPY[kind].legend}</legend>
+                    <label className={fieldLabel}>
+                      {DECISION_COPY[kind].reasonLabel}
+                      <textarea
+                        name={DECISION_COPY[kind].field}
+                        required
+                        maxLength={STATUS_REASON_MAX_LENGTH}
+                        rows={3}
+                        value={reasons[kind]}
+                        onChange={(event) =>
+                          setReasons((current) => ({ ...current, [kind]: event.target.value }))
+                        }
+                      />
+                    </label>
+                    <button type="submit" className={DECISION_TONES[kind].button} disabled={locked || !reasons[kind].trim()}>
+                      {DECISION_COPY[kind].submit}
+                    </button>
+                  </fieldset>
+                </form>
+              ))}
+            </div>
+            {state.kind === 'deciding' && <LoadingState>決裁しています…</LoadingState>}
+            {state.kind === 'error' && (
+              <RequestErrorAlert error={state.error} onRelogin={onRelogin}>
+                {state.error.status === 409 && (
+                  <p className="text-xs text-rose-800">
+                    審査した内容が現在の申請と一致しません。最新の申請を読み込んでから決裁してください。
+                  </p>
+                )}
+                {uncertain && state.retry !== null && (
+                  <p className="text-xs text-rose-800 space-x-2">
+                    <span>決裁結果が不明です。同じ内容で再試行すると、同じ操作として確定を試みます。</span>
+                    <button
+                      type="button"
+                      className={button.dangerOutline}
+                      disabled={deciding}
+                      onClick={() => {
+                        if (state.retry !== null) void decide(state.retry, true)
+                      }}
+                    >
+                      同じ内容で決裁を再試行
+                    </button>
+                  </p>
+                )}
+                {state.error.status === 409 && (
+                  <button type="button" className={button.dangerOutline} onClick={() => void reload()}>
+                    最新の申請を再読み込み
+                  </button>
+                )}
+              </RequestErrorAlert>
+            )}
+            {state.kind === 'result' && state.operation.operationState === 'SUCCEEDED' && (
+              <p role="status" className={callout.success}>
+                {state.operation.status === PUBLISHED_STATUS
+                  ? `公開承認しました（版 ${state.operation.recordVersion}）。カタログ検索への反映は数分かかることがあります（検索への反映待ち）。`
+                  : '却下しました。Publisher が編集して再申請します。'}
+              </p>
+            )}
+            {state.kind === 'result' && state.operation.operationState === 'VERIFYING' && (
+              <OperationCheck
+                operationId={state.operation.operationId}
+                load={(id) => api.getDecisionOperation(id)}
+                onDone={(operation) => setState({ kind: 'result', operation })}
+                onRelogin={onRelogin}
+              />
+            )}
+            {state.kind === 'result' && state.operation.operationState === 'FAILED' && (
+              <p role="alert" className={callout.danger}>
+                {state.operation.message}
+              </p>
+            )}
+          </section>
         </>
       )}
-      {state.kind === 'deciding' && <p role="status">決裁しています…</p>}
-      {state.kind === 'error' && (
-        <>
-          <RequestErrorAlert error={state.error} onRelogin={onRelogin} />
-          {state.error.status === 409 && (
-            <p>審査した内容が現在の申請と一致しません。最新の申請を読み込んでから決裁してください。</p>
-          )}
-          {uncertain && state.retry !== null && (
-            <p>
-              決裁結果が不明です。同じ内容で再試行すると、同じ操作として確定を試みます。
-              <button
-                type="button"
-                disabled={deciding}
-                onClick={() => {
-                  if (state.retry !== null) void decide(state.retry, true)
-                }}
-              >
-                同じ内容で決裁を再試行
-              </button>
-            </p>
-          )}
-          {state.error.status === 409 && (
-            <button type="button" onClick={() => void reload()}>
-              最新の申請を再読み込み
-            </button>
-          )}
-        </>
-      )}
-      {state.kind === 'result' && state.operation.operationState === 'SUCCEEDED' && (
-        <p role="status">
-          {state.operation.status === PUBLISHED_STATUS
-            ? `公開承認しました（版 ${state.operation.recordVersion}）。カタログ検索への反映は数分かかることがあります（検索への反映待ち）。`
-            : '却下しました。Publisher が編集して再申請します。'}
-        </p>
-      )}
-      {state.kind === 'result' && state.operation.operationState === 'VERIFYING' && (
-        <OperationCheck
-          operationId={state.operation.operationId}
-          load={(id) => api.getDecisionOperation(id)}
-          onDone={(operation) => setState({ kind: 'result', operation })}
-          onRelogin={onRelogin}
-        />
-      )}
-      {state.kind === 'result' && state.operation.operationState === 'FAILED' && (
-        <p role="alert">{state.operation.message}</p>
-      )}
-      <RecordHistoryToggle api={api} recordId={detail.recordId} onRelogin={onRelogin} />
-      <button type="button" disabled={deciding} onClick={onBack}>
-        一覧に戻る
-      </button>
     </section>
   )
 }
 
+/** 決裁できない申請の警告（左に太線のある赤い囲み） */
+const DECISION_BLOCKED = 'bg-rose-50 border-l-4 border-rose-600 rounded-r-xl p-4 text-sm text-rose-950'
+
+/** 公開承認は緑、却下は赤で見分ける */
+const DECISION_TONES: Record<DecisionKind, { frame: string; button: string }> = {
+  approve: {
+    frame: 'border-emerald-200 bg-emerald-50/30',
+    button:
+      'inline-flex items-center justify-center px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold shadow-xs disabled:opacity-50 disabled:cursor-not-allowed',
+  },
+  reject: {
+    frame: 'border-rose-200 bg-rose-50/30',
+    button:
+      'inline-flex items-center justify-center px-5 py-2 rounded-lg border border-rose-300 bg-rose-50 hover:bg-rose-100 text-rose-800 text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed',
+  },
+}
+
 function SnapshotSection({ snapshot }: { snapshot: SubmissionSnapshot }) {
   return (
-    <section aria-labelledby="review-snapshot-heading">
-      <h4 id="review-snapshot-heading">申請のスナップショット</h4>
-      <p>申請理由: {snapshot.reason}</p>
-      <p>申請者: {snapshot.submittedBy.subject} / 最終編集者: {snapshot.lastEditedBy.subject}</p>
-      <p>連絡先: {snapshot.contact || '未登録'} / 利用条件: {snapshot.termsOfUse || '未登録'}</p>
-      <p>接続先の参照: {snapshot.connectionReference || '未登録'}</p>
-      <p>関連参照: {formatReferences(snapshot.relatedReferences)}</p>
-      <details>
-        <summary>申請された定義と metadata を確認</summary>
-        <pre>{JSON.stringify({ record: snapshot.record, supplement: snapshot.supplement }, null, 2)}</pre>
+    <section aria-labelledby="review-snapshot-heading" className={`${card} p-6 space-y-3`}>
+      <h2 id="review-snapshot-heading" className="text-base font-semibold text-slate-900">
+        申請のスナップショット
+      </h2>
+      <p className="text-sm text-slate-700 bg-slate-50 border border-slate-200 rounded-lg p-3 break-all">
+        <strong className="font-semibold text-slate-900">申請理由: </strong>
+        {snapshot.reason}
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-xs text-slate-700">
+        <p className="break-all">申請者: {snapshot.submittedBy.subject} / 最終編集者: {snapshot.lastEditedBy.subject}</p>
+        <p className="break-all">連絡先: {snapshot.contact || '未登録'} / 利用条件: {snapshot.termsOfUse || '未登録'}</p>
+        <p className="break-all">接続先の参照: <span className="font-mono">{snapshot.connectionReference || '未登録'}</span></p>
+        <p className="break-all">関連参照: <span className="font-mono">{formatReferences(snapshot.relatedReferences)}</span></p>
+      </div>
+      <details className="pt-1">
+        <summary className="text-xs font-semibold text-slate-700 select-none">申請された定義と metadata を確認</summary>
+        <pre className="mt-3 p-4 rounded-lg bg-slate-900 text-slate-100 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all">
+          {JSON.stringify({ record: snapshot.record, supplement: snapshot.supplement }, null, 2)}
+        </pre>
       </details>
     </section>
   )
@@ -506,23 +710,28 @@ function DiffTable({ next, published }: { next: DiffFields; published: Published
     ['関連参照', formatReferences(published.relatedReferences), formatReferences(next.relatedReferences)],
   ]
   return (
-    <table className="review-diff">
-      <thead>
-        <tr>
-          <th>項目</th>
-          <th>公開中の版</th>
-          <th>申請された版</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map(([label, before, after]) => (
-          <tr key={label}>
-            <th>{label}</th>
-            <td>{before}</td>
-            <td>{after}</td>
+    <div className="overflow-x-auto">
+      <table className="diff-table text-xs">
+        <thead>
+          <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
+            <th className="py-3 px-4 w-36 text-left">項目</th>
+            <th className="py-3 px-4 text-left">公開中の版</th>
+            <th className="py-3 px-4 text-left">申請された版</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody className="divide-y divide-slate-200">
+          {rows.map(([label, before, after]) => {
+            const changed = before !== after
+            return (
+              <tr key={label} className={changed ? 'bg-amber-50/40' : undefined}>
+                <th className="py-3 px-4 font-semibold text-slate-700 text-left">{label}</th>
+                <td className="py-3 px-4 text-slate-600">{before}</td>
+                <td className={changed ? 'py-3 px-4 font-medium text-slate-900' : 'py-3 px-4 text-slate-700'}>{after}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
   )
 }
