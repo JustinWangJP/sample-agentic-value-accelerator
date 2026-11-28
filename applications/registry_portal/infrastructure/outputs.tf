@@ -42,7 +42,7 @@ output "human_client_id" {
   value       = aws_cognito_user_pool_client.human.id
 }
 output "cognito_issuer" {
-  description = "人間用トークンの issuer（decision の cognito_issuer）。"
+  description = "人間用トークンの issuer（確認用）。decision は region と cognito_user_pool_id から組み立てるため、tfvars には転記しない。"
   value       = local.issuer
 }
 output "management_role_name" {
